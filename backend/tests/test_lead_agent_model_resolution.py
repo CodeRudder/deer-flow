@@ -146,8 +146,11 @@ def test_create_summarization_middleware_uses_configured_model_alias(monkeypatch
         lambda: SummarizationConfig(enabled=True, model_name="model-masswork"),
     )
 
+    from unittest.mock import MagicMock
+
     captured: dict[str, object] = {}
-    fake_model = object()
+    fake_model = MagicMock()
+    fake_model.with_config.return_value = fake_model
 
     def _fake_create_chat_model(*, name=None, thinking_enabled, reasoning_effort=None):
         captured["name"] = name
@@ -163,3 +166,4 @@ def test_create_summarization_middleware_uses_configured_model_alias(monkeypatch
     assert captured["name"] == "model-masswork"
     assert captured["thinking_enabled"] is False
     assert middleware["model"] is fake_model
+    fake_model.with_config.assert_called_once_with(tags=["middleware:summarize"])
