@@ -1163,6 +1163,7 @@ def bash_list_tool(runtime: ToolRuntime[ContextT, ThreadState]) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Error: {_sanitize_error(e, runtime)}"
+@tool("ls", parse_docstring=True)
 def ls_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, path: str) -> str:
     """List the contents of a directory up to 2 levels deep in tree format.
 
