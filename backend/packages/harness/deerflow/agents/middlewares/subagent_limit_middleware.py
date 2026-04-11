@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Valid range for max_concurrent_subagents
 MIN_SUBAGENT_LIMIT = 2
-MAX_SUBAGENT_LIMIT = 4
+MAX_SUBAGENT_LIMIT = 6
 
 
 def _clamp_subagent_limit(value: int) -> int:

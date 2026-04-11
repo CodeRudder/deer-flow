@@ -64,6 +64,19 @@ class SandboxConfig(BaseModel):
         description="Environment variables to inject into the sandbox container. Values starting with $ will be resolved from host environment variables.",
     )
 
+    command_timeout: int = Field(
+        default=120,
+        ge=10,
+        description="Timeout in seconds for bash command execution (default: 120). On timeout the process tree is killed and partial output is returned. Minimum: 10s.",
+    )
+
+    max_background_commands: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of concurrent background commands per thread (default: 10).",
+    )
+
     bash_output_max_chars: int = Field(
         default=20000,
         ge=0,

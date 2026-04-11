@@ -118,8 +118,9 @@ if $DAEMON_MODE; then
 fi
 
 # Frontend command
+FRONTEND_PORT=2025
 if $DEV_MODE; then
-    FRONTEND_CMD="pnpm run dev"
+    FRONTEND_CMD="PORT=$FRONTEND_PORT pnpm run dev"
 else
     if command -v python3 >/dev/null 2>&1; then
         PYTHON_BIN="python3"
@@ -129,7 +130,7 @@ else
         echo "Python is required to generate BETTER_AUTH_SECRET."
         exit 1
     fi
-    FRONTEND_CMD="env BETTER_AUTH_SECRET=$($PYTHON_BIN -c 'import secrets; print(secrets.token_hex(16))') pnpm run preview"
+    FRONTEND_CMD="PORT=$FRONTEND_PORT env BETTER_AUTH_SECRET=$($PYTHON_BIN -c 'import secrets; print(secrets.token_hex(16))') pnpm run preview"
 fi
 
 # Extra flags for uvicorn/langgraph
@@ -212,7 +213,7 @@ if ! $GATEWAY_MODE; then
     echo "    LangGraph   → localhost:2024  (agent runtime)"
 fi
 echo "    Gateway     → localhost:8001  (REST API$(if $GATEWAY_MODE; then echo " + agent runtime"; fi))"
-echo "    Frontend    → localhost:3000  (Next.js)"
+echo "    Frontend    → localhost:$FRONTEND_PORT  (Next.js)"
 echo "    Nginx       → localhost:2026  (reverse proxy)"
 echo ""
 
@@ -255,6 +256,12 @@ run_service() {
 mkdir -p logs
 mkdir -p temp/client_body_temp temp/proxy_temp temp/fastcgi_temp temp/uwsgi_temp temp/scgi_temp
 
+# Pre-create DeerFlow base directories to avoid blocking mkdir during async request handling
+mkdir -p backend/.deer-flow/threads
+mkdir -p backend/.deer-flow/skills/custom
+mkdir -p backend/.deer-flow/memory
+mkdir -p backend/.deer-flow/acp-workspace
+
 # 1. LangGraph (skip in gateway mode)
 if ! $GATEWAY_MODE; then
     CONFIG_LOG_LEVEL=$(grep -m1 '^log_level:' config.yaml 2>/dev/null | awk '{print $2}' | tr -d ' ')
@@ -280,7 +287,7 @@ run_service "Gateway" \
 # 3. Frontend
 run_service "Frontend" \
     "cd frontend && $FRONTEND_CMD > ../logs/frontend.log 2>&1" \
-    3000 120
+    $FRONTEND_PORT 120
 
 # 4. Nginx
 run_service "Nginx" \

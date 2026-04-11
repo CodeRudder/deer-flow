@@ -2,6 +2,7 @@ import errno
 import ntpath
 import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -231,43 +232,103 @@ class LocalSandbox(Sandbox):
 
         raise RuntimeError("No suitable shell executable found. Tried /bin/zsh, /bin/bash, /bin/sh, and `sh` on PATH.")
 
+    @staticmethod
+    def _get_command_timeout() -> int:
+        """Read command timeout from config, default 120s."""
+        try:
+            from deerflow.config.app_config import get_app_config
+
+            config = get_app_config()
+            if config.sandbox and config.sandbox.command_timeout:
+                return config.sandbox.command_timeout
+        except Exception:
+            pass
+        return 120
+
+    def _kill_process_tree(self, proc: subprocess.Popen) -> None:
+        """Kill a process and its entire process group."""
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
+    def _collect_output(self, proc: subprocess.Popen) -> str:
+        """Read remaining output from a killed process."""
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except Exception:
+            stdout, stderr = ("", "")
+        output = stdout or ""
+        if stderr:
+            output += f"\nStd Error:\n{stderr}" if output else stderr
+        return output
+
     def execute_command(self, command: str) -> str:
         # Resolve container paths in command before execution
         resolved_command = self._resolve_paths_in_command(command)
         shell = self._get_shell()
+        timeout = self._get_command_timeout()
 
         if os.name == "nt":
-            if self._is_powershell(shell):
-                args = [shell, "-NoProfile", "-Command", resolved_command]
-            elif self._is_cmd_shell(shell):
-                args = [shell, "/c", resolved_command]
-            else:
-                args = [shell, "-c", resolved_command]
+            return self._execute_windows(resolved_command, shell, timeout)
+        return self._execute_unix(resolved_command, shell, timeout)
 
-            result = subprocess.run(
-                args,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
+    def _execute_windows(self, resolved_command: str, shell: str, timeout: int) -> str:
+        if self._is_powershell(shell):
+            args = [shell, "-NoProfile", "-Command", resolved_command]
+        elif self._is_cmd_shell(shell):
+            args = [shell, "/c", resolved_command]
         else:
-            result = subprocess.run(
-                resolved_command,
-                executable=shell,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
+            args = [shell, "-c", resolved_command]
+
+        result = subprocess.run(
+            args,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
         output = result.stdout
         if result.stderr:
             output += f"\nStd Error:\n{result.stderr}" if output else result.stderr
         if result.returncode != 0:
             output += f"\nExit Code: {result.returncode}"
-
         final_output = output if output else "(no output)"
-        # Reverse resolve local paths back to container paths in output
+        return self._reverse_resolve_paths_in_output(final_output)
+
+    def _execute_unix(self, resolved_command: str, shell: str, timeout: int) -> str:
+        # Use Popen with process group for clean timeout handling
+        proc = subprocess.Popen(
+            resolved_command,
+            executable=shell,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            preexec_fn=os.setsid,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Kill entire process group to clean up child processes
+            self._kill_process_tree(proc)
+            output = self._collect_output(proc)
+            output += f"\n\n[Command timed out after {timeout}s and was terminated]"
+            final_output = output if output else "(no output)"
+            return self._reverse_resolve_paths_in_output(final_output)
+
+        # Normal completion
+        output = stdout
+        if stderr:
+            output += f"\nStd Error:\n{stderr}" if output else stderr
+        if proc.returncode != 0:
+            output += f"\nExit Code: {proc.returncode}"
+        final_output = output if output else "(no output)"
         return self._reverse_resolve_paths_in_output(final_output)
 
     def list_dir(self, path: str, max_depth=2) -> list[str]:
@@ -291,7 +352,7 @@ class LocalSandbox(Sandbox):
             raise OSError(errno.EROFS, "Read-only file system", path)
         try:
             dir_path = os.path.dirname(resolved_path)
-            if dir_path:
+            if dir_path and not os.path.isdir(dir_path):
                 os.makedirs(dir_path, exist_ok=True)
             mode = "a" if append else "w"
             with open(resolved_path, mode, encoding="utf-8") as f:
@@ -339,7 +400,7 @@ class LocalSandbox(Sandbox):
             raise OSError(errno.EROFS, "Read-only file system", path)
         try:
             dir_path = os.path.dirname(resolved_path)
-            if dir_path:
+            if dir_path and not os.path.isdir(dir_path):
                 os.makedirs(dir_path, exist_ok=True)
             with open(resolved_path, "wb") as f:
                 f.write(content)

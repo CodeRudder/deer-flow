@@ -5,6 +5,8 @@ import type { Subtask } from "./types";
 export interface SubtaskContextValue {
   tasks: Record<string, Subtask>;
   setTasks: (tasks: Record<string, Subtask>) => void;
+  selectedTaskId: string | null;
+  setSelectedTaskId: (id: string | null) => void;
 }
 
 export const SubtaskContext = createContext<SubtaskContextValue>({
@@ -12,12 +14,19 @@ export const SubtaskContext = createContext<SubtaskContextValue>({
   setTasks: () => {
     /* noop */
   },
+  selectedTaskId: null,
+  setSelectedTaskId: () => {
+    /* noop */
+  },
 });
 
 export function SubtasksProvider({ children }: { children: React.ReactNode }) {
   const [tasks, setTasks] = useState<Record<string, Subtask>>({});
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   return (
-    <SubtaskContext.Provider value={{ tasks, setTasks }}>
+    <SubtaskContext.Provider
+      value={{ tasks, setTasks, selectedTaskId, setSelectedTaskId }}
+    >
       {children}
     </SubtaskContext.Provider>
   );

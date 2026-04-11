@@ -371,6 +371,21 @@ tools:
     group: bash
     use: deerflow.sandbox.tools:bash_tool
 
+  # Background bash tools — start, monitor, and kill long-running commands
+  # (dev servers, file watchers, etc.) without blocking the conversation.
+  - name: bash_background
+    group: bash
+    use: deerflow.sandbox.tools:bash_background_tool
+  - name: bash_output
+    group: bash
+    use: deerflow.sandbox.tools:bash_output_tool
+  - name: bash_kill
+    group: bash
+    use: deerflow.sandbox.tools:bash_kill_tool
+  - name: bash_list
+    group: bash
+    use: deerflow.sandbox.tools:bash_list_tool
+
 # ============================================================================
 # Tool Search Configuration (Deferred Tool Loading)
 # ============================================================================

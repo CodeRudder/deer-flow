@@ -1004,3 +1004,162 @@ class TestCooperativeCancellation:
         executor_module.cleanup_background_task(task_id)
 
         assert task_id not in executor_module._background_tasks
+
+
+# -----------------------------------------------------------------------------
+# Session Integration Tests
+# -----------------------------------------------------------------------------
+
+
+class TestSessionIntegration:
+    """Test SubagentResult new fields and session writes during _aexecute."""
+
+    def test_result_has_session_fields(self, classes):
+        """Test SubagentResult includes thread_id, subagent_name, description, original_prompt."""
+        SubagentResult = classes["SubagentResult"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        result = SubagentResult(
+            task_id="t1",
+            trace_id="tr1",
+            status=SubagentStatus.PENDING,
+            thread_id="thread-123",
+            subagent_name="developer",
+            description="implement feature",
+            original_prompt="Implement authentication module",
+        )
+
+        assert result.thread_id == "thread-123"
+        assert result.subagent_name == "developer"
+        assert result.description == "implement feature"
+        assert result.original_prompt == "Implement authentication module"
+
+    def test_result_default_fields_are_none(self, classes):
+        """Test that new fields default to None."""
+        SubagentResult = classes["SubagentResult"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        result = SubagentResult(
+            task_id="t1",
+            trace_id="tr1",
+            status=SubagentStatus.PENDING,
+        )
+
+        assert result.thread_id is None
+        assert result.subagent_name is None
+        assert result.description is None
+        assert result.original_prompt is None
+
+    @pytest.mark.anyio
+    async def test_session_receives_messages_during_execution(self, classes, base_config, mock_agent, msg):
+        """Test that session.append_message is called during _aexecute."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        ai_msg = msg.ai("Working on it", "msg-1")
+        final_state = {"messages": [msg.human("Task"), ai_msg]}
+        mock_agent.astream = lambda *args, **kwargs: async_iterator([final_state])
+
+        mock_session = MagicMock()
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=mock_session,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            result = await executor._aexecute("Task prompt")
+
+        assert result.status == SubagentStatus.COMPLETED
+        # Session should have received: initial HumanMessage + messages from chunks + mark_completed
+        mock_session.append_message.assert_called()  # Initial human message
+        mock_session.append_messages.assert_called()  # Chunk messages
+        mock_session.mark_completed.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_session_mark_failed_on_exception(self, classes, base_config, mock_agent):
+        """Test that session.mark_failed is called when execution raises."""
+        SubagentExecutor = classes["SubagentExecutor"]
+
+        mock_agent.astream.side_effect = RuntimeError("API error")
+        mock_session = MagicMock()
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=mock_session,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            result = await executor._aexecute("Task")
+
+        assert result.status.value == "failed"
+        mock_session.append_message.assert_called()  # Initial human message
+        mock_session.mark_failed.assert_called_once()
+        call_kwargs = mock_session.mark_failed.call_args
+        assert "API error" in call_kwargs[1].get("error", "") or "API error" in call_kwargs[0][0]
+
+    @pytest.mark.anyio
+    async def test_session_mark_interrupted_on_cancel(self, classes, base_config, mock_agent, msg):
+        """Test that session.mark_interrupted is called when task is cancelled."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        # Create a result with cancel_event already set
+        SubagentResult = classes["SubagentResult"]
+        result = SubagentResult(
+            task_id="cancel-test",
+            trace_id="tr1",
+            status=SubagentStatus.RUNNING,
+            started_at=datetime.now(),
+        )
+        result.cancel_event.set()
+
+        mock_session = MagicMock()
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=mock_session,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            ret = await executor._aexecute("Task", result_holder=result)
+
+        assert ret.status == SubagentStatus.CANCELLED
+        mock_session.mark_interrupted.assert_called_once()
+
+    def test_execute_async_sets_session_fields(self, classes, base_config, mock_agent, msg):
+        """Test that execute_async populates thread_id, subagent_name, description on result."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        ai_msg = msg.ai("Done", "msg-1")
+        final_state = {"messages": [msg.human("Task"), ai_msg]}
+        mock_agent.astream = lambda *args, **kwargs: async_iterator([final_state])
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="thread-456",
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            task_id = executor.execute_async("Do the task", description="test desc")
+
+        try:
+            from deerflow.subagents.executor import get_background_task_result
+
+            result = get_background_task_result(task_id)
+            if result is not None:
+                assert result.thread_id == "thread-456"
+                assert result.subagent_name == "test-agent"
+                assert result.description == "test desc"
+                assert result.original_prompt == "Do the task"
+        finally:
+            from deerflow.subagents.executor import cleanup_background_task
+
+            cleanup_background_task(task_id)

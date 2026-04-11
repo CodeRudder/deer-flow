@@ -15,8 +15,34 @@ from deerflow.agents.thread_state import ThreadState
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.subagents import SubagentExecutor, get_available_subagent_names, get_subagent_config
 from deerflow.subagents.executor import SubagentStatus, cleanup_background_task, get_background_task_result, request_cancel_background_task
+from deerflow.subagents.session import SubagentSession
 
 logger = logging.getLogger(__name__)
+
+
+def _build_recovery_prompt(sessions: list[SubagentSession]) -> str:
+    """Build a recovery context from interrupted sub-agent sessions."""
+    parts: list[str] = []
+    for s in sessions:
+        messages = s.read_messages()
+        ai_messages = [m for m in messages if m.get("role") == "ai"]
+        last_ai = ""
+        if ai_messages:
+            content = ai_messages[-1].get("content", "")
+            if isinstance(content, str):
+                last_ai = content[:200]
+            else:
+                last_ai = str(content)[:200]
+        parts.append(
+            f"- Task {s.task_id} ({s.subagent_name}): "
+            f"executed {len(messages)} steps, last AI response: {last_ai}"
+        )
+    return (
+        "<recovery_context>\nThe following sub-tasks were previously interrupted. "
+        "Continue from where they left off without repeating completed work:\n"
+        + "\n".join(parts)
+        + "\n</recovery_context>"
+    )
 
 
 @tool("task", parse_docstring=True)
@@ -34,14 +60,23 @@ async def task_tool(
     - Preserve context by keeping exploration and implementation separate
     - Handle complex multi-step tasks autonomously
     - Execute commands or operations in isolated contexts
+    - Simulate a multi-role development team with specialized agents
 
-    Available subagent types depend on the active sandbox configuration:
-    - **general-purpose**: A capable agent for complex, multi-step tasks that require
-      both exploration and action. Use when the task requires complex reasoning,
-      multiple dependent steps, or would benefit from isolated context.
-    - **bash**: Command execution specialist for running bash commands. This is only
-      available when host bash is explicitly allowed or when using an isolated shell
-      sandbox such as `AioSandboxProvider`.
+    Available subagent types:
+    - **general-purpose**: A capable agent for complex, multi-step tasks.
+    - **bash**: Command execution specialist (only when host bash is allowed).
+    - **pm**: Product Manager — requirements analysis, user stories, task prioritization.
+    - **architect**: System Architect — technical design, architecture decisions, code review.
+    - **developer**: Senior Developer — code implementation, debugging, optimization.
+    - **tester**: QA Tester — test design, quality assurance, automated testing.
+    - **devops**: DevOps Engineer — CI/CD, deployment, monitoring, infrastructure.
+
+    Team workflow example:
+    1. task("requirements", "Analyze requirements...", subagent_type="pm")
+    2. task("architecture", "Design architecture...", subagent_type="architect")
+    3. task("implementation", "Implement feature...", subagent_type="developer")
+    4. task("testing", "Write and run tests...", subagent_type="tester")
+    5. task("deployment", "Configure CI/CD...", subagent_type="devops")
 
     When to use this tool:
     - Complex tasks requiring multiple steps or tools
@@ -95,6 +130,20 @@ async def task_tool(
         thread_id = runtime.context.get("thread_id") if runtime.context else None
         if thread_id is None:
             thread_id = runtime.config.get("configurable", {}).get("thread_id")
+        if thread_id is None:
+            # Fallback: try get_config() from LangGraph context
+            try:
+                from langgraph.config import get_config
+                lg_config = get_config()
+                thread_id = lg_config.get("configurable", {}).get("thread_id")
+            except Exception:
+                pass
+        logger.debug(
+            "task_tool runtime: thread_id=%s, context_keys=%s, config_configurable_keys=%s",
+            thread_id,
+            list(runtime.context.keys()) if runtime.context else None,
+            list(runtime.config.get("configurable", {}).keys()) if runtime.config else None,
+        )
 
         # Try to get parent model from configurable
         metadata = runtime.config.get("metadata", {})
@@ -119,11 +168,40 @@ async def task_tool(
         thread_data=thread_data,
         thread_id=thread_id,
         trace_id=trace_id,
+        session=None,  # will be set below
     )
+
+    # Create session for persistence
+    session: SubagentSession | None = None
+    if thread_id:
+        try:
+            session = SubagentSession(
+                thread_id=thread_id,
+                task_id=tool_call_id,
+                subagent_name=subagent_type,
+                description=description,
+            )
+            executor.session = session
+            logger.info("Created SubagentSession for thread=%s, task=%s, subagent=%s", thread_id, tool_call_id, subagent_type)
+        except Exception:
+            logger.exception("Failed to create SubagentSession for thread=%s, task=%s", thread_id, tool_call_id)
+    else:
+        logger.warning("No thread_id available — subagent session will NOT be persisted")
+
+    # Check for interrupted sessions and inject recovery context
+    if thread_id and session is not None:
+        try:
+            interrupted = SubagentSession.find_interrupted(thread_id)
+            if interrupted:
+                recovery = _build_recovery_prompt(interrupted)
+                prompt = recovery + "\n\n" + prompt
+                logger.info("Injected recovery context from %d interrupted session(s)", len(interrupted))
+        except Exception:
+            logger.exception("Failed to check interrupted sessions, continuing without recovery")
 
     # Start background execution (always async to prevent blocking)
     # Use tool_call_id as task_id for better traceability
-    task_id = executor.execute_async(prompt, task_id=tool_call_id)
+    task_id = executor.execute_async(prompt, task_id=tool_call_id, description=description)
 
     # Poll for task completion in backend (removes need for LLM to poll)
     poll_count = 0

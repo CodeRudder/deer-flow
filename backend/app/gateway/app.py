@@ -61,6 +61,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("No IM channels configured or channel service failed to start")
 
+        # Auto-recover interrupted sub-agent tasks from previous run
+        try:
+            from app.gateway.recovery import auto_recover_interrupted_tasks
+
+            await auto_recover_interrupted_tasks()
+        except Exception:
+            logger.exception("Auto-recovery scan failed")
+
         yield
 
         # Stop channel service on shutdown
@@ -204,6 +212,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Stateless Runs API (stream/wait without a pre-existing thread)
     app.include_router(runs.router)
+
+    # Sub-agent session data (read JSONL conversation logs)
+    from app.gateway.routers import subagents
+    app.include_router(subagents.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:

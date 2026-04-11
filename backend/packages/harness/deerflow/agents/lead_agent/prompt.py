@@ -7,7 +7,7 @@ from functools import lru_cache
 from deerflow.config.agents_config import load_agent_soul
 from deerflow.skills import load_skills
 from deerflow.skills.types import Skill
-from deerflow.subagents import get_available_subagent_names
+from deerflow.subagents import get_available_subagent_names, list_subagents
 
 logger = logging.getLogger(__name__)
 
@@ -174,13 +174,25 @@ def _build_subagent_section(max_concurrent: int) -> str:
         Formatted subagent section string.
     """
     n = max_concurrent
-    bash_available = "bash" in get_available_subagent_names()
-    available_subagents = (
-        "- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.\n- **bash**: For command execution (git, build, test, deploy operations)"
-        if bash_available
-        else "- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.\n"
-        "- **bash**: Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access."
-    )
+    available_names = get_available_subagent_names()
+    bash_available = "bash" in available_names
+
+    # Build dynamic subagent list from registry (built-in + custom agents)
+    subagent_lines = []
+    all_configs = list_subagents()
+    for cfg in all_configs:
+        if cfg.name not in available_names:
+            continue
+        if cfg.name == "general-purpose":
+            subagent_lines.append("- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.")
+        elif cfg.name == "bash":
+            subagent_lines.append("- **bash**: For command execution (git, build, test, deploy operations)")
+        else:
+            # Custom agents from SOUL.md
+            subagent_lines.append(f"- **{cfg.name}**: {cfg.description}")
+    if not bash_available:
+        subagent_lines.append("- **bash**: Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access.")
+    available_subagents = "\n".join(subagent_lines)
     direct_tool_examples = "bash, ls, read_file, web_search, etc." if bash_available else "ls, read_file, web_search, etc."
     direct_execution_example = (
         '# User asks: "Run the tests"\n# Thinking: Cannot decompose into parallel sub-tasks\n# → Execute directly\n\nbash("npm test")  # Direct execution, not task()'
@@ -240,7 +252,7 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 ✅ **USE Parallel Subagents (max {n} per turn) when:**
 - **Complex research questions**: Requires multiple information sources or perspectives
 - **Multi-aspect analysis**: Task has several independent dimensions to explore
-- **Large codebases**: Need to analyze different parts simultaneously
+- **Code review / audit tasks**: MUST decompose by module/layer/package, never review all code at once
 - **Comprehensive investigations**: Questions requiring thorough coverage from multiple angles
 
 ❌ **DO NOT use subagents (execute directly) when:**
@@ -250,7 +262,14 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 - **Meta conversation**: Questions about conversation history
 - **Sequential dependencies**: Each step depends on previous results (do steps yourself sequentially)
 
+❌ **FORBIDDEN patterns — MUST decompose into sub-tasks:**
+- **"Check all module imports"** → Split by package: task("check agents/ imports", ...) + task("check sandbox/ imports", ...) + task("check tools/ imports", ...)
+- **"Review all source code"** → Split by module: one subagent per major module
+- **"Static analysis of entire project"** → Split by scope: task("analyze config layer", ...) + task("analyze agent layer", ...) + task("analyze API layer", ...)
+- **"Find all X in codebase"** → Use grep/glob first to count, then split into batches of ≤5 files per subagent
+
 **CRITICAL WORKFLOW** (STRICTLY follow this before EVERY action):
+0. **VALIDATE TASK SCOPE**: If a task requires reading all or most source files (e.g., "analyze the codebase", "review all code", "find all issues"), you MUST REJECT it as-is and decompose into 3-5 targeted sub-tasks (one module/layer/feature each). Never attempt wholesale code reading yourself or in a single subagent call.
 1. **COUNT**: In your thinking, list all sub-tasks and count them explicitly: "I have N sub-tasks"
 2. **PLAN BATCHES**: If N > {n}, explicitly plan which sub-tasks go in which batch:
    - "Batch 1 (this turn): first {n} sub-tasks"
@@ -312,6 +331,13 @@ task(description="Oracle Cloud analysis", prompt="...", subagent_type="general-p
 - Only use `task` when you can launch 2+ subagents in parallel
 - Single task = No value from subagents = Execute directly
 - For >{n} sub-tasks, use sequential batches of {n} across multiple turns
+
+**Interrupt Recovery Strategy:**
+If a sub-task fails or is interrupted, do NOT restart the entire task from scratch. Instead:
+1. Check completed sub-task results (visible in conversation context)
+2. Re-launch only the failed or incomplete sub-tasks
+3. Include prior progress information in the prompt so the new sub-agent can continue from the breakpoint
+4. The system automatically injects a `<recovery_context>` with interrupted session details when resuming
 </subagent_system>"""
 
 
@@ -420,6 +446,17 @@ You: "Deploying to staging..." [proceed]
 - Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_file` tool
 {acp_section}
 </working_directory>
+
+<file_reading_rules>
+**File Reading Constraints — MUST follow to avoid context overflow:**
+
+1. **Total file content per turn MUST NOT exceed 50KB.** This includes ALL read_file calls combined. If you need more, delegate to a subagent.
+2. **Avoid reading 5+ files per turn.** Reading too many files in a single response will fill the context window and trigger repeated summarization, losing critical information. If you need to read many files, delegate to a subagent.
+3. **Read file FRAGMENTS, not whole files.** Use `start_line` and `end_line` parameters to read only the section you need. Estimate the relevant range before reading.
+4. **Use `ls` and `glob` first** to understand file structure, then read only the specific sections relevant to the current task.
+5. **For code analysis tasks** that require reading many files, ALWAYS delegate to a subagent — the subagent has its own isolated context window.
+6. **NEVER attempt to read all source code for analysis.** Tasks like "analyze the entire codebase", "read all files in the project", or "review all source code" are FORBIDDEN. Instead, decompose into specific, targeted sub-tasks: analyze one module at a time, review specific functions, or examine particular file patterns. If the user requests a broad analysis, break it into 3-5 focused sub-tasks and delegate each to a subagent.
+</file_reading_rules>
 
 <response_style>
 - Clear and Concise: Avoid over-formatting unless requested

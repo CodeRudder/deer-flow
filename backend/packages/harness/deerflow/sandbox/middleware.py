@@ -66,6 +66,16 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     def after_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
+        # Clean up background commands for this thread
+        thread_id = (runtime.context or {}).get("thread_id")
+        if thread_id:
+            try:
+                from deerflow.sandbox.process_manager import cleanup_by_thread
+
+                cleanup_by_thread(thread_id)
+            except Exception as e:
+                logger.warning("Failed to cleanup background commands for thread %s: %s", thread_id, e)
+
         sandbox = state.get("sandbox")
         if sandbox is not None:
             sandbox_id = sandbox["sandbox_id"]

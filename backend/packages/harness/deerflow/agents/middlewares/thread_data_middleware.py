@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import NotRequired, override
 
@@ -25,10 +26,10 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
     - {base_dir}/threads/{thread_id}/user-data/workspace
     - {base_dir}/threads/{thread_id}/user-data/uploads
     - {base_dir}/threads/{thread_id}/user-data/outputs
+    - {base_dir}/threads/{thread_id}/subagents/
 
-    Lifecycle Management:
-    - With lazy_init=True (default): Only compute paths, directories created on-demand
-    - With lazy_init=False: Eagerly create directories in before_agent()
+    Directories are created eagerly in ``abefore_agent()`` via
+    ``asyncio.to_thread`` to avoid LangGraph's blocking-call detector.
     """
 
     state_schema = ThreadDataMiddlewareState
@@ -38,62 +39,48 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
 
         Args:
             base_dir: Base directory for thread data. Defaults to Paths resolution.
-            lazy_init: If True, defer directory creation until needed.
-                      If False, create directories eagerly in before_agent().
-                      Default is True for optimal performance.
+            lazy_init: Kept for backward compatibility but no longer affects
+                      directory creation — directories are always created in
+                      ``abefore_agent()``.
         """
         super().__init__()
         self._paths = Paths(base_dir) if base_dir else get_paths()
-        self._lazy_init = lazy_init
 
     def _get_thread_paths(self, thread_id: str) -> dict[str, str]:
-        """Get the paths for a thread's data directories.
-
-        Args:
-            thread_id: The thread ID.
-
-        Returns:
-            Dictionary with workspace_path, uploads_path, and outputs_path.
-        """
+        """Get the paths for a thread's data directories."""
         return {
             "workspace_path": str(self._paths.sandbox_work_dir(thread_id)),
             "uploads_path": str(self._paths.sandbox_uploads_dir(thread_id)),
             "outputs_path": str(self._paths.sandbox_outputs_dir(thread_id)),
         }
 
-    def _create_thread_directories(self, thread_id: str) -> dict[str, str]:
-        """Create the thread data directories.
-
-        Args:
-            thread_id: The thread ID.
-
-        Returns:
-            Dictionary with the created directory paths.
-        """
-        self._paths.ensure_thread_dirs(thread_id)
-        return self._get_thread_paths(thread_id)
-
-    @override
-    def before_agent(self, state: ThreadDataMiddlewareState, runtime: Runtime) -> dict | None:
+    def _extract_thread_id(self, runtime: Runtime) -> str:
+        """Extract thread_id from runtime context or LangGraph config."""
         context = runtime.context or {}
         thread_id = context.get("thread_id")
         if thread_id is None:
             config = get_config()
             thread_id = config.get("configurable", {}).get("thread_id")
-
         if thread_id is None:
             raise ValueError("Thread ID is required in runtime context or config.configurable")
+        return thread_id
 
-        if self._lazy_init:
-            # Lazy initialization: only compute paths, don't create directories
-            paths = self._get_thread_paths(thread_id)
-        else:
-            # Eager initialization: create directories immediately
-            paths = self._create_thread_directories(thread_id)
-            logger.debug("Created thread data directories for thread %s", thread_id)
+    @override
+    def before_agent(self, state: ThreadDataMiddlewareState, runtime: Runtime) -> dict | None:
+        thread_id = self._extract_thread_id(runtime)
+        paths = self._get_thread_paths(thread_id)
+        return {"thread_data": {**paths}}
 
-        return {
-            "thread_data": {
-                **paths,
-            }
-        }
+    @override
+    async def abefore_agent(self, state: ThreadDataMiddlewareState, runtime: Runtime) -> dict | None:
+        """Async hook: create all thread directories in a worker thread.
+
+        This is the preferred entry point when running under LangGraph's
+        ASGI server.  ``asyncio.to_thread`` offloads the blocking ``mkdir``
+        calls so LangGraph's blocking-call detector (blockbuster) won't
+        raise.
+        """
+        thread_id = self._extract_thread_id(runtime)
+        await asyncio.to_thread(self._paths.ensure_thread_dirs, thread_id)
+        paths = self._get_thread_paths(thread_id)
+        return {"thread_data": {**paths}}

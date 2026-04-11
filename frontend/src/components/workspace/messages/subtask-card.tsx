@@ -26,7 +26,7 @@ import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
 
 import { CitationLink } from "../citations/citation-link";
-import { useUpdateSubtask } from "@/core/tasks/context";
+import { useSubtaskContext, useUpdateSubtask } from "@/core/tasks/context";
 import { getBackendBaseURL } from "@/core/config";
 import { FlipDisplay } from "../flip-display";
 
@@ -47,6 +47,7 @@ export function SubtaskCard({
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const task = useSubtask(taskId)!;
   const updateSubtask = useUpdateSubtask();
+  const { setSelectedTaskId } = useSubtaskContext();
 
   const handleCancel = useCallback(async () => {
     setCancelling(true);
@@ -153,6 +154,19 @@ export function SubtaskCard({
                     }}
                   >
                     <SquareIcon className="size-3" />
+                  </Button>
+                )}
+                {task.status !== "in_progress" && !collapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedTaskId(taskId);
+                    }}
+                  >
+                    查看详情
                   </Button>
                 )}
                 <ChevronUp

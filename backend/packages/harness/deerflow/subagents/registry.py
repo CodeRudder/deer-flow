@@ -10,8 +10,72 @@ from deerflow.subagents.config import SubagentConfig
 logger = logging.getLogger(__name__)
 
 
+def _load_custom_agents() -> dict[str, SubagentConfig]:
+    """Dynamically load Custom Agents (SOUL.md + config.yaml) as Sub-Agent configs.
+
+    Scans the agents directory and converts each Custom Agent into a SubagentConfig
+    so the Lead Agent's `task()` tool can delegate to them by name.
+
+    Returns:
+        Mapping of agent name -> SubagentConfig for each valid custom agent.
+    """
+    agents: dict[str, SubagentConfig] = {}
+    try:
+        from deerflow.config.agents_config import list_custom_agents, load_agent_soul
+    except Exception:
+        logger.debug("Could not import agents_config for custom agent discovery")
+        return agents
+
+    try:
+        custom_list = list_custom_agents()
+    except Exception:
+        logger.debug("Could not list custom agents")
+        return agents
+
+    for agent_cfg in custom_list:
+        soul = load_agent_soul(agent_cfg.name)
+        if not soul or not soul.strip():
+            logger.debug("Skipping custom agent '%s': no SOUL.md content", agent_cfg.name)
+            continue
+
+        description = agent_cfg.description or f"Custom agent: {agent_cfg.name}"
+        system_prompt = f"You are the {agent_cfg.name} agent.\n\n{soul}"
+
+        sub_config = SubagentConfig(
+            name=agent_cfg.name,
+            description=description,
+            system_prompt=system_prompt,
+            disallowed_tools=["task", "ask_clarification", "present_files"],
+            model="inherit",
+            max_turns=100,
+            timeout_seconds=900,
+        )
+        agents[agent_cfg.name] = sub_config
+        logger.debug("Loaded custom agent as subagent: %s", agent_cfg.name)
+
+    if agents:
+        logger.info("Discovered %d custom agent(s) as subagents: %s", len(agents), list(agents.keys()))
+
+    return agents
+
+
+def _get_all_subagents() -> dict[str, SubagentConfig]:
+    """Merge built-in subagents with dynamically loaded custom agents.
+
+    Custom agents take precedence over built-ins if names collide.
+
+    Returns:
+        Combined mapping of all available subagents.
+    """
+    all_agents = dict(BUILTIN_SUBAGENTS)
+    all_agents.update(_load_custom_agents())
+    return all_agents
+
+
 def get_subagent_config(name: str) -> SubagentConfig | None:
     """Get a subagent configuration by name, with config.yaml overrides applied.
+
+    Looks up both built-in subagents and dynamically loaded custom agents.
 
     Args:
         name: The name of the subagent.
@@ -19,7 +83,8 @@ def get_subagent_config(name: str) -> SubagentConfig | None:
     Returns:
         SubagentConfig if found (with any config.yaml overrides applied), None otherwise.
     """
-    config = BUILTIN_SUBAGENTS.get(name)
+    all_agents = _get_all_subagents()
+    config = all_agents.get(name)
     if config is None:
         return None
 
@@ -59,7 +124,7 @@ def list_subagents() -> list[SubagentConfig]:
     Returns:
         List of all registered SubagentConfig instances.
     """
-    return [get_subagent_config(name) for name in BUILTIN_SUBAGENTS]
+    return [get_subagent_config(name) for name in _get_all_subagents()]
 
 
 def get_subagent_names() -> list[str]:
@@ -68,7 +133,7 @@ def get_subagent_names() -> list[str]:
     Returns:
         List of subagent names.
     """
-    return list(BUILTIN_SUBAGENTS.keys())
+    return list(_get_all_subagents().keys())
 
 
 def get_available_subagent_names() -> list[str]:
@@ -77,7 +142,7 @@ def get_available_subagent_names() -> list[str]:
     Returns:
         List of subagent names visible to the current sandbox configuration.
     """
-    names = list(BUILTIN_SUBAGENTS.keys())
+    names = list(_get_all_subagents().keys())
     try:
         host_bash_allowed = is_host_bash_allowed()
     except Exception:

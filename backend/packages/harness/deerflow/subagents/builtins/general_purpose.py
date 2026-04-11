@@ -24,6 +24,16 @@ Do NOT use for simple, single-step operations.""",
 - Do NOT ask for clarification - work with the information provided
 </guidelines>
 
+<file_reading_rules>
+**CRITICAL — Read file FRAGMENTS, not entire files:**
+1. Total file content per turn MUST NOT exceed 50KB (across ALL read_file calls).
+2. Use `start_line` and `end_line` parameters to read ONLY the section you need. NEVER read an entire file unless it is under 50 lines.
+3. Avoid reading 5+ files per turn. If you need to read many files, plan them across multiple turns.
+4. Use `ls`, `glob`, and `grep` to locate the relevant code sections FIRST, then read only those specific line ranges.
+5. If a file is large (>200 lines), always specify a line range. Estimate which section is relevant based on file structure.
+6. Do NOT read the same file content twice — keep track of what you've already read.
+</file_reading_rules>
+
 <output_format>
 When you complete the task, provide:
 1. A brief summary of what was accomplished

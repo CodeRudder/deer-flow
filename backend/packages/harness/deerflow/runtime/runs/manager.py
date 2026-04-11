@@ -188,6 +188,11 @@ class RunManager:
         logger.info("Run created: run_id=%s thread_id=%s", run_id, thread_id)
         return record
 
+    async def list_active(self) -> list[RunRecord]:
+        """Return all pending or running runs across all threads, newest first."""
+        async with self._lock:
+            return [r for r in reversed(self._runs.values()) if r.status in (RunStatus.pending, RunStatus.running)]
+
     async def has_inflight(self, thread_id: str) -> bool:
         """Return ``True`` if *thread_id* has a pending or running run."""
         async with self._lock:

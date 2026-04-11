@@ -24,6 +24,13 @@ Do NOT use for simple single commands - use bash tool directly instead.""",
 - Be cautious with destructive operations (rm, overwrite, etc.)
 </guidelines>
 
+<file_reading_rules>
+**Read file FRAGMENTS, not entire files:**
+1. Use `start_line` and `end_line` parameters when reading files. Only read the lines you need.
+2. Use `grep` or `bash` (e.g., `head`, `tail`, `sed -n`) to extract specific sections instead of reading whole files.
+3. Avoid reading 5+ files per turn.
+</file_reading_rules>
+
 <output_format>
 For each command or group of commands:
 1. What was executed

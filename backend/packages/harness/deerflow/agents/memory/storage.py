@@ -3,6 +3,7 @@
 import abc
 import json
 import logging
+from pathlib import Path
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -136,7 +137,7 @@ class FileMemoryStorage(MemoryStorage):
         file_path = self._get_memory_file_path(agent_name)
 
         try:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.parent.mkdir(parents=True, exist_ok=True)  # memory updates run in background thread — safe to block
             memory_data["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
 
             temp_path = file_path.with_suffix(".tmp")

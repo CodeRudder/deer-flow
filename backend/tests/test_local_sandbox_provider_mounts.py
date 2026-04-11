@@ -241,16 +241,27 @@ class TestMultipleMounts:
             ],
         )
 
-        # Mock subprocess to capture the resolved command
+        # Mock subprocess.Popen to capture the resolved command
         captured = {}
-        original_run = __import__("subprocess").run
 
-        def mock_run(*args, **kwargs):
+        def mock_popen(*args, **kwargs):
             if len(args) > 0:
                 captured["command"] = args[0]
-            return original_run(*args, **kwargs)
+            elif kwargs.get("executable"):
+                captured["command"] = args[0] if args else kwargs.get("args", "")
+            # Return a completed-like Popen stub
+            import io
 
-        monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.subprocess.run", mock_run)
+            proc = type("FakeProc", (), {})()
+            proc.stdout = io.StringIO("")
+            proc.stderr = io.StringIO("")
+            proc.returncode = 0
+            proc.pid = 12345
+            proc.wait = lambda *a, **kw: 0
+            proc.communicate = lambda *a, **kw: ("", "")
+            return proc
+
+        monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.subprocess.Popen", mock_popen)
         monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.LocalSandbox._get_shell", lambda self: "/bin/sh")
 
         sandbox.execute_command("cat /mnt/data/test.txt")

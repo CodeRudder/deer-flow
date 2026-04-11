@@ -894,19 +894,8 @@ def ensure_thread_directories_exist(runtime: ToolRuntime[ContextT, ThreadState] 
     if thread_data is None:
         return
 
-    # Check if directories have already been created
-    if runtime.state.get("thread_directories_created"):
-        return
-
-    # Create the three directories
-    import os
-
-    for key in ["workspace_path", "uploads_path", "outputs_path"]:
-        path = thread_data.get(key)
-        if path:
-            os.makedirs(path, exist_ok=True)
-
-    # Mark as created to avoid redundant operations
+    # Directories are pre-created by ThreadDataMiddleware.abefore_agent.
+    # This is a safety fallback — normally no-op since dirs already exist.
     runtime.state["thread_directories_created"] = True
 
 
@@ -1035,7 +1024,145 @@ def bash_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, com
         return f"Error: Unexpected error executing command: {_sanitize_error(e, runtime)}"
 
 
-@tool("ls", parse_docstring=True)
+@tool("bash_background", parse_docstring=True)
+def bash_background_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, command: str) -> str:
+    """Start a long-running bash command in the background and return immediately.
+
+    Use this for dev servers, file watchers, or any command that runs continuously.
+    The command runs asynchronously and does not block the conversation.
+    Returns a command_id that can be used with bash_output, bash_kill, and bash_list.
+
+    Args:
+        description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        command: The bash command to execute in the background. Always use absolute paths for files and directories.
+    """
+    try:
+        sandbox = ensure_sandbox_initialized(runtime)
+        if is_local_sandbox(runtime):
+            if not is_host_bash_allowed():
+                return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}"
+            ensure_thread_directories_exist(runtime)
+            thread_data = get_thread_data(runtime)
+            validate_local_bash_command_paths(command, thread_data)
+            command = replace_virtual_paths_in_command(command, thread_data)
+            command = _apply_cwd_prefix(command, thread_data)
+        else:
+            ensure_thread_directories_exist(runtime)
+
+        from deerflow.sandbox.local.local_sandbox import LocalSandbox
+        from deerflow.sandbox.process_manager import start as pm_start
+
+        if isinstance(sandbox, LocalSandbox):
+            shell = sandbox._get_shell()
+        else:
+            shell = "/bin/sh"
+
+        thread_id = runtime.context.get("thread_id") if runtime.context else "unknown"
+        command_id = pm_start(
+            command=command,
+            description=description,
+            shell=shell,
+            thread_id=thread_id,
+        )
+        return f"Background command started. ID: {command_id}\nUse bash_output to check output, bash_kill to stop, bash_list to see all commands."
+    except SandboxError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error: Failed to start background command: {_sanitize_error(e, runtime)}"
+
+
+@tool("bash_output", parse_docstring=True)
+def bash_output_tool(runtime: ToolRuntime[ContextT, ThreadState], command_id: str, start_line: int | None = None, line_count: int = 10) -> str:
+    """Get the output of a background command started with bash_background.
+
+    Shows the log file path, total lines, and the current line range. Maximum 50 lines per call.
+    Use start_line to paginate through output. For full analysis, use bash or grep on the log file.
+
+    Args:
+        command_id: The ID returned by bash_background.
+        start_line: Starting line number (0-based). Default: None, shows the last line_count lines.
+        line_count: Number of lines to read (default: 10, max: 50).
+    """
+    try:
+        from deerflow.sandbox.process_manager import get_output
+
+        status, output, log_file = get_output(command_id, start_line=start_line, line_count=line_count)
+        result = f"Status: {status if isinstance(status, str) else status.value}\n"
+        if log_file:
+            result += f"Log file: {log_file}\n"
+        if output:
+            masked = output
+            if is_local_sandbox(runtime):
+                thread_data = get_thread_data(runtime)
+                masked = mask_local_paths_in_output(output, thread_data)
+            try:
+                from deerflow.config.app_config import get_app_config
+
+                sandbox_cfg = get_app_config().sandbox
+                max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
+            except Exception:
+                max_chars = 20000
+            result += f"\n{_truncate_bash_output(masked, max_chars)}"
+        else:
+            result += "\n(no output yet)"
+        return result
+    except Exception as e:
+        return f"Error: {_sanitize_error(e, runtime)}"
+
+
+@tool("bash_kill", parse_docstring=True)
+def bash_kill_tool(runtime: ToolRuntime[ContextT, ThreadState], command_id: str) -> str:
+    """Kill a background command started with bash_background.
+
+    Args:
+        command_id: The ID of the background command to kill.
+    """
+    try:
+        from deerflow.sandbox.process_manager import kill as pm_kill
+
+        killed, output = pm_kill(command_id)
+        if not killed:
+            return output  # Error message
+        result = f"Command {command_id} killed successfully.\n"
+        if output:
+            masked = output
+            if is_local_sandbox(runtime):
+                thread_data = get_thread_data(runtime)
+                masked = mask_local_paths_in_output(output, thread_data)
+            result += f"Final output:\n{masked}"
+        return result
+    except Exception as e:
+        return f"Error: {_sanitize_error(e, runtime)}"
+
+
+@tool("bash_list", parse_docstring=True)
+def bash_list_tool(runtime: ToolRuntime[ContextT, ThreadState]) -> str:
+    """List all background commands started with bash_background and their status.
+
+    No parameters required.
+    """
+    try:
+        from deerflow.sandbox.process_manager import list_commands
+
+        thread_id = runtime.context.get("thread_id") if runtime.context else None
+        commands = list_commands(thread_id=thread_id)
+        if not commands:
+            return "No background commands running."
+
+        lines = ["Background commands:", ""]
+        for cmd in commands:
+            started = cmd["started_at"].replace("T", " ").replace("+00:00", "")
+            lines.append(f"  ID: {cmd['command_id']}")
+            lines.append(f"  Command: {cmd['command']}")
+            lines.append(f"  Description: {cmd['description']}")
+            lines.append(f"  Status: {cmd['status']}")
+            lines.append(f"  Started: {started}")
+            if cmd["return_code"] is not None:
+                lines.append(f"  Exit code: {cmd['return_code']}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {_sanitize_error(e, runtime)}"
 def ls_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, path: str) -> str:
     """List the contents of a directory up to 2 levels deep in tree format.
 
