@@ -7,6 +7,8 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
+from deerflow.agents.middlewares.main_session_middleware import MainSessionMiddleware
+from deerflow.agents.middlewares.summarization_loop_middleware import SummarizationLoopMiddleware
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.title_middleware import TitleMiddleware
@@ -76,8 +78,105 @@ def _create_summarization_middleware() -> SummarizationMiddleware | None:
 
     if config.summary_prompt is not None:
         kwargs["summary_prompt"] = config.summary_prompt
+    else:
+        # Use task-aware summary prompt that tracks task progress
+        kwargs["summary_prompt"] = _TASK_AWARE_SUMMARY_PROMPT
 
     return SummarizationMiddleware(**kwargs)
+
+
+_TASK_AWARE_SUMMARY_PROMPT = """<role>
+Context Extraction Assistant with Error Correction
+</role>
+
+<primary_objective>
+Extract the most important context from the conversation history, with special attention to task progress tracking, file reading history, and CORRECTING any erroneous or inefficient agent behavior.
+</primary_objective>
+
+<instructions>
+You are summarizing a conversation that will REPLACE the existing history. You must preserve all critical information AND correct any errors you detect.
+
+**ERROR DETECTION AND CORRECTION — MANDATORY:**
+Before extracting context, scan the conversation for the following error patterns and CORRECT them in the summary:
+
+1. **Wholesale code reading**: If the agent attempted to read all source files, scan entire directories of code, or analyze the whole codebase in a single pass → REMOVE those file contents from the summary. Replace with:
+   <error_correction>
+   [PATTERN: wholesale_code_reading] The agent attempted to read all source code. This approach is FORBIDDEN.
+   CORRECTIVE ACTION: Decompose into targeted sub-tasks: [suggest 3-5 specific module/feature focused tasks]
+   Files already partially reviewed: [list with key findings only, NOT full contents]
+   </error_correction>
+
+2. **Excessive file reading**: If the agent read more than 5 files in a single turn or read files exceeding 50KB total → Summarize each file in 1-2 sentences only. Do NOT preserve large file contents.
+
+3. **Repetitive failed attempts**: If the agent tried the same failing approach 2+ times (e.g., reading the same file repeatedly, running the same failing command) → Note the failure once, include the error message, and add:
+   <error_correction>
+   [PATTERN: repetitive_failure] The agent repeated a failing action N times.
+   CORRECTIVE ACTION: [suggest alternative approach]
+   </error_correction>
+
+4. **Context window overflow**: If the conversation was summarized multiple times due to context overflow → Identify what caused the bloat (usually large file reads) and add:
+   <error_correction>
+   [PATTERN: context_overflow] Context overflow was triggered by [cause].
+   CORRECTIVE ACTION: Use subagents for file analysis, read only targeted fragments.
+   </error_correction>
+
+5. **Task too broad**: If the current task is "analyze the codebase", "review all code", "find all bugs", or similar overly broad scope → Replace with:
+   <error_correction>
+   [PATTERN: overly_broad_task] The task "[original task]" is too broad for direct execution.
+   CORRECTIVE ACTION: Break into focused sub-tasks:
+   1. [specific module/aspect to analyze]
+   2. [specific module/aspect to analyze]
+   3. [specific module/aspect to analyze]
+   </error_correction>
+
+**TASK PROGRESS TRACKING — MANDATORY:**
+Extract and include a section like this at the BEGINNING of your summary:
+
+<task_progress>
+Last task status: [completed / in-progress / not-started]
+Last task description: [brief description of what was being worked on]
+Tasks completed since last summary: [list of completed tasks, or "none"]
+Tasks still pending: [list of remaining work, or "none"]
+Errors detected and corrected: [count of error patterns found, or "none"]
+</task_progress>
+
+**FILE READING HISTORY — MANDATORY:**
+Extract and include a section listing files that were read during the conversation. Keep summaries BRIEF (1-2 sentences max per file):
+
+<files_read>
+- path/to/file1.py (lines 10-50): [1-2 sentence summary of key findings]
+- path/to/file2.py (lines 1-100): [1-2 sentence summary of key findings]
+</files_read>
+
+This file reading history is critical for avoiding redundant re-reading of the same files.
+Do NOT include full file contents — only brief summaries of what was found.
+
+**If the last task was NOT completed:**
+- Clearly state what was accomplished and what remains
+- Suggest breaking the remaining work into smaller, focused sub-tasks
+- Include any partial results or findings
+
+**Context Extraction Rules:**
+1. Preserve all completed task results and key findings
+2. Keep file paths, URLs, and specific technical details
+3. Record any decisions made and their rationale
+4. Note any errors encountered and their resolutions
+5. Preserve the user's original goal/requirement
+6. NEVER preserve large file contents verbatim — always summarize to 1-2 sentences
+
+**If no tasks have been completed since the last summary:**
+This means the work is stuck or the task is too large. In this case:
+- Explicitly recommend decomposing the current task into 2-4 smaller sub-tasks
+- List the suggested sub-tasks with clear descriptions
+- This helps the agent avoid repeating the same unproductive pattern
+- If the agent was attempting to read all source code or analyze the entire codebase, WARN that this approach is forbidden — the task MUST be decomposed into targeted sub-tasks focusing on specific modules, layers, or features
+
+Do NOT include any additional text before or after the extracted context.
+
+<messages>
+Messages to summarize:
+{messages}
+</messages>"""
 
 
 def _create_todo_list_middleware(is_plan_mode: bool) -> TodoMiddleware | None:
@@ -218,10 +317,15 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     """
     middlewares = build_lead_runtime_middlewares(lazy_init=True)
 
+    # Persist main conversation to local JSONL for debugging (always on)
+    middlewares.append(MainSessionMiddleware())
+
     # Add summarization middleware if enabled
     summarization_middleware = _create_summarization_middleware()
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
+        # Detect and break summarization loops — must run after SummarizationMiddleware
+        middlewares.append(SummarizationLoopMiddleware())
 
     # Add TodoList middleware if plan mode is enabled
     is_plan_mode = config.get("configurable", {}).get("is_plan_mode", False)

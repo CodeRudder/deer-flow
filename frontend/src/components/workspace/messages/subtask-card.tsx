@@ -3,9 +3,10 @@ import {
   ChevronUp,
   ClipboardListIcon,
   Loader2Icon,
+  SquareIcon,
   XCircleIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 
 import {
@@ -25,6 +26,8 @@ import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
 
 import { CitationLink } from "../citations/citation-link";
+import { useUpdateSubtask } from "@/core/tasks/context";
+import { getBackendBaseURL } from "@/core/config";
 import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
@@ -40,8 +43,34 @@ export function SubtaskCard({
 }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const task = useSubtask(taskId)!;
+  const updateSubtask = useUpdateSubtask();
+
+  const handleCancel = useCallback(async () => {
+    setCancelling(true);
+    try {
+      const res = await fetch(
+        `${getBackendBaseURL()}/api/runs/subtasks/${taskId}/cancel`,
+        { method: "POST" },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.cancelled) {
+          updateSubtask({
+            id: taskId,
+            status: "failed",
+            error: "Cancelled by user",
+          });
+        }
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setCancelling(false);
+    }
+  }, [taskId, updateSubtask]);
   const icon = useMemo(() => {
     if (task.status === "completed") {
       return <CheckCircleIcon className="size-3" />;
@@ -111,6 +140,20 @@ export function SubtaskCard({
                         : t.subtasks[task.status]}
                     </FlipDisplay>
                   </div>
+                )}
+                {task.status === "in_progress" && !collapsed && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6"
+                    disabled={cancelling}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleCancel();
+                    }}
+                  >
+                    <SquareIcon className="size-3" />
+                  </Button>
                 )}
                 <ChevronUp
                   className={cn(

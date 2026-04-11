@@ -102,16 +102,30 @@ export function MessageList({
             );
           } else if (group.type === "assistant:subagent") {
             const tasks = new Set<Subtask>();
+            // Collect task tool_call_ids that have received ToolMessage responses
+            const respondedTaskIds = new Set<string>();
+            for (const message of group.messages) {
+              if (message.type === "tool" && message.tool_call_id) {
+                respondedTaskIds.add(message.tool_call_id);
+              }
+            }
             for (const message of group.messages) {
               if (message.type === "ai") {
                 for (const toolCall of message.tool_calls ?? []) {
                   if (toolCall.name === "task") {
+                    const hasResponse = respondedTaskIds.has(toolCall.id!);
+                    // If not streaming and no ToolMessage response, mark as failed (interrupted/dangling)
+                    const status: Subtask["status"] =
+                      hasResponse || thread.isLoading
+                        ? "in_progress"
+                        : "failed";
                     const task: Subtask = {
                       id: toolCall.id!,
                       subagent_type: toolCall.args.subagent_type,
                       description: toolCall.args.description,
                       prompt: toolCall.args.prompt,
-                      status: "in_progress",
+                      status,
+                      error: hasResponse ? undefined : "Task interrupted",
                     };
                     updateSubtask(task);
                     tasks.add(task);

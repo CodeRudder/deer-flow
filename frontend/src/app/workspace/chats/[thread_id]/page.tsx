@@ -22,6 +22,7 @@ import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
+import { getBackendBaseURL } from "@/core/config";
 import { useNotification } from "@/core/notification/hooks";
 import { useThreadSettings } from "@/core/settings";
 import { useThreadStream } from "@/core/threads/hooks";
@@ -80,6 +81,14 @@ export default function ChatPage() {
   );
   const handleStop = useCallback(async () => {
     await thread.stop();
+    // Also cancel the server-side run so LLM stops executing
+    try {
+      await fetch(`${getBackendBaseURL()}/api/runs/cancel-all`, {
+        method: "POST",
+      });
+    } catch {
+      // Best-effort: client-side stop already succeeded
+    }
   }, [thread]);
 
   const messageListPaddingBottom = showFollowups

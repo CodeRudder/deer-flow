@@ -23,6 +23,7 @@ import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicato
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
+import { getBackendBaseURL } from "@/core/config";
 import { useNotification } from "@/core/notification/hooks";
 import { useThreadSettings } from "@/core/settings";
 import { useThreadStream } from "@/core/threads/hooks";
@@ -86,6 +87,13 @@ export default function AgentChatPage() {
 
   const handleStop = useCallback(async () => {
     await thread.stop();
+    try {
+      await fetch(`${getBackendBaseURL()}/api/runs/cancel-all`, {
+        method: "POST",
+      });
+    } catch {
+      // Best-effort
+    }
   }, [thread]);
 
   const messageListPaddingBottom = showFollowups

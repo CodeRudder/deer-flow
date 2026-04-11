@@ -171,6 +171,20 @@ class Paths:
         """
         return self.thread_dir(thread_id) / "user-data" / "outputs"
 
+    def subagent_dir(self, thread_id: str) -> Path:
+        """Host path for sub-agent session files.
+
+        ``{base_dir}/threads/{thread_id}/subagents/``
+
+        Each sub-agent run stores its conversation as a JSONL file here,
+        enabling inspection and recovery after interruptions.
+
+        Note: Does NOT auto-create the directory. The caller (SubagentSession)
+        ensures the directory exists on first write to avoid blocking calls
+        in async contexts.
+        """
+        return self.thread_dir(thread_id) / "subagents"
+
     def acp_workspace_dir(self, thread_id: str) -> Path:
         """
         Host path for the ACP workspace of a specific thread.
@@ -232,6 +246,7 @@ class Paths:
             self.sandbox_uploads_dir(thread_id),
             self.sandbox_outputs_dir(thread_id),
             self.acp_workspace_dir(thread_id),
+            self.thread_dir(thread_id) / "subagents",
         ]:
             d.mkdir(parents=True, exist_ok=True)
             d.chmod(0o777)

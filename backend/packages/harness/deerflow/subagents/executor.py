@@ -13,12 +13,13 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.thread_state import SandboxState, ThreadDataState, ThreadState
 from deerflow.models import create_chat_model
 from deerflow.subagents.config import SubagentConfig
+from deerflow.subagents.session import SubagentSession
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ class SubagentResult:
     completed_at: datetime | None = None
     ai_messages: list[dict[str, Any]] | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    thread_id: str | None = None
+    subagent_name: str | None = None
+    description: str | None = None
+    original_prompt: str | None = None
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -70,11 +75,11 @@ _background_tasks: dict[str, SubagentResult] = {}
 _background_tasks_lock = threading.Lock()
 
 # Thread pool for background task scheduling and orchestration
-_scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
+_scheduler_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="subagent-scheduler-")
 
 # Thread pool for actual subagent execution (with timeout support)
 # Larger pool to avoid blocking when scheduler submits execution tasks
-_execution_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-exec-")
+_execution_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="subagent-exec-")
 
 
 def _filter_tools(
@@ -134,6 +139,7 @@ class SubagentExecutor:
         thread_data: ThreadDataState | None = None,
         thread_id: str | None = None,
         trace_id: str | None = None,
+        session: SubagentSession | None = None,
     ):
         """Initialize the executor.
 
@@ -145,6 +151,7 @@ class SubagentExecutor:
             thread_data: Thread data from parent agent.
             thread_id: Thread ID for sandbox operations.
             trace_id: Trace ID from parent for distributed tracing.
+            session: Optional session for conversation persistence.
         """
         self.config = config
         self.parent_model = parent_model
@@ -153,6 +160,7 @@ class SubagentExecutor:
         self.thread_id = thread_id
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
+        self.session = session
 
         # Filter tools based on config
         self.tools = _filter_tools(
@@ -225,9 +233,20 @@ class SubagentExecutor:
                 started_at=datetime.now(),
             )
 
+        # Track total message count for session summary (must be initialized before try block
+        # so it's available in the except clause for mark_failed)
+        _session_msg_count = 0
+
         try:
             agent = self._create_agent()
             state = self._build_initial_state(task)
+
+            # ① Write initial HumanMessage to session
+            if self.session is not None:
+                self.session.append_message(HumanMessage(content=task))
+
+            # Track seen message IDs to avoid duplicate session writes
+            _seen_msg_ids: set[str] = set()
 
             # Build config with thread_id for sandbox access and recursion limit
             run_config: RunnableConfig = {
@@ -252,6 +271,8 @@ class SubagentExecutor:
                         result.status = SubagentStatus.CANCELLED
                         result.error = "Cancelled by user"
                         result.completed_at = datetime.now()
+                if self.session is not None:
+                    self.session.mark_interrupted(message_count=_session_msg_count)
                 return result
 
             async for chunk in agent.astream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
@@ -266,9 +287,32 @@ class SubagentExecutor:
                             result.status = SubagentStatus.CANCELLED
                             result.error = "Cancelled by user"
                             result.completed_at = datetime.now()
+                    # ⑤ Mark interrupted on cancellation
+                    if self.session is not None:
+                        self.session.mark_interrupted(message_count=_session_msg_count)
                     return result
 
                 final_state = chunk
+
+                # ② Write new messages to session (all message types)
+                if self.session is not None:
+                    chunk_messages: list[BaseMessage] = chunk.get("messages", [])
+                    new_msgs: list[BaseMessage] = []
+                    for m in chunk_messages:
+                        msg_id = getattr(m, "id", None) or ""
+                        if msg_id and msg_id in _seen_msg_ids:
+                            continue
+                        # Skip the initial HumanMessage (already written at ①)
+                        if isinstance(m, HumanMessage) and not _seen_msg_ids and not msg_id:
+                            if msg_id:
+                                _seen_msg_ids.add(msg_id)
+                            continue
+                        if msg_id:
+                            _seen_msg_ids.add(msg_id)
+                        new_msgs.append(m)
+                    if new_msgs:
+                        self.session.append_messages(new_msgs)
+                        _session_msg_count += len(new_msgs)
 
                 # Extract AI messages from the current state
                 messages = chunk.get("messages", [])
@@ -366,11 +410,22 @@ class SubagentExecutor:
             result.status = SubagentStatus.COMPLETED
             result.completed_at = datetime.now()
 
+            # ③ Mark session completed
+            if self.session is not None:
+                self.session.mark_completed(
+                    result=result.result or "No response generated",
+                    message_count=_session_msg_count,
+                )
+
         except Exception as e:
             logger.exception(f"[trace={self.trace_id}] Subagent {self.config.name} async execution failed")
             result.status = SubagentStatus.FAILED
             result.error = str(e)
             result.completed_at = datetime.now()
+
+            # ④ Mark session failed
+            if self.session is not None:
+                self.session.mark_failed(error=str(e), message_count=_session_msg_count)
 
         return result
 
@@ -414,12 +469,13 @@ class SubagentExecutor:
             result.completed_at = datetime.now()
             return result
 
-    def execute_async(self, task: str, task_id: str | None = None) -> str:
+    def execute_async(self, task: str, task_id: str | None = None, description: str = "") -> str:
         """Start a task execution in the background.
 
         Args:
             task: The task description for the subagent.
             task_id: Optional task ID to use. If not provided, a random UUID will be generated.
+            description: Short description for display and health monitoring recovery.
 
         Returns:
             Task ID that can be used to check status later.
@@ -433,6 +489,10 @@ class SubagentExecutor:
             task_id=task_id,
             trace_id=self.trace_id,
             status=SubagentStatus.PENDING,
+            thread_id=self.thread_id,
+            subagent_name=self.config.name,
+            description=description,
+            original_prompt=task,
         )
 
         logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} starting async execution, task_id={task_id}, timeout={self.config.timeout_seconds}s")
@@ -481,7 +541,7 @@ class SubagentExecutor:
         return task_id
 
 
-MAX_CONCURRENT_SUBAGENTS = 3
+MAX_CONCURRENT_SUBAGENTS = 5
 
 
 def request_cancel_background_task(task_id: str) -> None:
@@ -561,3 +621,36 @@ def cleanup_background_task(task_id: str) -> None:
                 task_id,
                 result.status.value if hasattr(result.status, "value") else result.status,
             )
+
+
+# ── Health Monitor Integration ──────────────────────────────────────────
+
+_health_monitor: "SubagentHealthMonitor | None" = None
+
+
+def start_health_monitor(check_interval: int = 60, stale_threshold: int = 300) -> None:
+    """Start the sub-agent health monitor.
+
+    Args:
+        check_interval: Seconds between health checks (default 60).
+        stale_threshold: Seconds after which a session with no JSONL updates
+            is considered stale (default 300 = 5 minutes).
+    """
+    global _health_monitor
+    if _health_monitor is not None:
+        logger.warning("Health monitor already running, ignoring duplicate start")
+        return
+    from deerflow.subagents.health_monitor import SubagentHealthMonitor
+
+    _health_monitor = SubagentHealthMonitor(check_interval=check_interval, stale_threshold=stale_threshold)
+    _health_monitor.start()
+    logger.info("Sub-agent health monitor started (interval=%ds, stale_threshold=%ds)", check_interval, stale_threshold)
+
+
+def stop_health_monitor() -> None:
+    """Stop the sub-agent health monitor."""
+    global _health_monitor
+    if _health_monitor is not None:
+        _health_monitor.stop()
+        _health_monitor = None
+        logger.info("Sub-agent health monitor stopped")

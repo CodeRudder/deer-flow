@@ -3,6 +3,7 @@ import { Toaster } from "sonner";
 
 import { QueryClientProvider } from "@/components/query-client-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { ActiveRunsIndicator } from "@/components/workspace/active-runs-indicator";
 import { CommandPalette } from "@/components/workspace/command-palette";
 import { WorkspaceSidebar } from "@/components/workspace/workspace-sidebar";
 
@@ -29,6 +30,7 @@ export default async function WorkspaceLayout({
         <SidebarInset className="min-w-0">{children}</SidebarInset>
       </SidebarProvider>
       <CommandPalette />
+      <ActiveRunsIndicator />
       <Toaster position="top-center" />
     </QueryClientProvider>
   );
