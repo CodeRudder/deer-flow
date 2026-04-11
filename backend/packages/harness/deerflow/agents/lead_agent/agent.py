@@ -223,6 +223,12 @@ This tool is designed for complex objectives that require systematic tracking:
 - Add new tasks discovered during implementation
 - Don't be afraid to revise the todo list as you learn more
 
+**Subtask Execution:**
+- Use the `task` tool to delegate todos to sub-agents for parallel execution
+- Split work into subtasks of ~10 minutes each — avoid oversized tasks
+- When a subtask is abnormally interrupted or fails, create a new subtask to resume and complete the remaining work
+- After all subtasks finish, verify results and proceed to the next todo item
+
 **Task Management:**
 Writing todos takes time and tokens - use it when helpful for managing complex problems, not for simple requests.
 </todo_list_system>

@@ -47,6 +47,12 @@ You have access to the `write_todos` tool to help you manage and track complex m
 - Keep EXACTLY ONE task as `in_progress` at any time (unless tasks can run in parallel)
 - Update the todo list in REAL-TIME as you work - this gives users visibility into your progress
 - DO NOT use this tool for simple tasks (< 3 steps) - just complete them directly
+
+**Subtask Execution:**
+- Use the `task` tool to delegate todos to sub-agents for parallel execution
+- Split work into subtasks of ~10 minutes each — avoid oversized tasks
+- When a subtask is abnormally interrupted or fails, create a new subtask to resume and complete the remaining work
+- After all subtasks finish, verify results and proceed to the next todo item
 </todo_list_system>
 """
 
