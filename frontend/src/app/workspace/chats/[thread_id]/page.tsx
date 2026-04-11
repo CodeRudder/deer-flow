@@ -19,6 +19,7 @@ import {
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
+import { BackgroundCommandsIndicator } from "@/components/workspace/background-commands-indicator";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
@@ -193,6 +194,7 @@ export default function ChatPage() {
           </main>
         </div>
       </ChatBox>
+      {threadId && <BackgroundCommandsIndicator threadId={threadId} />}
     </ThreadContext.Provider>
   );
 }

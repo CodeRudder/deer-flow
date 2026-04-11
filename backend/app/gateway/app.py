@@ -11,6 +11,7 @@ from app.gateway.routers import (
     artifacts,
     assistants_compat,
     channels,
+    commands,
     mcp,
     memory,
     models,
@@ -165,6 +166,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
                 "description": "LangGraph Platform-compatible runs lifecycle (create, stream, cancel)",
             },
             {
+                "name": "commands",
+                "description": "Manage background commands for threads (list, output, kill)",
+            },
+            {
                 "name": "health",
                 "description": "Health check and system status endpoints",
             },
@@ -216,6 +221,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
     # Sub-agent session data (read JSONL conversation logs)
     from app.gateway.routers import subagents
     app.include_router(subagents.router)
+
+    # Background command management (list, output, kill)
+    app.include_router(commands.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:
