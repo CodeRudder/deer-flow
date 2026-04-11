@@ -70,7 +70,40 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Auto-recovery scan failed")
 
+        # Start session health monitor (periodic zombie detection + activation)
+        session_monitor = None
+        try:
+            import asyncio
+
+            from app.gateway.session_health_monitor import SessionHealthMonitor
+
+            app_config = get_app_config()
+            extra = app_config.model_extra or {}
+            monitor_cfg = extra.get("session_health_monitor", {}) or {}
+            if monitor_cfg.get("enabled", True):
+                # Resolve langgraph_url from channels config or default
+                channels_cfg = extra.get("channels", {}) or {}
+                langgraph_url = channels_cfg.get("langgraph_url", "http://localhost:2024")
+
+                session_monitor = SessionHealthMonitor(
+                    check_interval=int(monitor_cfg.get("check_interval", 120)),
+                    stale_threshold=int(monitor_cfg.get("stale_threshold", 300)),
+                    langgraph_url=str(monitor_cfg.get("langgraph_url", langgraph_url)),
+                )
+                session_monitor.start(asyncio.get_event_loop())
+                app.state.session_monitor = session_monitor
+                logger.info("Session health monitor started")
+        except Exception:
+            logger.exception("Session health monitor failed to start")
+
         yield
+
+        # Stop session health monitor
+        if session_monitor is not None:
+            try:
+                session_monitor.stop()
+            except Exception:
+                logger.exception("Failed to stop session health monitor")
 
         # Stop channel service on shutdown
         try:

@@ -423,6 +423,15 @@ Both can be modified at runtime via Gateway API endpoints or `DeerFlowClient` me
 
 ## Development Workflow
 
+### Design-First Development — MANDATORY
+
+**Every new feature MUST start with a design document before implementation. No exceptions.**
+
+- Create design document in `backend/docs/` before writing any code
+- Design document should include: context, goals, API/接口设计, data flow, configuration, testing strategy
+- Get design review before proceeding to implementation
+- Update relevant documentation (README.md, CLAUDE.md) after implementation
+
 ### Test-Driven Development (TDD) — MANDATORY
 
 **Every new feature or bug fix MUST be accompanied by unit tests. No exceptions.**
