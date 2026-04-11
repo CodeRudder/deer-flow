@@ -7,6 +7,16 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -98,6 +108,7 @@ export function ActiveRunsIndicator() {
   const [runs, setRuns] = useState<ActiveRun[]>([]);
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -159,7 +170,7 @@ export function ActiveRunsIndicator() {
             size="sm"
             className="w-full"
             disabled={cancelling}
-            onClick={handleCancelAll}
+            onClick={() => setConfirmOpen(true)}
           >
             {cancelling ? (
               <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
@@ -175,6 +186,25 @@ export function ActiveRunsIndicator() {
           </div>
         </div>
       </SheetContent>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>停止所有任务</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要停止所有 {runs.length} 个运行中的任务吗？正在执行的工作将丢失。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => void handleCancelAll()}
+            >
+              确认停止
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   );
 }

@@ -95,9 +95,9 @@ def _build_recovery_message(sessions: list[SubagentSession]) -> str:
 async def _notify_thread(thread_id: str, message: str) -> None:
     """Send a recovery message to a Lead Agent thread via the LangGraph SDK.
 
-    Uses ``client.runs.wait()`` so the recovery is synchronous (the Gateway
-    lifespan waits for it to complete before yielding).  The recovery message
-    is sent as a human message on the existing thread.
+    Spawns a background task via ``asyncio.create_task()`` so the Gateway
+    lifespan is not blocked waiting for the agent to process the message.
+    The recovery message is sent as a human message on the existing thread.
     """
     try:
         from langgraph_sdk import get_client
@@ -110,25 +110,31 @@ async def _notify_thread(thread_id: str, message: str) -> None:
         logger.exception("Failed to create LangGraph client for recovery")
         return
 
-    try:
-        await client.runs.wait(
-            thread_id=thread_id,
-            assistant_id="lead_agent",
-            input={
-                "messages": [
-                    {
-                        "role": "human",
-                        "content": message,
-                    }
-                ]
-            },
-            config={
-                "recursion_limit": 50,
-            },
-        )
-        logger.info("Recovery message sent to thread %s", thread_id)
-    except Exception:
-        logger.exception("Failed to send recovery message to thread %s", thread_id)
+    async def _send() -> None:
+        try:
+            await client.runs.create(
+                thread_id=thread_id,
+                assistant_id="lead_agent",
+                input={
+                    "messages": [
+                        {
+                            "role": "human",
+                            "content": message,
+                        }
+                    ]
+                },
+                config={
+                    "recursion_limit": 50,
+                },
+            )
+            logger.info("Recovery message sent to thread %s", thread_id)
+        except Exception:
+            logger.exception("Failed to send recovery message to thread %s", thread_id)
+
+    import asyncio
+
+    asyncio.create_task(_send())
+    logger.info("Recovery message queued for thread %s", thread_id)
 
 
 async def auto_recover_interrupted_tasks() -> None:

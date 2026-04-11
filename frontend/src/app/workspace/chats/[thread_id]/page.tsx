@@ -3,6 +3,16 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import {
   ChatBox,
@@ -80,6 +90,7 @@ export default function ChatPage() {
     },
     [sendMessage, threadId],
   );
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const handleStop = useCallback(async () => {
     await thread.stop();
     // Also cancel the server-side run so LLM stops executing
@@ -91,6 +102,9 @@ export default function ChatPage() {
       // Best-effort: client-side stop already succeeded
     }
   }, [thread]);
+  const handleStopRequest = useCallback(() => {
+    setStopConfirmOpen(true);
+  }, []);
 
   const messageListPaddingBottom = showFollowups
     ? MESSAGE_LIST_DEFAULT_PADDING_BOTTOM +
@@ -174,7 +188,7 @@ export default function ChatPage() {
                     }
                     onFollowupsVisibilityChange={setShowFollowups}
                     onSubmit={handleSubmit}
-                    onStop={handleStop}
+                    onStop={handleStopRequest}
                   />
                 ) : (
                   <div
@@ -195,6 +209,25 @@ export default function ChatPage() {
         </div>
       </ChatBox>
       {threadId && <BackgroundCommandsIndicator threadId={threadId} />}
+      <AlertDialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>停止会话</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要停止当前会话吗？正在执行的任务将被中断。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => void handleStop()}
+            >
+              确认停止
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ThreadContext.Provider>
   );
 }

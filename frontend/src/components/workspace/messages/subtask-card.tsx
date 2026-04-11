@@ -15,19 +15,32 @@ import {
   ChainOfThoughtStep,
 } from "@/components/ai-elements/chain-of-thought";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { streamdownPluginsWithWordAnimation } from "@/core/streamdown";
-import { useSubtask } from "@/core/tasks/context";
+import {
+  useSubtask,
+  useSubtaskContext,
+  useUpdateSubtask,
+} from "@/core/tasks/context";
 import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
 
 import { CitationLink } from "../citations/citation-link";
-import { useSubtaskContext, useUpdateSubtask } from "@/core/tasks/context";
-import { getBackendBaseURL } from "@/core/config";
 import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
@@ -44,6 +57,7 @@ export function SubtaskCard({
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const task = useSubtask(taskId)!;
   const updateSubtask = useUpdateSubtask();
@@ -150,7 +164,7 @@ export function SubtaskCard({
                     disabled={cancelling}
                     onClick={(e) => {
                       e.stopPropagation();
-                      void handleCancel();
+                      setConfirmOpen(true);
                     }}
                   >
                     <SquareIcon className="size-3" />
@@ -229,6 +243,25 @@ export function SubtaskCard({
           )}
         </ChainOfThoughtContent>
       </div>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>停止子任务</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要停止子任务「{task.description}」吗？正在执行的工作将丢失。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => void handleCancel()}
+            >
+              确认停止
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ChainOfThought>
   );
 }
