@@ -43,10 +43,12 @@ export function MessageGroup({
   className,
   messages,
   isLoading = false,
+  getMessagesMetadata,
 }: {
   className?: string;
   messages: Message[];
   isLoading?: boolean;
+  getMessagesMetadata?: (message: Message, index?: number) => { firstSeenState?: { created_at?: string } } | undefined;
 }) {
   const { t } = useI18n();
   const [showAbove, setShowAbove] = useState(
@@ -77,6 +79,15 @@ export function MessageGroup({
     }
   }, [lastToolCallStep, steps]);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
+  const getMessageTime = (messageId: string | undefined): string | undefined => {
+    if (!messageId || !getMessagesMetadata) return undefined;
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) return undefined;
+    const created_at = getMessagesMetadata(msg)?.firstSeenState?.created_at;
+    if (!created_at) return undefined;
+    const d = new Date(created_at);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
   return (
     <ChainOfThought
       className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
@@ -124,7 +135,7 @@ export function MessageGroup({
                   }
                 ></ChainOfThoughtStep>
               ) : (
-                <ToolCall key={step.id} {...step} isLoading={isLoading} />
+                <ToolCall key={step.id} {...step} isLoading={isLoading} time={getMessageTime(step.messageId)} />
               ),
             )}
           {lastToolCallStep && (
@@ -134,6 +145,7 @@ export function MessageGroup({
                 {...lastToolCallStep}
                 isLast={true}
                 isLoading={isLoading}
+                time={getMessageTime(lastToolCallStep.messageId)}
               />
             </FlipDisplay>
           )}
@@ -191,6 +203,7 @@ function ToolCall({
   result,
   isLast = false,
   isLoading = false,
+  time,
 }: {
   id?: string;
   messageId?: string;
@@ -199,6 +212,7 @@ function ToolCall({
   result?: string | Record<string, unknown>;
   isLast?: boolean;
   isLoading?: boolean;
+  time?: string;
 }) {
   const { t } = useI18n();
   const { setOpen, autoOpen, autoSelect, selectedArtifact, select } =
@@ -210,7 +224,7 @@ function ToolCall({
       label = t.toolCalls.searchOnWebFor(args.query);
     }
     return (
-      <ChainOfThoughtStep key={id} label={label} icon={SearchIcon}>
+      <ChainOfThoughtStep key={id} label={<StepLabel label={label} time={time} />} icon={SearchIcon}>
         {Array.isArray(result) && (
           <ChainOfThoughtSearchResults>
             {result.map((item) => (
@@ -240,7 +254,7 @@ function ToolCall({
       }
     )?.results;
     return (
-      <ChainOfThoughtStep key={id} label={label} icon={SearchIcon}>
+      <ChainOfThoughtStep key={id} label={<StepLabel label={label} time={time} />} icon={SearchIcon}>
         {Array.isArray(results) && (
           <ChainOfThoughtSearchResults>
             {Array.isArray(results) &&
@@ -280,7 +294,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={t.toolCalls.viewWebPage}
+        label={<StepLabel label={t.toolCalls.viewWebPage} time={time} />}
         icon={GlobeIcon}
       >
         <ChainOfThoughtSearchResult>
@@ -305,7 +319,7 @@ function ToolCall({
     }
     const path: string | undefined = (args as { path: string })?.path;
     return (
-      <ChainOfThoughtStep key={id} label={description} icon={FolderOpenIcon}>
+      <ChainOfThoughtStep key={id} label={<StepLabel label={description} time={time} />} icon={FolderOpenIcon}>
         {path && (
           <ChainOfThoughtSearchResult className="cursor-pointer">
             {path}
@@ -321,7 +335,7 @@ function ToolCall({
     }
     const { path } = args as { path: string; content: string };
     return (
-      <ChainOfThoughtStep key={id} label={description} icon={BookOpenTextIcon}>
+      <ChainOfThoughtStep key={id} label={<StepLabel label={description} time={time} />} icon={BookOpenTextIcon}>
         {path && (
           <ChainOfThoughtSearchResult className="cursor-pointer">
             {path}
@@ -353,7 +367,7 @@ function ToolCall({
       <ChainOfThoughtStep
         key={id}
         className="cursor-pointer"
-        label={description}
+        label={<StepLabel label={description} time={time} />}
         icon={NotebookPenIcon}
         onClick={() => {
           select(
@@ -381,7 +395,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={description}
+        label={<StepLabel label={description} time={time} />}
         icon={SquareTerminalIcon}
       >
         {command && (
@@ -398,7 +412,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={t.toolCalls.needYourHelp}
+        label={<StepLabel label={t.toolCalls.needYourHelp} time={time} />}
         icon={MessageCircleQuestionMarkIcon}
       ></ChainOfThoughtStep>
     );
@@ -406,7 +420,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={t.toolCalls.writeTodos}
+        label={<StepLabel label={t.toolCalls.writeTodos} time={time} />}
         icon={ListTodoIcon}
       ></ChainOfThoughtStep>
     );
@@ -416,7 +430,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={description ?? t.toolCalls.useTool(name)}
+        label={<StepLabel label={description ?? t.toolCalls.useTool(name)} time={time} />}
         icon={WrenchIcon}
       ></ChainOfThoughtStep>
     );
@@ -483,4 +497,14 @@ function convertToSteps(messages: Message[]): CoTStep[] {
     }
   }
   return steps;
+}
+
+function StepLabel({ label, time }: { label: React.ReactNode; time?: string }) {
+  if (!time) return <>{label}</>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      {label}
+      <span className="text-muted-foreground text-xs">{time}</span>
+    </span>
+  );
 }

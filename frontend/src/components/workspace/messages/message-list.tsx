@@ -178,6 +178,7 @@ export function MessageList({
                     key={"thinking-group-" + message.id}
                     messages={[message]}
                     isLoading={thread.isLoading}
+                    getMessagesMetadata={thread.getMessagesMetadata}
                   />,
                 );
               }
@@ -216,6 +217,7 @@ export function MessageList({
               key={"group-" + group.id}
               messages={group.messages}
               isLoading={thread.isLoading}
+              getMessagesMetadata={thread.getMessagesMetadata}
             />
           );
         })}
