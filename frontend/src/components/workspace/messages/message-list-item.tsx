@@ -39,12 +39,17 @@ export function MessageListItem({
   className,
   message,
   isLoading,
+  timestamp,
 }: {
   className?: string;
   message: Message;
   isLoading?: boolean;
+  timestamp?: Date;
 }) {
   const isHuman = message.type === "human";
+  const timeStr = timestamp
+    ? `${String(timestamp.getHours()).padStart(2, "0")}:${String(timestamp.getMinutes()).padStart(2, "0")}`
+    : undefined;
   return (
     <AIElementMessage
       className={cn("group/conversation-message relative w-full", className)}
@@ -62,7 +67,10 @@ export function MessageListItem({
             "absolute right-0 left-0 z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
           )}
         >
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
+            {timeStr && (
+              <span className="text-muted-foreground text-xs">{timeStr}</span>
+            )}
             <CopyButton
               clipboardData={
                 extractContentFromMessage(message) ??

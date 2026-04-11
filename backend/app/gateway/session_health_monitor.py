@@ -65,7 +65,6 @@ class SessionHealthMonitor:
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: LangGraphClient | None = None
-        self._activated_threads: set[str] = set()  # Threads already activated this session
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -473,7 +472,11 @@ class SessionHealthMonitor:
                         {"type": "human", "content": message},
                     ],
                 },
-                "config": {"recursion_limit": 50},
+                "config": {"recursion_limit": 500},
+                "context": {
+                    "subagent_enabled": True,
+                    "is_plan_mode": True,
+                },
                 "stream_mode": ["values"],
             }
             try:
@@ -570,7 +573,7 @@ class SessionHealthMonitor:
                     return True
             return False
         except Exception:
-            logger.exception("Failed to check active runs for thread %s", thread_id)
+            logger.debug("Failed to check active runs for thread %s", thread_id, exc_info=True)
             return False
 
     async def _is_user_interrupted(self, thread_id: str) -> bool:
@@ -589,7 +592,7 @@ class SessionHealthMonitor:
                 return True
             return False
         except Exception:
-            logger.exception("Failed to check run status for thread %s", thread_id)
+            logger.debug("Failed to check run status for thread %s", thread_id, exc_info=True)
             return False
 
     async def _has_unfinished_todos(self, thread_id: str) -> bool:
