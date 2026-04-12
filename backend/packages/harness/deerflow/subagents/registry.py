@@ -47,7 +47,7 @@ def _load_custom_agents() -> dict[str, SubagentConfig]:
             system_prompt=system_prompt,
             disallowed_tools=["task", "ask_clarification", "present_files"],
             model="inherit",
-            max_turns=100,
+            max_turns=300,
             timeout_seconds=900,
         )
         agents[agent_cfg.name] = sub_config

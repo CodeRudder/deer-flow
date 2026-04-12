@@ -142,6 +142,13 @@ If the agent repeated a failing action 2+ times or no tasks were completed:
 - Note the failure pattern once with the error message.
 - Recommend breaking remaining work into smaller subtasks.
 - Do NOT repeat the failed approach in the summary.
+
+**CRITICAL — Subtask Failure Recovery:**
+When a subtask fails or is interrupted, the main session MUST NOT take over and execute the work directly (no reading files, no writing code, no running commands).
+Instead, ALWAYS recover by creating a new subtask or resuming the failed one:
+- Add a reminder: "Subtask failed — MUST create a new subtask to retry. Do NOT execute directly in the main session."
+- Include the failed task description and any error details in the new subtask prompt.
+- The main session is a task orchestrator, not a code executor.
 </rules>
 
 Do NOT include any additional text before or after the extracted context.

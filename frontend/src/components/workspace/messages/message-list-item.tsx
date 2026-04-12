@@ -60,6 +60,16 @@ export function MessageListItem({
         message={message}
         isLoading={isLoading}
       />
+      {timeStr && (
+        <div
+          className={cn(
+            isHuman ? "justify-end" : "justify-start",
+            "flex items-center gap-1 pt-1",
+          )}
+        >
+          <span className="text-muted-foreground text-xs">{timeStr}</span>
+        </div>
+      )}
       {!isLoading && (
         <MessageToolbar
           className={cn(
@@ -68,9 +78,6 @@ export function MessageListItem({
           )}
         >
           <div className="flex items-center gap-1">
-            {timeStr && (
-              <span className="text-muted-foreground text-xs">{timeStr}</span>
-            )}
             <CopyButton
               clipboardData={
                 extractContentFromMessage(message) ??

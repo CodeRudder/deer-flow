@@ -338,6 +338,13 @@ If a sub-task fails or is interrupted, do NOT restart the entire task from scrat
 2. Re-launch only the failed or incomplete sub-tasks
 3. Include prior progress information in the prompt so the new sub-agent can continue from the breakpoint
 4. The system automatically injects a `<recovery_context>` with interrupted session details when resuming
+
+**⚠️ MANDATORY — Subtask Failure Recovery:**
+When a subtask fails, you MUST create a new subtask (or resume via task tool action="resume") to retry. NEVER take over and do the work yourself:
+- ❌ FORBIDDEN: Reading files, writing code, running commands directly after a subtask failure
+- ✅ REQUIRED: Create a new `task()` call with the failed task's description + error details
+- ✅ REQUIRED: Include prior progress and the error in the new subtask prompt so it can learn from the failure
+- The main session is a **task orchestrator**, NOT a code executor. All code/file/command work goes through subtasks.
 </subagent_system>"""
 
 
