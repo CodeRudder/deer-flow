@@ -48,7 +48,7 @@ def _load_custom_agents() -> dict[str, SubagentConfig]:
             disallowed_tools=["task", "ask_clarification", "present_files"],
             model="inherit",
             max_turns=300,
-            timeout_seconds=900,
+            timeout_seconds=1800,
         )
         agents[agent_cfg.name] = sub_config
         logger.debug("Loaded custom agent as subagent: %s", agent_cfg.name)
