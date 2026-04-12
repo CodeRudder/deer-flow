@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from deerflow.subagents.executor import (
@@ -135,7 +136,7 @@ class SubagentHealthMonitor:
         self._schedule_next()
 
     def _check_all(self) -> None:
-        """Check all running sub-agent tasks for health issues."""
+        """Check RUNNING sub-agent tasks whose executor may have silently died."""
         with _background_tasks_lock:
             running = {
                 tid: r
@@ -155,24 +156,18 @@ class SubagentHealthMonitor:
                 logger.exception("Health monitor failed to check task %s", task_id)
 
     def _check_task(self, task_id: str, result: "SubagentResult") -> None:
-        """Check a single task for premature stop (not staleness).
+        """Check a RUNNING task for stale in-memory status.
 
-        We NEVER cancel or interrupt a running task — LLM calls, tool
-        executions, and code generation can legitimately take many minutes
-        without writing to the JSONL file.  Only recover tasks whose executor
-        has already terminated (status is terminal) but whose session file
-        lacks a matching terminal status marker.
+        Only handles the case where a task is RUNNING in memory but the JSONL
+        file already has a terminal marker (executor finished but status was
+        never updated, e.g. due to a crash). Updates the in-memory status.
+
+        If JSONL has NO terminal marker, the task may still be legitimately
+        running (LLM call, tool execution, etc.) — never interfere.
+
+        Failed/completed tasks are NOT reactivated here; the main session
+        health monitor handles recovery.
         """
-        # If the task is still running, do not interfere regardless of JSONL mtime.
-        with _background_tasks_lock:
-            current = _background_tasks.get(task_id)
-        if current is not None and current.status not in {
-            SubagentStatus.CANCELLED,
-            SubagentStatus.FAILED,
-            SubagentStatus.TIMED_OUT,
-            SubagentStatus.COMPLETED,
-        }:
-            return
 
         jsonl_path = _find_session_jsonl(result.thread_id, task_id)
         if jsonl_path is None:
@@ -182,16 +177,32 @@ class SubagentHealthMonitor:
         if last_entry is None:
             return
 
-        # Already has terminal status marker — nothing to do
-        if last_entry.get("status") in ("completed", "failed", "interrupted"):
-            return
+        # Only act if JSONL has a terminal marker — task finished but
+        # in-memory status was never updated.
+        terminal_status = last_entry.get("status")
+        if terminal_status not in ("completed", "failed", "interrupted"):
+            return  # No terminal marker — task may still be running, leave alone
 
-        # Task has stopped but session has no terminal marker — recover it
-        logger.warning(
-            "Health monitor detected stopped task %s without terminal marker, recovering",
+        # Sync in-memory status from JSONL
+        logger.info(
+            "Health monitor: task %s JSONL has terminal marker '%s' but in-memory status is RUNNING, updating",
             task_id,
+            terminal_status,
         )
-        self._reactivate_task(task_id, result, "task stopped without terminal marker")
+        try:
+            status_map = {
+                "completed": SubagentStatus.COMPLETED,
+                "failed": SubagentStatus.FAILED,
+                "interrupted": SubagentStatus.CANCELLED,
+            }
+            result.status = status_map.get(terminal_status, SubagentStatus.FAILED)
+            result.completed_at = datetime.now()
+            if terminal_status == "completed":
+                result.result = last_entry.get("result", "")
+            else:
+                result.error = last_entry.get("error", last_entry.get("message", f"Task {terminal_status}"))
+        except Exception:
+            logger.exception("Failed to update stale status for task %s", task_id)
 
     def _reactivate_task(self, task_id: str, result: "SubagentResult", reason: str) -> None:
         """Restart a stopped task with a recovery prompt."""

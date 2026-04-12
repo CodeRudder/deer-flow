@@ -290,12 +290,38 @@ class TestRunningTaskProtection:
 
 
 class TestStoppedTaskRecovery:
-    """Only tasks that have already stopped (terminal status) but lack a
-    terminal JSONL marker should be recovered."""
+    """RUNNING tasks whose JSONL has a terminal marker get their in-memory
+    status updated. Tasks with no terminal marker are left alone (might still
+    be running). Failed tasks are NOT reactivated (main session handles those)."""
 
-    def test_recover_failed_task_without_terminal_marker(
+    def test_updates_stale_running_task_with_terminal_marker(
         self, mock_executor_module, tmp_session_dir
     ):
+        """RUNNING task with completed marker in JSONL → update in-memory status."""
+        from deerflow.subagents.health_monitor import SubagentHealthMonitor
+
+        jsonl = tmp_session_dir / "task-001.jsonl"
+        _write_jsonl(jsonl, [
+            {"ts": "1", "role": "human", "content": "do work"},
+            {"ts": "2", "role": "ai", "content": "done"},
+            {"ts": "3", "status": "completed", "result": "all done"},
+        ])
+
+        result = _make_result(task_id="task-001", status=mock_executor_module.status.RUNNING)
+        mock_executor_module.background_tasks["task-001"] = result
+
+        monitor = SubagentHealthMonitor(check_interval=60)
+
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)):
+            monitor._check_task("task-001", result)
+
+        assert result.status == mock_executor_module.status.COMPLETED
+        assert result.result == "all done"
+
+    def test_does_not_touch_running_task_without_terminal_marker(
+        self, mock_executor_module, tmp_session_dir
+    ):
+        """RUNNING task with no terminal marker → leave alone."""
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
@@ -304,17 +330,15 @@ class TestStoppedTaskRecovery:
             {"ts": "2", "role": "ai", "content": "working..."},
         ])
 
-        result = _make_result(task_id="task-001", status=mock_executor_module.status.FAILED)
+        result = _make_result(task_id="task-001", status=mock_executor_module.status.RUNNING)
         mock_executor_module.background_tasks["task-001"] = result
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)):
             monitor._check_task("task-001", result)
-            mock_reactivate.assert_called_once()
-            assert "stopped without terminal marker" in mock_reactivate.call_args[0][2]
+
+        assert result.status == mock_executor_module.status.RUNNING
 
     def test_no_recovery_for_session_with_terminal_marker(
         self, mock_executor_module, tmp_session_dir

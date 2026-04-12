@@ -2,9 +2,11 @@
 
 Detects and recovers from these conditions:
 
-1. **Zombie sub-agent tasks (in-memory)**: ``_background_tasks`` shows RUNNING
-   but the JSONL session file has not been updated for ``stale_threshold`` seconds.
+1. **Zombie sub-agent tasks (in-memory)**: ``_background_tasks`` shows a
+   terminal status but the JSONL session file has no matching terminal marker.
    Action: reactivate the task using ``SubagentHealthMonitor`` logic.
+   IMPORTANT: We NEVER interrupt a task that is still RUNNING — LLM calls,
+   tool executions, and code generation can legitimately take many minutes.
 
 2. **Orphan sub-agent sessions (on-disk)**: JSONL file exists without a terminal
    status marker and no matching entry in ``_background_tasks`` (typically after a
@@ -58,8 +60,7 @@ class SessionHealthMonitor:
         langgraph_url: str = "http://localhost:2024",
     ) -> None:
         self._check_interval = check_interval
-        self._stale_threshold = stale_threshold
-        self._our_run_ids: set[str] = set()  # Run IDs we created, to avoid cancelling
+        self._stale_threshold = stale_threshold  # Only used for orphan session detection
         self._langgraph_url = langgraph_url
         self._timer: threading.Timer | None = None
         self._running = False
@@ -117,68 +118,22 @@ class SessionHealthMonitor:
     # ------------------------------------------------------------------
 
     async def _check_all(self) -> None:
-        """Run all health checks in sequence."""
-        await self._check_subagent_tasks()
+        """Run health checks in sequence.
+
+        IMPORTANT: We never cancel or interrupt running tasks or runs.
+        Only orphan sessions (from process restarts) are marked as interrupted,
+        and stalled threads (all sessions terminal + unfinished todos) are re-activated.
+        """
         await self._check_orphan_sessions()
-        await self._check_stuck_runs()
         await self._check_stalled_threads()
 
     # ------------------------------------------------------------------
-    # Sub-agent zombie detection (in-memory)
+    # Sub-agent task monitoring (removed — never interrupt running tasks)
     # ------------------------------------------------------------------
-
-    async def _check_subagent_tasks(self) -> None:
-        """Detect and reactivate zombie sub-agent tasks in _background_tasks."""
-        from deerflow.subagents.executor import (
-            _background_tasks,
-            _background_tasks_lock,
-        )
-
-        with _background_tasks_lock:
-            running = {
-                tid: r
-                for tid, r in _background_tasks.items()
-                if self._status_value(r.status) == "running"
-            }
-
-        if not running:
-            return
-
-        logger.debug("Checking %d running sub-agent task(s)", len(running))
-
-        for task_id, result in running.items():
-            try:
-                await self._check_subagent_task(task_id, result)
-            except Exception:
-                logger.exception("Failed to check sub-agent task %s", task_id)
-
-    async def _check_subagent_task(self, task_id: str, result: Any) -> None:
-        """Check a single sub-agent task for staleness."""
-        jsonl_path = self._find_session_jsonl(result.thread_id, task_id)
-        if jsonl_path is None:
-            return
-
-        try:
-            mtime = Path(jsonl_path).stat().st_mtime
-            stale_seconds = time.time() - mtime
-        except OSError:
-            return
-
-        if stale_seconds > self._stale_threshold:
-            logger.warning(
-                "Zombie sub-agent task detected: task_id=%s stale=%ds threshold=%ds",
-                task_id,
-                int(stale_seconds),
-                self._stale_threshold,
-            )
-            self._reactivate_subagent(task_id, result, f"session stale for {int(stale_seconds)}s")
-
-    def _reactivate_subagent(self, task_id: str, result: Any, reason: str) -> None:
-        """Reactivate a zombie sub-agent task using SubagentHealthMonitor logic."""
-        from deerflow.subagents.health_monitor import SubagentHealthMonitor
-
-        monitor = SubagentHealthMonitor.__new__(SubagentHealthMonitor)
-        monitor._reactivate_task(task_id, result, reason)
+    # Previously this section detected "zombie" sub-agent tasks based on
+    # JSONL mtime staleness and cancelled them.  Removed because running
+    # tasks must never be interrupted — they may be legitimately processing
+    # long-running LLM calls or tool executions.
 
     # ------------------------------------------------------------------
     # Orphan session detection (on-disk, cross-restart)
@@ -190,6 +145,10 @@ class SessionHealthMonitor:
         After a process restart, ``_background_tasks`` is empty.  This method
         finds sessions that were running before the restart and marks them as
         interrupted so they no longer appear as "running" in API responses.
+
+        Only marks sessions that are older than ``stale_threshold`` seconds
+        (default 5 minutes) to avoid marking sessions that were just created
+        by a currently-running lead agent task.
         """
         from deerflow.subagents.executor import (
             _background_tasks,
@@ -228,11 +187,12 @@ class SessionHealthMonitor:
                     if self._session_has_terminal_marker(jsonl_file):
                         continue
 
-                    # Orphan session found — check staleness
+                    # Orphan session found — only mark if truly stale
+                    # (old enough that it can't be from a currently running task)
                     mtime = jsonl_file.stat().st_mtime
                     stale_seconds = time.time() - mtime
                     if stale_seconds < self._stale_threshold:
-                        continue  # Still recent, maybe just started
+                        continue  # Still recent, maybe actively running
 
                     logger.info(
                         "Orphan session detected: thread=%s task=%s stale=%ds, marking interrupted",
@@ -298,92 +258,12 @@ class SessionHealthMonitor:
             logger.exception("Failed to mark session %s as interrupted", jsonl_path)
 
     # ------------------------------------------------------------------
-    # Stuck LangGraph run detection and cleanup
+    # Stuck LangGraph run detection (removed — never cancel runs)
     # ------------------------------------------------------------------
-
-    async def _check_stuck_runs(self) -> None:
-        """Find and cancel LangGraph runs stuck in running/pending state.
-
-        A run that has been in running or pending state for longer than
-        ``stale_threshold`` seconds is considered stuck and will be cancelled
-        to unblock the run queue.
-        """
-        client = self._get_client()
-        if client is None:
-            return
-
-        thread_ids = await self._discover_threads_with_sessions()
-        if not thread_ids:
-            return
-
-        now = time.time()
-        total_cancelled = 0
-
-        for thread_id in thread_ids:
-            try:
-                cancelled = await self._cancel_stuck_runs_for_thread(
-                    client, thread_id, now,
-                )
-                total_cancelled += cancelled
-            except Exception:
-                logger.exception("Failed to check stuck runs for thread %s", thread_id)
-
-        if total_cancelled:
-            logger.info("Cancelled %d stuck run(s) across %d thread(s)", total_cancelled, len(thread_ids))
-
-    async def _cancel_stuck_runs_for_thread(
-        self, client: LangGraphClient, thread_id: str, now: float,
-    ) -> int:
-        """Cancel stuck runs for a single thread. Returns count of cancelled runs."""
-        try:
-            runs = await client.runs.list(thread_id, limit=50)
-        except Exception:
-            logger.exception("Failed to list runs for thread %s", thread_id)
-            return 0
-
-        cancelled = 0
-        for run in runs:
-            status = run.get("status", "")
-            if status not in ("running", "pending"):
-                continue
-
-            run_id = run.get("run_id", "")
-            if run_id in self._our_run_ids:
-                logger.debug("Skipping our own run %s on thread %s", run_id, thread_id)
-                continue
-
-            created_at = run.get("created_at", "")
-            if not created_at:
-                continue
-
-            try:
-                # Parse ISO timestamp
-                if created_at.endswith("Z"):
-                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                else:
-                    created_dt = datetime.fromisoformat(created_at)
-
-                age_seconds = now - created_dt.timestamp()
-            except (ValueError, TypeError):
-                continue
-
-            if age_seconds > self._stale_threshold:
-                run_id = run.get("run_id", "")
-                logger.warning(
-                    "Stuck run detected: thread=%s run=%s status=%s age=%ds",
-                    thread_id,
-                    run_id,
-                    status,
-                    int(age_seconds),
-                )
-                try:
-                    await client.runs.cancel(thread_id, run_id)
-                    cancelled += 1
-                    logger.info("Cancelled stuck run %s on thread %s", run_id, thread_id)
-                except Exception:
-                    logger.exception("Failed to cancel stuck run %s on thread %s", run_id, thread_id)
-
-        return cancelled
+    # Previously this section cancelled LangGraph runs that appeared stuck
+    # based on age thresholds.  This was removed because the monitor cannot
+    # reliably distinguish between a truly stuck run and one that is actively
+    # processing a complex task.  Runs should only be cancelled by user action.
 
     # ------------------------------------------------------------------
     # Main session activation
