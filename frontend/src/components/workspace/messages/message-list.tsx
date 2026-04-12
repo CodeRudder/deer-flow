@@ -74,13 +74,14 @@ export function MessageList({
       if (message.type === "ai") {
         for (const toolCall of message.tool_calls ?? []) {
           if (toolCall.name === "task") {
-            // Only register the task metadata; status is determined solely
-            // by the tool response (handled in the "tool" branch below).
+            // During streaming, mark tasks as in_progress so the card shows
+            // a running indicator. Final status comes from the tool response.
             updateSubtask({
               id: toolCall.id!,
               subagent_type: toolCall.args.subagent_type,
               description: toolCall.args.description,
               prompt: toolCall.args.prompt,
+              ...(thread.isLoading ? { status: "in_progress" as const } : {}),
             });
           }
         }

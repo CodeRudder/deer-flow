@@ -27,7 +27,8 @@ def _get_work_dir(thread_id: str | None) -> str:
     Falls back to the legacy global ``{base_dir}/acp-workspace/`` when
     ``thread_id`` is not available (e.g. embedded / direct invocation).
 
-    The directory is created automatically if it does not exist.
+    The directory is created during thread initialization by
+    ``ThreadDataMiddleware`` via ``Paths.ensure_thread_dirs()``.
 
     Returns:
         An absolute physical filesystem path to use as the working directory.
@@ -44,7 +45,11 @@ def _get_work_dir(thread_id: str | None) -> str:
     else:
         work_dir = paths.base_dir / "acp-workspace"
 
-    work_dir.mkdir(parents=True, exist_ok=True)
+    # For per-thread paths, the directory is guaranteed to exist
+    # (created by ThreadDataMiddleware.ensure_thread_dirs).
+    # Only mkdir for legacy/global fallback paths.
+    if not thread_id and not work_dir.exists():
+        work_dir.mkdir(parents=True, exist_ok=True)
     logger.info("ACP agent work_dir: %s", work_dir)
     return str(work_dir)
 

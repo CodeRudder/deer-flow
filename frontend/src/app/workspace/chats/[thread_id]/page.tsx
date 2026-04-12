@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import {
@@ -110,11 +111,12 @@ export default function ChatPage() {
   }, []);
 
   const handleStop = useCallback(async () => {
-    const promises: Promise<void>[] = [];
+    const promises: Promise<{ target: string; success: boolean }>[] = [];
 
     if (stopTargets.mainSession) {
       promises.push(
         thread.stop().then(async () => {
+          let cancelled = false;
           // Cancel only the current thread's run on the server side
           // Do NOT use cancel-all — that would also cancel running subtasks
           try {
@@ -129,12 +131,14 @@ export default function ChatPage() {
                     `${getBackendBaseURL()}/api/langgraph/threads/${encodeURIComponent(threadId ?? "")}/runs/${encodeURIComponent(run.run_id)}/cancel`,
                     { method: "POST" },
                   );
+                  cancelled = true;
                 }
               }
             }
           } catch {
             // Best-effort: client-side stop already succeeded
           }
+          return { target: "主会话", success: true };
         }),
       );
     }
@@ -160,16 +164,32 @@ export default function ChatPage() {
                     error: "Cancelled by user",
                   });
                 }
+                return { target: "子任务", success: data.cancelled };
               }
             } catch {
               // silently ignore
             }
+            return { target: "子任务", success: false };
           })(),
         );
       }
     }
 
-    await Promise.all(promises);
+    const results = await Promise.all(promises);
+    const succeeded = results.filter((r) => r.success);
+    const failed = results.filter((r) => !r.success);
+
+    if (succeeded.length > 0) {
+      toast.success(
+        `已停止: ${succeeded.map((r) => r.target).join(", ")}`,
+      );
+    }
+    if (failed.length > 0) {
+      toast.error(
+        `停止失败: ${failed.map((r) => r.target).join(", ")}`,
+      );
+    }
+
     setStopConfirmOpen(false);
   }, [thread, threadId, stopTargets, updateSubtask]);
 
