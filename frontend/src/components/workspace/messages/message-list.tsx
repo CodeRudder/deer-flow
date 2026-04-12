@@ -1,4 +1,5 @@
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
+import { useEffect, useRef } from "react";
 
 import {
   Conversation,
@@ -48,6 +49,79 @@ export function MessageList({
   const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
   const updateSubtask = useUpdateSubtask();
   const messages = thread.messages;
+
+  // Sync subtask statuses from messages into context — runs in useEffect
+  // to avoid calling setState during render (which causes cascading re-renders).
+  const prevMsgIdsRef = useRef<string>("");
+
+  useEffect(() => {
+    // Build a quick fingerprint of message ids + types to skip redundant work
+    const fingerprint = messages
+      .map((m) => `${m.id}:${m.type}`)
+      .join(",");
+    if (fingerprint === prevMsgIdsRef.current) return;
+    prevMsgIdsRef.current = fingerprint;
+
+    // Collect task tool_call_ids that have received ToolMessage responses
+    const respondedTaskIds = new Set<string>();
+    for (const message of messages) {
+      if (message.type === "tool" && message.tool_call_id) {
+        respondedTaskIds.add(message.tool_call_id);
+      }
+    }
+
+    for (const message of messages) {
+      if (message.type === "ai") {
+        for (const toolCall of message.tool_calls ?? []) {
+          if (toolCall.name === "task") {
+            const hasResponse = respondedTaskIds.has(toolCall.id!);
+            const status: Subtask["status"] =
+              hasResponse || thread.isLoading
+                ? "in_progress"
+                : "failed";
+            updateSubtask({
+              id: toolCall.id!,
+              subagent_type: toolCall.args.subagent_type,
+              description: toolCall.args.description,
+              prompt: toolCall.args.prompt,
+              status,
+              error: hasResponse ? undefined : "Task interrupted",
+            });
+          }
+        }
+      } else if (message.type === "tool") {
+        const taskId = message.tool_call_id;
+        if (taskId) {
+          const result = extractTextFromMessage(message);
+          if (result.startsWith("Task Succeeded. Result:")) {
+            updateSubtask({
+              id: taskId,
+              status: "completed",
+              result: result.split("Task Succeeded. Result:")[1]?.trim(),
+            });
+          } else if (result.startsWith("Task failed.")) {
+            updateSubtask({
+              id: taskId,
+              status: "failed",
+              error: result.split("Task failed.")[1]?.trim(),
+            });
+          } else if (result.startsWith("Task timed out")) {
+            updateSubtask({
+              id: taskId,
+              status: "failed",
+              error: result,
+            });
+          } else {
+            updateSubtask({
+              id: taskId,
+              status: "in_progress",
+            });
+          }
+        }
+      }
+    }
+  }, [messages, thread.isLoading, updateSubtask]);
+
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
   }
@@ -105,69 +179,6 @@ export function MessageList({
               </div>
             );
           } else if (group.type === "assistant:subagent") {
-            const tasks = new Set<Subtask>();
-            // Collect task tool_call_ids that have received ToolMessage responses
-            const respondedTaskIds = new Set<string>();
-            for (const message of group.messages) {
-              if (message.type === "tool" && message.tool_call_id) {
-                respondedTaskIds.add(message.tool_call_id);
-              }
-            }
-            for (const message of group.messages) {
-              if (message.type === "ai") {
-                for (const toolCall of message.tool_calls ?? []) {
-                  if (toolCall.name === "task") {
-                    const hasResponse = respondedTaskIds.has(toolCall.id!);
-                    // If not streaming and no ToolMessage response, mark as failed (interrupted/dangling)
-                    const status: Subtask["status"] =
-                      hasResponse || thread.isLoading
-                        ? "in_progress"
-                        : "failed";
-                    const task: Subtask = {
-                      id: toolCall.id!,
-                      subagent_type: toolCall.args.subagent_type,
-                      description: toolCall.args.description,
-                      prompt: toolCall.args.prompt,
-                      status,
-                      error: hasResponse ? undefined : "Task interrupted",
-                    };
-                    updateSubtask(task);
-                    tasks.add(task);
-                  }
-                }
-              } else if (message.type === "tool") {
-                const taskId = message.tool_call_id;
-                if (taskId) {
-                  const result = extractTextFromMessage(message);
-                  if (result.startsWith("Task Succeeded. Result:")) {
-                    updateSubtask({
-                      id: taskId,
-                      status: "completed",
-                      result: result
-                        .split("Task Succeeded. Result:")[1]
-                        ?.trim(),
-                    });
-                  } else if (result.startsWith("Task failed.")) {
-                    updateSubtask({
-                      id: taskId,
-                      status: "failed",
-                      error: result.split("Task failed.")[1]?.trim(),
-                    });
-                  } else if (result.startsWith("Task timed out")) {
-                    updateSubtask({
-                      id: taskId,
-                      status: "failed",
-                      error: result,
-                    });
-                  } else {
-                    updateSubtask({
-                      id: taskId,
-                      status: "in_progress",
-                    });
-                  }
-                }
-              }
-            }
             const results: React.ReactNode[] = [];
             for (const message of group.messages.filter(
               (message) => message.type === "ai",
@@ -182,17 +193,18 @@ export function MessageList({
                   />,
                 );
               }
+              const taskIds = message.tool_calls
+                ?.filter((toolCall) => toolCall.name === "task")
+                .map((toolCall) => toolCall.id);
+              const taskCount = taskIds?.length ?? 0;
               results.push(
                 <div
                   key="subtask-count"
                   className="text-muted-foreground pt-2 text-sm font-normal"
                 >
-                  {t.subtasks.executing(tasks.size)}
+                  {t.subtasks.executing(taskCount)}
                 </div>,
               );
-              const taskIds = message.tool_calls
-                ?.filter((toolCall) => toolCall.name === "task")
-                .map((toolCall) => toolCall.id);
               for (const taskId of taskIds ?? []) {
                 results.push(
                   <SubtaskCard
