@@ -118,15 +118,13 @@ class SessionHealthMonitor:
     # ------------------------------------------------------------------
 
     async def _check_all(self) -> None:
-        """Run health checks in sequence.
+        """Run health checks — currently a no-op.
 
-        IMPORTANT: We never cancel or interrupt running tasks or runs.
-        Only orphan sessions (from process restarts) are marked as interrupted.
-        Stalled thread activation is disabled because creating runs blocks the
-        main session — recovery is handled by auto_recover_interrupted_tasks()
-        at startup instead.
+        All automatic session status modification has been removed to prevent
+        false-positive interruptions of legitimately running tasks.  Session
+        monitoring will be redesigned in a future iteration.
         """
-        await self._check_orphan_sessions()
+        pass
 
     # ------------------------------------------------------------------
     # Sub-agent task monitoring (removed — never interrupt running tasks)
