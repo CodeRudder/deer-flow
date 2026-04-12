@@ -113,7 +113,18 @@ export default function ChatPage() {
     const promises: Promise<void>[] = [];
 
     if (stopTargets.mainSession) {
-      promises.push(thread.stop());
+      promises.push(
+        thread.stop().then(async () => {
+          // Also cancel the server-side run so LLM stops executing
+          try {
+            await fetch(`${getBackendBaseURL()}/api/runs/cancel-all`, {
+              method: "POST",
+            });
+          } catch {
+            // Best-effort: client-side stop already succeeded
+          }
+        }),
+      );
     }
 
     // Cancel selected subtasks
