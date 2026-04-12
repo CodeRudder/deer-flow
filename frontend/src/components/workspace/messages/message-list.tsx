@@ -76,9 +76,11 @@ export function MessageList({
           if (toolCall.name === "task") {
             const hasResponse = respondedTaskIds.has(toolCall.id!);
             const status: Subtask["status"] =
-              hasResponse || thread.isLoading
+              thread.isLoading
                 ? "in_progress"
-                : "failed";
+                : hasResponse
+                  ? "completed" // Has response and not streaming → task finished
+                  : "failed";
             updateSubtask({
               id: toolCall.id!,
               subagent_type: toolCall.args.subagent_type,
@@ -110,6 +112,14 @@ export function MessageList({
               id: taskId,
               status: "failed",
               error: result,
+            });
+          } else if (!thread.isLoading) {
+            // Not streaming and response doesn't match known patterns →
+            // treat as completed (the task finished, we just don't know the format)
+            updateSubtask({
+              id: taskId,
+              status: "completed",
+              result: result.slice(0, 500),
             });
           } else {
             updateSubtask({

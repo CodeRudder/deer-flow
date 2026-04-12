@@ -261,7 +261,7 @@ export default function ChatPage() {
               选择要停止的目标：
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="flex flex-col gap-3 py-2">
+          <div className="flex max-h-60 flex-col gap-3 overflow-y-auto py-2">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
