@@ -1,17 +1,13 @@
 """Sub-agent session health monitor.
 
-Periodically checks all running sub-agent sessions for two abnormal conditions:
+Periodically checks sub-agent sessions that have already stopped (terminal status)
+but whose JSONL files lack a matching terminal status marker — a sign that the
+executor crashed or was killed before writing the marker.
 
-1. **Stale session**: JSONL file has not been updated for ``stale_threshold``
-   seconds while the task is still RUNNING (thread stuck, model timeout, etc.).
-2. **Premature stop**: JSONL last message is an AI message with no ``tool_calls``
-   and the session has no terminal status marker (model stopped but task
-   incomplete, or model API error causing the stream to stall).
-
-When either condition is detected the monitor:
-- Cancels the current task via ``request_cancel_background_task``
-- Marks the session as interrupted
-- Creates a new ``SubagentExecutor`` with a recovery prompt and re-submits it
+IMPORTANT: The monitor NEVER interrupts or cancels a running task.  LLM calls,
+tool executions, and code generation can legitimately take many minutes without
+writing to the JSONL file.  Only tasks whose executor has already terminated
+unexpectedly are recovered.
 """
 
 import json
@@ -101,9 +97,8 @@ class SubagentHealthMonitor:
     update queue in ``agents/memory/queue.py``).
     """
 
-    def __init__(self, check_interval: int = 60, stale_threshold: int = 300) -> None:
+    def __init__(self, check_interval: int = 60) -> None:
         self._check_interval = check_interval
-        self._stale_threshold = stale_threshold
         self._timer: threading.Timer | None = None
         self._running = False
 
@@ -112,9 +107,8 @@ class SubagentHealthMonitor:
         self._running = True
         self._schedule_next()
         logger.info(
-            "Health monitor started (interval=%ds, stale_threshold=%ds)",
+            "Health monitor started (interval=%ds)",
             self._check_interval,
-            self._stale_threshold,
         )
 
     def stop(self) -> None:
@@ -161,34 +155,15 @@ class SubagentHealthMonitor:
                 logger.exception("Health monitor failed to check task %s", task_id)
 
     def _check_task(self, task_id: str, result: "SubagentResult") -> None:
-        """Check a single task for staleness or premature stop."""
-        jsonl_path = _find_session_jsonl(result.thread_id, task_id)
-        if jsonl_path is None:
-            # No session file — cannot monitor, skip
-            return
+        """Check a single task for premature stop (not staleness).
 
-        # Check file staleness
-        try:
-            mtime = __import__("pathlib").Path(jsonl_path).stat().st_mtime
-            stale_seconds = time.time() - mtime
-        except OSError:
-            return
-
-        if stale_seconds > self._stale_threshold:
-            logger.warning(
-                "Health monitor detected stale session for task %s "
-                "(no update for %ds, threshold=%ds)",
-                task_id,
-                int(stale_seconds),
-                self._stale_threshold,
-            )
-            self._reactivate_task(task_id, result, f"session stale for {int(stale_seconds)}s")
-            return
-
-        # Check premature stop: only when the task is no longer running
-        # (result has reached a terminal state) but session lacks a terminal
-        # status marker.  We never cancel a running task — only recover
-        # tasks that have already stopped unexpectedly.
+        We NEVER cancel or interrupt a running task — LLM calls, tool
+        executions, and code generation can legitimately take many minutes
+        without writing to the JSONL file.  Only recover tasks whose executor
+        has already terminated (status is terminal) but whose session file
+        lacks a matching terminal status marker.
+        """
+        # If the task is still running, do not interfere regardless of JSONL mtime.
         with _background_tasks_lock:
             current = _background_tasks.get(task_id)
         if current is not None and current.status not in {
@@ -197,7 +172,10 @@ class SubagentHealthMonitor:
             SubagentStatus.TIMED_OUT,
             SubagentStatus.COMPLETED,
         }:
-            # Task is still running — do not interfere
+            return
+
+        jsonl_path = _find_session_jsonl(result.thread_id, task_id)
+        if jsonl_path is None:
             return
 
         last_entry = _read_last_line(jsonl_path)
