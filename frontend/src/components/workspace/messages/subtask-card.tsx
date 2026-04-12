@@ -45,6 +45,7 @@ import { CitationLink } from "../citations/citation-link";
 import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
+import { useThread } from "../messages/context";
 
 export function SubtaskCard({
   className,
@@ -66,6 +67,7 @@ export function SubtaskCard({
   const task = useSubtask(taskId)!;
   const updateSubtask = useUpdateSubtask();
   const { setSelectedTaskId } = useSubtaskContext();
+  const { thread: streamThread } = useThread();
 
   const handleCancel = useCallback(async () => {
     setCancelling(true);
@@ -94,26 +96,53 @@ export function SubtaskCard({
   const handleResume = useCallback(async () => {
     setResuming(true);
     try {
-      const res = await fetch(
-        `${getBackendBaseURL()}/api/threads/${threadId}/subagents/${taskId}/resume`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
-      );
-      if (res.ok) {
-        updateSubtask({
-          id: taskId,
-          status: "in_progress",
-          error: undefined,
-        });
-      } else {
-        const data = await res.json().catch(() => ({}));
-        console.error("Resume failed:", data.detail ?? res.statusText);
+      // Update subtask status optimistically
+      updateSubtask({
+        id: taskId,
+        status: "in_progress",
+        error: undefined,
+      });
+
+      // Send resume message through the normal conversation stream
+      // so the lead agent calls task(action="resume") and the frontend
+      // receives streaming events.
+      const message = `恢复执行子任务（${task.description}）。\n请使用 task tool 的 action="resume" 模式恢复执行：\ntask(description="${task.description}", prompt="继续执行", subagent_type="${task.subagent_type}", action="resume", task_id="${taskId}")`;
+
+      try {
+        await streamThread.submit(
+          {
+            messages: [{ type: "human", content: message }],
+          },
+          {
+            threadId,
+            streamSubgraphs: true,
+            streamResumable: true,
+            config: { recursion_limit: 1000 },
+            context: {
+              subagent_enabled: true,
+              is_plan_mode: true,
+              thinking_enabled: true,
+              thread_id: threadId,
+            },
+          },
+        );
+      } catch {
+        // Fallback to API if thread submit fails
+        const res = await fetch(
+          `${getBackendBaseURL()}/api/threads/${threadId}/subagents/${taskId}/resume`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
+        );
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          console.error("Resume failed:", data.detail ?? res.statusText);
+        }
       }
     } catch {
       // silently ignore
     } finally {
       setResuming(false);
     }
-  }, [taskId, threadId, updateSubtask]);
+  }, [taskId, threadId, task.description, task.subagent_type, streamThread, updateSubtask]);
   const icon = useMemo(() => {
     if (task.status === "completed") {
       return <CheckCircleIcon className="size-3" />;

@@ -2,11 +2,19 @@ import { createContext, useCallback, useContext, useState } from "react";
 
 import type { Subtask } from "./types";
 
+export type ResumeSubtaskFn = (
+  taskId: string,
+  threadId: string,
+  description: string,
+  subagentType: string,
+) => void;
+
 export interface SubtaskContextValue {
   tasks: Record<string, Subtask>;
   setTasks: (tasks: Record<string, Subtask>) => void;
   selectedTaskId: string | null;
   setSelectedTaskId: (id: string | null) => void;
+  resumeSubtask?: ResumeSubtaskFn;
 }
 
 export const SubtaskContext = createContext<SubtaskContextValue>({
