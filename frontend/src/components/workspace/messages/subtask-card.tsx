@@ -64,12 +64,16 @@ export function SubtaskCard({
   const [resuming, setResuming] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
-  const task = useSubtask(taskId);
+  const task = useSubtask(taskId) ?? {
+    id: taskId,
+    status: "in_progress" as const,
+    subagent_type: "",
+    description: "",
+    prompt: "",
+  };
   const updateSubtask = useUpdateSubtask();
   const { setSelectedTaskId } = useSubtaskContext();
   const { thread: streamThread } = useThread();
-
-  if (!task) return null;
 
   const handleCancel = useCallback(async () => {
     setCancelling(true);
