@@ -825,20 +825,19 @@ export function InputBox({
                 </ModelSelectorList>
               </ModelSelectorContent>
             </ModelSelector>
-            {status === "streaming" && (
-              <Tooltip content="停止">
-                <PromptInputButton
-                  className="rounded-full"
-                  onClick={(e: React.MouseEvent) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onStop?.();
-                  }}
-                >
-                  <SquareIcon className="size-4" />
-                </PromptInputButton>
-              </Tooltip>
-            )}
+            <Tooltip content="停止">
+              <PromptInputButton
+                className="rounded-full"
+                disabled={!onStop || disabled}
+                onClick={(e: React.MouseEvent) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onStop?.();
+                }}
+              >
+                <SquareIcon className="size-4" />
+              </PromptInputButton>
+            </Tooltip>
             <PromptInputSubmit
               className="rounded-full"
               disabled={disabled || status === "streaming"}
