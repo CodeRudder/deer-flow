@@ -561,15 +561,46 @@ class SessionHealthMonitor:
             return None
 
     async def _has_active_run(self, thread_id: str) -> bool:
-        """Check if the thread has any running or pending runs."""
+        """Check if the thread has any running or pending runs.
+
+        A run is considered active only if it is running/pending AND
+        recently created (within 30 minutes).  Stale "running" runs
+        that survived a LangGraph server restart are treated as dead.
+        """
         client = self._get_client()
         if client is None:
             return False
 
         try:
+            from datetime import datetime, timezone, timedelta
+
+            stale_threshold = timedelta(minutes=30)
+
             runs = await client.runs.list(thread_id, limit=10)
             for run in runs:
                 if run.get("status") in ("running", "pending"):
+                    created_at = run.get("created_at")
+                    if created_at:
+                        try:
+                            if isinstance(created_at, str):
+                                created = datetime.fromisoformat(created_at)
+                            else:
+                                created = created_at
+                            # Ensure timezone-aware comparison
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=timezone.utc)
+                            age = datetime.now(tz=timezone.utc) - created
+                            if age > stale_threshold:
+                                logger.info(
+                                    "Thread %s: stale run %s (%s, age=%.0f min), treating as dead",
+                                    thread_id,
+                                    run.get("run_id", "?")[:12],
+                                    run.get("status"),
+                                    age.total_seconds() / 60,
+                                )
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # If we can't parse, assume active
                     return True
             return False
         except Exception:

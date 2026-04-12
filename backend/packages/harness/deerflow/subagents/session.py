@@ -308,3 +308,53 @@ class SubagentSession:
             if not session.is_terminal:
                 interrupted.append(session)
         return interrupted
+
+    @staticmethod
+    def get_resume_info(task_id: str, thread_id: str) -> dict[str, Any] | None:
+        """Get information needed to resume an interrupted/failed subtask.
+
+        Returns a dict with keys:
+            original_prompt, subagent_type, description, message_count,
+            last_ai_content, status
+        or None if session not found.
+        """
+        session = SubagentSession(
+            thread_id=thread_id,
+            task_id=task_id,
+            subagent_name="unknown",
+        )
+        if not session.jsonl_path.exists():
+            return None
+
+        # Read summary for metadata
+        summary = session.read_summary()
+        subagent_type = "general-purpose"
+        description = ""
+        status = "unknown"
+        if summary:
+            subagent_type = summary.get("subagent_name", subagent_type)
+            description = summary.get("description", "")
+            status = summary.get("status", "unknown")
+
+        # Read messages to extract original prompt and last AI content
+        messages = session.read_messages()
+        original_prompt = ""
+        last_ai_content = ""
+        for msg in messages:
+            role = msg.get("role", "")
+            if role == "human" and not original_prompt:
+                content = msg.get("content", "")
+                original_prompt = content[:2000] if isinstance(content, str) else str(content)[:2000]
+            elif role == "ai":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    last_ai_content = content[:500]
+
+        return {
+            "original_prompt": original_prompt,
+            "subagent_type": subagent_type,
+            "description": description,
+            "message_count": len(messages),
+            "last_ai_content": last_ai_content,
+            "status": status,
+        }

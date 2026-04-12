@@ -53,6 +53,8 @@ async def task_tool(
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
+    task_id: str | None = None,
+    action: str = "create",
 ) -> str:
     """Delegate a task to a specialized subagent that runs in its own context.
 
@@ -88,12 +90,34 @@ async def task_tool(
     - Simple, single-step operations (use tools directly)
     - Tasks requiring user interaction or clarification
 
+    Actions:
+    - **create** (default): Create and execute a new subtask.
+    - **resume**: Resume an interrupted/failed subtask from where it left off.
+      The system reads the previous session's conversation history and injects
+      recovery context so the subagent continues without repeating completed work.
+      Example: task(action="resume", task_id="call_xxx", description="Resume implementation", prompt="continue", subagent_type="developer")
+    - **cancel**: Cancel a running subtask.
+      Example: task(action="cancel", task_id="call_xxx", description="Cancel", prompt="", subagent_type="general-purpose")
+    - **query**: Query a subtask's status and result.
+      Example: task(action="query", task_id="call_xxx", description="Check status", prompt="", subagent_type="general-purpose")
+
     Args:
         description: A short (3-5 word) description of the task for logging/display. ALWAYS PROVIDE THIS PARAMETER FIRST.
         prompt: The task description for the subagent. Be specific and clear about what needs to be done. ALWAYS PROVIDE THIS PARAMETER SECOND.
         subagent_type: The type of subagent to use. ALWAYS PROVIDE THIS PARAMETER THIRD.
         max_turns: Optional maximum number of agent turns. Defaults to subagent's configured max.
+        task_id: Target subtask ID for resume/cancel/query actions. Not needed for create.
+        action: Action to perform: "create" (default), "resume", "cancel", or "query".
     """
+    # ── Action dispatch ─────────────────────────────────────────────────
+    if action == "cancel":
+        return await _action_cancel(task_id)
+    elif action == "query":
+        return await _action_query(task_id)
+    elif action == "resume":
+        return await _action_resume(runtime, task_id, tool_call_id, description, prompt, subagent_type, max_turns)
+
+    # ── Default: action="create" ────────────────────────────────────────
     available_subagent_names = get_available_subagent_names()
 
     # Get subagent configuration
@@ -324,3 +348,245 @@ async def task_tool(
         logger.debug(f"[trace={trace_id}] Scheduling deferred cleanup for cancelled task {task_id}")
         asyncio.create_task(cleanup_when_done()).add_done_callback(log_cleanup_failure)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Action handlers
+# ---------------------------------------------------------------------------
+
+
+async def _action_cancel(task_id: str | None) -> str:
+    """Cancel a running subtask."""
+    if not task_id:
+        return "Error: task_id is required for cancel action"
+
+    result = get_background_task_result(task_id)
+    if result is None:
+        return f"Error: Task {task_id} not found"
+
+    if result.status.value not in ("running", "pending"):
+        return f"Error: Task {task_id} is {result.status.value}, cannot cancel"
+
+    request_cancel_background_task(task_id)
+    logger.info("Cancelled subtask %s via task tool", task_id)
+    return f"Task {task_id} cancelled successfully."
+
+
+async def _action_query(task_id: str | None) -> str:
+    """Query subtask status and result."""
+    if not task_id:
+        return "Error: task_id is required for query action"
+
+    # Check in-memory first
+    result = get_background_task_result(task_id)
+    if result is not None:
+        status = result.status.value
+        parts = [f"Task {task_id}: status={status}"]
+        if result.result:
+            parts.append(f"result={result.result[:500]}")
+        if result.error:
+            parts.append(f"error={result.error[:300]}")
+        return "\n".join(parts)
+
+    # Check on-disk session
+    try:
+        from deerflow.subagents.session import SubagentSession
+        # Need thread_id — try to find it from session files
+        info = SubagentSession.get_resume_info(task_id, _find_thread_id_for_task(task_id) or "")
+        if info:
+            return (
+                f"Task {task_id}: status={info['status']}, "
+                f"subagent={info['subagent_type']}, "
+                f"steps={info['message_count']}"
+            )
+    except Exception:
+        logger.exception("Failed to query task %s from disk", task_id)
+
+    return f"Error: Task {task_id} not found (neither in memory nor on disk)"
+
+
+async def _action_resume(
+    runtime: ToolRuntime[ContextT, ThreadState],
+    task_id: str | None,
+    tool_call_id: str,
+    description: str,
+    prompt: str,
+    subagent_type: str,
+    max_turns: int | None,
+) -> str:
+    """Resume an interrupted/failed subtask from where it left off."""
+    if not task_id:
+        return "Error: task_id is required for resume action"
+
+    # Get thread_id from runtime
+    thread_id: str | None = None
+    if runtime is not None:
+        thread_id = runtime.context.get("thread_id") if runtime.context else None
+        if thread_id is None:
+            thread_id = runtime.config.get("configurable", {}).get("thread_id")
+
+    if not thread_id:
+        return f"Error: Cannot determine thread_id for resuming task {task_id}"
+
+    # Read session info
+    from deerflow.subagents.session import SubagentSession
+
+    info = SubagentSession.get_resume_info(task_id, thread_id)
+    if info is None:
+        return f"Error: No session found for task {task_id} in thread {thread_id}"
+
+    # Use original subagent_type if available
+    effective_subagent_type = info["subagent_type"] or subagent_type
+    effective_description = description or f"Resume: {info['description']}"
+
+    # Build recovery prompt
+    recovery = (
+        f"<recovery>\n"
+        f"任务被中断。已执行 {info['message_count']} 步。\n"
+        f"最后完成的工作：{info['last_ai_content'] or '（无）'}\n"
+        f"原始任务：{info['original_prompt'][:500]}\n"
+        f"请继续完成剩余工作，不要重复已完成的步骤。\n"
+        f"</recovery>\n\n"
+        f"{info['original_prompt'] or prompt}"
+    )
+
+    logger.info(
+        "Resuming task %s (subagent=%s, steps_completed=%d)",
+        task_id,
+        effective_subagent_type,
+        info["message_count"],
+    )
+
+    # Reuse the create flow by resetting action and calling with recovery prompt
+    # We monkey-patch the call by directly executing the create logic
+    available_subagent_names = get_available_subagent_names()
+
+    config = get_subagent_config(effective_subagent_type)
+    if config is None:
+        available = ", ".join(available_subagent_names)
+        return f"Error: Unknown subagent type '{effective_subagent_type}'. Available: {available}"
+
+    # Build config overrides
+    overrides: dict = {}
+    skills_section = get_skills_prompt_section()
+    if skills_section:
+        overrides["system_prompt"] = config.system_prompt + "\n\n" + skills_section
+    if max_turns is not None:
+        overrides["max_turns"] = max_turns
+    if overrides:
+        from dataclasses import replace as _replace
+        config = _replace(config, **overrides)
+
+    # Extract context from runtime
+    sandbox_state = None
+    thread_data = None
+    parent_model = None
+    trace_id = None
+    if runtime is not None:
+        sandbox_state = runtime.state.get("sandbox")
+        thread_data = runtime.state.get("thread_data")
+        metadata = runtime.config.get("metadata", {})
+        parent_model = metadata.get("model_name")
+        trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
+
+    from deerflow.tools import get_available_tools
+
+    tools = get_available_tools(model_name=parent_model, subagent_enabled=False)
+
+    executor = SubagentExecutor(
+        config=config,
+        tools=tools,
+        parent_model=parent_model,
+        sandbox_state=sandbox_state,
+        thread_data=thread_data,
+        thread_id=thread_id,
+        trace_id=trace_id,
+        session=None,
+    )
+
+    # Create new session for the resumed run
+    try:
+        session = SubagentSession(
+            thread_id=thread_id,
+            task_id=tool_call_id,
+            subagent_name=effective_subagent_type,
+            description=effective_description,
+        )
+        executor.session = session
+    except Exception:
+        logger.exception("Failed to create session for resumed task")
+
+    # Execute with recovery prompt
+    new_task_id = executor.execute_async(recovery, task_id=tool_call_id, description=effective_description)
+
+    writer = get_stream_writer()
+    writer({"type": "task_started", "task_id": new_task_id, "description": effective_description})
+
+    # Poll for completion (same logic as create)
+    poll_count = 0
+    last_status = None
+    last_message_count = 0
+    max_poll_count = (config.timeout_seconds + 60) // 5
+
+    logger.info(f"[trace={trace_id}] Resumed task {task_id} as new task {new_task_id}")
+
+    try:
+        while True:
+            result = get_background_task_result(new_task_id)
+            if result is None:
+                writer({"type": "task_failed", "task_id": new_task_id, "error": "Task disappeared"})
+                return f"Error: Resumed task {new_task_id} disappeared"
+
+            if result.status != last_status:
+                logger.info(f"[trace={trace_id}] Resumed task {new_task_id} status: {result.status.value}")
+                last_status = result.status
+
+            current_message_count = len(result.ai_messages)
+            if current_message_count > last_message_count:
+                for i in range(last_message_count, current_message_count):
+                    writer({"type": "task_running", "task_id": new_task_id, "message": result.ai_messages[i]})
+                last_message_count = current_message_count
+
+            if result.status == SubagentStatus.COMPLETED:
+                writer({"type": "task_completed", "task_id": new_task_id, "result": result.result})
+                cleanup_background_task(new_task_id)
+                return f"Task Resumed. Result: {result.result}"
+            elif result.status == SubagentStatus.FAILED:
+                writer({"type": "task_failed", "task_id": new_task_id, "error": result.error})
+                cleanup_background_task(new_task_id)
+                return f"Task resumed but failed. Error: {result.error}"
+            elif result.status == SubagentStatus.CANCELLED:
+                cleanup_background_task(new_task_id)
+                return "Resumed task cancelled by user."
+            elif result.status == SubagentStatus.TIMED_OUT:
+                writer({"type": "task_timed_out", "task_id": new_task_id})
+                cleanup_background_task(new_task_id)
+                return f"Resumed task timed out."
+
+            await asyncio.sleep(5)
+            poll_count += 1
+            if poll_count > max_poll_count:
+                return f"Resumed task polling timed out. Status: {result.status.value}"
+    except asyncio.CancelledError:
+        request_cancel_background_task(new_task_id)
+        raise
+
+
+def _find_thread_id_for_task(task_id: str) -> str | None:
+    """Try to find the thread_id for a task by scanning session directories."""
+    try:
+        from deerflow.config.paths import get_paths
+        threads_dir = get_paths().base_dir / "threads"
+        if not threads_dir.exists():
+            return None
+        for thread_dir in threads_dir.iterdir():
+            if not thread_dir.is_dir():
+                continue
+            subagents_dir = thread_dir / "subagents"
+            if subagents_dir.exists():
+                jsonl = subagents_dir / f"{task_id}.jsonl"
+                if jsonl.exists():
+                    return thread_dir.name
+    except Exception:
+        pass
+    return None

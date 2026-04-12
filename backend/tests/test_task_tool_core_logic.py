@@ -123,7 +123,7 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
         def __init__(self, **kwargs):
             captured["executor_kwargs"] = kwargs
 
-        def execute_async(self, prompt, task_id=None):
+        def execute_async(self, prompt, task_id=None, description=None):
             captured["prompt"] = prompt
             captured["task_id"] = task_id
             return task_id or "generated-task-id"
@@ -182,7 +182,7 @@ def test_task_tool_returns_failed_message(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -216,7 +216,7 @@ def test_task_tool_returns_timed_out_message(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -252,7 +252,7 @@ def test_task_tool_polling_safety_timeout(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -288,7 +288,7 @@ def test_cleanup_called_on_completed(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -328,7 +328,7 @@ def test_cleanup_called_on_failed(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -368,7 +368,7 @@ def test_cleanup_called_on_timed_out(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -415,7 +415,7 @@ def test_cleanup_not_called_on_polling_safety_timeout(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -468,7 +468,7 @@ def test_cleanup_scheduled_on_cancellation(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -519,7 +519,7 @@ def test_cancelled_cleanup_stops_after_timeout(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -574,7 +574,7 @@ def test_cancellation_calls_request_cancel(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
@@ -632,7 +632,7 @@ def test_task_tool_returns_cancelled_message(monkeypatch):
     monkeypatch.setattr(
         task_tool_module,
         "SubagentExecutor",
-        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None, description=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
     monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
