@@ -115,10 +115,15 @@ async def _notify_thread(thread_id: str, message: str) -> None:
 
 
 async def auto_recover_interrupted_tasks() -> None:
-    """Main entry point — scan for interrupted sessions and notify threads.
+    """Main entry point — scan for interrupted sessions.
 
-    Called once from the Gateway ``lifespan()`` handler after all services are
-    up (config, LangGraph runtime, channel service).
+    Currently disabled: automatic recovery was causing issues:
+    - Creating runs blocks the main session
+    - update_state fails when in-flight runs exist
+    - Recovery messages trigger agent to execute code directly
+
+    Only logs the number of interrupted sessions for visibility.
+    Users can manually resume tasks from the UI.
     """
     logger.info("Scanning for interrupted sub-agent sessions...")
 
@@ -130,16 +135,7 @@ async def auto_recover_interrupted_tasks() -> None:
 
     total_sessions = sum(len(sessions) for sessions in interrupted.values())
     logger.info(
-        "Found %d interrupted session(s) across %d thread(s)",
+        "Found %d interrupted session(s) across %d thread(s) — auto-recovery disabled, use UI to resume",
         total_sessions,
         len(interrupted),
     )
-
-    for thread_id, sessions in interrupted.items():
-        message = _build_recovery_message(sessions)
-        logger.info(
-            "Sending recovery message to thread %s (%d interrupted session(s))",
-            thread_id,
-            len(sessions),
-        )
-        await _notify_thread(thread_id, message)
