@@ -64,7 +64,8 @@ export function SubtaskCard({
   const [resuming, setResuming] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
-  const task = useSubtask(taskId)!;
+  const task = useSubtask(taskId);
+  if (!task) return null;
   const updateSubtask = useUpdateSubtask();
   const { setSelectedTaskId } = useSubtaskContext();
   const { thread: streamThread } = useThread();
