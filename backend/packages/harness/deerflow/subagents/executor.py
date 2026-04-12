@@ -407,7 +407,26 @@ class SubagentExecutor:
                     logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} no messages in final state")
                     result.result = "No response generated"
 
-            result.status = SubagentStatus.COMPLETED
+            # Check if the final result is an LLM error fallback message
+            _LLM_ERROR_PREFIXES = (
+                "The configured LLM provider rejected the request",
+                "The LLM provider is temporarily unavailable",
+                "The LLM returned an empty response",
+                "LLM request failed:",
+            )
+            is_llm_error = isinstance(result.result, str) and any(
+                result.result.startswith(p) for p in _LLM_ERROR_PREFIXES
+            )
+
+            if is_llm_error:
+                logger.warning(
+                    "[trace=%s] Subagent %s final result is an LLM error: %s",
+                    self.trace_id, self.config.name, result.result[:100],
+                )
+                result.status = SubagentStatus.FAILED
+                result.error = result.result
+            else:
+                result.status = SubagentStatus.COMPLETED
             result.completed_at = datetime.now()
 
             # ③ Mark session completed

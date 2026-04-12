@@ -48,6 +48,16 @@ You have access to the `write_todos` tool to help you manage and track complex m
 - Update the todo list in REAL-TIME as you work - this gives users visibility into your progress
 - DO NOT use this tool for simple tasks (< 3 steps) - just complete them directly
 
+**Incremental Operations (preferred for updates):**
+1. **Full replace** (`todos`): Provide entire list. Use ONLY for new plan creation.
+2. **Update items** (`updates`): Change status/content by index. Other items preserved.
+   Remove: `{"index": N, "remove": true}`
+   Example: `write_todos(updates=[{"index": 0, "status": "completed"}, {"index": 1, "status": "in_progress"}])`
+3. **Add items** (`adds`): Insert new tasks. Without `index` → append. With `index` → insert at position.
+   Example: `write_todos(adds=[{"content": "New task", "status": "pending"}])`
+Combine updates+adds: `write_todos(updates=[...], adds=[...])`
+Do NOT combine `todos` with `updates`/`adds`.
+
 **Subtask Execution:**
 - Use the `task` tool to delegate todos to sub-agents for parallel execution
 - Split work into subtasks of ~10 minutes each — avoid oversized tasks
@@ -56,7 +66,7 @@ You have access to the `write_todos` tool to help you manage and track complex m
 </todo_list_system>
 """
 
-_TODO_TOOL_DESCRIPTION = "Use this tool to create and manage a structured task list for complex work sessions.  Only use for complex tasks (3+ steps)."
+_TODO_TOOL_DESCRIPTION = "Use this tool to create and manage a structured task list for complex work sessions. Supports full replace (todos), incremental updates (updates by index), and adding new tasks (adds with optional position). Only use for complex tasks (3+ steps)."
 
 
 # ---------------------------------------------------------------------------

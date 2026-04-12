@@ -196,12 +196,23 @@ This tool is designed for complex objectives that require systematic tracking:
 - Purely conversational or informational requests
 - Simple tool calls where the approach is obvious
 
-**Best Practices:**
-- Break down complex tasks into smaller, actionable steps
-- Use clear, descriptive task names
-- Remove tasks that become irrelevant
-- Add new tasks discovered during implementation
-- Don't be afraid to revise the todo list as you learn more
+**Incremental Operations (preferred for updates):**
+The tool supports three modes — use the appropriate one to avoid losing existing tasks:
+
+1. **Full replace** (`todos`): Provide the entire list. Use ONLY when creating a new plan from scratch or explicitly rewriting ALL tasks. AVOID using this for status updates — use `updates` instead.
+
+2. **Update items** (`updates`): Change status/content of specific items by index. Other items are preserved.
+   Example: `write_todos(updates=[{"index": 0, "status": "completed"}, {"index": 1, "status": "in_progress"}])`
+   Remove an item: `write_todos(updates=[{"index": 2, "remove": true}])`
+
+3. **Add items** (`adds`): Insert new tasks. Without `index` → append to end. With `index` → insert at that position.
+   Example: `write_todos(adds=[{"content": "New task", "status": "pending"}])`
+   Example with position: `write_todos(adds=[{"content": "Urgent", "status": "in_progress", "index": 0}])`
+
+You can combine `updates` and `adds` in a single call:
+   `write_todos(updates=[{"index": 0, "status": "completed"}], adds=[{"content": "Follow-up", "status": "pending"}])`
+
+**IMPORTANT:** Do NOT combine `todos` with `updates`/`adds` — use one mode per call.
 
 **Subtask Execution:**
 - Use the `task` tool to delegate todos to sub-agents for parallel execution
@@ -218,63 +229,48 @@ Writing todos takes time and tokens - use it when helpful for managing complex p
 
 **IMPORTANT: Only use this tool for complex tasks (3+ steps). For simple requests, just do the work directly.**
 
+## Parameters
+
+- `todos`: Full task list — replaces ALL existing tasks. Use ONLY for initial plan creation or explicit full rewrite.
+- `updates`: Update/remove items by index — `[{"index": 0, "status": "completed"}]` or `[{"index": 2, "remove": true}]`
+- `adds`: Insert new tasks — `[{"content": "task desc", "status?": "pending", "index?": 0}]`
+
+Rules:
+- Use ONLY `todos` (full replace) OR `updates`/`adds` (incremental) — never both together.
+- `updates` and `adds` can be combined in one call (updates applied first, then adds).
+- For `adds`: omit `index` to append at end; specify `index` to insert at that position.
+- For `updates`: use `"remove": true` to delete an item by index.
+
 ## When to Use
 
-Use this tool in these scenarios:
-1. **Complex multi-step tasks**: When a task requires 3 or more distinct steps or actions
-2. **Non-trivial tasks**: Tasks requiring careful planning or multiple operations
-3. **User explicitly requests todo list**: When the user directly asks you to track tasks
-4. **Multiple tasks**: When users provide a list of things to be done
-5. **Dynamic planning**: When the plan may need updates based on intermediate results
+1. Complex multi-step tasks (3+ steps)
+2. Non-trivial tasks needing careful planning
+3. User explicitly requests a todo list
+4. Multiple tasks provided
+5. Dynamic plans needing updates
 
 ## When NOT to Use
 
-Skip this tool when:
-1. The task is straightforward and takes less than 3 steps
-2. The task is trivial and tracking provides no benefit
-3. The task is purely conversational or informational
-4. It's clear what needs to be done and you can just do it
-
-## How to Use
-
-1. **Starting a task**: Mark it as `in_progress` BEFORE beginning work
-2. **Completing a task**: Mark it as `completed` IMMEDIATELY after finishing
-3. **Updating the list**: Add new tasks, remove irrelevant ones, or update descriptions as needed
-4. **Multiple updates**: You can make several updates at once (e.g., complete one task and start the next)
+1. Straightforward tasks (< 3 steps)
+2. Trivial tasks
+3. Purely conversational requests
+4. Clear what to do — just do it directly
 
 ## Task States
 
-- `pending`: Task not yet started
-- `in_progress`: Currently working on (can have multiple if tasks run in parallel)
-- `completed`: Task finished successfully
-
-## Task Completion Requirements
-
-**CRITICAL: Only mark a task as completed when you have FULLY accomplished it.**
-
-Never mark a task as completed if:
-- There are unresolved issues or errors
-- Work is partial or incomplete
-- You encountered blockers preventing completion
-- You couldn't find necessary resources or dependencies
-- Quality standards haven't been met
-
-If blocked, keep the task as `in_progress` and create a new task describing what needs to be resolved.
+- `pending`: Not yet started
+- `in_progress`: Currently working on
+- `completed`: Finished successfully
 
 ## Best Practices
 
-- Create specific, actionable items
-- Break complex tasks into smaller, manageable steps
-- Use clear, descriptive task names
-- Update task status in real-time as you work
-- Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
-- Remove tasks that are no longer relevant
-- **IMPORTANT**: When you write the todo list, mark your first task(s) as `in_progress` immediately
-- **IMPORTANT**: Unless all tasks are completed, always have at least one task `in_progress` to show progress
+- Mark first task(s) as `in_progress` immediately
+- Always have at least one `in_progress` task until all are completed
+- Update status in real-time — don't batch completions
+- Only mark `completed` when FULLY done
+- Use `updates` to change status of individual tasks (prevents accidentally dropping other tasks)
 
-Being proactive with task management demonstrates thoroughness and ensures all requirements are completed successfully.
-
-**Remember**: If you only need a few tool calls to complete a task and it's clear what to do, it's better to just do the task directly and NOT use this tool at all.
+**Remember**: If you only need a few tool calls and it's clear what to do, just do the work directly.
 """
 
     return TodoMiddleware(system_prompt=system_prompt, tool_description=tool_description)

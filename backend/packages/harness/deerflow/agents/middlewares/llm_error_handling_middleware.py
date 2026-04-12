@@ -139,7 +139,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         if reason == "auth":
             return "The configured LLM provider rejected the request because authentication or access is invalid. Please check the provider credentials and try again."
         if reason in {"busy", "transient"}:
-            return "The configured LLM provider is temporarily unavailable after multiple retries. Please wait a moment and continue the conversation."
+            return "The LLM provider is temporarily unavailable. Please retry the request."
         return f"LLM request failed: {detail}"
 
     def _emit_retry_event(self, attempt: int, wait_ms: int, reason: str) -> None:
