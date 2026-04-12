@@ -338,6 +338,7 @@ class SessionHealthMonitor:
         message = (
             "<session_recovery>\n"
             "服务已经重启，请继续处理未完成任务。\n"
+            "注意：所有工作必须通过 task() 工具委派给子 Agent 执行，不要直接编写代码或运行命令。\n"
             "</session_recovery>"
         )
 

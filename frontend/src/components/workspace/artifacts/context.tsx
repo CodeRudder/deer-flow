@@ -34,11 +34,11 @@ interface ArtifactsProviderProps {
 export function ArtifactsProvider({ children }: ArtifactsProviderProps) {
   const [artifacts, setArtifacts] = useState<string[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
-  const [autoSelect, setAutoSelect] = useState(true);
+  const [autoSelect, setAutoSelect] = useState(false);
   const [open, setOpen] = useState(
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
   );
-  const [autoOpen, setAutoOpen] = useState(true);
+  const [autoOpen, setAutoOpen] = useState(false);
   const { setOpen: setSidebarOpen } = useSidebar();
 
   const select = useCallback(
