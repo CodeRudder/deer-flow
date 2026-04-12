@@ -198,6 +198,7 @@ export function MessageList({
                   <SubtaskCard
                     key={"task-group-" + taskId}
                     taskId={taskId!}
+                    threadId={threadId}
                     isLoading={thread.isLoading}
                   />,
                 );

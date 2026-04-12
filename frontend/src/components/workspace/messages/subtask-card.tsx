@@ -3,6 +3,7 @@ import {
   ChevronUp,
   ClipboardListIcon,
   Loader2Icon,
+  RotateCcwIcon,
   SquareIcon,
   XCircleIcon,
 } from "lucide-react";
@@ -48,15 +49,18 @@ import { MarkdownContent } from "./markdown-content";
 export function SubtaskCard({
   className,
   taskId,
+  threadId,
   isLoading,
 }: {
   className?: string;
   taskId: string;
+  threadId: string;
   isLoading: boolean;
 }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const task = useSubtask(taskId)!;
@@ -86,6 +90,30 @@ export function SubtaskCard({
       setCancelling(false);
     }
   }, [taskId, updateSubtask]);
+
+  const handleResume = useCallback(async () => {
+    setResuming(true);
+    try {
+      const res = await fetch(
+        `${getBackendBaseURL()}/api/threads/${threadId}/subagents/${taskId}/resume`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
+      );
+      if (res.ok) {
+        updateSubtask({
+          id: taskId,
+          status: "in_progress",
+          error: undefined,
+        });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        console.error("Resume failed:", data.detail ?? res.statusText);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setResuming(false);
+    }
+  }, [taskId, threadId, updateSubtask]);
   const icon = useMemo(() => {
     if (task.status === "completed") {
       return <CheckCircleIcon className="size-3" />;
@@ -171,17 +199,38 @@ export function SubtaskCard({
                   </Button>
                 )}
                 {task.status !== "in_progress" && !collapsed && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedTaskId(taskId);
-                    }}
-                  >
-                    查看详情
-                  </Button>
+                  <>
+                    {task.status === "failed" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        disabled={resuming}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleResume();
+                        }}
+                      >
+                        {resuming ? (
+                          <Loader2Icon className="mr-1 size-3 animate-spin" />
+                        ) : (
+                          <RotateCcwIcon className="mr-1 size-3" />
+                        )}
+                        重新执行
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedTaskId(taskId);
+                      }}
+                    >
+                      查看详情
+                    </Button>
+                  </>
                 )}
                 <ChevronUp
                   className={cn(

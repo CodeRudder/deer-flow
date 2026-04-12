@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -98,3 +98,80 @@ async def get_subagent_session(thread_id: str, task_id: str, request: Request) -
         status=status,
         messages=messages,
     )
+
+
+class ResumeSubagentRequest(BaseModel):
+    description: str = ""
+
+
+class ResumeSubagentResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.post("/{task_id}/resume", response_model=ResumeSubagentResponse)
+async def resume_subagent_session(
+    thread_id: str,
+    task_id: str,
+    body: ResumeSubagentRequest,
+    request: Request,
+) -> ResumeSubagentResponse:
+    """Resume an interrupted/failed subtask by sending an activation message to the thread.
+
+    The message instructs the lead agent to use the task tool with action="resume"
+    and the specified task_id.  The agent reads the session history and continues
+    from where the subtask left off.
+    """
+    from deerflow.subagents.session import SubagentSession
+
+    # Check session exists and is resumable
+    info = SubagentSession.get_resume_info(task_id, thread_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"Subtask {task_id} not found in thread {thread_id}")
+
+    if info["status"] not in ("interrupted", "failed", "unknown"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Subtask {task_id} has status '{info['status']}' — only interrupted/failed tasks can be resumed",
+        )
+
+    description = body.description or info["description"] or "Resume subtask"
+
+    # Build the resume instruction message
+    subagent_type = info.get("subagent_type", "general-purpose")
+    message = (
+        f"恢复执行子任务 {task_id}（{description}）。\n"
+        f"请使用 task tool 的 action=\"resume\" 模式恢复执行：\n"
+        f'task(description="{description}", prompt="继续执行", subagent_type="{subagent_type}", action="resume", task_id="{task_id}")'
+    )
+
+    # Send message to the thread via LangGraph client
+    try:
+        from langgraph_sdk import get_client
+
+        client = get_client(url="http://localhost:2024")
+
+        # Create a new run with the resume instruction
+        run = await client.runs.create(
+            thread_id,
+            assistant_id="lead_agent",
+            input={"messages": [{"type": "human", "content": message}]},
+            config={"recursion_limit": 500},
+            context={
+                "subagent_enabled": True,
+                "is_plan_mode": True,
+            },
+            stream_mode=["values"],
+        )
+
+        logger.info("Resumed subtask %s on thread %s, run_id=%s", task_id, thread_id, run["run_id"])
+
+        return ResumeSubagentResponse(
+            success=True,
+            message=f"Resume message sent for subtask {task_id}",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to resume subtask %s on thread %s", task_id, thread_id)
+        raise HTTPException(status_code=500, detail="Failed to send resume message")
