@@ -28,6 +28,7 @@ import {
   MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 
@@ -214,6 +215,7 @@ export default function ChatPage() {
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
             <div className="flex items-center gap-2">
+              <SessionStatusButton threadId={threadId} />
               <TokenUsageIndicator messages={thread.messages} />
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />

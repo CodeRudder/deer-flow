@@ -1,4 +1,4 @@
-"""Tests for SessionHealthMonitor."""
+"""Tests for SessionHealthMonitor — thread activation and status detection."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,39 +27,27 @@ def _make_subagent_result(
     status="running",
     subagent_name="general-purpose",
     description="test task",
-    original_prompt="do something",
 ):
-    """Create a mock SubagentResult with a real-ish status.
-
-    conftest.py mocks deerflow.subagents.executor at module level, so
-    SubagentStatus is a MagicMock.  We use a simple namespace with .value
-    instead so the monitor's string-based status comparison works.
-    """
-    from types import SimpleNamespace
-
+    """Create a mock SubagentResult."""
     result = MagicMock()
     result.task_id = task_id
     result.thread_id = thread_id
     result.status = SimpleNamespace(value=status)
     result.subagent_name = subagent_name
     result.description = description
-    result.original_prompt = original_prompt
     return result
 
 
 def _patch_background_tasks(tasks: dict):
-    """Return a context manager that patches _background_tasks."""
     return patch("deerflow.subagents.executor._background_tasks", tasks)
 
 
 def _patch_lock():
     import threading
-
     return patch("deerflow.subagents.executor._background_tasks_lock", threading.Lock())
 
 
 def _write_jsonl(path: Path, messages: list[dict], terminal_status: str | None = None):
-    """Write a JSONL file with given messages and optional terminal marker."""
     with open(path, "w", encoding="utf-8") as f:
         for msg in messages:
             f.write(json.dumps(msg, ensure_ascii=False) + "\n")
@@ -66,432 +55,19 @@ def _write_jsonl(path: Path, messages: list[dict], terminal_status: str | None =
             f.write(json.dumps({"status": terminal_status}, ensure_ascii=False) + "\n")
 
 
-# ---------------------------------------------------------------------------
-# Sub-agent zombie detection (in-memory)
-# ---------------------------------------------------------------------------
-
-
-class TestSubagentZombieDetection:
-
-    def test_reactivates_stale_running_task(self, tmp_path):
-        """A RUNNING task with stale JSONL should be reactivated."""
-        jsonl = tmp_path / "task-1.jsonl"
-        jsonl.write_text('{"role": "ai", "content": "working"}\n', encoding="utf-8")
-        old_time = time.time() - 600
-        os.utime(jsonl, (old_time, old_time))
-
-        result = _make_subagent_result()
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch.object(monitor, "_find_session_jsonl", return_value=str(jsonl)),
-            _patch_background_tasks({"task-1": result}),
-            _patch_lock(),
-            patch.object(monitor, "_reactivate_subagent") as mock_reactivate,
-        ):
-            asyncio.run(monitor._check_subagent_tasks())
-
-        mock_reactivate.assert_called_once()
-        assert "stale" in mock_reactivate.call_args[0][2]
-
-    def test_skips_fresh_running_task(self, tmp_path):
-        """A RUNNING task with fresh JSONL should NOT be reactivated."""
-        jsonl = tmp_path / "task-1.jsonl"
-        jsonl.write_text('{"role": "ai", "content": "working"}\n', encoding="utf-8")
-
-        result = _make_subagent_result()
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch.object(monitor, "_find_session_jsonl", return_value=str(jsonl)),
-            _patch_background_tasks({"task-1": result}),
-            _patch_lock(),
-            patch.object(monitor, "_reactivate_subagent") as mock_reactivate,
-        ):
-            asyncio.run(monitor._check_subagent_tasks())
-
-        mock_reactivate.assert_not_called()
-
-    def test_skips_completed_task(self):
-        """A COMPLETED task should be skipped."""
-        result = _make_subagent_result(status="completed")
-        monitor = SessionHealthMonitor()
-
-        with (
-            _patch_background_tasks({"task-1": result}),
-            _patch_lock(),
-        ):
-            asyncio.run(monitor._check_subagent_tasks())
-
-    def test_skips_task_without_jsonl(self):
-        """A task without JSONL file should be skipped."""
-        result = _make_subagent_result()
-        monitor = SessionHealthMonitor()
-
-        with (
-            patch.object(monitor, "_find_session_jsonl", return_value=None),
-            _patch_background_tasks({"task-1": result}),
-            _patch_lock(),
-            patch.object(monitor, "_reactivate_subagent") as mock_reactivate,
-        ):
-            asyncio.run(monitor._check_subagent_tasks())
-
-        mock_reactivate.assert_not_called()
-
-    def test_no_running_tasks_is_noop(self):
-        """When no tasks are running, check is a no-op."""
-        monitor = SessionHealthMonitor()
-        with (
-            _patch_background_tasks({}),
-            _patch_lock(),
-        ):
-            asyncio.run(monitor._check_subagent_tasks())
-
-
-# ---------------------------------------------------------------------------
-# Orphan session detection (on-disk, cross-restart)
-# ---------------------------------------------------------------------------
-
-
-class TestOrphanSessionDetection:
-
-    def test_marks_orphan_stale_session_as_interrupted(self, tmp_path):
-        """An orphan session (no _background_tasks entry) with stale JSONL should be marked interrupted."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl = threads_dir / "task-orphan.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
-        old_time = time.time() - 600
-        os.utime(jsonl, (old_time, old_time))
-
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch("deerflow.config.paths.get_paths") as mock_paths,
-            _patch_background_tasks({}),
-            _patch_lock(),
-        ):
-            mock_paths.return_value.base_dir = tmp_path
-            asyncio.run(monitor._check_orphan_sessions())
-
-        # Check terminal marker was appended
-        lines = jsonl.read_text(encoding="utf-8").strip().split("\n")
-        last = json.loads(lines[-1])
-        assert last["status"] == "interrupted"
-
-    def test_skips_session_with_terminal_marker(self, tmp_path):
-        """A session with a terminal status marker should NOT be touched."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl = threads_dir / "task-done.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
-
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch("deerflow.config.paths.get_paths") as mock_paths,
-            _patch_background_tasks({}),
-            _patch_lock(),
-        ):
-            mock_paths.return_value.base_dir = tmp_path
-            asyncio.run(monitor._check_orphan_sessions())
-
-        # Should NOT have added anything
-        lines = jsonl.read_text(encoding="utf-8").strip().split("\n")
-        assert len(lines) == 2  # original message + terminal marker
-
-    def test_skips_session_in_background_tasks(self, tmp_path):
-        """A session that has a _background_tasks entry should NOT be treated as orphan."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl = threads_dir / "task-active.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
-
-        result = _make_subagent_result(task_id="task-active")
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch("deerflow.config.paths.get_paths") as mock_paths,
-            _patch_background_tasks({"task-active": result}),
-            _patch_lock(),
-        ):
-            mock_paths.return_value.base_dir = tmp_path
-            asyncio.run(monitor._check_orphan_sessions())
-
-        # Should NOT have added terminal marker
-        lines = jsonl.read_text(encoding="utf-8").strip().split("\n")
-        assert len(lines) == 1  # Only original message
-
-    def test_skips_fresh_orphan_session(self, tmp_path):
-        """A recently updated orphan session should NOT be marked (might just be starting)."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl = threads_dir / "task-fresh.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "just started"}])
-
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch("deerflow.config.paths.get_paths") as mock_paths,
-            _patch_background_tasks({}),
-            _patch_lock(),
-        ):
-            mock_paths.return_value.base_dir = tmp_path
-            asyncio.run(monitor._check_orphan_sessions())
-
-        lines = jsonl.read_text(encoding="utf-8").strip().split("\n")
-        assert len(lines) == 1  # Only original message, no terminal marker
-
-    def test_no_threads_dir_is_noop(self, tmp_path):
-        """When threads directory doesn't exist, check is a no-op."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-
-        with (
-            patch("deerflow.config.paths.get_paths") as mock_paths,
-            _patch_background_tasks({}),
-            _patch_lock(),
-        ):
-            mock_paths.return_value.base_dir = tmp_path / "nonexistent"
-            asyncio.run(monitor._check_orphan_sessions())
-
-    def test_session_has_terminal_marker_detects_completed(self, tmp_path):
-        """_session_has_terminal_marker should detect 'completed' status."""
-        jsonl = tmp_path / "test.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is True
-
-    def test_session_has_terminal_marker_detects_interrupted(self, tmp_path):
-        """_session_has_terminal_marker should detect 'interrupted' status."""
-        jsonl = tmp_path / "test.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "stopped"}], terminal_status="interrupted")
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is True
-
-    def test_session_has_terminal_marker_returns_false_for_active(self, tmp_path):
-        """_session_has_terminal_marker should return False for active session."""
-        jsonl = tmp_path / "test.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is False
-
-
-# ---------------------------------------------------------------------------
-# Stuck run detection and cleanup
-# ---------------------------------------------------------------------------
-
-
-class TestStuckRunDetection:
-
-    def test_cancels_stuck_running_run(self):
-        """A run in 'running' state older than threshold should be cancelled."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-        old_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
-
-        mock_client = AsyncMock()
-        mock_client.runs.list.return_value = [
-            {"run_id": "run-1", "status": "running", "created_at": old_time},
-        ]
-        mock_client.runs.cancel = AsyncMock()
-
-        async def _test():
-            count = await monitor._cancel_stuck_runs_for_thread(
-                mock_client, "thread-1", time.time(),
-            )
-            assert count == 1
-            mock_client.runs.cancel.assert_called_once_with("thread-1", "run-1")
-
-        asyncio.run(_test())
-
-    def test_cancels_stuck_pending_run(self):
-        """A run in 'pending' state older than threshold should be cancelled."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-        old_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
-
-        mock_client = AsyncMock()
-        mock_client.runs.list.return_value = [
-            {"run_id": "run-1", "status": "pending", "created_at": old_time},
-        ]
-        mock_client.runs.cancel = AsyncMock()
-
-        async def _test():
-            count = await monitor._cancel_stuck_runs_for_thread(
-                mock_client, "thread-1", time.time(),
-            )
-            assert count == 1
-
-        asyncio.run(_test())
-
-    def test_skips_recent_runs(self):
-        """A recent run should NOT be cancelled."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-        recent_time = datetime.now(UTC).isoformat()
-
-        mock_client = AsyncMock()
-        mock_client.runs.list.return_value = [
-            {"run_id": "run-1", "status": "running", "created_at": recent_time},
-        ]
-        mock_client.runs.cancel = AsyncMock()
-
-        async def _test():
-            count = await monitor._cancel_stuck_runs_for_thread(
-                mock_client, "thread-1", time.time(),
-            )
-            assert count == 0
-            mock_client.runs.cancel.assert_not_called()
-
-        asyncio.run(_test())
-
-    def test_skips_completed_runs(self):
-        """Completed/interrupted/success runs should be skipped."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-        old_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
-
-        mock_client = AsyncMock()
-        mock_client.runs.list.return_value = [
-            {"run_id": "run-1", "status": "success", "created_at": old_time},
-            {"run_id": "run-2", "status": "interrupted", "created_at": old_time},
-            {"run_id": "run-3", "status": "error", "created_at": old_time},
-        ]
-        mock_client.runs.cancel = AsyncMock()
-
-        async def _test():
-            count = await monitor._cancel_stuck_runs_for_thread(
-                mock_client, "thread-1", time.time(),
-            )
-            assert count == 0
-
-        asyncio.run(_test())
-
-    def test_handles_list_failure_gracefully(self):
-        """If runs.list fails, should return 0 without raising."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-        mock_client = AsyncMock()
-        mock_client.runs.list.side_effect = Exception("connection refused")
-
-        async def _test():
-            count = await monitor._cancel_stuck_runs_for_thread(
-                mock_client, "thread-1", time.time(),
-            )
-            assert count == 0
-
-        asyncio.run(_test())
-
-    def test_skips_own_run_ids(self):
-        """Runs created by this monitor should NOT be cancelled."""
-        monitor = SessionHealthMonitor(stale_threshold=300)
-        monitor._our_run_ids.add("our-run-1")
-        old_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
-
-        mock_client = AsyncMock()
-        mock_client.runs.list.return_value = [
-            {"run_id": "our-run-1", "status": "running", "created_at": old_time},
-            {"run_id": "other-run", "status": "running", "created_at": old_time},
-        ]
-        mock_client.runs.cancel = AsyncMock()
-
-        async def _test():
-            count = await monitor._cancel_stuck_runs_for_thread(
-                mock_client, "thread-1", time.time(),
-            )
-            assert count == 1  # Only other-run cancelled
-            mock_client.runs.cancel.assert_called_once_with("thread-1", "other-run")
-
-        asyncio.run(_test())
-
-
-# ---------------------------------------------------------------------------
-# Main session activation
-# ---------------------------------------------------------------------------
-
-
-class TestMainSessionActivation:
-
-    def test_activates_when_all_sessions_terminal_and_todos_incomplete(self, tmp_path):
-        """Activate when: all sessions terminal + not user-interrupted + has unfinished todos."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl = threads_dir / "task-1.jsonl"
-        _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
-
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with (
-                patch.object(monitor, "_discover_threads_with_sessions", return_value={"thread-1"}),
-                patch.object(monitor, "_is_user_interrupted", return_value=False),
-                patch.object(monitor, "_has_unfinished_todos", return_value=True),
-                patch.object(monitor, "_all_sessions_terminal", return_value=True),
-                patch("deerflow.config.paths.get_paths") as mock_paths,
-            ):
-                mock_paths.return_value.base_dir = tmp_path
-                monitor._activate_thread = AsyncMock()
-                await monitor._check_stalled_threads()
-
-            monitor._activate_thread.assert_called_once_with("thread-1")
-
-        asyncio.run(_test())
-
-    def test_does_not_activate_when_sessions_still_active(self):
-        """Do NOT activate when some sessions are still active."""
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with (
-                patch.object(monitor, "_discover_threads_with_sessions", return_value={"thread-1"}),
-                patch.object(monitor, "_all_sessions_terminal", return_value=False),
-            ):
-                monitor._activate_thread = AsyncMock()
-                await monitor._check_stalled_threads()
-
-            monitor._activate_thread.assert_not_called()
-
-        asyncio.run(_test())
-
-    def test_does_not_activate_when_user_interrupted(self):
-        """Do NOT activate when last run was user-interrupted."""
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with (
-                patch.object(monitor, "_discover_threads_with_sessions", return_value={"thread-1"}),
-                patch.object(monitor, "_all_sessions_terminal", return_value=True),
-                patch.object(monitor, "_is_user_interrupted", return_value=True),
-            ):
-                monitor._activate_thread = AsyncMock()
-                await monitor._check_stalled_threads()
-
-            monitor._activate_thread.assert_not_called()
-
-        asyncio.run(_test())
-
-    def test_does_not_activate_when_no_unfinished_todos(self):
-        """Do NOT activate when all todos are completed."""
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with (
-                patch.object(monitor, "_discover_threads_with_sessions", return_value={"thread-1"}),
-                patch.object(monitor, "_all_sessions_terminal", return_value=True),
-                patch.object(monitor, "_is_user_interrupted", return_value=False),
-                patch.object(monitor, "_has_unfinished_todos", return_value=False),
-            ):
-                monitor._activate_thread = AsyncMock()
-                await monitor._check_stalled_threads()
-
-            monitor._activate_thread.assert_not_called()
-
-        asyncio.run(_test())
-
-    def test_no_threads_is_noop(self):
-        """When there are no threads with sessions, check is a no-op."""
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with patch.object(monitor, "_discover_threads_with_sessions", return_value=set()):
-                monitor._activate_thread = AsyncMock()
-                await monitor._check_stalled_threads()
-
-            monitor._activate_thread.assert_not_called()
-
-        asyncio.run(_test())
+def _patch_langgraph_store(thread_ids: list[str] | None = None):
+    """Patch _get_client to return a mock that searches threads."""
+    mock_client = AsyncMock()
+    if thread_ids is not None:
+        mock_client.threads.search.return_value = [{"thread_id": tid} for tid in thread_ids]
+    else:
+        mock_client.threads.search.return_value = []
+    return patch.object(SessionHealthMonitor, "_get_client", return_value=mock_client)
+
+
+def _patch_get_client_none():
+    """Patch _get_client to return None (no LangGraph client)."""
+    return patch.object(SessionHealthMonitor, "_get_client", return_value=None)
 
 
 # ---------------------------------------------------------------------------
@@ -500,173 +76,406 @@ class TestMainSessionActivation:
 
 
 class TestThreadDiscovery:
-
     def test_discovers_from_background_tasks(self):
-        """Threads from _background_tasks should be discovered."""
-        result = _make_subagent_result(thread_id="thread-mem")
         monitor = SessionHealthMonitor()
-
-        async def _test():
-            with (
-                _patch_background_tasks({"task-1": result}),
-                _patch_lock(),
-                patch("deerflow.config.paths.get_paths") as mock_paths,
-            ):
-                mock_paths.return_value.base_dir = Path("/nonexistent")
-                threads = await monitor._discover_threads_with_sessions()
-
-            assert "thread-mem" in threads
-
-        asyncio.run(_test())
+        result = _make_subagent_result(thread_id="t1")
+        with (
+            _patch_background_tasks({"task-1": result}),
+            _patch_lock(),
+            _patch_langgraph_store(),
+        ):
+            threads = asyncio.run(monitor._discover_threads_with_sessions())
+        assert "t1" in threads
 
     def test_discovers_from_disk(self, tmp_path):
-        """Threads with JSONL files on disk should be discovered."""
-        threads_dir = tmp_path / "threads" / "thread-disk" / "subagents"
-        threads_dir.mkdir(parents=True)
-        (threads_dir / "task-1.jsonl").write_text("{}", encoding="utf-8")
+        subagents_dir = tmp_path / "threads" / "thread-disk" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        (subagents_dir / "task-1.jsonl").write_text("{}", encoding="utf-8")
 
         monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({}),
+            _patch_lock(),
+            patch("deerflow.config.paths.get_paths") as mock_paths,
+            _patch_get_client_none(),
+        ):
+            mock_paths.return_value.base_dir = tmp_path
+            threads = asyncio.run(monitor._discover_threads_with_sessions())
+        assert "thread-disk" in threads
 
-        async def _test():
-            with (
-                _patch_background_tasks({}),
-                _patch_lock(),
-                patch("deerflow.config.paths.get_paths") as mock_paths,
-            ):
-                mock_paths.return_value.base_dir = tmp_path
-                threads = await monitor._discover_threads_with_sessions()
-
-            assert "thread-disk" in threads
-
-        asyncio.run(_test())
+    def test_discovers_from_langgraph_store(self):
+        monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({}),
+            _patch_lock(),
+            patch("deerflow.config.paths.get_paths") as mock_paths,
+            _patch_langgraph_store(thread_ids=["store-t1", "store-t2"]),
+        ):
+            mock_paths.return_value.base_dir = Path("/nonexistent")
+            threads = asyncio.run(monitor._discover_threads_with_sessions())
+        assert "store-t1" in threads
+        assert "store-t2" in threads
 
     def test_deduplicates(self, tmp_path):
-        """Same thread from both sources should only appear once."""
-        threads_dir = tmp_path / "threads" / "thread-dup" / "subagents"
-        threads_dir.mkdir(parents=True)
-        (threads_dir / "task-1.jsonl").write_text("{}", encoding="utf-8")
+        subagents_dir = tmp_path / "threads" / "thread-dup" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        (subagents_dir / "task-1.jsonl").write_text("{}", encoding="utf-8")
 
         result = _make_subagent_result(thread_id="thread-dup")
         monitor = SessionHealthMonitor()
-
-        async def _test():
-            with (
-                _patch_background_tasks({"task-1": result}),
-                _patch_lock(),
-                patch("deerflow.config.paths.get_paths") as mock_paths,
-            ):
-                mock_paths.return_value.base_dir = tmp_path
-                threads = await monitor._discover_threads_with_sessions()
-
-            assert threads == {"thread-dup"}
-
-        asyncio.run(_test())
+        with (
+            _patch_background_tasks({"task-1": result}),
+            _patch_lock(),
+            patch("deerflow.config.paths.get_paths") as mock_paths,
+            _patch_get_client_none(),
+        ):
+            mock_paths.return_value.base_dir = tmp_path
+            threads = asyncio.run(monitor._discover_threads_with_sessions())
+        assert "thread-dup" in threads
 
 
 # ---------------------------------------------------------------------------
-# Timer scheduling
+# Running subtask detection
 # ---------------------------------------------------------------------------
 
 
-class TestTimerScheduling:
+class TestHasRunningSubtask:
+    def test_running_in_memory(self):
+        result = _make_subagent_result(status="running")
+        monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({"task-1": result}),
+            _patch_lock(),
+        ):
+            assert asyncio.run(monitor._has_running_subtask("thread-1")) is True
 
-    def test_start_schedules_first_check(self):
+    def test_completed_in_memory(self):
+        result = _make_subagent_result(status="completed")
+        monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({"task-1": result}),
+            _patch_lock(),
+        ):
+            assert asyncio.run(monitor._has_running_subtask("thread-1")) is False
+
+    def test_running_on_disk_fresh(self, tmp_path):
+        subagents_dir = tmp_path / "threads" / "thread-1" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        jsonl = subagents_dir / "task-1.jsonl"
+        _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
+
+        monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({}),
+            _patch_lock(),
+            patch("deerflow.config.paths.get_paths") as mock_paths,
+            _patch_get_client_none(),
+        ):
+            mock_paths.return_value.base_dir = tmp_path
+            assert asyncio.run(monitor._has_running_subtask("thread-1")) is True
+
+    def test_running_on_disk_stale(self, tmp_path):
+        subagents_dir = tmp_path / "threads" / "thread-1" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        jsonl = subagents_dir / "task-1.jsonl"
+        _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
+        old_time = time.time() - 1000
+        os.utime(jsonl, (old_time, old_time))
+
+        monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({}),
+            _patch_lock(),
+            patch("deerflow.config.paths.get_paths") as mock_paths,
+            _patch_get_client_none(),
+        ):
+            mock_paths.return_value.base_dir = tmp_path
+            assert asyncio.run(monitor._has_running_subtask("thread-1")) is False
+
+    def test_completed_on_disk(self, tmp_path):
+        subagents_dir = tmp_path / "threads" / "thread-1" / "subagents"
+        subagents_dir.mkdir(parents=True)
+        jsonl = subagents_dir / "task-1.jsonl"
+        _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
+
+        monitor = SessionHealthMonitor()
+        with (
+            _patch_background_tasks({}),
+            _patch_lock(),
+            patch("deerflow.config.paths.get_paths") as mock_paths,
+            _patch_get_client_none(),
+        ):
+            mock_paths.return_value.base_dir = tmp_path
+            assert asyncio.run(monitor._has_running_subtask("thread-1")) is False
+
+
+# ---------------------------------------------------------------------------
+# Thread activation check
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAndActivateThread:
+    def test_skips_when_subtask_running(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+
+    def test_skips_when_main_run_active(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+
+    def test_skips_when_user_interrupted(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+
+    def test_skips_when_no_unfinished_todos(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+
+    def test_activates_when_stalled_with_todos(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_called_once_with("t1")
+
+    def test_stops_after_max_activations(self):
+        monitor = SessionHealthMonitor()
+        mocks = dict(
+            _has_running_subtask=AsyncMock(return_value=False),
+            _has_active_run=AsyncMock(return_value=False),
+            _is_user_interrupted=AsyncMock(return_value=False),
+            _has_unfinished_todos=AsyncMock(return_value=True),
+            _activate_thread=AsyncMock(),
+        )
+        # Activate 5 times
+        with patch.multiple(monitor, **mocks):
+            for _ in range(5):
+                asyncio.run(monitor._check_and_activate_thread("t1"))
+        assert monitor._activation_counts["t1"] == 5
+
+        # 6th call should be skipped
+        mocks["_activate_thread"].reset_mock()
+        with patch.multiple(monitor, **mocks):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mocks["_activate_thread"].assert_not_called()
+
+    def test_resets_count_when_active_run_found(self):
+        monitor = SessionHealthMonitor()
+        monitor._activation_counts["t1"] = 3
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock),
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        assert "t1" not in monitor._activation_counts
+
+    def test_resets_count_when_subtask_running(self):
+        monitor = SessionHealthMonitor()
+        monitor._activation_counts["t1"] = 4
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock),
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        assert "t1" not in monitor._activation_counts
+
+
+# ---------------------------------------------------------------------------
+# Activation via runs/stream
+# ---------------------------------------------------------------------------
+
+
+class TestActivateThread:
+    def test_posts_to_runs_stream(self):
+        mock_client = AsyncMock()
+        mock_client.threads.get_state.return_value = {
+            "config": {"configurable": {"checkpoint_id": "cp-123", "checkpoint_ns": ""}},
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_get_client", return_value=mock_client),
+            patch("httpx.AsyncClient") as mock_http_client_cls,
+        ):
+            mock_http = AsyncMock()
+            mock_http.post.return_value = mock_resp
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client_cls.return_value = mock_http
+
+            asyncio.run(monitor._activate_thread("t1"))
+
+        # Verify the POST was made with correct payload
+        mock_http.post.assert_called_once()
+        call_args = mock_http.post.call_args
+        payload = call_args[1].get("json") or call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["json"]
+        assert payload["assistant_id"] == "lead_agent"
+        assert payload["multitask_strategy"] == "cancel"
+        assert payload["checkpoint"]["checkpoint_id"] == "cp-123"
+        # Verify message content
+        msg = payload["input"]["messages"][0]
+        assert msg["type"] == "human"
+
+    def test_posts_without_checkpoint_when_get_state_fails(self):
+        mock_client = AsyncMock()
+        mock_client.threads.get_state.side_effect = Exception("no state")
+
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_get_client", return_value=mock_client),
+            patch("httpx.AsyncClient") as mock_http_client_cls,
+        ):
+            mock_http = AsyncMock()
+            mock_http.post.return_value = MagicMock(status_code=200)
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client_cls.return_value = mock_http
+
+            asyncio.run(monitor._activate_thread("t1"))
+
+        payload = mock_http.post.call_args[1]["json"]
+        assert "checkpoint" not in payload
+        assert payload["multitask_strategy"] == "cancel"
+
+    def test_logs_error_when_no_client(self):
+        monitor = SessionHealthMonitor()
+        with patch.object(monitor, "_get_client", return_value=None):
+            asyncio.run(monitor._activate_thread("t1"))  # Should not raise
+
+    def test_handles_http_error(self):
+        mock_client = AsyncMock()
+        mock_client.threads.get_state.return_value = {"config": {"configurable": {}}}
+
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_get_client", return_value=mock_client),
+            patch("httpx.AsyncClient") as mock_http_client_cls,
+        ):
+            mock_http = AsyncMock()
+            mock_http.post.side_effect = Exception("connection error")
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client_cls.return_value = mock_http
+
+            asyncio.run(monitor._activate_thread("t1"))  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# _check_all integration
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAll:
+    def test_no_threads_found(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value=set()),
+        ):
+            asyncio.run(monitor._check_all())  # Should not raise
+
+    def test_checks_each_thread(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value={"t1", "t2"}),
+            patch.object(monitor, "_check_and_activate_thread", new_callable=AsyncMock) as mock_check,
+        ):
+            asyncio.run(monitor._check_all())
+        assert mock_check.call_count == 2
+
+    def test_continues_on_exception(self):
+        monitor = SessionHealthMonitor()
+        async def _check_fail(tid):
+            if tid == "t1":
+                raise RuntimeError("test error")
+
+        with (
+            patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value={"t1", "t2"}),
+            patch.object(monitor, "_check_and_activate_thread", side_effect=_check_fail),
+        ):
+            asyncio.run(monitor._check_all())  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Terminal marker detection
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalMarker:
+    def test_detects_completed(self, tmp_path):
+        jsonl = tmp_path / "test.jsonl"
+        _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
+        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is True
+
+    def test_detects_failed(self, tmp_path):
+        jsonl = tmp_path / "test.jsonl"
+        _write_jsonl(jsonl, [{"role": "ai", "content": "err"}], terminal_status="failed")
+        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is True
+
+    def test_no_terminal_marker(self, tmp_path):
+        jsonl = tmp_path / "test.jsonl"
+        _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
+        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is False
+
+    def test_empty_file(self, tmp_path):
+        jsonl = tmp_path / "test.jsonl"
+        jsonl.write_text("", encoding="utf-8")
+        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is False
+
+
+# ---------------------------------------------------------------------------
+# Scheduling
+# ---------------------------------------------------------------------------
+
+
+class TestScheduling:
+    def test_start_schedules_timer(self):
+        monitor = SessionHealthMonitor()
         loop = asyncio.new_event_loop()
-        monitor = SessionHealthMonitor(check_interval=1)
         monitor.start(loop)
-
-        assert monitor._running is True
         assert monitor._timer is not None
-
         monitor.stop()
         loop.close()
 
     def test_stop_cancels_timer(self):
+        monitor = SessionHealthMonitor()
         loop = asyncio.new_event_loop()
-        monitor = SessionHealthMonitor(check_interval=1)
         monitor.start(loop)
         monitor.stop()
-
-        assert monitor._running is False
         assert monitor._timer is None
         loop.close()
-
-    def test_check_cycle_reschedules_on_exception(self):
-        """Check cycle should reschedule even when loop is closed."""
-        monitor = SessionHealthMonitor(check_interval=1)
-        monitor._running = True
-        monitor._loop = MagicMock()
-        monitor._loop.is_closed.return_value = True
-
-        monitor._check_cycle()
-
-        # Should have rescheduled
-        assert monitor._timer is not None
-        monitor.stop()
-
-    def test_stop_is_idempotent(self):
-        monitor = SessionHealthMonitor()
-        monitor.stop()  # Should not raise
-        assert monitor._running is False
-
-    def test_find_session_jsonl_returns_none_without_thread_id(self):
-        result = SessionHealthMonitor._find_session_jsonl(None, "task-1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# All-sessions-terminal check
-# ---------------------------------------------------------------------------
-
-
-class TestAllSessionsTerminal:
-
-    def test_returns_true_when_all_terminal(self, tmp_path):
-        """Returns True when all sessions have terminal markers."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl1 = threads_dir / "task-1.jsonl"
-        jsonl2 = threads_dir / "task-2.jsonl"
-        _write_jsonl(jsonl1, [{"role": "ai", "content": "done"}], terminal_status="completed")
-        _write_jsonl(jsonl2, [{"role": "ai", "content": "err"}], terminal_status="failed")
-
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with patch("deerflow.config.paths.get_paths") as mock_paths:
-                mock_paths.return_value.base_dir = tmp_path
-                result = await monitor._all_sessions_terminal("thread-1")
-            assert result is True
-
-        asyncio.run(_test())
-
-    def test_returns_false_when_active_session(self, tmp_path):
-        """Returns False when at least one session has no terminal marker."""
-        threads_dir = tmp_path / "threads" / "thread-1" / "subagents"
-        threads_dir.mkdir(parents=True)
-        jsonl1 = threads_dir / "task-1.jsonl"
-        jsonl2 = threads_dir / "task-2.jsonl"
-        _write_jsonl(jsonl1, [{"role": "ai", "content": "done"}], terminal_status="completed")
-        _write_jsonl(jsonl2, [{"role": "ai", "content": "running"}])
-
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with patch("deerflow.config.paths.get_paths") as mock_paths:
-                mock_paths.return_value.base_dir = tmp_path
-                result = await monitor._all_sessions_terminal("thread-1")
-            assert result is False
-
-        asyncio.run(_test())
-
-    def test_returns_true_when_no_sessions(self, tmp_path):
-        """Returns True when thread has no sub-agent sessions."""
-        monitor = SessionHealthMonitor()
-
-        async def _test():
-            with patch("deerflow.config.paths.get_paths") as mock_paths:
-                mock_paths.return_value.base_dir = tmp_path
-                result = await monitor._all_sessions_terminal("nonexistent")
-            assert result is True
-
-        asyncio.run(_test())

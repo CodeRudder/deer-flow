@@ -64,3 +64,47 @@ export function useSubtaskStatuses(threadId: string) {
     refetchInterval: 10000,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Session status overview
+// ---------------------------------------------------------------------------
+
+export interface MainSessionStatus {
+  status: string;
+  run_id: string | null;
+  started_at: string | null;
+  last_updated: string | null;
+  last_message: string | null;
+}
+
+export interface SubtaskStatusItem {
+  task_id: string;
+  subagent_name: string;
+  description: string;
+  status: string;
+  detail: string;
+  started_at: string | null;
+  last_updated: string | null;
+  last_message: string | null;
+}
+
+export interface SessionStatus {
+  thread_id: string;
+  main_session: MainSessionStatus;
+  active_subtasks: SubtaskStatusItem[];
+  recent_subtasks: SubtaskStatusItem[];
+}
+
+export function useSessionStatus(threadId: string) {
+  return useQuery<SessionStatus>({
+    queryKey: ["session-status", threadId],
+    queryFn: async () => {
+      const res = await fetch(
+        `${getBackendBaseURL()}/api/threads/${threadId}/status`,
+      );
+      if (!res.ok) throw new Error("Failed to fetch session status");
+      return res.json();
+    },
+    refetchInterval: 10000,
+  });
+}

@@ -680,3 +680,183 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
         raise HTTPException(status_code=500, detail="Failed to get thread history")
 
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Session status overview
+# ---------------------------------------------------------------------------
+
+
+class MainSessionStatus(BaseModel):
+    status: str = "unknown"  # "running" | "idle" | "interrupted" | "error"
+    run_id: str | None = None
+    started_at: str | None = None
+    last_updated: str | None = None
+    last_message: str | None = None
+
+
+class SubtaskStatus(BaseModel):
+    task_id: str
+    subagent_name: str = ""
+    description: str = ""
+    status: str = "unknown"  # "running" | "completed" | "failed" | "interrupted" | "timed_out"
+    detail: str = ""  # "waiting_for_tool" | "waiting_for_llm" | "" (only for running)
+    started_at: str | None = None
+    last_updated: str | None = None
+    last_message: str | None = None
+
+
+class SessionStatusResponse(BaseModel):
+    thread_id: str
+    main_session: MainSessionStatus = MainSessionStatus()
+    active_subtasks: list[SubtaskStatus] = []
+    recent_subtasks: list[SubtaskStatus] = []
+
+
+@router.get("/{thread_id}/status", response_model=SessionStatusResponse)
+async def get_thread_status(thread_id: str, request: Request) -> SessionStatusResponse:
+    """Get comprehensive session status overview.
+
+    Returns main session status, active subtasks, and last 10 subtasks
+    with accurate status including waiting_for_tool / waiting_for_llm / timed_out.
+    """
+    from datetime import UTC, datetime
+
+    TIMEOUT_SECONDS = 900  # 15 minutes
+
+    # --- Main session status ---
+    main_status = MainSessionStatus(status="idle")
+    try:
+        from langgraph_sdk import get_client
+
+        client = get_client(url="http://localhost:2024")
+        runs = await client.runs.list(thread_id, limit=3)
+        if runs:
+            last_run = runs[0]
+            run_status = last_run.get("status", "")
+            main_status.run_id = last_run.get("run_id") or last_run.get("id")
+            created_at = last_run.get("created_at")
+            if created_at:
+                if isinstance(created_at, str):
+                    main_status.started_at = created_at
+                    main_status.last_updated = created_at
+                else:
+                    main_status.started_at = str(created_at)
+                    main_status.last_updated = str(created_at)
+
+            if run_status in ("running", "pending"):
+                main_status.status = "running"
+            elif run_status in ("error", "cancelled"):
+                main_status.status = "interrupted"
+                metadata = last_run.get("metadata", {})
+                if metadata.get("cancelled_by") == "user":
+                    main_status.status = "interrupted"
+            # else: idle or completed
+    except Exception:
+        logger.debug("Failed to get main session status for thread %s", thread_id, exc_info=True)
+
+    # --- Subtask statuses ---
+    active: list[SubtaskStatus] = []
+    recent: list[SubtaskStatus] = []
+
+    # 1. From in-memory background tasks
+    try:
+        from deerflow.subagents.executor import _background_tasks, _background_tasks_lock
+
+        with _background_tasks_lock:
+            for task_id, result in _background_tasks.items():
+                if result.thread_id != thread_id:
+                    continue
+                st = SubtaskStatus(
+                    task_id=task_id,
+                    subagent_name=result.subagent_name or "",
+                    description=result.description or "",
+                    status=result.status.value if hasattr(result.status, "value") else str(result.status),
+                    started_at=str(result.started_at) if result.started_at else None,
+                    last_updated=str(result.completed_at or result.started_at) if (result.completed_at or result.started_at) else None,
+                )
+                if st.status == "running":
+                    active.append(st)
+                else:
+                    recent.append(st)
+    except Exception:
+        logger.debug("Failed to read background tasks", exc_info=True)
+
+    # 2. From disk (JSONL sessions)
+    try:
+        from deerflow.subagents.session import SubagentSession
+
+        sessions = SubagentSession.list_sessions(thread_id)
+        in_memory_ids = {t.task_id for t in active + recent}
+
+        for session in sessions:
+            if session.task_id in in_memory_ids:
+                continue
+            summary = session.read_summary()
+            if not summary:
+                continue
+
+            st = SubtaskStatus(
+                task_id=session.task_id,
+                subagent_name=session.subagent_name,
+                description=session.description,
+                status=summary.get("status", "unknown"),
+                started_at=summary.get("started_at", ""),
+                last_updated=summary.get("completed_at", "") or summary.get("started_at", ""),
+            )
+
+            # Check for timeout (10 min without update while "running")
+            now = datetime.now(UTC)
+            if st.status == "running" and st.last_updated:
+                try:
+                    if isinstance(st.last_updated, str) and st.last_updated:
+                        updated = datetime.fromisoformat(st.last_updated)
+                        if updated.tzinfo is None:
+                            updated = updated.replace(tzinfo=UTC)
+                        age = (now - updated).total_seconds()
+                        if age > TIMEOUT_SECONDS:
+                            st.status = "timed_out"
+                            st.detail = f"no update for {int(age / 60)} minutes"
+                except (ValueError, TypeError):
+                    pass
+
+            # Determine detail for running tasks
+            if st.status == "running" and not st.detail:
+                try:
+                    messages = session.read_messages()
+                    if messages:
+                        last_msg = messages[-1]
+                        role = last_msg.get("role", "")
+                        if role == "tool":
+                            st.detail = "waiting_for_llm"
+                        elif role == "ai":
+                            tool_calls = last_msg.get("tool_calls", [])
+                            st.detail = "waiting_for_tool" if tool_calls else "waiting_for_llm"
+                        else:
+                            st.detail = "running"
+                        # Last message preview
+                        content = last_msg.get("content", "")
+                        if isinstance(content, str):
+                            st.last_message = content[:200]
+                        elif isinstance(content, list):
+                            texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("text")]
+                            st.last_message = " ".join(texts)[:200]
+                except Exception:
+                    st.detail = "running"
+
+            if st.status in ("running", "timed_out"):
+                active.append(st)
+            else:
+                recent.append(st)
+    except Exception:
+        logger.debug("Failed to read disk sessions for thread %s", thread_id, exc_info=True)
+
+    # Sort: recent by started_at descending, keep last 10
+    recent.sort(key=lambda t: t.started_at or "", reverse=True)
+
+    return SessionStatusResponse(
+        thread_id=thread_id,
+        main_session=main_status,
+        active_subtasks=active,
+        recent_subtasks=recent[:10],
+    )

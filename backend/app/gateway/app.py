@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 langgraph_url = channels_cfg.get("langgraph_url", "http://localhost:2024")
 
                 session_monitor = SessionHealthMonitor(
-                    check_interval=int(monitor_cfg.get("check_interval", 120)),
+                    check_interval=int(monitor_cfg.get("check_interval", 180)),
                     stale_threshold=int(monitor_cfg.get("stale_threshold", 300)),
                     langgraph_url=str(monitor_cfg.get("langgraph_url", langgraph_url)),
                 )
