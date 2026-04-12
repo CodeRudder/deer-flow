@@ -171,7 +171,7 @@ export default function ChatPage() {
 
     await Promise.all(promises);
     setStopConfirmOpen(false);
-  }, [thread, stopTargets, updateSubtask]);
+  }, [thread, threadId, stopTargets, updateSubtask]);
 
   const messageListPaddingBottom = showFollowups
     ? MESSAGE_LIST_DEFAULT_PADDING_BOTTOM +

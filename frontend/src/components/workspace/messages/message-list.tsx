@@ -74,20 +74,13 @@ export function MessageList({
       if (message.type === "ai") {
         for (const toolCall of message.tool_calls ?? []) {
           if (toolCall.name === "task") {
-            const hasResponse = respondedTaskIds.has(toolCall.id!);
-            const status: Subtask["status"] =
-              thread.isLoading
-                ? "in_progress"
-                : hasResponse
-                  ? "completed" // Has response and not streaming → task finished
-                  : "failed";
+            // Only register the task metadata; status is determined solely
+            // by the tool response (handled in the "tool" branch below).
             updateSubtask({
               id: toolCall.id!,
               subagent_type: toolCall.args.subagent_type,
               description: toolCall.args.description,
               prompt: toolCall.args.prompt,
-              status,
-              error: hasResponse ? undefined : "Task interrupted",
             });
           }
         }
@@ -113,20 +106,9 @@ export function MessageList({
               status: "failed",
               error: result,
             });
-          } else if (!thread.isLoading) {
-            // Not streaming and response doesn't match known patterns →
-            // treat as completed (the task finished, we just don't know the format)
-            updateSubtask({
-              id: taskId,
-              status: "completed",
-              result: result.slice(0, 500),
-            });
-          } else {
-            updateSubtask({
-              id: taskId,
-              status: "in_progress",
-            });
           }
+          // Do NOT guess status for unknown response patterns.
+          // The task status should only be set when we have a clear signal.
         }
       }
     }

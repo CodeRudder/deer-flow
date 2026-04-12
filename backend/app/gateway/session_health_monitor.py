@@ -121,11 +121,12 @@ class SessionHealthMonitor:
         """Run health checks in sequence.
 
         IMPORTANT: We never cancel or interrupt running tasks or runs.
-        Only orphan sessions (from process restarts) are marked as interrupted,
-        and stalled threads (all sessions terminal + unfinished todos) are re-activated.
+        Only orphan sessions (from process restarts) are marked as interrupted.
+        Stalled thread activation is disabled because creating runs blocks the
+        main session — recovery is handled by auto_recover_interrupted_tasks()
+        at startup instead.
         """
         await self._check_orphan_sessions()
-        await self._check_stalled_threads()
 
     # ------------------------------------------------------------------
     # Sub-agent task monitoring (removed — never interrupt running tasks)

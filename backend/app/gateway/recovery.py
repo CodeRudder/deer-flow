@@ -90,10 +90,12 @@ async def _notify_thread(thread_id: str, message: str) -> None:
 
     async def _send() -> None:
         try:
-            await client.runs.create(
+            # Add message to thread state without creating a run.
+            # Creating a run would block the main session until it completes.
+            # The user will see the recovery message when they next interact.
+            await client.threads.update_state(
                 thread_id=thread_id,
-                assistant_id="lead_agent",
-                input={
+                values={
                     "messages": [
                         {
                             "role": "human",
@@ -101,13 +103,10 @@ async def _notify_thread(thread_id: str, message: str) -> None:
                         }
                     ]
                 },
-                config={
-                    "recursion_limit": 50,
-                },
             )
-            logger.info("Recovery message sent to thread %s", thread_id)
+            logger.info("Recovery message added to thread %s state", thread_id)
         except Exception:
-            logger.exception("Failed to send recovery message to thread %s", thread_id)
+            logger.exception("Failed to add recovery message to thread %s", thread_id)
 
     import asyncio
 
