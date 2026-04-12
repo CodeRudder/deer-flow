@@ -24,6 +24,16 @@ export interface SubagentSessionDetail {
   messages: SubagentMessage[];
 }
 
+export interface SubagentSessionSummary {
+  task_id: string;
+  subagent_name: string;
+  description: string;
+  status: string;
+  started_at: string;
+  completed_at: string;
+  message_count: number;
+}
+
 export function useSubtaskMessages(
   threadId: string,
   taskId: string | null,
@@ -38,5 +48,19 @@ export function useSubtaskMessages(
       return res.json();
     },
     enabled: !!taskId,
+  });
+}
+
+export function useSubtaskStatuses(threadId: string) {
+  return useQuery<SubagentSessionSummary[]>({
+    queryKey: ["subagents-statuses", threadId],
+    queryFn: async () => {
+      const res = await fetch(
+        `${getBackendBaseURL()}/api/threads/${threadId}/subagents`,
+      );
+      if (!res.ok) return [];
+      return res.json();
+    },
+    refetchInterval: 10000,
   });
 }

@@ -16,6 +16,7 @@ import {
   hasReasoning,
 } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
+import { useSubtaskStatuses } from "@/core/subagents/hooks";
 import type { Subtask } from "@/core/tasks";
 import { useUpdateSubtask } from "@/core/tasks/context";
 import type { AgentThreadState } from "@/core/threads";
@@ -49,6 +50,23 @@ export function MessageList({
   const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
   const updateSubtask = useUpdateSubtask();
   const messages = thread.messages;
+
+  // Sync real subtask statuses from backend API (polls every 10s)
+  const { data: subtaskStatuses } = useSubtaskStatuses(threadId);
+  useEffect(() => {
+    if (!subtaskStatuses) return;
+    for (const s of subtaskStatuses) {
+      const status = s.status as Subtask["status"];
+      if (status === "completed" || status === "failed" || status === "interrupted") {
+        updateSubtask({
+          id: s.task_id,
+          status,
+          subagent_type: s.subagent_name,
+          description: s.description,
+        });
+      }
+    }
+  }, [subtaskStatuses, updateSubtask]);
 
   // Sync subtask statuses from messages into context — runs in useEffect
   // to avoid calling setState during render (which causes cascading re-renders).
