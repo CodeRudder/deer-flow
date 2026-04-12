@@ -64,10 +64,17 @@ export function useUpdateSubtask() {
   const { tasks, setTasks } = useSubtaskContext();
   const updateSubtask = useCallback(
     (task: Partial<Subtask> & { id: string }) => {
-      tasks[task.id] = { ...tasks[task.id], ...task } as Subtask;
-      if (task.latestMessage) {
-        setTasks({ ...tasks });
+      const existing = tasks[task.id];
+      // Never downgrade a terminal status (completed/failed) back to in_progress
+      if (
+        existing &&
+        (existing.status === "completed" || existing.status === "failed") &&
+        task.status === "in_progress"
+      ) {
+        return;
       }
+      tasks[task.id] = { ...existing, ...task } as Subtask;
+      setTasks({ ...tasks });
     },
     [tasks, setTasks],
   );
