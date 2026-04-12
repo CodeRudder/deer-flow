@@ -55,6 +55,11 @@ export function useSubtask(id: string) {
   return tasks[id];
 }
 
+export function useSubtasks() {
+  const { tasks } = useSubtaskContext();
+  return Object.values(tasks);
+}
+
 export function useUpdateSubtask() {
   const { tasks, setTasks } = useSubtaskContext();
   const updateSubtask = useCallback(

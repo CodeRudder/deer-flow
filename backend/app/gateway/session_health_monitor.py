@@ -522,7 +522,7 @@ class SessionHealthMonitor:
                     return True
             return False
         except Exception:
-            logger.exception("Failed to check todos for thread %s", thread_id)
+            logger.warning("Failed to check todos for thread %s", thread_id, exc_info=True)
             return False
 
     @staticmethod
