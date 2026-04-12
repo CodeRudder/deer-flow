@@ -19,88 +19,37 @@ import pytest
 
 
 class TestBuildRecoveryMessage:
-    """Test _build_recovery_message — pure function, no imports needed."""
+    """Test _build_recovery_message — simplified recovery prompt."""
 
     def _call(self, sessions):
-        """Import and call _build_recovery_message with mocked SubagentSession objects."""
-        # Define the function inline to avoid import chain issues
-        def _build_recovery_message(sessions):
-            parts = []
-            for s in sessions:
-                messages = s.read_messages()
-                ai_messages = [m for m in messages if m.get("role") == "ai"]
-                last_ai = ""
-                if ai_messages:
-                    content = ai_messages[-1].get("content", "")
-                    last_ai = content[:500] if isinstance(content, str) else str(content)[:500]
-                parts.append(
-                    f"- **{s.subagent_name}** (task {s.task_id}): "
-                    f"已执行 {len(messages)} 步，最后进度：{last_ai or '（无 AI 响应）'}"
-                )
-            session_lines = "\n".join(parts)
-            return (
-                "<task_recovery>\n"
-                "服务重启后发现以下子任务在上次运行中被中断：\n\n"
-                f"{session_lines}\n\n"
-                "请检查每个任务的进度，决定是否需要继续执行未完成的工作。\n"
-                "如果需要继续，请使用 task() 工具重新启动相关子任务，"
-                "并在 prompt 中包含之前的进度信息，让子 Agent 从断点继续。\n"
-                "</task_recovery>"
-            )
-        return _build_recovery_message(sessions)
+        """Simulate _build_recovery_message (inline to avoid import chain issues)."""
+        return (
+            "<task_recovery>\n"
+            f"服务已经重启，有 {len(sessions)} 个子任务被中断，请继续处理未完成任务。\n"
+            "</task_recovery>"
+        )
 
-    def test_formats_single_session(self):
+    def test_single_session(self):
+        s = MagicMock()
+        msg = self._call([s])
+        assert "<task_recovery>" in msg
+        assert "1 个子任务被中断" in msg
+        assert "请继续处理未完成任务" in msg
+
+    def test_multiple_sessions(self):
+        msg = self._call([MagicMock(), MagicMock(), MagicMock()])
+        assert "3 个子任务被中断" in msg
+
+    def test_no_session_details_exposed(self):
+        """Recovery message should NOT expose subtask details (agent name, progress, etc.)."""
         s = MagicMock()
         s.subagent_name = "developer"
         s.task_id = "task-abc"
-        s.read_messages.return_value = [
-            {"role": "human", "content": "implement auth"},
-            {"role": "ai", "content": "I will implement JWT authentication. Let me start by reading existing code."},
-        ]
-
+        s.read_messages.return_value = [{"role": "ai", "content": "secret progress"}]
         msg = self._call([s])
-        assert "developer" in msg
-        assert "task-abc" in msg
-        assert "JWT authentication" in msg
-        assert "<task_recovery>" in msg
-        assert "2 步" in msg
-
-    def test_formats_multiple_sessions(self):
-        s1 = MagicMock()
-        s1.subagent_name = "architect"
-        s1.task_id = "task-1"
-        s1.read_messages.return_value = [{"role": "ai", "content": "Design done"}]
-
-        s2 = MagicMock()
-        s2.subagent_name = "developer"
-        s2.task_id = "task-2"
-        s2.read_messages.return_value = [{"role": "ai", "content": "Code started"}]
-
-        msg = self._call([s1, s2])
-        assert "architect" in msg
-        assert "developer" in msg
-        assert "task-1" in msg
-        assert "task-2" in msg
-
-    def test_handles_no_ai_messages(self):
-        s = MagicMock()
-        s.subagent_name = "tester"
-        s.task_id = "task-3"
-        s.read_messages.return_value = [{"role": "human", "content": "test it"}]
-
-        msg = self._call([s])
-        assert "tester" in msg
-        assert "无 AI 响应" in msg
-
-    def test_truncates_long_content(self):
-        s = MagicMock()
-        s.subagent_name = "dev"
-        s.task_id = "task-4"
-        s.read_messages.return_value = [{"role": "ai", "content": "x" * 600}]
-
-        msg = self._call([s])
-        # Should be truncated to 500 chars
-        assert "x" * 500 in msg
+        assert "developer" not in msg
+        assert "task-abc" not in msg
+        assert "secret progress" not in msg
 
 
 # ── Scan Logic Tests ────────────────────────────────────────────────────
@@ -221,8 +170,8 @@ class TestAutoRecover:
 
                 mock_notify.assert_called_once()
                 assert mock_notify.call_args[0][0] == "thread-1"
-                assert "developer" in mock_notify.call_args[0][1]
-                assert "task-x" in mock_notify.call_args[0][1]
+                assert "子任务被中断" in mock_notify.call_args[0][1]
+                assert "请继续处理未完成任务" in mock_notify.call_args[0][1]
 
     @pytest.mark.anyio
     async def test_no_action_when_no_interrupted(self):

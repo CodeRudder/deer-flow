@@ -13,8 +13,6 @@ prompt).
 
 import logging
 from collections import defaultdict
-from pathlib import Path
-from typing import Any
 
 from deerflow.config.paths import get_paths
 from deerflow.subagents.session import SubagentSession
@@ -57,36 +55,17 @@ def _scan_interrupted_sessions() -> dict[str, list[SubagentSession]]:
 
 
 def _build_recovery_message(sessions: list[SubagentSession]) -> str:
-    """Build a human-readable recovery message summarising interrupted work.
+    """Build a brief recovery message for interrupted work.
 
     Args:
         sessions: List of interrupted sessions for a single thread.
 
     Returns:
-        Formatted recovery prompt to send to the Lead Agent thread.
+        Simple recovery prompt to send to the Lead Agent thread.
     """
-    parts: list[str] = []
-    for s in sessions:
-        messages = s.read_messages()
-        ai_messages = [m for m in messages if m.get("role") == "ai"]
-
-        last_ai = ""
-        if ai_messages:
-            content = ai_messages[-1].get("content", "")
-            last_ai = content[:500] if isinstance(content, str) else str(content)[:500]
-
-        parts.append(
-            f"- **{s.subagent_name}** (task {s.task_id}): "
-            f"已执行 {len(messages)} 步，最后进度：{last_ai or '（无 AI 响应）'}"
-        )
-
-    session_lines = "\n".join(parts)
     return (
         "<task_recovery>\n"
-        "服务已经重启，请继续处理未完成任务：\n\n"
-        f"{session_lines}\n\n"
-        "请使用 task() 工具恢复或重新启动未完成的子任务，"
-        "在 prompt 中包含之前的进度信息，让子 Agent 从断点继续。\n"
+        f"服务已经重启，有 {len(sessions)} 个子任务被中断，请继续处理未完成任务。\n"
         "</task_recovery>"
     )
 
