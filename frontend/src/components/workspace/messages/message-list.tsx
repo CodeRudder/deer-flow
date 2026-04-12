@@ -138,7 +138,7 @@ export function MessageList({
         }
       }
     }
-  }, [messages, thread.isLoading]);
+  }, [messages, thread.isLoading, updateSubtask]);
 
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
