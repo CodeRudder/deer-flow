@@ -19,6 +19,11 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
+_EMPTY_RESPONSE_FALLBACK = (
+    "The LLM returned an empty response after multiple retries. "
+    "Please continue the conversation."
+)
+
 logger = logging.getLogger(__name__)
 
 _RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -122,6 +127,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
 
     def _build_retry_message(self, attempt: int, wait_ms: int, reason: str) -> str:
         seconds = max(1, round(wait_ms / 1000))
+        if reason == "empty_response":
+            return f"LLM returned empty response on attempt {attempt}/{self.retry_max_attempts}. Retrying in {seconds}s."
         reason_text = "provider is busy" if reason == "busy" else "provider request failed temporarily"
         return f"LLM request retry {attempt}/{self.retry_max_attempts}: {reason_text}. Retrying in {seconds}s."
 
@@ -153,6 +160,42 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         except Exception:
             logger.debug("Failed to emit llm_retry event", exc_info=True)
 
+    @staticmethod
+    def _is_empty_ai_response(result: ModelCallResult) -> bool:
+        """Check if the model returned an empty AI response (no content, no tool_calls)."""
+        msg: AIMessage | None = None
+        if isinstance(result, AIMessage):
+            msg = result
+        elif isinstance(result, ModelResponse) and result.result:
+            first = result.result[0]
+            if isinstance(first, AIMessage):
+                msg = first
+        if msg is None:
+            return False
+
+        if msg.tool_calls:
+            return False
+
+        content = msg.content
+        if isinstance(content, str):
+            return not content.strip()
+        if isinstance(content, list):
+            if not content:
+                return True
+            for item in content:
+                if isinstance(item, str) and item.strip():
+                    return False
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        return False
+            return True
+        return False
+
+    def _empty_retry_delay_ms(self, attempt: int) -> int:
+        backoff = self.retry_base_delay_ms * (2 ** max(0, attempt - 1))
+        return min(backoff, self.retry_cap_delay_ms)
+
     @override
     def wrap_model_call(
         self,
@@ -162,7 +205,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         attempt = 1
         while True:
             try:
-                return handler(request)
+                result = handler(request)
             except GraphBubbleUp:
                 # Preserve LangGraph control-flow signals (interrupt/pause/resume).
                 raise
@@ -189,6 +232,27 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 )
                 return AIMessage(content=self._build_user_message(exc, reason))
 
+            # Retry empty responses (no content, no tool_calls)
+            if self._is_empty_ai_response(result):
+                if attempt < self.retry_max_attempts:
+                    wait_ms = self._empty_retry_delay_ms(attempt)
+                    logger.warning(
+                        "Empty AI response (no content, no tool_calls) on attempt %d/%d; retrying in %dms",
+                        attempt,
+                        self.retry_max_attempts,
+                        wait_ms,
+                    )
+                    self._emit_retry_event(attempt, wait_ms, "empty_response")
+                    time.sleep(wait_ms / 1000)
+                    attempt += 1
+                    continue
+                logger.warning(
+                    "LLM returned empty response after %d attempt(s)", attempt,
+                )
+                return AIMessage(content=_EMPTY_RESPONSE_FALLBACK)
+
+            return result
+
     @override
     async def awrap_model_call(
         self,
@@ -198,7 +262,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         attempt = 1
         while True:
             try:
-                return await handler(request)
+                result = await handler(request)
             except GraphBubbleUp:
                 # Preserve LangGraph control-flow signals (interrupt/pause/resume).
                 raise
@@ -224,6 +288,27 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     exc_info=exc,
                 )
                 return AIMessage(content=self._build_user_message(exc, reason))
+
+            # Retry empty responses (no content, no tool_calls)
+            if self._is_empty_ai_response(result):
+                if attempt < self.retry_max_attempts:
+                    wait_ms = self._empty_retry_delay_ms(attempt)
+                    logger.warning(
+                        "Empty AI response (no content, no tool_calls) on attempt %d/%d; retrying in %dms",
+                        attempt,
+                        self.retry_max_attempts,
+                        wait_ms,
+                    )
+                    self._emit_retry_event(attempt, wait_ms, "empty_response")
+                    await asyncio.sleep(wait_ms / 1000)
+                    attempt += 1
+                    continue
+                logger.warning(
+                    "LLM returned empty response after %d attempt(s)", attempt,
+                )
+                return AIMessage(content=_EMPTY_RESPONSE_FALLBACK)
+
+            return result
 
 
 def _matches_any(detail: str, patterns: tuple[str, ...]) -> bool:
