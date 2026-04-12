@@ -198,39 +198,37 @@ export function SubtaskCard({
                     <SquareIcon className="size-3" />
                   </Button>
                 )}
-                {task.status !== "in_progress" && !collapsed && (
-                  <>
-                    {task.status === "failed" && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        disabled={resuming}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleResume();
-                        }}
-                      >
-                        {resuming ? (
-                          <Loader2Icon className="mr-1 size-3 animate-spin" />
-                        ) : (
-                          <RotateCcwIcon className="mr-1 size-3" />
-                        )}
-                        重新执行
-                      </Button>
+                {task.status === "failed" && !collapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs"
+                    disabled={resuming}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleResume();
+                    }}
+                  >
+                    {resuming ? (
+                      <Loader2Icon className="mr-1 size-3 animate-spin" />
+                    ) : (
+                      <RotateCcwIcon className="mr-1 size-3" />
                     )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-xs"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedTaskId(taskId);
-                      }}
-                    >
-                      查看详情
-                    </Button>
-                  </>
+                    恢复执行
+                  </Button>
+                )}
+                {!collapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedTaskId(taskId);
+                    }}
+                  >
+                    查看详情
+                  </Button>
                 )}
                 <ChevronUp
                   className={cn(

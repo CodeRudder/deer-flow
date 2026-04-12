@@ -205,6 +205,8 @@ async def task_tool(
                 subagent_name=subagent_type,
                 description=description,
             )
+            # Write initial summary so the API can return subagent_name immediately
+            session._write_summary("running", message_count=0)
             executor.session = session
             logger.info("Created SubagentSession for thread=%s, task=%s, subagent=%s", thread_id, tool_call_id, subagent_type)
         except Exception:

@@ -36,6 +36,23 @@ _BUSY_PATTERNS = (
     "稍后重试",
     "请稍后重试",
 )
+# Transient network errors that may appear with any status code (e.g. 400).
+_TRANSIENT_NETWORK_PATTERNS = (
+    "网络错误",
+    "connection error",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "network error",
+    "network timeout",
+    "network unreachable",
+    "socket error",
+    " Broken pipe",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "EOF occurred",
+)
 _QUOTA_PATTERNS = (
     "insufficient_quota",
     "quota",
@@ -89,6 +106,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             return True, "transient"
         if _matches_any(lowered, _BUSY_PATTERNS):
             return True, "busy"
+        # Network-level transient errors (e.g. litellm 400 "网络错误") are
+        # retriable regardless of the HTTP status code they carry.
+        if _matches_any(lowered, _TRANSIENT_NETWORK_PATTERNS):
+            return True, "transient"
 
         return False, "generic"
 

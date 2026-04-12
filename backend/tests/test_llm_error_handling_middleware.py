@@ -134,3 +134,76 @@ def test_async_model_call_propagates_graph_bubble_up() -> None:
 
     with pytest.raises(GraphBubbleUp):
         asyncio.run(middleware.awrap_model_call(SimpleNamespace(), handler))
+
+
+# ---------------------------------------------------------------------------
+# Transient network error patterns (e.g. litellm 400 "网络错误")
+# ---------------------------------------------------------------------------
+
+
+def test_retries_400_with_network_error_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 + '网络错误' is retriable (litellm proxy returning network errors as 400)."""
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=10, retry_cap_delay_ms=10)
+    attempts = 0
+    waits: list[float] = []
+
+    def fake_sleep(delay: float) -> None:
+        waits.append(delay)
+
+    def handler(_request) -> AIMessage:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise FakeError("litellm.BadRequestError: AnthropicException - 网络错误", status_code=400)
+        return AIMessage(content="recovered")
+
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    result = middleware.wrap_model_call(SimpleNamespace(), handler)
+
+    assert isinstance(result, AIMessage)
+    assert result.content == "recovered"
+    assert attempts == 3
+
+
+def test_retries_400_with_connection_error_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 + 'Connection reset' is retriable."""
+    middleware = _build_middleware(retry_max_attempts=2, retry_base_delay_ms=10, retry_cap_delay_ms=10)
+    attempts = 0
+
+    def fake_sleep(delay: float) -> None:
+        pass
+
+    async def handler(_request) -> AIMessage:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise FakeError("Connection reset by peer", status_code=400)
+        return AIMessage(content="ok")
+
+    async def fake_sleep(delay: float) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = asyncio.run(middleware.awrap_model_call(SimpleNamespace(), handler))
+
+    assert result.content == "ok"
+    assert attempts == 2
+
+
+def test_does_not_retry_400_with_non_transient_message() -> None:
+    """400 without transient patterns is NOT retried."""
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=10)
+
+    async def handler(_request) -> AIMessage:
+        raise FakeError("Invalid request: max_tokens must be positive", status_code=400)
+
+    result = asyncio.run(middleware.awrap_model_call(SimpleNamespace(), handler))
+
+    assert isinstance(result, AIMessage)
+    assert "LLM request failed" in result.content
