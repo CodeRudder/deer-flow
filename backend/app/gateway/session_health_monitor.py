@@ -337,7 +337,7 @@ class SessionHealthMonitor:
         """
         message = (
             "<session_recovery>\n"
-            "请启动子任务继续处理剩余工作。\n"
+            "服务已经重启，请继续处理未完成任务。\n"
             "</session_recovery>"
         )
 

@@ -8,7 +8,7 @@ import {
   Loader2Icon,
   XCircleIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Sheet,
@@ -21,6 +21,15 @@ import type { SubagentMessage } from "@/core/subagents/hooks";
 import { useSubtaskContext } from "@/core/tasks/context";
 
 import { MarkdownContent } from "./messages/markdown-content";
+
+function formatTime(ts: string): string {
+  try {
+    const d = new Date(ts);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  } catch {
+    return "";
+  }
+}
 
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
@@ -75,11 +84,14 @@ function ToolMessageContent({
 }
 
 function MessageItem({ msg }: { msg: SubagentMessage }) {
+  const timeStr = msg.ts ? formatTime(msg.ts) : "";
+
   if (msg.role === "human") {
     return (
       <div className="bg-muted/30 rounded-lg px-3 py-2">
-        <div className="text-muted-foreground mb-1 text-xs font-medium">
-          任务
+        <div className="text-muted-foreground mb-1 flex items-center gap-2 text-xs font-medium">
+          <span>任务</span>
+          {timeStr && <span>{timeStr}</span>}
         </div>
         <div className="text-sm">{msg.content}</div>
       </div>
@@ -89,6 +101,9 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
   if (msg.role === "ai") {
     return (
       <div className="space-y-1">
+        {timeStr && (
+          <div className="text-muted-foreground text-xs">{timeStr}</div>
+        )}
         {msg.content && (
           <div className="rounded-lg px-3 py-2">
             <MarkdownContent content={msg.content} isLoading={false} rehypePlugins={[]} />
@@ -113,10 +128,11 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
   if (msg.role === "tool") {
     return (
       <div className="space-y-1">
-        <div className="text-muted-foreground flex items-center gap-1 text-xs">
+        <div className="text-muted-foreground flex items-center gap-2 text-xs">
           <span className="bg-secondary rounded px-1 py-0.5 font-mono">
             {msg.name}
           </span>
+          {timeStr && <span>{timeStr}</span>}
         </div>
         <ToolMessageContent content={msg.content} />
       </div>
@@ -129,6 +145,7 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
 export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
   const { selectedTaskId, setSelectedTaskId } = useSubtaskContext();
   const { data, isLoading } = useSubtaskMessages(threadId, selectedTaskId);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   const statusLabel = useMemo(() => {
     if (!data) return "";
@@ -139,6 +156,16 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
       running: "运行中",
     };
     return map[data.status] ?? data.status;
+  }, [data]);
+
+  // Auto-scroll to bottom when data loads
+  useEffect(() => {
+    if (data && data.messages.length > 0) {
+      // Use requestAnimationFrame to ensure content is rendered
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "instant" });
+      });
+    }
   }, [data]);
 
   return (
@@ -185,6 +212,7 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
               {data.messages.map((msg, i) => (
                 <MessageItem key={msg.id ?? i} msg={msg} />
               ))}
+              <div ref={bottomRef} />
             </div>
           )}
         </div>

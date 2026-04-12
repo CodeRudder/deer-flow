@@ -83,11 +83,10 @@ def _build_recovery_message(sessions: list[SubagentSession]) -> str:
     session_lines = "\n".join(parts)
     return (
         "<task_recovery>\n"
-        "服务重启后发现以下子任务在上次运行中被中断：\n\n"
+        "服务已经重启，请继续处理未完成任务：\n\n"
         f"{session_lines}\n\n"
-        "请检查每个任务的进度，决定是否需要继续执行未完成的工作。\n"
-        "如果需要继续，请使用 task() 工具重新启动相关子任务，"
-        "并在 prompt 中包含之前的进度信息，让子 Agent 从断点继续。\n"
+        "请使用 task() 工具恢复或重新启动未完成的子任务，"
+        "在 prompt 中包含之前的进度信息，让子 Agent 从断点继续。\n"
         "</task_recovery>"
     )
 
