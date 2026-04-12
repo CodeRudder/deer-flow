@@ -53,12 +53,19 @@ export function MessageList({
 
   // Sync real subtask statuses from backend API (polls every 10s)
   const { data: subtaskStatuses } = useSubtaskStatuses(threadId);
+  const prevStatusFingerprintRef = useRef<string>("");
+  const updateSubtaskRef = useRef(updateSubtask);
+  updateSubtaskRef.current = updateSubtask;
   useEffect(() => {
     if (!subtaskStatuses) return;
+    // Fingerprint to skip redundant updates
+    const fp = subtaskStatuses.map((s) => `${s.task_id}:${s.status}`).join(",");
+    if (fp === prevStatusFingerprintRef.current) return;
+    prevStatusFingerprintRef.current = fp;
     for (const s of subtaskStatuses) {
       const status = s.status as Subtask["status"];
       if (status === "completed" || status === "failed" || status === "interrupted") {
-        updateSubtask({
+        updateSubtaskRef.current({
           id: s.task_id,
           status,
           subagent_type: s.subagent_name,
@@ -66,7 +73,7 @@ export function MessageList({
         });
       }
     }
-  }, [subtaskStatuses, updateSubtask]);
+  }, [subtaskStatuses]);
 
   // Sync subtask statuses from messages into context — runs in useEffect
   // to avoid calling setState during render (which causes cascading re-renders).
@@ -131,7 +138,7 @@ export function MessageList({
         }
       }
     }
-  }, [messages, thread.isLoading, updateSubtask]);
+  }, [messages, thread.isLoading]);
 
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
