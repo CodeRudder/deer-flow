@@ -115,11 +115,23 @@ export default function ChatPage() {
     if (stopTargets.mainSession) {
       promises.push(
         thread.stop().then(async () => {
-          // Also cancel the server-side run so LLM stops executing
+          // Cancel only the current thread's run on the server side
+          // Do NOT use cancel-all — that would also cancel running subtasks
           try {
-            await fetch(`${getBackendBaseURL()}/api/runs/cancel-all`, {
-              method: "POST",
-            });
+            const res = await fetch(
+              `${getBackendBaseURL()}/api/langgraph/threads/${encodeURIComponent(threadId ?? "")}/runs?limit=5`,
+            );
+            if (res.ok) {
+              const runs = await res.json();
+              for (const run of runs) {
+                if (run.status === "running" || run.status === "pending") {
+                  await fetch(
+                    `${getBackendBaseURL()}/api/langgraph/threads/${encodeURIComponent(threadId ?? "")}/runs/${encodeURIComponent(run.run_id)}/cancel`,
+                    { method: "POST" },
+                  );
+                }
+              }
+            }
           } catch {
             // Best-effort: client-side stop already succeeded
           }
