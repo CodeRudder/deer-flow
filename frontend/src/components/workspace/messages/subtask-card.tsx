@@ -65,10 +65,11 @@ export function SubtaskCard({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const task = useSubtask(taskId);
-  if (!task) return null;
   const updateSubtask = useUpdateSubtask();
   const { setSelectedTaskId } = useSubtaskContext();
   const { thread: streamThread } = useThread();
+
+  if (!task) return null;
 
   const handleCancel = useCallback(async () => {
     setCancelling(true);
