@@ -336,37 +336,20 @@ class SessionHealthMonitor:
     # ------------------------------------------------------------------
 
     async def _activate_thread(self, thread_id: str) -> bool:
-        """Activate a stalled thread by simulating user input.
+        """Activate a stalled thread by creating a run with auto-cancellation.
 
-        Replicates the exact API call the frontend makes when a user sends a
-        message: ``POST /threads/{id}/runs/stream``.  Uses
-        ``multitask_strategy: "interrupt"`` so any stale zombie runs are
-        automatically interrupted, preventing the new run from getting stuck
-        in ``pending``.
+        Posts a message to the thread via ``POST /threads/{id}/runs/stream``
+        with ``on_disconnect: "cancel"`` so the run is automatically cancelled
+        when the HTTP client disconnects.  This prevents zombie runs that
+        block future activations.
 
-        Returns True if the activation request was accepted (HTTP 200 or
-        timeout expected for streaming), False on error.
+        The agent processes the message in the brief window before the
+        client disconnects, dispatching subtasks and updating todos.  Any
+        incomplete work is picked up by subsequent activation cycles.
+
+        Returns True if the request was accepted, False on error.
         """
         import httpx
-
-        client = self._get_client()
-        if client is None:
-            logger.error("Cannot activate thread %s: no LangGraph client", thread_id)
-            return False
-
-        # Get latest checkpoint to resume from
-        checkpoint = None
-        try:
-            state = await client.threads.get_state(thread_id)
-            configurable = state.get("config", {}).get("configurable", {})
-            cp_id = configurable.get("checkpoint_id")
-            if cp_id:
-                checkpoint = {
-                    "checkpoint_id": cp_id,
-                    "checkpoint_ns": configurable.get("checkpoint_ns", ""),
-                }
-        except Exception:
-            logger.debug("Failed to get checkpoint for thread %s", thread_id, exc_info=True)
 
         message = self._activation_message
 
@@ -386,23 +369,19 @@ class SessionHealthMonitor:
                 "thread_id": thread_id,
             },
             "stream_mode": ["values"],
-            "stream_subgraphs": True,
-            "stream_resumable": True,
-            "on_disconnect": "continue",
             "multitask_strategy": "interrupt",
+            "on_disconnect": "cancel",
         }
-        if checkpoint:
-            payload["checkpoint"] = checkpoint
 
         url = f"{self._langgraph_url}/threads/{thread_id}/runs/stream"
 
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=5, read=5, write=5, pool=5),
+                timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
             ) as http:
                 resp = await http.post(url, json=payload)
                 if resp.status_code == 200:
-                    logger.info("Activation run accepted for thread %s", thread_id)
+                    logger.info("Activation run completed for thread %s", thread_id)
                     return True
                 else:
                     logger.error(
@@ -411,8 +390,8 @@ class SessionHealthMonitor:
                     )
                     return False
         except httpx.TimeoutException:
-            # Timeout is expected for streaming endpoints — request was sent
-            logger.info("Activation request sent (timeout expected) for thread %s", thread_id)
+            # 30s timeout — the run was accepted and processed for a while
+            logger.info("Activation request sent (timeout) for thread %s", thread_id)
             return True
         except Exception:
             logger.exception("Failed to activate thread %s", thread_id)

@@ -835,7 +835,8 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
             # Determine effective status
             effective_status = st.status
 
-            # Check for timeout (15 min without update while "running")
+            # Check for stale running session (no update for a long time)
+            is_stale = False
             if effective_status == "running" and st.last_updated:
                 try:
                     if isinstance(st.last_updated, str) and st.last_updated:
@@ -844,7 +845,7 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                             updated = updated.replace(tzinfo=UTC)
                         age = (now - updated).total_seconds()
                         if age > TIMEOUT_SECONDS:
-                            effective_status = "timed_out"
+                            is_stale = True
                             st.detail = f"no update for {int(age / 60)} minutes"
                 except (ValueError, TypeError):
                     pass
@@ -875,7 +876,8 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                 except Exception:
                     st.detail = "running"
 
-            if st.status in ("running",):
+            # Running and not stale → active list; everything else → recent
+            if st.status == "running" and not is_stale:
                 active.append(st)
             else:
                 recent.append(st)
