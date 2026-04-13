@@ -35,7 +35,7 @@ class SubagentSessionDetail(BaseModel):
 
 @router.get("", response_model=list[SubagentSessionSummary])
 async def list_subagent_sessions(thread_id: str, request: Request) -> list[SubagentSessionSummary]:
-    """List all sub-agent sessions for a thread."""
+    """List recent sub-agent sessions for a thread (last 10, newest first)."""
     from deerflow.subagents.session import SubagentSession
 
     try:
@@ -68,7 +68,10 @@ async def list_subagent_sessions(thread_id: str, request: Request) -> list[Subag
                 started_at=session.started_at,
                 message_count=msg_count,
             ))
-    return results
+
+    # Sort by started_at descending, keep last 10
+    results.sort(key=lambda s: s.started_at, reverse=True)
+    return results[:10]
 
 
 @router.get("/{task_id}", response_model=SubagentSessionDetail)

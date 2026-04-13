@@ -823,13 +823,25 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
             if not summary:
                 continue
 
+            # Derive last_updated: completed_at for finished, last message ts for running
+            last_updated = summary.get("completed_at", "")
+            if not last_updated:
+                try:
+                    msgs = session.read_messages()
+                    if msgs:
+                        last_updated = msgs[-1].get("ts", "")
+                except Exception:
+                    pass
+            if not last_updated:
+                last_updated = summary.get("started_at", "")
+
             st = SubtaskStatus(
                 task_id=session.task_id,
                 subagent_name=session.subagent_name,
                 description=session.description,
                 status=summary.get("status", "unknown"),
                 started_at=summary.get("started_at", ""),
-                last_updated=summary.get("completed_at", "") or summary.get("started_at", ""),
+                last_updated=last_updated,
             )
 
             # Determine effective status
