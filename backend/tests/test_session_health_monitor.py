@@ -265,10 +265,24 @@ class TestCheckAndActivateThread:
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
-            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
         mock_activate.assert_called_once_with("t1")
+        assert monitor._activation_counts["t1"] == 1
+
+    def test_does_not_count_failed_activation(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=False),
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        # Count should not be incremented on failure
+        assert monitor._activation_counts.get("t1", 0) == 0
 
     def test_stops_after_max_activations(self):
         monitor = SessionHealthMonitor()
@@ -277,7 +291,7 @@ class TestCheckAndActivateThread:
             _has_active_run=AsyncMock(return_value=False),
             _is_user_interrupted=AsyncMock(return_value=False),
             _has_unfinished_todos=AsyncMock(return_value=True),
-            _activate_thread=AsyncMock(),
+            _activate_thread=AsyncMock(return_value=True),
         )
         # Activate 5 times
         with patch.multiple(monitor, **mocks):
@@ -346,7 +360,7 @@ class TestActivateThread:
         call_args = mock_http.post.call_args
         payload = call_args[1].get("json") or call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["json"]
         assert payload["assistant_id"] == "lead_agent"
-        assert payload["multitask_strategy"] == "cancel"
+        assert payload["multitask_strategy"] == "interrupt"
         assert payload["checkpoint"]["checkpoint_id"] == "cp-123"
         # Verify message content
         msg = payload["input"]["messages"][0]
@@ -371,7 +385,7 @@ class TestActivateThread:
 
         payload = mock_http.post.call_args[1]["json"]
         assert "checkpoint" not in payload
-        assert payload["multitask_strategy"] == "cancel"
+        assert payload["multitask_strategy"] == "interrupt"
 
     def test_logs_error_when_no_client(self):
         monitor = SessionHealthMonitor()

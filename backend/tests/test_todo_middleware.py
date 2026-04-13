@@ -11,7 +11,7 @@ from deerflow.agents.middlewares.todo_middleware import (
     _reminder_in_messages,
     _todos_in_messages,
 )
-from deerflow.agents.thread_state import merge_todos
+from deerflow.agents.thread_state import apply_todo_ops
 
 
 def _ai_with_write_todos():
@@ -158,43 +158,37 @@ class TestAbeforeModel:
 
 
 # ---------------------------------------------------------------------------
-# merge_todos reducer — incremental operations
+# apply_todo_ops — incremental operations
 # ---------------------------------------------------------------------------
 
 
-class TestMergeTodosFullReplace:
-    def test_full_replace(self):
+class TestApplyTodoOpsBasic:
+    def test_no_ops_returns_existing(self):
         existing = [{"content": "A", "status": "pending"}]
-        new = [{"content": "B", "status": "in_progress"}]
-        result = merge_todos(existing, new)
-        assert result == [{"content": "B", "status": "in_progress"}]
-
-    def test_full_replace_with_none_existing(self):
-        new = [{"content": "A", "status": "pending"}]
-        result = merge_todos(None, new)
-        assert result == [{"content": "A", "status": "pending"}]
-
-    def test_none_new_returns_existing(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = merge_todos(existing, None)
+        result = apply_todo_ops(existing, None, None)
         assert result == existing
 
-    def test_both_none_returns_empty(self):
-        result = merge_todos(None, None)
+    def test_none_existing_returns_empty(self):
+        result = apply_todo_ops(None, None, None)
         assert result == []
 
+    def test_does_not_mutate_existing(self):
+        existing = [{"content": "A", "status": "pending"}]
+        result = apply_todo_ops(existing, [{"index": 0, "status": "completed"}], None)
+        assert existing[0]["status"] == "pending"  # Original unchanged
+        assert result[0]["status"] == "completed"
 
-class TestMergeTodosUpdate:
+
+class TestApplyTodoOpsUpdate:
     def test_update_status_by_index(self):
         existing = [
             {"content": "Task A", "status": "pending"},
             {"content": "Task B", "status": "pending"},
         ]
-        new = {
-            "_todo_ops": True,
-            "updates": [{"index": 0, "status": "completed"}, {"index": 1, "status": "in_progress"}],
-        }
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, [
+            {"index": 0, "status": "completed"},
+            {"index": 1, "status": "in_progress"},
+        ], None)
         assert result[0]["status"] == "completed"
         assert result[0]["content"] == "Task A"
         assert result[1]["status"] == "in_progress"
@@ -203,32 +197,28 @@ class TestMergeTodosUpdate:
 
     def test_update_content_by_index(self):
         existing = [{"content": "Old", "status": "pending"}]
-        new = {"_todo_ops": True, "updates": [{"index": 0, "content": "New"}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, [{"index": 0, "content": "New"}], None)
         assert result[0]["content"] == "New"
         assert result[0]["status"] == "pending"
 
     def test_update_skips_invalid_index(self):
         existing = [{"content": "A", "status": "pending"}]
-        new = {"_todo_ops": True, "updates": [{"index": 5, "status": "completed"}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, [{"index": 5, "status": "completed"}], None)
         assert result == [{"content": "A", "status": "pending"}]
 
     def test_update_with_none_existing(self):
-        new = {"_todo_ops": True, "updates": [{"index": 0, "status": "completed"}]}
-        result = merge_todos(None, new)
+        result = apply_todo_ops(None, [{"index": 0, "status": "completed"}], None)
         assert result == []
 
 
-class TestMergeTodosRemove:
+class TestApplyTodoOpsRemove:
     def test_remove_by_index(self):
         existing = [
             {"content": "A", "status": "completed"},
             {"content": "B", "status": "in_progress"},
             {"content": "C", "status": "pending"},
         ]
-        new = {"_todo_ops": True, "updates": [{"index": 1, "remove": True}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, [{"index": 1, "remove": True}], None)
         assert len(result) == 2
         assert result[0]["content"] == "A"
         assert result[1]["content"] == "C"
@@ -239,11 +229,10 @@ class TestMergeTodosRemove:
             {"content": "B", "status": "pending"},
             {"content": "C", "status": "pending"},
         ]
-        new = {
-            "_todo_ops": True,
-            "updates": [{"index": 0, "remove": True}, {"index": 2, "remove": True}],
-        }
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, [
+            {"index": 0, "remove": True},
+            {"index": 2, "remove": True},
+        ], None)
         assert len(result) == 1
         assert result[0]["content"] == "B"
 
@@ -252,21 +241,19 @@ class TestMergeTodosRemove:
             {"content": "A", "status": "pending"},
             {"content": "B", "status": "pending"},
         ]
-        new = {
-            "_todo_ops": True,
-            "updates": [{"index": 0, "status": "completed"}, {"index": 1, "remove": True}],
-        }
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, [
+            {"index": 0, "status": "completed"},
+            {"index": 1, "remove": True},
+        ], None)
         assert len(result) == 1
         assert result[0]["content"] == "A"
         assert result[0]["status"] == "completed"
 
 
-class TestMergeTodosAdd:
+class TestApplyTodoOpsAdd:
     def test_add_append_to_end(self):
         existing = [{"content": "A", "status": "pending"}]
-        new = {"_todo_ops": True, "adds": [{"content": "B", "status": "pending"}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, None, [{"content": "B", "status": "pending"}])
         assert len(result) == 2
         assert result[1]["content"] == "B"
 
@@ -275,8 +262,7 @@ class TestMergeTodosAdd:
             {"content": "A", "status": "pending"},
             {"content": "C", "status": "pending"},
         ]
-        new = {"_todo_ops": True, "adds": [{"content": "B", "status": "in_progress", "index": 1}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, None, [{"content": "B", "status": "in_progress", "index": 1}])
         assert len(result) == 3
         assert result[0]["content"] == "A"
         assert result[1]["content"] == "B"
@@ -285,50 +271,43 @@ class TestMergeTodosAdd:
 
     def test_add_insert_at_beginning(self):
         existing = [{"content": "B", "status": "pending"}]
-        new = {"_todo_ops": True, "adds": [{"content": "A", "status": "pending", "index": 0}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, None, [{"content": "A", "status": "pending", "index": 0}])
         assert result[0]["content"] == "A"
         assert result[1]["content"] == "B"
 
     def test_add_out_of_range_appends(self):
         existing = [{"content": "A", "status": "pending"}]
-        new = {"_todo_ops": True, "adds": [{"content": "B", "status": "pending", "index": 99}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, None, [{"content": "B", "status": "pending", "index": 99}])
         assert len(result) == 2
         assert result[1]["content"] == "B"
 
     def test_add_negative_index_appends(self):
         existing = [{"content": "A", "status": "pending"}]
-        new = {"_todo_ops": True, "adds": [{"content": "B", "status": "pending", "index": -1}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, None, [{"content": "B", "status": "pending", "index": -1}])
         assert len(result) == 2
         assert result[1]["content"] == "B"
 
     def test_add_defaults_to_pending(self):
-        existing = []
-        new = {"_todo_ops": True, "adds": [{"content": "Task"}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops([], None, [{"content": "Task"}])
         assert result[0]["status"] == "pending"
 
     def test_add_skips_empty_content(self):
         existing = [{"content": "A", "status": "pending"}]
-        new = {"_todo_ops": True, "adds": [{"content": ""}]}
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(existing, None, [{"content": ""}])
         assert len(result) == 1
 
 
-class TestMergeTodosCombined:
+class TestApplyTodoOpsCombined:
     def test_update_then_add(self):
         existing = [
             {"content": "A", "status": "pending"},
             {"content": "B", "status": "pending"},
         ]
-        new = {
-            "_todo_ops": True,
-            "updates": [{"index": 0, "status": "completed"}],
-            "adds": [{"content": "C", "status": "pending"}],
-        }
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(
+            existing,
+            [{"index": 0, "status": "completed"}],
+            [{"content": "C", "status": "pending"}],
+        )
         assert len(result) == 3
         assert result[0]["status"] == "completed"
         assert result[2]["content"] == "C"
@@ -338,12 +317,11 @@ class TestMergeTodosCombined:
             {"content": "Old", "status": "pending"},
             {"content": "Keep", "status": "pending"},
         ]
-        new = {
-            "_todo_ops": True,
-            "updates": [{"index": 0, "remove": True}],
-            "adds": [{"content": "New", "status": "in_progress", "index": 0}],
-        }
-        result = merge_todos(existing, new)
+        result = apply_todo_ops(
+            existing,
+            [{"index": 0, "remove": True}],
+            [{"content": "New", "status": "in_progress", "index": 0}],
+        )
         assert len(result) == 2
         assert result[0]["content"] == "New"
         assert result[1]["content"] == "Keep"

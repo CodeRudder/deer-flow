@@ -36,15 +36,19 @@ class SessionHealthMonitor:
         langgraph_url: LangGraph Server URL for standard mode queries.
     """
 
+    DEFAULT_ACTIVATION_MESSAGE = "请按要求使用子任务继续处理未完成任务计划。"
+
     def __init__(
         self,
         check_interval: int = 180,
         stale_threshold: int = 300,
         langgraph_url: str = "http://localhost:2024",
+        activation_message: str | None = None,
     ) -> None:
         self._check_interval = check_interval
         self._stale_threshold = stale_threshold
         self._langgraph_url = langgraph_url
+        self._activation_message = activation_message or self.DEFAULT_ACTIVATION_MESSAGE
         self._timer: threading.Timer | None = None
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -149,12 +153,18 @@ class SessionHealthMonitor:
 
         # All conditions met — activate
         count = self._activation_counts.get(thread_id, 0) + 1
-        self._activation_counts[thread_id] = count
         logger.info(
             "Activating stalled thread %s (attempt %d/%d)",
             thread_id, count, self._max_activations,
         )
-        await self._activate_thread(thread_id)
+        success = await self._activate_thread(thread_id)
+        if success:
+            self._activation_counts[thread_id] = count
+        else:
+            logger.warning(
+                "Activation failed for thread %s, will retry next cycle",
+                thread_id,
+            )
 
     async def _has_running_subtask(self, thread_id: str) -> bool:
         """Check if any subtask for this thread is still running."""
@@ -301,21 +311,24 @@ class SessionHealthMonitor:
     # Main session activation
     # ------------------------------------------------------------------
 
-    async def _activate_thread(self, thread_id: str) -> None:
+    async def _activate_thread(self, thread_id: str) -> bool:
         """Activate a stalled thread by simulating user input.
 
         Replicates the exact API call the frontend makes when a user sends a
         message: ``POST /threads/{id}/runs/stream``.  Uses
-        ``multitask_strategy: "cancel"`` so any stale zombie runs are
-        automatically cancelled, preventing the new run from getting stuck
+        ``multitask_strategy: "interrupt"`` so any stale zombie runs are
+        automatically interrupted, preventing the new run from getting stuck
         in ``pending``.
+
+        Returns True if the activation request was accepted (HTTP 200 or
+        timeout expected for streaming), False on error.
         """
         import httpx
 
         client = self._get_client()
         if client is None:
             logger.error("Cannot activate thread %s: no LangGraph client", thread_id)
-            return
+            return False
 
         # Get latest checkpoint to resume from
         checkpoint = None
@@ -331,7 +344,7 @@ class SessionHealthMonitor:
         except Exception:
             logger.debug("Failed to get checkpoint for thread %s", thread_id, exc_info=True)
 
-        message = "请继续处理未完成的任务。"
+        message = self._activation_message
 
         payload: dict[str, Any] = {
             "assistant_id": "lead_agent",
@@ -352,34 +365,34 @@ class SessionHealthMonitor:
             "stream_subgraphs": True,
             "stream_resumable": True,
             "on_disconnect": "continue",
-            "multitask_strategy": "cancel",
+            "multitask_strategy": "interrupt",
         }
         if checkpoint:
             payload["checkpoint"] = checkpoint
 
         url = f"{self._langgraph_url}/threads/{thread_id}/runs/stream"
 
-        async def _send() -> None:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=5, read=5, write=5, pool=5),
-                ) as http:
-                    resp = await http.post(url, json=payload)
-                    if resp.status_code == 200:
-                        logger.info("Activation run accepted for thread %s", thread_id)
-                    else:
-                        logger.error(
-                            "Activation failed for thread %s: HTTP %d %s",
-                            thread_id, resp.status_code, resp.text[:200],
-                        )
-            except httpx.TimeoutException:
-                # Timeout is expected for streaming endpoints — request was sent
-                logger.info("Activation request sent (timeout expected) for thread %s", thread_id)
-            except Exception:
-                logger.exception("Failed to activate thread %s", thread_id)
-
-        asyncio.create_task(_send())
-        logger.info("Activation message queued for thread %s", thread_id)
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5, read=5, write=5, pool=5),
+            ) as http:
+                resp = await http.post(url, json=payload)
+                if resp.status_code == 200:
+                    logger.info("Activation run accepted for thread %s", thread_id)
+                    return True
+                else:
+                    logger.error(
+                        "Activation failed for thread %s: HTTP %d %s",
+                        thread_id, resp.status_code, resp.text[:200],
+                    )
+                    return False
+        except httpx.TimeoutException:
+            # Timeout is expected for streaming endpoints — request was sent
+            logger.info("Activation request sent (timeout expected) for thread %s", thread_id)
+            return True
+        except Exception:
+            logger.exception("Failed to activate thread %s", thread_id)
+            return False
 
     # ------------------------------------------------------------------
     # Thread discovery

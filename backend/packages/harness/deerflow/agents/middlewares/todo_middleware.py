@@ -7,8 +7,9 @@ reminder message so the model still knows about the outstanding todo list.
 
 The ``write_todos`` tool is overridden to support incremental operations
 (``updates``, ``adds``) in addition to the original full-replace (``todos``).
-Incremental operations are processed by the ``merge_todos`` reducer in
-``thread_state.py``, which reads the existing list and applies the changes.
+Incremental operations read the current todos from state via ``InjectedState``
+and compute the full replacement list, avoiding the need for a channel-level
+reducer and keeping backward compatibility with existing checkpoints.
 """
 
 from __future__ import annotations
@@ -20,9 +21,12 @@ from langchain.agents.middleware.todo import PlanningState, Todo
 from langchain.tools import InjectedToolCallId
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import Annotated
+
+from deerflow.agents.thread_state import apply_todo_ops
 
 
 def _todos_in_messages(messages: list[Any]) -> bool:
@@ -85,6 +89,7 @@ class TodoMiddleware(TodoListMiddleware):
             todos: list[Todo] | None = None,
             updates: list[dict] | None = None,
             adds: list[dict] | None = None,
+            state: Annotated[dict, InjectedState] = None,
             tool_call_id: Annotated[str, InjectedToolCallId] = "",
         ) -> Command:
             """Create and manage a structured task list for your current work session."""
@@ -133,12 +138,9 @@ class TodoMiddleware(TodoListMiddleware):
                     }
                 )
 
-            # Incremental operation — encode as a special dict for the reducer
-            ops: dict[str, Any] = {"_todo_ops": True}
-            if has_updates:
-                ops["updates"] = updates
-            if has_adds:
-                ops["adds"] = adds
+            # Incremental operation — read current state and compute full list
+            current_todos = (state or {}).get("todos") or []
+            new_todos = apply_todo_ops(current_todos, updates, adds)
 
             parts: list[str] = []
             if has_updates:
@@ -148,7 +150,7 @@ class TodoMiddleware(TodoListMiddleware):
 
             return Command(
                 update={
-                    "todos": ops,
+                    "todos": new_todos,
                     "messages": [
                         ToolMessage(
                             content=f"Applied todo operations: {', '.join(parts)}",
