@@ -184,8 +184,11 @@ class SessionHealthMonitor:
         except Exception:
             logger.debug("Failed to check background tasks", exc_info=True)
 
-        # Check on-disk sessions
+        # Check on-disk sessions: a session is considered running if it has
+        # been updated recently AND its summary does not show a terminal status.
         try:
+            import json
+
             from deerflow.config.paths import get_paths
 
             timeout_seconds = 900  # 15 minutes
@@ -194,142 +197,24 @@ class SessionHealthMonitor:
                 return False
 
             for jsonl_file in subagents_dir.glob("*.jsonl"):
-                if self._session_has_terminal_marker(jsonl_file):
-                    continue
-                # Also check summary file — a race condition can leave
-                # messages appended after the JSONL terminal marker
-                if self._summary_has_terminal_status(jsonl_file):
-                    continue
-                # No terminal marker — check if recently updated
+                # Check summary for terminal status
+                summary_path = jsonl_file.parent / jsonl_file.name.replace(".jsonl", ".summary.json")
+                if summary_path.exists():
+                    try:
+                        with open(summary_path, encoding="utf-8") as f:
+                            summary = json.load(f)
+                        if summary.get("status", "") in _TERMINAL_STATUSES:
+                            continue
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                # Check if recently updated (not stale)
                 mtime = jsonl_file.stat().st_mtime
-                stale_seconds = time.time() - mtime
-                if stale_seconds < timeout_seconds:
+                if time.time() - mtime < timeout_seconds:
                     return True  # Still actively updating
         except Exception:
             logger.debug("Failed to check disk sessions for thread %s", thread_id, exc_info=True)
 
         return False
-
-    # ------------------------------------------------------------------
-    # Orphan session detection (on-disk, cross-restart)
-    # ------------------------------------------------------------------
-
-    async def _check_orphan_sessions(self) -> None:
-        """Scan disk for sessions without terminal markers and no in-memory task."""
-        from deerflow.subagents.executor import (
-            _background_tasks,
-            _background_tasks_lock,
-        )
-
-        try:
-            from deerflow.config.paths import get_paths
-
-            threads_dir = get_paths().base_dir / "threads"
-        except Exception:
-            logger.exception("Failed to resolve threads directory")
-            return
-
-        if not threads_dir.exists():
-            return
-
-        with _background_tasks_lock:
-            known_task_ids = set(_background_tasks.keys())
-
-        marked_count = 0
-        for thread_dir in threads_dir.iterdir():
-            if not thread_dir.is_dir():
-                continue
-            subagents_dir = thread_dir / "subagents"
-            if not subagents_dir.is_dir():
-                continue
-            thread_id = thread_dir.name
-
-            for jsonl_file in subagents_dir.glob("*.jsonl"):
-                task_id = jsonl_file.stem
-                if task_id in known_task_ids:
-                    continue
-
-                try:
-                    if self._session_has_terminal_marker(jsonl_file):
-                        continue
-
-                    mtime = jsonl_file.stat().st_mtime
-                    stale_seconds = time.time() - mtime
-                    if stale_seconds < self._stale_threshold:
-                        continue
-
-                    logger.info(
-                        "Orphan session detected: thread=%s task=%s stale=%ds, marking interrupted",
-                        thread_id, task_id, int(stale_seconds),
-                    )
-                    self._mark_session_interrupted(jsonl_file)
-                    marked_count += 1
-                except Exception:
-                    logger.exception("Failed to check orphan session %s/%s", thread_id, task_id)
-
-        if marked_count:
-            logger.info("Marked %d orphan session(s) as interrupted", marked_count)
-
-    @staticmethod
-    def _session_has_terminal_marker(jsonl_path: Path) -> bool:
-        """Check if a JSONL file ends with a terminal status marker."""
-        try:
-            with open(jsonl_path, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                if size == 0:
-                    return False
-                f.seek(max(0, size - 4096))
-                tail = f.read().decode("utf-8", errors="replace")
-        except OSError:
-            return False
-
-        for line in reversed(tail.splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                import json
-
-                entry = json.loads(line)
-                if entry.get("status", "") in _TERMINAL_STATUSES:
-                    return True
-            except (json.JSONDecodeError, ValueError):
-                continue
-            break
-        return False
-
-    @staticmethod
-    def _summary_has_terminal_status(jsonl_path: Path) -> bool:
-        """Check if the summary file alongside a JSONL indicates a terminal state.
-
-        Handles the race condition where a dying background thread appends
-        messages to the JSONL *after* the startup cleanup wrote the terminal
-        marker, effectively burying it beneath non-status lines.
-        """
-        import json
-
-        summary_path = jsonl_path.parent / jsonl_path.name.replace(".jsonl", ".summary.json")
-        if not summary_path.exists():
-            return False
-        try:
-            with open(summary_path, encoding="utf-8") as f:
-                summary = json.load(f)
-            return summary.get("status", "") in _TERMINAL_STATUSES
-        except (json.JSONDecodeError, OSError):
-            return False
-
-    @staticmethod
-    def _mark_session_interrupted(jsonl_path: Path) -> None:
-        """Append an interrupted status marker to a JSONL session file."""
-        import json
-
-        marker = {"status": "interrupted", "ts": datetime.now(UTC).isoformat()}
-        try:
-            with open(jsonl_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(marker, ensure_ascii=False) + "\n")
-        except Exception:
-            logger.exception("Failed to mark session %s as interrupted", jsonl_path)
 
     # ------------------------------------------------------------------
     # Main session activation

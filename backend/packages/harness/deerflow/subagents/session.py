@@ -233,12 +233,7 @@ class SubagentSession:
 
     @property
     def is_terminal(self) -> bool:
-        """Check whether this session has a terminal status.
-
-        Checks the JSONL terminal marker first.  Falls back to the summary
-        file to handle the race where a dying background thread appends
-        messages *after* the startup cleanup wrote the marker.
-        """
+        """Check whether this session has a terminal status marker."""
         if not self.jsonl_path.exists():
             return False
         with open(self.jsonl_path, encoding="utf-8") as f:
@@ -255,10 +250,6 @@ class SubagentSession:
             if entry.get("status") in ("completed", "failed", "interrupted"):
                 return True
             break
-        # JSONL marker may be buried by late writes — check summary
-        summary = self.read_summary()
-        if summary and summary.get("status") in ("completed", "failed", "interrupted"):
-            return True
         return False
 
     # ── Class-level queries ─────────────────────────────────────────────
@@ -317,38 +308,6 @@ class SubagentSession:
             if not session.is_terminal:
                 interrupted.append(session)
         return interrupted
-
-    @staticmethod
-    def mark_orphan_sessions(thread_id: str, active_task_ids: set[str]) -> int:
-        """Mark sessions as interrupted if they have no terminal marker and no in-memory task.
-
-        Used on startup to clean up sessions that were running when the server
-        crashed or was killed.  Returns the number of sessions cleaned up.
-        """
-        cleaned = 0
-        for session in SubagentSession.list_sessions(thread_id):
-            if session.is_terminal:
-                continue
-            if session.task_id in active_task_ids:
-                continue
-            # No terminal marker and no in-memory task — this session is dead
-            try:
-                msg_count = 0
-                messages = session.read_messages()
-                if messages:
-                    msg_count = len(messages)
-                session.mark_interrupted(message_count=msg_count)
-                logger.info(
-                    "Marked orphan session %s (thread %s) as interrupted",
-                    session.task_id, thread_id,
-                )
-                cleaned += 1
-            except Exception:
-                logger.exception(
-                    "Failed to mark orphan session %s as interrupted",
-                    session.task_id,
-                )
-        return cleaned
 
     @staticmethod
     def get_resume_info(task_id: str, thread_id: str) -> dict[str, Any] | None:
