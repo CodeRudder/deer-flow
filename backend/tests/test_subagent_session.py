@@ -365,3 +365,70 @@ class TestListSessions:
         assert len(sessions) == 2
         task_ids = {s.task_id for s in sessions}
         assert task_ids == {"task-a", "task-b"}
+
+
+# ── read_last_message_ts Tests ────────────────────────────────────────────
+
+
+class TestReadLastMessageTs:
+    """Test read_last_message_ts — efficient tail-read of last message timestamp."""
+
+    def test_returns_last_message_ts(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        lines = [
+            json.dumps({"ts": "2026-04-13T10:00:00+00:00", "role": "human", "content": "start"}),
+            json.dumps({"ts": "2026-04-13T10:01:00+00:00", "role": "ai", "content": "working"}),
+            json.dumps({"ts": "2026-04-13T10:02:00+00:00", "role": "tool", "tool_call_id": "tc1", "name": "bash", "content": "ok"}),
+            json.dumps({"ts": "2026-04-13T10:03:00+00:00", "role": "ai", "content": "done"}),
+        ]
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        assert session.read_last_message_ts() == "2026-04-13T10:03:00+00:00"
+
+    def test_skips_status_marker(self, mock_paths, tmp_path):
+        """Status marker lines at end should be skipped."""
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        lines = [
+            json.dumps({"ts": "2026-04-13T10:00:00+00:00", "role": "human", "content": "hi"}),
+            json.dumps({"ts": "2026-04-13T10:00:05+00:00", "status": "completed", "result": "done"}),
+        ]
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        assert session.read_last_message_ts() == "2026-04-13T10:00:00+00:00"
+
+    def test_empty_file(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text("")
+
+        assert session.read_last_message_ts() == ""
+
+    def test_no_jsonl_file(self, mock_paths, tmp_path):
+        session = _make_session()
+
+        assert session.read_last_message_ts() == ""
+
+    def test_only_corrupt_lines(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text("not json\n{broken\n")
+
+        assert session.read_last_message_ts() == ""
+
+    def test_only_status_markers(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text(json.dumps({"ts": "t", "status": "failed", "error": "x"}) + "\n")
+
+        assert session.read_last_message_ts() == ""
+
+    def test_single_message(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text(json.dumps({"ts": "2026-04-13T12:00:00+00:00", "role": "human", "content": "hi"}) + "\n")
+
+        assert session.read_last_message_ts() == "2026-04-13T12:00:00+00:00"

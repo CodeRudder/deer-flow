@@ -795,13 +795,27 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                 if result.thread_id != thread_id:
                     continue
                 in_memory_ids.add(task_id)
+
+                # Derive last_updated from session JSONL last message ts
+                last_updated: str | None = str(result.completed_at) if result.completed_at else None
+                if not last_updated:
+                    try:
+                        from deerflow.subagents.session import SubagentSession
+
+                        _sess = SubagentSession(thread_id=thread_id, task_id=task_id, subagent_name="")
+                        last_updated = _sess.read_last_message_ts() or None
+                    except Exception:
+                        pass
+                if not last_updated:
+                    last_updated = str(result.started_at) if result.started_at else None
+
                 st = SubtaskStatus(
                     task_id=task_id,
                     subagent_name=result.subagent_name or "",
                     description=result.description or "",
                     status=result.status.value if hasattr(result.status, "value") else str(result.status),
                     started_at=str(result.started_at) if result.started_at else None,
-                    last_updated=str(result.completed_at or result.started_at) if (result.completed_at or result.started_at) else None,
+                    last_updated=last_updated,
                 )
                 if st.status == "running":
                     active.append(st)
@@ -824,14 +838,11 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                 continue
 
             # Derive last_updated: completed_at for finished, last message ts for running
-            last_updated = summary.get("completed_at", "")
-            if not last_updated:
-                try:
-                    msgs = session.read_messages()
-                    if msgs:
-                        last_updated = msgs[-1].get("ts", "")
-                except Exception:
-                    pass
+            session_status = summary.get("status", "unknown")
+            if session_status in ("completed", "failed", "interrupted", "cancelled", "timed_out"):
+                last_updated = summary.get("completed_at", "")
+            else:
+                last_updated = session.read_last_message_ts()
             if not last_updated:
                 last_updated = summary.get("started_at", "")
 

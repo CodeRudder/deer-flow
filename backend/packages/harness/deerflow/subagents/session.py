@@ -221,6 +221,31 @@ class SubagentSession:
                 messages.append(entry)
         return messages
 
+    def read_last_message_ts(self) -> str:
+        """Return the ``ts`` field of the last non-status message in the JSONL.
+
+        Reads the file from the end so large conversation logs are not fully
+        parsed.  Returns an empty string if no timestamp is found.
+        """
+        if not self.jsonl_path.exists():
+            return ""
+        try:
+            with open(self.jsonl_path, encoding="utf-8") as f:
+                lines = f.readlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "role" in entry and "ts" in entry:
+                    return entry["ts"]
+            return ""
+        except OSError:
+            return ""
+
     def read_summary(self) -> dict[str, Any] | None:
         """Read the summary JSON if it exists."""
         if not self.summary_path.exists():
