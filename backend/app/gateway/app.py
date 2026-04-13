@@ -97,6 +97,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Session health monitor failed to start")
 
+        # Mark orphan sessions (running when server crashed/restarted)
+        try:
+            from deerflow.subagents.executor import _background_tasks, _background_tasks_lock
+            from deerflow.subagents.session import SubagentSession
+            from deerflow.config.paths import get_paths
+
+            with _background_tasks_lock:
+                active_ids = set(_background_tasks.keys())
+
+            total_cleaned = 0
+            threads_dir = get_paths().base_dir / "threads"
+            if threads_dir.exists():
+                for thread_dir in threads_dir.iterdir():
+                    if not thread_dir.is_dir():
+                        continue
+                    subagents_dir = thread_dir / "subagents"
+                    if not subagents_dir.is_dir() or not any(subagents_dir.glob("*.jsonl")):
+                        continue
+                    cleaned = SubagentSession.mark_orphan_sessions(
+                        thread_dir.name, active_ids,
+                    )
+                    total_cleaned += cleaned
+            if total_cleaned:
+                logger.info("Cleaned up %d orphan sessions on startup", total_cleaned)
+        except Exception:
+            logger.exception("Session health monitor failed to start")
+
         yield
 
         # Stop session health monitor

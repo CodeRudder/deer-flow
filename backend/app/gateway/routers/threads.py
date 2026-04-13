@@ -723,6 +723,7 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
     from datetime import UTC, datetime
 
     TIMEOUT_SECONDS = 900  # 15 minutes
+    now = datetime.now(UTC)
 
     # --- Main session status ---
     main_status = MainSessionStatus(status="idle")
@@ -755,11 +756,37 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
     except Exception:
         logger.debug("Failed to get main session status for thread %s", thread_id, exc_info=True)
 
+    # --- Last message from main session ---
+    try:
+        from langgraph_sdk import get_client as _get_client
+
+        _client = _get_client(url="http://localhost:2024")
+        state = await _client.threads.get_state(thread_id)
+        values = state.get("values", {})
+        messages = values.get("messages", [])
+        # Find the last AI or human message with text content
+        for msg in reversed(messages):
+            role = msg.get("type", msg.get("role", ""))
+            content = msg.get("content", "")
+            if role in ("ai", "human") and content:
+                text = content if isinstance(content, str) else ""
+                if isinstance(content, list):
+                    text = " ".join(
+                        p.get("text", "") for p in content
+                        if isinstance(p, dict) and p.get("text")
+                    )
+                if text.strip():
+                    main_status.last_message = text.strip()[:200]
+                    break
+    except Exception:
+        logger.debug("Failed to get last message for thread %s", thread_id, exc_info=True)
+
     # --- Subtask statuses ---
     active: list[SubtaskStatus] = []
     recent: list[SubtaskStatus] = []
 
     # 1. From in-memory background tasks
+    in_memory_ids: set[str] = set()
     try:
         from deerflow.subagents.executor import _background_tasks, _background_tasks_lock
 
@@ -767,6 +794,7 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
             for task_id, result in _background_tasks.items():
                 if result.thread_id != thread_id:
                     continue
+                in_memory_ids.add(task_id)
                 st = SubtaskStatus(
                     task_id=task_id,
                     subagent_name=result.subagent_name or "",
@@ -787,7 +815,6 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
         from deerflow.subagents.session import SubagentSession
 
         sessions = SubagentSession.list_sessions(thread_id)
-        in_memory_ids = {t.task_id for t in active + recent}
 
         for session in sessions:
             if session.task_id in in_memory_ids:
@@ -805,9 +832,11 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                 last_updated=summary.get("completed_at", "") or summary.get("started_at", ""),
             )
 
-            # Check for timeout (10 min without update while "running")
-            now = datetime.now(UTC)
-            if st.status == "running" and st.last_updated:
+            # Determine effective status
+            effective_status = st.status
+
+            # Check for timeout (15 min without update while "running")
+            if effective_status == "running" and st.last_updated:
                 try:
                     if isinstance(st.last_updated, str) and st.last_updated:
                         updated = datetime.fromisoformat(st.last_updated)
@@ -815,12 +844,14 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                             updated = updated.replace(tzinfo=UTC)
                         age = (now - updated).total_seconds()
                         if age > TIMEOUT_SECONDS:
-                            st.status = "timed_out"
+                            effective_status = "timed_out"
                             st.detail = f"no update for {int(age / 60)} minutes"
                 except (ValueError, TypeError):
                     pass
 
-            # Determine detail for running tasks
+            st.status = effective_status
+
+            # Determine detail for genuinely running tasks
             if st.status == "running" and not st.detail:
                 try:
                     messages = session.read_messages()
@@ -844,7 +875,7 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                 except Exception:
                     st.detail = "running"
 
-            if st.status in ("running", "timed_out"):
+            if st.status in ("running",):
                 active.append(st)
             else:
                 recent.append(st)

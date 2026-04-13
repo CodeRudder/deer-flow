@@ -25,7 +25,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 MODE="${1:-prod}"
-SERVICE_USER="${2:-$(whoami)}"
+# When run with sudo, use the real user (not root)
+SERVICE_USER="${2:-${SUDO_USER:-$(whoami)}}"
 SERVICE_NAME="deerflow"
 
 # Build serve.sh flags from mode
@@ -51,6 +52,22 @@ if [ ! -x "$SERVE_SH" ]; then
     chmod +x "$SERVE_SH"
 fi
 
+# Build PATH from the service user's actual tool locations
+# Probe common locations for node/pnpm/uv
+USER_HOME="/home/$SERVICE_USER"
+EXTRA_PATHS=""
+for dir in \
+    "$USER_HOME/.local/bin" \
+    "$USER_HOME/.cargo/bin" \
+    $(ls -d "$USER_HOME/.config/nvm/versions/node/"*/bin 2>/dev/null) \
+    $(ls -d "$USER_HOME/.nvm/versions/node/"*/bin 2>/dev/null) \
+; do
+    if [ -d "$dir" ] && echo ":$EXTRA_PATHS:" | grep -qv ":$dir:"; then
+        EXTRA_PATHS="${EXTRA_PATHS:+$EXTRA_PATHS:}$dir"
+    fi
+done
+RESOLVED_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${EXTRA_PATHS:+:$EXTRA_PATHS}"
+
 # Ensure log directory exists
 mkdir -p "$REPO_ROOT/logs"
 chown "$SERVICE_USER:$SERVICE_USER" "$REPO_ROOT/logs" 2>/dev/null || true
@@ -63,25 +80,29 @@ cat > "$UNIT_FILE" << EOF
 Description=DeerFlow AI Agent Service ($MODE mode)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
 
 [Service]
 Type=forking
 User=$SERVICE_USER
 Group=$(id -gn "$SERVICE_USER")
 WorkingDirectory=$REPO_ROOT
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$HOME/.cargo/bin
+Environment=PATH=$RESOLVED_PATH
 EnvironmentFile=-$REPO_ROOT/.env
 
-ExecStartPre=$REPO_ROOT/scripts/serve.sh --stop
+# serve.sh --daemon handles its own stop-before-start, no need for ExecStartPre
 ExecStart=$REPO_ROOT/scripts/serve.sh $SERVE_FLAGS
 ExecStop=$REPO_ROOT/scripts/serve.sh --stop
 
-# Wait for main port to confirm startup
-ExecStartPost=/bin/bash -c 'for i in $(seq 1 60); do ss -ltn "( sport = :2026 )" | grep -q . && exit 0; sleep 1; done; exit 1'
+# Frontend (next dev) can take 2+ minutes to compile on first start
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+# Wait for main port to confirm startup (runs after serve.sh exits)
+ExecStartPost=$REPO_ROOT/scripts/wait-port.sh
 
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=300
 StartLimitBurst=5
 
 # Logging

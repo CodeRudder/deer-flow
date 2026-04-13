@@ -87,27 +87,34 @@ function formatTime(iso: string | null | undefined) {
 function MainSessionCard({ session }: { session: MainSessionStatus }) {
   const { t } = useI18n();
   return (
-    <div className="flex items-center gap-3 rounded-lg border p-3">
-      {statusIcon(session.status)}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">主会话</span>
-          <span className="text-xs text-muted-foreground">
-            {statusLabel(session.status)}
-          </span>
-        </div>
-        <div className="text-xs text-muted-foreground mt-0.5">
-          {session.run_id && (
-            <span>ID: {session.run_id.slice(0, 12)}...</span>
-          )}
-          {session.started_at && (
-            <span className="ml-2">开始: {formatTime(session.started_at)}</span>
-          )}
-          {session.last_updated && (
-            <span className="ml-2">更新: {formatTime(session.last_updated)}</span>
-          )}
+    <div className="rounded-lg border p-3">
+      <div className="flex items-center gap-3">
+        {statusIcon(session.status)}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">主会话</span>
+            <span className="text-xs text-muted-foreground">
+              {statusLabel(session.status)}
+            </span>
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {session.run_id && (
+              <span>ID: {session.run_id.slice(0, 12)}...</span>
+            )}
+            {session.started_at && (
+              <span className="ml-2">开始: {formatTime(session.started_at)}</span>
+            )}
+            {session.last_updated && (
+              <span className="ml-2">更新: {formatTime(session.last_updated)}</span>
+            )}
+          </div>
         </div>
       </div>
+      {session.last_message && (
+        <div className="text-xs text-muted-foreground mt-2 line-clamp-2 border-t pt-2">
+          {session.last_message}
+        </div>
+      )}
     </div>
   );
 }
