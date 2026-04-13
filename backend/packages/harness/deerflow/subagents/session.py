@@ -233,7 +233,12 @@ class SubagentSession:
 
     @property
     def is_terminal(self) -> bool:
-        """Check whether this session has a terminal status marker."""
+        """Check whether this session has a terminal status.
+
+        Checks the JSONL terminal marker first.  Falls back to the summary
+        file to handle the race where a dying background thread appends
+        messages *after* the startup cleanup wrote the marker.
+        """
         if not self.jsonl_path.exists():
             return False
         with open(self.jsonl_path, encoding="utf-8") as f:
@@ -250,6 +255,10 @@ class SubagentSession:
             if entry.get("status") in ("completed", "failed", "interrupted"):
                 return True
             break
+        # JSONL marker may be buried by late writes — check summary
+        summary = self.read_summary()
+        if summary and summary.get("status") in ("completed", "failed", "interrupted"):
+            return True
         return False
 
     # ── Class-level queries ─────────────────────────────────────────────

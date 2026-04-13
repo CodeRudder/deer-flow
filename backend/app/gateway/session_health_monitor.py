@@ -196,6 +196,10 @@ class SessionHealthMonitor:
             for jsonl_file in subagents_dir.glob("*.jsonl"):
                 if self._session_has_terminal_marker(jsonl_file):
                     continue
+                # Also check summary file — a race condition can leave
+                # messages appended after the JSONL terminal marker
+                if self._summary_has_terminal_status(jsonl_file):
+                    continue
                 # No terminal marker — check if recently updated
                 mtime = jsonl_file.stat().st_mtime
                 stale_seconds = time.time() - mtime
@@ -294,6 +298,26 @@ class SessionHealthMonitor:
                 continue
             break
         return False
+
+    @staticmethod
+    def _summary_has_terminal_status(jsonl_path: Path) -> bool:
+        """Check if the summary file alongside a JSONL indicates a terminal state.
+
+        Handles the race condition where a dying background thread appends
+        messages to the JSONL *after* the startup cleanup wrote the terminal
+        marker, effectively burying it beneath non-status lines.
+        """
+        import json
+
+        summary_path = jsonl_path.parent / jsonl_path.name.replace(".jsonl", ".summary.json")
+        if not summary_path.exists():
+            return False
+        try:
+            with open(summary_path, encoding="utf-8") as f:
+                summary = json.load(f)
+            return summary.get("status", "") in _TERMINAL_STATUSES
+        except (json.JSONDecodeError, OSError):
+            return False
 
     @staticmethod
     def _mark_session_interrupted(jsonl_path: Path) -> None:
