@@ -193,10 +193,15 @@ class TestHasRunningSubtask:
             assert asyncio.run(monitor._has_running_subtask("thread-1")) is False
 
     def test_completed_on_disk(self, tmp_path):
+        import json as _json
+
         subagents_dir = tmp_path / "threads" / "thread-1" / "subagents"
         subagents_dir.mkdir(parents=True)
         jsonl = subagents_dir / "task-1.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
+        # Write summary with terminal status so _has_running_subtask skips it
+        summary = subagents_dir / "task-1.summary.json"
+        summary.write_text(_json.dumps({"status": "completed"}))
 
         monitor = SessionMonitor()
         with (
@@ -361,7 +366,7 @@ class TestActivateThread:
         payload = call_args[1].get("json") or call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["json"]
         assert payload["assistant_id"] == "lead_agent"
         assert payload["multitask_strategy"] == "interrupt"
-        assert payload["checkpoint"]["checkpoint_id"] == "cp-123"
+        assert payload["on_disconnect"] == "cancel"
         # Verify message content
         msg = payload["input"]["messages"][0]
         assert msg["type"] == "human"
