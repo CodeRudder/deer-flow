@@ -20,8 +20,8 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
 _EMPTY_RESPONSE_FALLBACK = (
-    "The LLM returned an empty response after multiple retries. "
-    "Please continue the conversation."
+    "LLM 返回了空响应，已重试多次仍失败。"
+    "请稍后重试，或检查模型服务状态。"
 )
 
 logger = logging.getLogger(__name__)
@@ -135,12 +135,12 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     def _build_user_message(self, exc: BaseException, reason: str) -> str:
         detail = _extract_error_detail(exc)
         if reason == "quota":
-            return "The configured LLM provider rejected the request because the account is out of quota, billing is unavailable, or usage is restricted. Please fix the provider account and try again."
+            return "LLM 服务额度不足或账户受限，请检查账户余额和用量限制后重试。"
         if reason == "auth":
-            return "The configured LLM provider rejected the request because authentication or access is invalid. Please check the provider credentials and try again."
+            return "LLM 服务认证失败，请检查 API Key 配置是否正确。"
         if reason in {"busy", "transient"}:
-            return "The LLM provider is temporarily unavailable. Please retry the request."
-        return f"LLM request failed: {detail}"
+            return "LLM 服务暂时不可用，请稍后重试。"
+        return f"LLM 请求失败: {detail}"
 
     def _emit_retry_event(self, attempt: int, wait_ms: int, reason: str) -> None:
         try:
@@ -230,7 +230,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     _extract_error_detail(exc),
                     exc_info=exc,
                 )
-                return AIMessage(content=self._build_user_message(exc, reason))
+                return AIMessage(
+                    content=self._build_user_message(exc, reason),
+                    additional_kwargs={"llm_error": True, "error_reason": reason},
+                )
 
             # Retry empty responses (no content, no tool_calls)
             if self._is_empty_ai_response(result):
@@ -249,7 +252,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 logger.warning(
                     "LLM returned empty response after %d attempt(s)", attempt,
                 )
-                return AIMessage(content=_EMPTY_RESPONSE_FALLBACK)
+                return AIMessage(
+                    content=_EMPTY_RESPONSE_FALLBACK,
+                    additional_kwargs={"llm_error": True, "error_reason": "empty_response"},
+                )
 
             return result
 
@@ -287,7 +293,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     _extract_error_detail(exc),
                     exc_info=exc,
                 )
-                return AIMessage(content=self._build_user_message(exc, reason))
+                return AIMessage(
+                    content=self._build_user_message(exc, reason),
+                    additional_kwargs={"llm_error": True, "error_reason": reason},
+                )
 
             # Retry empty responses (no content, no tool_calls)
             if self._is_empty_ai_response(result):
@@ -306,7 +315,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 logger.warning(
                     "LLM returned empty response after %d attempt(s)", attempt,
                 )
-                return AIMessage(content=_EMPTY_RESPONSE_FALLBACK)
+                return AIMessage(
+                    content=_EMPTY_RESPONSE_FALLBACK,
+                    additional_kwargs={"llm_error": True, "error_reason": "empty_response"},
+                )
 
             return result
 

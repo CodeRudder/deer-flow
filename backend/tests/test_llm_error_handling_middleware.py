@@ -87,7 +87,7 @@ def test_async_model_call_returns_user_message_for_quota_errors() -> None:
     result = asyncio.run(middleware.awrap_model_call(SimpleNamespace(), handler))
 
     assert isinstance(result, AIMessage)
-    assert "out of quota" in str(result.content)
+    assert "额度不足" in str(result.content)
 
 
 def test_sync_model_call_uses_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,7 +208,7 @@ def test_does_not_retry_400_with_non_transient_message() -> None:
     result = asyncio.run(middleware.awrap_model_call(SimpleNamespace(), handler))
 
     assert isinstance(result, AIMessage)
-    assert "LLM request failed" in result.content
+    assert "LLM 请求失败" in result.content
 
 
 # ---------------------------------------------------------------------------
