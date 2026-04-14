@@ -72,13 +72,22 @@ async def task_tool(
     - **developer**: Senior Developer — code implementation, debugging, optimization.
     - **tester**: QA Tester — test design, quality assurance, automated testing.
     - **devops**: DevOps Engineer — CI/CD, deployment, monitoring, infrastructure.
+    - **game-designer**: Game Designer — gameplay mechanics, level design, game balance.
+    - **game-developer**: Game Developer — HTML5 game implementation, Canvas rendering, game engine.
+    - **game-artist**: Game Artist — visual style, color schemes, UI/UX, animation design.
 
-    Team workflow example:
+    Software team workflow:
     1. task("requirements", "Analyze requirements...", subagent_type="pm")
     2. task("architecture", "Design architecture...", subagent_type="architect")
     3. task("implementation", "Implement feature...", subagent_type="developer")
     4. task("testing", "Write and run tests...", subagent_type="tester")
     5. task("deployment", "Configure CI/CD...", subagent_type="devops")
+
+    Game dev workflow:
+    1. task("game-design", "Design a bubble shooter game...", subagent_type="game-designer")
+    2. task("game-art", "Define visual style and color scheme...", subagent_type="game-artist")
+    3. task("game-impl", "Implement game per design doc...", subagent_type="game-developer")
+    4. task("game-polish", "Review visuals and improve animations...", subagent_type="game-artist")
 
     When to use this tool:
     - Complex tasks requiring multiple steps or tools
