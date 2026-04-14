@@ -141,16 +141,48 @@ class CancelSubtaskResponse(BaseModel):
 
 @router.post("/subtasks/{task_id}/cancel", response_model=CancelSubtaskResponse)
 async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskResponse:
-    """Cancel a running sub-agent task by task_id."""
+    """Cancel a running sub-agent task by task_id.
+
+    If the task is not found in memory (e.g. after service restart),
+    marks the on-disk session as interrupted so it stops appearing as
+    running in the status API.
+    """
     from deerflow.subagents.executor import get_background_task_result, request_cancel_background_task
 
     result = get_background_task_result(task_id)
-    if result is None:
-        return CancelSubtaskResponse(task_id=task_id, cancelled=False, error="Task not found")
+    if result is not None:
+        if result.status.value not in ("running", "pending"):
+            return CancelSubtaskResponse(task_id=task_id, cancelled=False, error=f"Task is {result.status.value}")
 
-    if result.status.value not in ("running", "pending"):
-        return CancelSubtaskResponse(task_id=task_id, cancelled=False, error=f"Task is {result.status.value}")
+        request_cancel_background_task(task_id)
+        logger.info("Cancelled subtask %s via API (in-memory)", task_id)
+        return CancelSubtaskResponse(task_id=task_id, cancelled=True)
 
-    request_cancel_background_task(task_id)
-    logger.info("Cancelled subtask %s via API", task_id)
-    return CancelSubtaskResponse(task_id=task_id, cancelled=True)
+    # Not in memory — mark on-disk session as interrupted
+    try:
+        import json
+
+        from deerflow.config.paths import get_paths
+
+        # Find the session across all threads
+        threads_dir = get_paths().base_dir / "threads"
+        if threads_dir.exists():
+            for thread_dir in threads_dir.iterdir():
+                if not thread_dir.is_dir():
+                    continue
+                summary_path = thread_dir / "subagents" / f"{task_id}.summary.json"
+                if not summary_path.exists():
+                    continue
+
+                with open(summary_path, encoding="utf-8") as f:
+                    summary = json.load(f)
+                if summary.get("status") in ("running", "pending", "unknown"):
+                    summary["status"] = "interrupted"
+                    with open(summary_path, "w", encoding="utf-8") as f:
+                        json.dump(summary, f, indent=2, ensure_ascii=False)
+                    logger.info("Marked subtask %s as interrupted on disk (thread %s)", task_id, thread_dir.name)
+                    return CancelSubtaskResponse(task_id=task_id, cancelled=True)
+    except Exception:
+        logger.exception("Failed to mark subtask %s as interrupted on disk", task_id)
+
+    return CancelSubtaskResponse(task_id=task_id, cancelled=False, error="Task not found")
