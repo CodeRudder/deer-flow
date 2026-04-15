@@ -220,9 +220,28 @@ class TestHasRunningSubtask:
 
 
 class TestCheckAndActivateThread:
+    def _base_mocks(self, **overrides):
+        """Return standard mock dict with _thread_exists=True."""
+        mocks = {
+            "_thread_exists": AsyncMock(return_value=True),
+        }
+        mocks.update(overrides)
+        return mocks
+
+    def test_skips_zombie_thread(self):
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("zombie-thread"))
+        mock_activate.assert_not_called()
+
     def test_skips_when_subtask_running(self):
         monitor = SessionMonitor()
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
@@ -233,6 +252,7 @@ class TestCheckAndActivateThread:
     def test_skips_when_main_run_active(self):
         monitor = SessionMonitor()
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
@@ -243,9 +263,10 @@ class TestCheckAndActivateThread:
     def test_skips_when_user_interrupted(self):
         monitor = SessionMonitor()
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_is_user_run_interrupted", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -254,10 +275,13 @@ class TestCheckAndActivateThread:
     def test_skips_when_no_unfinished_todos(self):
         monitor = SessionMonitor()
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_interrupted", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_failed", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_last_message_llm_error", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -266,23 +290,61 @@ class TestCheckAndActivateThread:
     def test_activates_when_stalled_with_todos(self):
         monitor = SessionMonitor()
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_interrupted", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_is_user_run_failed", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_last_message_llm_error", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
         mock_activate.assert_called_once_with("t1", message=monitor.DEFAULT_ACTIVATION_MESSAGE)
         assert monitor._activation_counts["t1"] == 1
 
+    def test_activates_when_run_failed_no_todos(self):
+        """Run failed but all todos completed → still activate (todos may not be created yet)."""
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_failed", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_is_last_message_llm_error", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_called_once_with("t1")
+
+    def test_activates_when_last_message_is_llm_error(self):
+        """Last AI message is LLM error → activate even if todos completed and run succeeded."""
+        monitor = SessionHealthMonitor()
+        with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_failed", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_last_message_llm_error", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_called_once_with("t1")
+
     def test_does_not_count_failed_activation(self):
         monitor = SessionMonitor()
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_run_interrupted", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_is_user_run_failed", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_last_message_llm_error", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=False),
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -292,10 +354,13 @@ class TestCheckAndActivateThread:
     def test_stops_after_max_activations(self):
         monitor = SessionMonitor()
         mocks = dict(
+            _thread_exists=AsyncMock(return_value=True),
             _has_running_subtask=AsyncMock(return_value=False),
             _has_active_run=AsyncMock(return_value=False),
-            _is_user_interrupted=AsyncMock(return_value=False),
+            _is_user_run_interrupted=AsyncMock(return_value=False),
             _has_unfinished_todos=AsyncMock(return_value=True),
+            _is_user_run_failed=AsyncMock(return_value=False),
+            _is_last_message_llm_error=AsyncMock(return_value=False),
             _activate_thread=AsyncMock(return_value=True),
         )
         # Activate 5 times
@@ -314,6 +379,7 @@ class TestCheckAndActivateThread:
         monitor = SessionMonitor()
         monitor._activation_counts["t1"] = 3
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock),
@@ -325,6 +391,7 @@ class TestCheckAndActivateThread:
         monitor = SessionMonitor()
         monitor._activation_counts["t1"] = 4
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock),

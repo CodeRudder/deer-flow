@@ -114,12 +114,16 @@ class SessionMonitor:
 
     def _check_cycle(self) -> None:
         """Execute one check cycle, then schedule the next."""
+        logger.info("Health monitor check cycle triggered")
         try:
             if self._loop and not self._loop.is_closed():
                 future = asyncio.run_coroutine_threadsafe(
                     self._check_all(), self._loop,
                 )
-                future.result(timeout=30)
+                future.result(timeout=60)
+            else:
+                logger.warning("Health monitor: event loop is not available (loop=%s, closed=%s)",
+                               self._loop is not None, self._loop.is_closed() if self._loop else "N/A")
         except Exception:
             logger.exception("Session health monitor check cycle failed")
         self._schedule_next()
@@ -183,9 +187,9 @@ class SessionMonitor:
             self._iteration_states.pop(thread_id, None)
             return
 
-        # 3. Check if we should activate
-        if await self._is_user_interrupted(thread_id):
-            logger.debug("Thread %s: last run was user-interrupted, skipping", thread_id)
+        # 3. Skip if last user run was interrupted (user actively stopped)
+        if await self._is_user_run_interrupted(thread_id):
+            logger.debug("Thread %s: last user run was interrupted, skipping", thread_id)
             return
 
         # 4. 会话激活: unfinished todos
@@ -310,6 +314,7 @@ class SessionMonitor:
                 "is_plan_mode": True,
                 "thread_id": thread_id,
             },
+            "metadata": {"source": "health_monitor"},
             "stream_mode": ["values"],
             "multitask_strategy": "interrupt",
             "on_disconnect": "cancel",
@@ -455,21 +460,19 @@ class SessionMonitor:
             logger.debug("Failed to check active runs for thread %s", thread_id, exc_info=True)
             return False
 
-    async def _is_user_interrupted(self, thread_id: str) -> bool:
-        """Check if the last run on this thread was user-interrupted."""
+    async def _thread_exists(self, thread_id: str) -> bool:
+        """Check if thread exists in LangGraph server.
+
+        Skips zombie threads that have disk data but were deleted from
+        LangGraph, which would otherwise waste check cycles with 404 errors.
+        """
         client = self._get_client()
         if client is None:
             return False
-
         try:
-            runs = await client.runs.list(thread_id, limit=1)
-            if not runs:
-                return False
-            last_run = runs[0]
-            metadata = last_run.get("metadata", {})
-            return metadata.get("cancelled_by") == "user"
+            state = await client.threads.get_state(thread_id)
+            return state is not None
         except Exception:
-            logger.debug("Failed to check run status for thread %s", thread_id, exc_info=True)
             return False
 
     async def _has_unfinished_todos(self, thread_id: str) -> bool:
@@ -496,7 +499,42 @@ class SessionMonitor:
         client = self._get_client()
         if client is None:
             return False
+        try:
+            runs = await client.runs.list(thread_id, limit=20)
+            for run in runs:
+                meta = run.get("metadata", {})
+                if meta.get("source") == "health_monitor":
+                    continue  # Skip activation runs
+                return run.get("status") == "interrupted"
+            return False
+        except Exception:
+            return False
 
+    async def _is_user_run_failed(self, thread_id: str) -> bool:
+        """Check if the last *user-initiated* run ended with error/timeout."""
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            runs = await client.runs.list(thread_id, limit=20)
+            for run in runs:
+                meta = run.get("metadata", {})
+                if meta.get("source") == "health_monitor":
+                    continue  # Skip activation runs
+                return run.get("status") in ("error", "timeout")
+            return False
+        except Exception:
+            return False
+
+    async def _is_last_message_llm_error(self, thread_id: str) -> bool:
+        """Check if the last AI message in the thread is an LLM error.
+
+        LLM error messages carry ``additional_kwargs.llm_error = True``,
+        set by ``LLMErrorHandlingMiddleware``.
+        """
+        client = self._get_client()
+        if client is None:
+            return False
         try:
             state = await client.threads.get_state(thread_id)
             values = state.get("values", {})
