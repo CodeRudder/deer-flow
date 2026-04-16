@@ -54,7 +54,7 @@ auto_iteration:
         所有任务已完成。请根据目标规划并启动下一轮迭代任务。
 ```
 
-**达到限制后**：重置计数器，本轮结束，不发送任何消息。下次检查时重新开始新一轮。
+**达到限制后**：停止自动迭代，不发送任何消息。当用户发送新消息（产生 active run）时，迭代计数自动重置，下一轮可重新开始。
 
 ---
 
@@ -101,7 +101,7 @@ auto_iteration:
 3. 子任务完成后，Agent 更新 todos 状态
 4. 所有 todos 完成 → `auto_iteration` 触发，发送迭代提示词
 5. Agent 制定新一轮 todos，循环继续
-6. 达到 `max_iterations` → 本轮结束，等待下一轮重置
+6. 达到 `max_iterations` → 停止自动迭代，等待用户发送新消息后重置计数
 
 ---
 
@@ -109,6 +109,6 @@ auto_iteration:
 
 - `langgraph_url` 在 Docker 环境中需使用容器名（`http://langgraph:2024`），本地开发用 `http://localhost:2024`
 - `check_interval` 修改后需重启 gateway 生效（monitor 在启动时读取配置）
-- `auto_iteration` 的迭代状态保存在内存中，gateway 重启后计数器重置
+- `auto_iteration` 的迭代状态保存在内存中，gateway 重启后计数器重置；用户发送新消息后也会重置
 - 建议在 `is_plan_mode: true` 的会话中使用，确保 Agent 维护 todos 列表
 - 子任务执行需在 `context.subagent_enabled: true` 时才可用

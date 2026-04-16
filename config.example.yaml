@@ -769,7 +769,7 @@ checkpointer:
 #   2. If unfinished todos → 会话激活 (send activation_message)
 #   3. If all todos completed → 自动迭代 (send iteration_prompt)
 #      - Within limits: send iteration_prompt, increment counter
-#      - Limits reached: reset counter, send nothing
+#      - Limits reached: stop iterating until user sends a new message (resets counter)
 #
 # auto_iteration:
 #   enabled: false
