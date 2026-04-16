@@ -334,6 +334,38 @@ Bridges external messaging platforms (Feishu, Slack, Telegram) to the DeerFlow a
 - In Docker Compose, IM channels run inside the `gateway` container, so `localhost` points back to that container. Use `http://langgraph:2024` / `http://gateway:8001`, or set `DEER_FLOW_CHANNELS_LANGGRAPH_URL` / `DEER_FLOW_CHANNELS_GATEWAY_URL`.
 - Per-channel configs: `feishu` (app_id, app_secret), `slack` (bot_token, app_token), `telegram` (bot_token)
 
+### Session Monitor (`app/gateway/session_monitor.py`)
+
+Periodic background task (threading.Timer) that runs in the Gateway process. Checks threads every `check_interval` seconds and takes action based on state.
+
+**Decision tree per thread** (single pass, no duplicate checks):
+1. Skip if subtask running or active run (reset counters)
+2. Skip if user-interrupted
+3. **会话激活**: unfinished todos → send `activation_message` (per-session override or global)
+4. **自动迭代**: all todos completed (configured sessions only) → send `iteration_prompt`; reset when limits reached
+
+**Configuration** (`config.yaml`):
+```yaml
+session_monitor:
+  enabled: true
+  check_interval: 180
+  langgraph_url: http://langgraph:2024   # use container name in Docker
+  activation_message: "请按要求使用子任务继续处理未完成任务计划。"
+  sessions:                              # optional per-session overrides
+    - thread_id: "..."
+      activation_message: "..."
+
+auto_iteration:
+  enabled: false
+  sessions:
+    - thread_id: "..."
+      max_iterations: 10
+      max_duration_seconds: 3600
+      iteration_prompt: "所有任务已完成。请规划并启动下一轮迭代任务。"
+```
+
+See `docs/AUTO_ITERATION.md` for full 3-level orchestration guide.
+
 ### Memory System (`packages/harness/deerflow/agents/memory/`)
 
 **Components**:
