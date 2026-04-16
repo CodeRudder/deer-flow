@@ -29,7 +29,7 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 DEV_PORT="${DEV_PORT:-2027}"
-COMPOSE_CMD="docker compose -p deer-flow-dev -f $DOCKER_DIR/docker-compose-dev.yaml"
+COMPOSE_CMD="docker compose -p deer-flow-dev --env-file $PROJECT_ROOT/.env -f $DOCKER_DIR/docker-compose-dev.yaml"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
