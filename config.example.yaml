@@ -747,7 +747,7 @@ checkpointer:
 # Periodically checks threads with sub-agent sessions and activates stalled
 # sessions that have unfinished todos but no active run (会话激活).
 #
-# session_health_monitor:
+# session_monitor:
 #   enabled: true
 #   check_interval: 180          # seconds between check cycles (default: 180)
 #   stale_threshold: 300         # seconds before a sub-agent task is stale (default: 300)

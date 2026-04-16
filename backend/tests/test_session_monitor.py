@@ -1,4 +1,4 @@
-"""Tests for SessionHealthMonitor — thread activation and status detection."""
+"""Tests for SessionMonitor — thread activation and status detection."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.gateway.session_health_monitor import SessionHealthMonitor
+from app.gateway.session_monitor import SessionMonitor
 
 
 # ---------------------------------------------------------------------------
@@ -62,12 +62,12 @@ def _patch_langgraph_store(thread_ids: list[str] | None = None):
         mock_client.threads.search.return_value = [{"thread_id": tid} for tid in thread_ids]
     else:
         mock_client.threads.search.return_value = []
-    return patch.object(SessionHealthMonitor, "_get_client", return_value=mock_client)
+    return patch.object(SessionMonitor, "_get_client", return_value=mock_client)
 
 
 def _patch_get_client_none():
     """Patch _get_client to return None (no LangGraph client)."""
-    return patch.object(SessionHealthMonitor, "_get_client", return_value=None)
+    return patch.object(SessionMonitor, "_get_client", return_value=None)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def _patch_get_client_none():
 
 class TestThreadDiscovery:
     def test_discovers_from_background_tasks(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         result = _make_subagent_result(thread_id="t1")
         with (
             _patch_background_tasks({"task-1": result}),
@@ -92,7 +92,7 @@ class TestThreadDiscovery:
         subagents_dir.mkdir(parents=True)
         (subagents_dir / "task-1.jsonl").write_text("{}", encoding="utf-8")
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({}),
             _patch_lock(),
@@ -104,7 +104,7 @@ class TestThreadDiscovery:
         assert "thread-disk" in threads
 
     def test_discovers_from_langgraph_store(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({}),
             _patch_lock(),
@@ -122,7 +122,7 @@ class TestThreadDiscovery:
         (subagents_dir / "task-1.jsonl").write_text("{}", encoding="utf-8")
 
         result = _make_subagent_result(thread_id="thread-dup")
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({"task-1": result}),
             _patch_lock(),
@@ -142,7 +142,7 @@ class TestThreadDiscovery:
 class TestHasRunningSubtask:
     def test_running_in_memory(self):
         result = _make_subagent_result(status="running")
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({"task-1": result}),
             _patch_lock(),
@@ -151,7 +151,7 @@ class TestHasRunningSubtask:
 
     def test_completed_in_memory(self):
         result = _make_subagent_result(status="completed")
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({"task-1": result}),
             _patch_lock(),
@@ -164,7 +164,7 @@ class TestHasRunningSubtask:
         jsonl = subagents_dir / "task-1.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({}),
             _patch_lock(),
@@ -182,7 +182,7 @@ class TestHasRunningSubtask:
         old_time = time.time() - 1000
         os.utime(jsonl, (old_time, old_time))
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({}),
             _patch_lock(),
@@ -198,7 +198,7 @@ class TestHasRunningSubtask:
         jsonl = subagents_dir / "task-1.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             _patch_background_tasks({}),
             _patch_lock(),
@@ -216,7 +216,7 @@ class TestHasRunningSubtask:
 
 class TestCheckAndActivateThread:
     def test_skips_when_subtask_running(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock),
@@ -226,7 +226,7 @@ class TestCheckAndActivateThread:
         mock_activate.assert_not_called()
 
     def test_skips_when_main_run_active(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
@@ -236,7 +236,7 @@ class TestCheckAndActivateThread:
         mock_activate.assert_not_called()
 
     def test_skips_when_user_interrupted(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -247,7 +247,7 @@ class TestCheckAndActivateThread:
         mock_activate.assert_not_called()
 
     def test_skips_when_no_unfinished_todos(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -259,7 +259,7 @@ class TestCheckAndActivateThread:
         mock_activate.assert_not_called()
 
     def test_activates_when_stalled_with_todos(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -272,7 +272,7 @@ class TestCheckAndActivateThread:
         assert monitor._activation_counts["t1"] == 1
 
     def test_does_not_count_failed_activation(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -285,7 +285,7 @@ class TestCheckAndActivateThread:
         assert monitor._activation_counts.get("t1", 0) == 0
 
     def test_stops_after_max_activations(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         mocks = dict(
             _has_running_subtask=AsyncMock(return_value=False),
             _has_active_run=AsyncMock(return_value=False),
@@ -306,7 +306,7 @@ class TestCheckAndActivateThread:
         mocks["_activate_thread"].assert_not_called()
 
     def test_resets_count_when_active_run_found(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         monitor._activation_counts["t1"] = 3
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
@@ -317,7 +317,7 @@ class TestCheckAndActivateThread:
         assert "t1" not in monitor._activation_counts
 
     def test_resets_count_when_subtask_running(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         monitor._activation_counts["t1"] = 4
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=True),
@@ -342,7 +342,7 @@ class TestActivateThread:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_get_client", return_value=mock_client),
             patch("httpx.AsyncClient") as mock_http_client_cls,
@@ -370,7 +370,7 @@ class TestActivateThread:
         mock_client = AsyncMock()
         mock_client.threads.get_state.side_effect = Exception("no state")
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_get_client", return_value=mock_client),
             patch("httpx.AsyncClient") as mock_http_client_cls,
@@ -388,7 +388,7 @@ class TestActivateThread:
         assert payload["multitask_strategy"] == "interrupt"
 
     def test_logs_error_when_no_client(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with patch.object(monitor, "_get_client", return_value=None):
             asyncio.run(monitor._activate_thread("t1"))  # Should not raise
 
@@ -396,7 +396,7 @@ class TestActivateThread:
         mock_client = AsyncMock()
         mock_client.threads.get_state.return_value = {"config": {"configurable": {}}}
 
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_get_client", return_value=mock_client),
             patch("httpx.AsyncClient") as mock_http_client_cls,
@@ -417,14 +417,14 @@ class TestActivateThread:
 
 class TestCheckAll:
     def test_no_threads_found(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value=set()),
         ):
             asyncio.run(monitor._check_all())  # Should not raise
 
     def test_checks_each_thread(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value={"t1", "t2"}),
             patch.object(monitor, "_check_and_activate_thread", new_callable=AsyncMock) as mock_check,
@@ -433,7 +433,7 @@ class TestCheckAll:
         assert mock_check.call_count == 2
 
     def test_continues_on_exception(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         async def _check_fail(tid):
             if tid == "t1":
                 raise RuntimeError("test error")
@@ -454,22 +454,22 @@ class TestTerminalMarker:
     def test_detects_completed(self, tmp_path):
         jsonl = tmp_path / "test.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "done"}], terminal_status="completed")
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is True
+        assert SessionMonitor._session_has_terminal_marker(jsonl) is True
 
     def test_detects_failed(self, tmp_path):
         jsonl = tmp_path / "test.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "err"}], terminal_status="failed")
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is True
+        assert SessionMonitor._session_has_terminal_marker(jsonl) is True
 
     def test_no_terminal_marker(self, tmp_path):
         jsonl = tmp_path / "test.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is False
+        assert SessionMonitor._session_has_terminal_marker(jsonl) is False
 
     def test_empty_file(self, tmp_path):
         jsonl = tmp_path / "test.jsonl"
         jsonl.write_text("", encoding="utf-8")
-        assert SessionHealthMonitor._session_has_terminal_marker(jsonl) is False
+        assert SessionMonitor._session_has_terminal_marker(jsonl) is False
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +479,7 @@ class TestTerminalMarker:
 
 class TestScheduling:
     def test_start_schedules_timer(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         loop = asyncio.new_event_loop()
         monitor.start(loop)
         assert monitor._timer is not None
@@ -487,7 +487,7 @@ class TestScheduling:
         loop.close()
 
     def test_stop_cancels_timer(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         loop = asyncio.new_event_loop()
         monitor.start(loop)
         monitor.stop()
@@ -519,7 +519,7 @@ def _make_auto_iter_session(
 class TestAutoIteration:
     def test_skips_when_no_todos(self):
         """No todos at all → skip (no plan started)."""
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
+        monitor = SessionMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -533,7 +533,7 @@ class TestAutoIteration:
 
     def test_skips_when_todos_incomplete(self):
         """Unfinished todos → 会话激活 (not auto iteration), iteration state untouched."""
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
+        monitor = SessionMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -549,7 +549,7 @@ class TestAutoIteration:
     def test_sends_iteration_prompt_when_todos_done(self):
         """All todos completed, within limits → sends iteration_prompt."""
         session = _make_auto_iter_session(iteration_prompt="go next", max_iterations=5)
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        monitor = SessionMonitor(auto_iteration_sessions=[session])
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
@@ -565,8 +565,8 @@ class TestAutoIteration:
     def test_resets_state_when_max_iterations_reached(self):
         """Iteration count >= max_iterations → reset state, send nothing."""
         session = _make_auto_iter_session(max_iterations=3)
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
-        from app.gateway.session_health_monitor import _IterationState
+        monitor = SessionMonitor(auto_iteration_sessions=[session])
+        from app.gateway.session_monitor import _IterationState
         monitor._iteration_states["t1"] = _IterationState(iteration_count=3, cycle_start_time=1.0)
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
@@ -584,8 +584,8 @@ class TestAutoIteration:
     def test_resets_state_when_duration_exceeded(self):
         """Elapsed time >= max_duration_seconds → reset state, send nothing."""
         session = _make_auto_iter_session(max_iterations=100, max_duration_seconds=60)
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
-        from app.gateway.session_health_monitor import _IterationState
+        monitor = SessionMonitor(auto_iteration_sessions=[session])
+        from app.gateway.session_monitor import _IterationState
         monitor._iteration_states["t1"] = _IterationState(
             iteration_count=1, cycle_start_time=time.time() - 120
         )
@@ -604,7 +604,7 @@ class TestAutoIteration:
     def test_disabled_session_not_included_in_check(self):
         """Disabled auto-iteration session is not added to thread_ids in _check_all."""
         session = _make_auto_iter_session(thread_id="t-disabled", enabled=False)
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        monitor = SessionMonitor(auto_iteration_sessions=[session])
         with (
             patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value=set()),
             patch.object(monitor, "_check_and_activate_thread", new_callable=AsyncMock) as mock_check,
@@ -614,7 +614,7 @@ class TestAutoIteration:
 
     def test_per_session_activation_message_override(self):
         """Per-session activation_message overrides global for 会话激活."""
-        monitor = SessionHealthMonitor(
+        monitor = SessionMonitor(
             activation_message="global msg",
             session_activation_overrides={"t1": "per-session msg"},
         )
@@ -624,8 +624,8 @@ class TestAutoIteration:
     def test_iteration_state_cleared_when_active_run(self):
         """Active run resets iteration state."""
         session = _make_auto_iter_session()
-        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
-        from app.gateway.session_health_monitor import _IterationState
+        monitor = SessionMonitor(auto_iteration_sessions=[session])
+        from app.gateway.session_monitor import _IterationState
         monitor._iteration_states["t1"] = _IterationState(iteration_count=2, cycle_start_time=1.0)
         with (
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),

@@ -37,7 +37,7 @@ class _IterationState:
     cycle_start_time: float | None = None
 
 
-class SessionHealthMonitor:
+class SessionMonitor:
     """Gateway-level periodic health monitor for sessions.
 
     Args:

@@ -75,11 +75,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             import asyncio
 
-            from app.gateway.session_health_monitor import SessionHealthMonitor
+            from app.gateway.session_monitor import SessionMonitor
 
             app_config = get_app_config()
             extra = app_config.model_extra or {}
-            monitor_cfg = extra.get("session_health_monitor", {}) or {}
+            monitor_cfg = extra.get("session_monitor", {}) or {}
             if monitor_cfg.get("enabled", True):
                 # Resolve langgraph_url from channels config or default
                 channels_cfg = extra.get("channels", {}) or {}
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     else []
                 )
 
-                session_monitor = SessionHealthMonitor(
+                session_monitor = SessionMonitor(
                     check_interval=int(monitor_cfg.get("check_interval", 180)),
                     stale_threshold=int(monitor_cfg.get("stale_threshold", 300)),
                     langgraph_url=str(monitor_cfg.get("langgraph_url", langgraph_url)),
