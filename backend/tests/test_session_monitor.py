@@ -563,7 +563,7 @@ class TestAutoIteration:
         assert monitor._iteration_states["t1"].iteration_count == 1
 
     def test_resets_state_when_max_iterations_reached(self):
-        """Iteration count >= max_iterations → reset state, send nothing."""
+        """Iteration count >= max_iterations → stop, do NOT reset state."""
         session = _make_auto_iter_session(max_iterations=3)
         monitor = SessionMonitor(auto_iteration_sessions=[session])
         from app.gateway.session_monitor import _IterationState
@@ -578,11 +578,11 @@ class TestAutoIteration:
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
         mock_activate.assert_not_called()
-        assert monitor._iteration_states["t1"].iteration_count == 0
-        assert monitor._iteration_states["t1"].cycle_start_time is None
+        # State preserved (not reset) — will resume when user sends a new message
+        assert monitor._iteration_states["t1"].iteration_count == 3
 
     def test_resets_state_when_duration_exceeded(self):
-        """Elapsed time >= max_duration_seconds → reset state, send nothing."""
+        """Elapsed time >= max_duration_seconds → stop, do NOT reset state."""
         session = _make_auto_iter_session(max_iterations=100, max_duration_seconds=60)
         monitor = SessionMonitor(auto_iteration_sessions=[session])
         from app.gateway.session_monitor import _IterationState
@@ -599,7 +599,8 @@ class TestAutoIteration:
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
         mock_activate.assert_not_called()
-        assert monitor._iteration_states["t1"].iteration_count == 0
+        # State preserved — count still 1
+        assert monitor._iteration_states["t1"].iteration_count == 1
 
     def test_disabled_session_not_included_in_check(self):
         """Disabled auto-iteration session is not added to thread_ids in _check_all."""

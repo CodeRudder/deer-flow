@@ -549,11 +549,9 @@ class SessionMonitor:
 
         if limits_reached:
             logger.info(
-                "Auto iteration thread %s: limits reached (count=%d/%d), resetting cycle",
+                "Auto iteration thread %s: limits reached (count=%d/%d), stopping until next user message",
                 thread_id, state.iteration_count, max_iterations,
             )
-            state.iteration_count = 0
-            state.cycle_start_time = None
             return
 
         if state.cycle_start_time is None:
