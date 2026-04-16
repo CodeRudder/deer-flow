@@ -85,11 +85,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 channels_cfg = extra.get("channels", {}) or {}
                 langgraph_url = channels_cfg.get("langgraph_url", "http://localhost:2024")
 
+                # Per-session activation_message overrides
+                session_overrides: dict[str, str] = {}
+                for s in monitor_cfg.get("sessions", []):
+                    if isinstance(s, dict) and s.get("thread_id") and s.get("activation_message"):
+                        session_overrides[s["thread_id"]] = s["activation_message"]
+
+                # Auto-iteration sessions
+                auto_iter_cfg = extra.get("auto_iteration", {}) or {}
+                auto_iteration_sessions = (
+                    auto_iter_cfg.get("sessions", [])
+                    if auto_iter_cfg.get("enabled", False)
+                    else []
+                )
+
                 session_monitor = SessionHealthMonitor(
                     check_interval=int(monitor_cfg.get("check_interval", 180)),
                     stale_threshold=int(monitor_cfg.get("stale_threshold", 300)),
                     langgraph_url=str(monitor_cfg.get("langgraph_url", langgraph_url)),
                     activation_message=monitor_cfg.get("activation_message"),
+                    session_activation_overrides=session_overrides,
+                    auto_iteration_sessions=auto_iteration_sessions,
                 )
                 session_monitor.start(asyncio.get_event_loop())
                 app.state.session_monitor = session_monitor

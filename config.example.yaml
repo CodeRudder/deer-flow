@@ -742,6 +742,46 @@ checkpointer:
 #     bot_secret: $WECOM_BOT_SECRET
 
 # ============================================================================
+# Session Health Monitor Configuration
+# ============================================================================
+# Periodically checks threads with sub-agent sessions and activates stalled
+# sessions that have unfinished todos but no active run (会话激活).
+#
+# session_health_monitor:
+#   enabled: true
+#   check_interval: 180          # seconds between check cycles (default: 180)
+#   stale_threshold: 300         # seconds before a sub-agent task is stale (default: 300)
+#   activation_message: "请按要求使用子任务继续处理未完成任务计划。"  # global default
+#   # Optional: per-session activation_message overrides (same params, higher priority)
+#   sessions:
+#     - thread_id: "your-thread-id"
+#       activation_message: "针对该会话的激活提示词"
+
+# ============================================================================
+# Auto Iteration Configuration
+# ============================================================================
+# Extends the session health monitor: when a configured session is idle AND
+# all todos are completed, automatically sends an iteration prompt to start
+# the next iteration (自动迭代).
+#
+# Activation logic per configured session (runs in same check cycle):
+#   1. Skip if subtask running / active run / user-interrupted
+#   2. If unfinished todos → 会话激活 (send activation_message)
+#   3. If all todos completed → 自动迭代 (send iteration_prompt)
+#      - Within limits: send iteration_prompt, increment counter
+#      - Limits reached: reset counter, send nothing
+#
+# auto_iteration:
+#   enabled: false
+#   sessions:
+#     - thread_id: "your-thread-id"
+#       enabled: true
+#       max_iterations: 10           # max auto-iterations per cycle (default: 10)
+#       max_duration_seconds: 3600   # max cycle duration in seconds (default: 3600)
+#       iteration_prompt: |
+#         所有任务已完成。请根据目标规划并启动下一轮迭代任务。
+
+# ============================================================================
 # Guardrails Configuration
 # ============================================================================
 # Optional pre-execution authorization for tool calls.

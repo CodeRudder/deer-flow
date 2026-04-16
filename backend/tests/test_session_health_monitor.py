@@ -268,7 +268,7 @@ class TestCheckAndActivateThread:
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
-        mock_activate.assert_called_once_with("t1")
+        mock_activate.assert_called_once_with("t1", message=monitor.DEFAULT_ACTIVATION_MESSAGE)
         assert monitor._activation_counts["t1"] == 1
 
     def test_does_not_count_failed_activation(self):
@@ -493,3 +493,144 @@ class TestScheduling:
         monitor.stop()
         assert monitor._timer is None
         loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Auto iteration
+# ---------------------------------------------------------------------------
+
+
+def _make_auto_iter_session(
+    thread_id="t1",
+    iteration_prompt="iterate",
+    max_iterations=3,
+    max_duration_seconds=3600,
+    enabled=True,
+):
+    return {
+        "thread_id": thread_id,
+        "iteration_prompt": iteration_prompt,
+        "max_iterations": max_iterations,
+        "max_duration_seconds": max_duration_seconds,
+        "enabled": enabled,
+    }
+
+
+class TestAutoIteration:
+    def test_skips_when_no_todos(self):
+        """No todos at all → skip (no plan started)."""
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+
+    def test_skips_when_todos_incomplete(self):
+        """Unfinished todos → 会话激活 (not auto iteration), iteration state untouched."""
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        # 会话激活 fires, not auto iteration
+        mock_activate.assert_called_once()
+        assert "t1" not in monitor._iteration_states
+
+    def test_sends_iteration_prompt_when_todos_done(self):
+        """All todos completed, within limits → sends iteration_prompt."""
+        session = _make_auto_iter_session(iteration_prompt="go next", max_iterations=5)
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_called_once_with("t1", message="go next")
+        assert monitor._iteration_states["t1"].iteration_count == 1
+
+    def test_resets_state_when_max_iterations_reached(self):
+        """Iteration count >= max_iterations → reset state, send nothing."""
+        session = _make_auto_iter_session(max_iterations=3)
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        from app.gateway.session_health_monitor import _IterationState
+        monitor._iteration_states["t1"] = _IterationState(iteration_count=3, cycle_start_time=1.0)
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+        assert monitor._iteration_states["t1"].iteration_count == 0
+        assert monitor._iteration_states["t1"].cycle_start_time is None
+
+    def test_resets_state_when_duration_exceeded(self):
+        """Elapsed time >= max_duration_seconds → reset state, send nothing."""
+        session = _make_auto_iter_session(max_iterations=100, max_duration_seconds=60)
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        from app.gateway.session_health_monitor import _IterationState
+        monitor._iteration_states["t1"] = _IterationState(
+            iteration_count=1, cycle_start_time=time.time() - 120
+        )
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        mock_activate.assert_not_called()
+        assert monitor._iteration_states["t1"].iteration_count == 0
+
+    def test_disabled_session_not_included_in_check(self):
+        """Disabled auto-iteration session is not added to thread_ids in _check_all."""
+        session = _make_auto_iter_session(thread_id="t-disabled", enabled=False)
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        with (
+            patch.object(monitor, "_discover_threads_with_sessions", new_callable=AsyncMock, return_value=set()),
+            patch.object(monitor, "_check_and_activate_thread", new_callable=AsyncMock) as mock_check,
+        ):
+            asyncio.run(monitor._check_all())
+        mock_check.assert_not_called()
+
+    def test_per_session_activation_message_override(self):
+        """Per-session activation_message overrides global for 会话激活."""
+        monitor = SessionHealthMonitor(
+            activation_message="global msg",
+            session_activation_overrides={"t1": "per-session msg"},
+        )
+        assert monitor._get_session_activation_message("t1") == "per-session msg"
+        assert monitor._get_session_activation_message("t2") == "global msg"
+
+    def test_iteration_state_cleared_when_active_run(self):
+        """Active run resets iteration state."""
+        session = _make_auto_iter_session()
+        monitor = SessionHealthMonitor(auto_iteration_sessions=[session])
+        from app.gateway.session_health_monitor import _IterationState
+        monitor._iteration_states["t1"] = _IterationState(iteration_count=2, cycle_start_time=1.0)
+        with (
+            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
+            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
+            patch.object(monitor, "_activate_thread", new_callable=AsyncMock),
+        ):
+            asyncio.run(monitor._check_and_activate_thread("t1"))
+        assert "t1" not in monitor._iteration_states
