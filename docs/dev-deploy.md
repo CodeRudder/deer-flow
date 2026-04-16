@@ -89,15 +89,20 @@ make docker-logs    # 查看日志
 ## 数据文件位置
 
 ```
-~/.deer-flow-dev/
-├── checkpoints.db        # LangGraph 状态存储
-├── memory.json           # 全局记忆
-├── threads/              # 会话数据
+~/.deer-flow-dev/          # DeerFlow 数据（DEER_FLOW_HOME）
+├── checkpoints.db         # LangGraph checkpoint 存储
+├── memory.json            # 全局记忆
+├── threads/               # 会话数据
 │   └── {thread_id}/
-│       ├── *.jsonl       # 消息历史
-│       └── user-data/    # 上传文件
-└── agents/               # 自定义 Agent 配置
+│       ├── *.jsonl        # 消息历史
+│       └── user-data/     # 上传文件
+└── agents/                # 自定义 Agent 配置
+
+~/.langgraph_api_dev/      # LangGraph server 内部状态
+└── .langgraph_ops.pckl    # 线程/运行元数据（langgraph dev server 维护）
 ```
+
+两个目录均通过 Docker bind mount 挂载进容器，与生产目录（`~/.deer-flow`）完全隔离。
 
 ## 配置文件
 
