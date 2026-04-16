@@ -255,6 +255,9 @@ class SessionMonitor:
                             continue
                     except (json.JSONDecodeError, OSError):
                         pass
+                # Also check JSONL itself for terminal marker
+                if self._session_has_terminal_marker(jsonl_file):
+                    continue
                 # Check if recently updated (not stale)
                 mtime = jsonl_file.stat().st_mtime
                 if time.time() - mtime < timeout_seconds:
@@ -269,26 +272,28 @@ class SessionMonitor:
     # ------------------------------------------------------------------
 
     async def _activate_thread(self, thread_id: str, message: str | None = None) -> bool:
-        """Activate a stalled thread by creating a run with auto-cancellation.
-
-        Posts a message to the thread via ``POST /threads/{id}/runs/stream``
-        with ``on_disconnect: "cancel"`` so the run is automatically cancelled
-        when the HTTP client disconnects.  This prevents zombie runs that
-        block future activations.
-
-        The agent processes the message in the brief window before the
-        client disconnects, dispatching subtasks and updating todos.  Any
-        incomplete work is picked up by subsequent activation cycles.
-
-        Args:
-            thread_id: Target thread ID.
-            message: Message to send. Defaults to ``self._activation_message``.
-
-        Returns True if the request was accepted, False on error.
-        """
+        """Activate a stalled thread by creating a run with auto-cancellation."""
         import httpx
 
         msg = message if message is not None else self._activation_message
+
+        # Fetch latest checkpoint so the run resumes from the correct state
+        checkpoint_info: dict[str, Any] = {}
+        client = self._get_client()
+        if client is not None:
+            try:
+                state = await client.threads.get_state(thread_id)
+                cfg = state.get("config", {}) if isinstance(state, dict) else {}
+                configurable = cfg.get("configurable", {})
+                checkpoint_id = configurable.get("checkpoint_id")
+                checkpoint_ns = configurable.get("checkpoint_ns", "")
+                if checkpoint_id:
+                    checkpoint_info = {
+                        "checkpoint_id": checkpoint_id,
+                        "checkpoint_ns": checkpoint_ns,
+                    }
+            except Exception:
+                logger.debug("Failed to fetch checkpoint for thread %s (non-fatal)", thread_id, exc_info=True)
 
         payload: dict[str, Any] = {
             "assistant_id": "lead_agent",
@@ -309,6 +314,8 @@ class SessionMonitor:
             "multitask_strategy": "interrupt",
             "on_disconnect": "cancel",
         }
+        if checkpoint_info:
+            payload["checkpoint"] = checkpoint_info
 
         url = f"{self._langgraph_url}/threads/{thread_id}/runs/stream"
 
@@ -559,6 +566,36 @@ class SessionMonitor:
         success = await self._activate_thread(thread_id, message=iteration_prompt)
         if success:
             state.iteration_count += 1
+
+    @staticmethod
+    def _session_has_terminal_marker(jsonl_path: "Path") -> bool:
+        """Return True if the JSONL file's last non-empty line has a terminal status marker."""
+        import json as _json
+        try:
+            with open(jsonl_path, encoding="utf-8") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                if size == 0:
+                    return False
+                read_size = min(size, 4096)
+                f.seek(size - read_size)
+                lines = f.readlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                status = entry.get("status")
+                if status in _TERMINAL_STATUSES:
+                    return True
+                if "role" in entry:
+                    return False  # Last message line, no terminal marker
+            return False
+        except OSError:
+            return False
 
     @staticmethod
     def _status_value(status: Any) -> str:
