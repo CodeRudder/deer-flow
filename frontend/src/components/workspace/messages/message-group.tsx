@@ -47,7 +47,7 @@ export const MessageGroup = memo(function MessageGroup({
   className?: string;
   messages: Message[];
   isLoading?: boolean;
-  getMessagesMetadata?: (message: Message, index?: number) => { firstSeenState?: { created_at?: string } } | undefined;
+  getMessagesMetadata?: (message: Message, index?: number) => { firstSeenState?: { created_at?: string | null } } | undefined;
 }) {
   const { t } = useI18n();
   const [showAbove, setShowAbove] = useState(

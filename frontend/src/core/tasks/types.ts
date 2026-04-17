@@ -2,7 +2,7 @@ import type { AIMessage } from "@langchain/langgraph-sdk";
 
 export interface Subtask {
   id: string;
-  status: "in_progress" | "completed" | "failed";
+  status: "in_progress" | "completed" | "failed" | "interrupted";
   subagent_type: string;
   description: string;
   latestMessage?: AIMessage;
