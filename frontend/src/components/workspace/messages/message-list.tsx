@@ -154,6 +154,17 @@ export function MessageList({
   const loadMore = useCallback(() => {
     setRenderCount((prev) => prev + LOAD_MORE_COUNT);
   }, []);
+  const loadMoreRef = useRef(loadMore);
+  loadMoreRef.current = loadMore;
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const target = e.currentTarget;
+      if (target.scrollTop < 100) {
+        loadMoreRef.current();
+      }
+    },
+    [],
+  );
 
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
@@ -166,18 +177,6 @@ export function MessageList({
   const startIndex = Math.max(0, allGroups.length - renderCount);
   const visibleGroups = allGroups.slice(startIndex);
   const hasMore = startIndex > 0;
-
-  // Load more on scroll to top
-  const handleScroll = useCallback(
-    (e: React.UIEvent<HTMLDivElement>) => {
-      if (!hasMore) return;
-      const target = e.currentTarget;
-      if (target.scrollTop < 100) {
-        loadMore();
-      }
-    },
-    [hasMore, loadMore],
-  );
 
   return (
     <Conversation
