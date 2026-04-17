@@ -193,12 +193,32 @@ async def _store_upsert(store, thread_id: str, *, metadata: dict | None = None, 
 def _inject_message_timestamps(thread_id: str, serialized_values: dict) -> None:
     """Inject timestamps from conversation.jsonl into serialized messages.
 
-    Reads the JSONL file to build a msg_id → ts mapping, then sets
-    ``response_metadata.created_at`` on each message that has a matching ID.
+    Only reads the portion of the JSONL file needed to resolve timestamps
+    for messages that don't already have one.  Scans backwards from the
+    end of the file to find matching IDs quickly (recent messages are at
+    the bottom).  Stops as soon as all needed IDs are resolved.
+
     Modifies ``serialized_values`` in place.  Silently skips on any error.
     """
+    import json as _json
+
     messages = serialized_values.get("messages")
     if not messages or not isinstance(messages, list):
+        return
+
+    # Collect message IDs that need timestamps
+    needed: dict[str, dict] = {}  # msg_id → msg dict ref
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        mid = msg.get("id")
+        if not mid:
+            continue
+        rm = msg.get("response_metadata") or {}
+        if not rm.get("created_at"):
+            needed[mid] = msg
+
+    if not needed:
         return
 
     try:
@@ -208,36 +228,54 @@ def _inject_message_timestamps(thread_id: str, serialized_values: dict) -> None:
         if not jsonl_path.exists():
             return
 
-        # Build id → ts mapping from JSONL
-        ts_map: dict[str, str] = {}
-        with open(jsonl_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    import json as _json
-
-                    entry = _json.loads(line)
-                    mid = entry.get("id")
-                    ts = entry.get("ts")
-                    if mid and ts:
-                        ts_map[mid] = ts
-                except Exception:
-                    continue
-
-        if not ts_map:
+        # Read file backwards in chunks to find needed IDs quickly
+        remaining = set(needed.keys())
+        chunk_size = 8192
+        file_size = jsonl_path.stat().st_size
+        if file_size == 0:
             return
 
-        # Inject into messages
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            mid = msg.get("id")
-            if mid and mid in ts_map:
-                rm = msg.setdefault("response_metadata", {})
-                if not rm.get("created_at"):
-                    rm["created_at"] = ts_map[mid]
+        with open(jsonl_path, "rb") as f:
+            # Read from end in chunks, parse lines
+            pos = file_size
+            leftover = b""
+            while pos > 0 and remaining:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size) + leftover
+                lines = chunk.split(b"\n")
+                # First element may be partial line — save for next iteration
+                leftover = lines[0]
+                # Process complete lines (from end to start)
+                for raw_line in reversed(lines[1:]):
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        entry = _json.loads(raw_line)
+                    except Exception:
+                        continue
+                    mid = entry.get("id")
+                    if mid and mid in remaining:
+                        msg = needed[mid]
+                        rm = msg.setdefault("response_metadata", {})
+                        rm["created_at"] = entry.get("ts")
+                        remaining.discard(mid)
+
+            # Process any remaining leftover (first line of file)
+            if remaining and leftover:
+                raw_line = leftover.strip()
+                if raw_line:
+                    try:
+                        entry = _json.loads(raw_line)
+                        mid = entry.get("id")
+                        if mid and mid in remaining:
+                            msg = needed[mid]
+                            rm = msg.setdefault("response_metadata", {})
+                            rm["created_at"] = entry.get("ts")
+                    except Exception:
+                        pass
     except Exception:
         logger.debug("Failed to inject timestamps for thread %s", thread_id, exc_info=True)
 
