@@ -220,16 +220,8 @@ class TestHasRunningSubtask:
 
 
 class TestCheckAndActivateThread:
-    def _base_mocks(self, **overrides):
-        """Return standard mock dict with _thread_exists=True."""
-        mocks = {
-            "_thread_exists": AsyncMock(return_value=True),
-        }
-        mocks.update(overrides)
-        return mocks
-
     def test_skips_zombie_thread(self):
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock),
@@ -305,7 +297,7 @@ class TestCheckAndActivateThread:
 
     def test_activates_when_run_failed_no_todos(self):
         """Run failed but all todos completed → still activate (todos may not be created yet)."""
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
@@ -317,11 +309,11 @@ class TestCheckAndActivateThread:
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
-        mock_activate.assert_called_once_with("t1")
+        mock_activate.assert_called_once_with("t1", message=monitor.DEFAULT_ACTIVATION_MESSAGE)
 
     def test_activates_when_last_message_is_llm_error(self):
         """Last AI message is LLM error → activate even if todos completed and run succeeded."""
-        monitor = SessionHealthMonitor()
+        monitor = SessionMonitor()
         with (
             patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
@@ -333,7 +325,7 @@ class TestCheckAndActivateThread:
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
-        mock_activate.assert_called_once_with("t1")
+        mock_activate.assert_called_once_with("t1", message=monitor.DEFAULT_ACTIVATION_MESSAGE)
 
     def test_does_not_count_failed_activation(self):
         monitor = SessionMonitor()
@@ -589,15 +581,26 @@ def _make_auto_iter_session(
 
 
 class TestAutoIteration:
+    def _base_mocks(self, **overrides):
+        """Standard mocks for auto-iteration tests."""
+        mocks = {
+            "_thread_exists": AsyncMock(return_value=True),
+            "_has_running_subtask": AsyncMock(return_value=False),
+            "_has_active_run": AsyncMock(return_value=False),
+            "_is_user_run_interrupted": AsyncMock(return_value=False),
+            "_has_unfinished_todos": AsyncMock(return_value=False),
+            "_is_user_run_failed": AsyncMock(return_value=False),
+            "_is_last_message_llm_error": AsyncMock(return_value=False),
+        }
+        mocks.update(overrides)
+        return mocks
+
     def test_skips_when_no_todos(self):
         """No todos at all → skip (no plan started)."""
         monitor = SessionMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
+        mocks = self._base_mocks(_has_any_todos=AsyncMock(return_value=False))
         with (
-            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=False),
+            patch.multiple(monitor, **mocks),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -606,11 +609,9 @@ class TestAutoIteration:
     def test_skips_when_todos_incomplete(self):
         """Unfinished todos → 会话激活 (not auto iteration), iteration state untouched."""
         monitor = SessionMonitor(auto_iteration_sessions=[_make_auto_iter_session()])
+        mocks = self._base_mocks(_has_unfinished_todos=AsyncMock(return_value=True))
         with (
-            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=True),
+            patch.multiple(monitor, **mocks),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -622,12 +623,9 @@ class TestAutoIteration:
         """All todos completed, within limits → sends iteration_prompt."""
         session = _make_auto_iter_session(iteration_prompt="go next", max_iterations=5)
         monitor = SessionMonitor(auto_iteration_sessions=[session])
+        mocks = self._base_mocks(_has_any_todos=AsyncMock(return_value=True))
         with (
-            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=True),
+            patch.multiple(monitor, **mocks),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock, return_value=True) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -640,12 +638,9 @@ class TestAutoIteration:
         monitor = SessionMonitor(auto_iteration_sessions=[session])
         from app.gateway.session_monitor import _IterationState
         monitor._iteration_states["t1"] = _IterationState(iteration_count=3, cycle_start_time=1.0)
+        mocks = self._base_mocks(_has_any_todos=AsyncMock(return_value=True))
         with (
-            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=True),
+            patch.multiple(monitor, **mocks),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -661,12 +656,9 @@ class TestAutoIteration:
         monitor._iteration_states["t1"] = _IterationState(
             iteration_count=1, cycle_start_time=time.time() - 120
         )
+        mocks = self._base_mocks(_has_any_todos=AsyncMock(return_value=True))
         with (
-            patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_is_user_interrupted", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_unfinished_todos", new_callable=AsyncMock, return_value=False),
-            patch.object(monitor, "_has_any_todos", new_callable=AsyncMock, return_value=True),
+            patch.multiple(monitor, **mocks),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock) as mock_activate,
         ):
             asyncio.run(monitor._check_and_activate_thread("t1"))
@@ -701,6 +693,7 @@ class TestAutoIteration:
         from app.gateway.session_monitor import _IterationState
         monitor._iteration_states["t1"] = _IterationState(iteration_count=2, cycle_start_time=1.0)
         with (
+            patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_has_running_subtask", new_callable=AsyncMock, return_value=False),
             patch.object(monitor, "_has_active_run", new_callable=AsyncMock, return_value=True),
             patch.object(monitor, "_activate_thread", new_callable=AsyncMock),

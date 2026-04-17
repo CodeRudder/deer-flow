@@ -162,15 +162,17 @@ class SessionMonitor:
         """Check a single thread and activate if stalled.
 
         Decision tree:
-        1. Skip if activation limit reached (会话激活 counter).
+        1. Skip zombie threads (disk-only, not in LangGraph).
         2. Skip if subtask running or active run (reset counters).
         3. Skip if user-interrupted.
-        4. If unfinished todos → 会话激活.
-        5. Elif all todos completed → 自动迭代 (configured sessions only).
-        6. Else → skip.
+        4. Skip if activation limit reached.
+        5. Check activation reasons: unfinished todos / run failed / LLM error → 会话激活.
+        6. Elif all todos completed → 自动迭代 (configured sessions only).
+        7. Else → skip.
         """
-        # 0. Check activation limit
-        if self._activation_counts.get(thread_id, 0) >= self._max_activations:
+        # 0. Skip threads that don't exist in LangGraph (zombie disk-only threads)
+        if not await self._thread_exists(thread_id):
+            logger.debug("Thread %s: does not exist in LangGraph, skipping", thread_id)
             return
 
         # 1. Check for running subtasks
@@ -192,13 +194,30 @@ class SessionMonitor:
             logger.debug("Thread %s: last user run was interrupted, skipping", thread_id)
             return
 
-        # 4. 会话激活: unfinished todos
-        if await self._has_unfinished_todos(thread_id):
+        # 4. Check activation limit
+        if self._activation_counts.get(thread_id, 0) >= self._max_activations:
+            return
+
+        # 5. Check reasons to activate
+        has_todos = await self._has_unfinished_todos(thread_id)
+        run_failed = await self._is_user_run_failed(thread_id)
+        last_msg_error = await self._is_last_message_llm_error(thread_id)
+
+        if has_todos or run_failed or last_msg_error:
+            reasons = []
+            if has_todos:
+                reasons.append("unfinished todos")
+            if run_failed:
+                reasons.append("last run failed")
+            if last_msg_error:
+                reasons.append("last message is LLM error")
+            reason = ", ".join(reasons)
+
             count = self._activation_counts.get(thread_id, 0) + 1
             msg = self._get_session_activation_message(thread_id)
             logger.info(
-                "Activating stalled thread %s (attempt %d/%d)",
-                thread_id, count, self._max_activations,
+                "Activating stalled thread %s (attempt %d/%d, reason: %s)",
+                thread_id, count, self._max_activations, reason,
             )
             success = await self._activate_thread(thread_id, message=msg)
             if success:
@@ -210,13 +229,13 @@ class SessionMonitor:
                 )
             return
 
-        # 5. 自动迭代: all todos completed (configured sessions only)
+        # 6. 自动迭代: session idle AND all todos completed AND configured
         auto_cfg = self._get_auto_iteration_session(thread_id)
         if auto_cfg:
             await self._run_auto_iteration(thread_id, auto_cfg)
             return
 
-        logger.debug("Thread %s: no unfinished todos, skipping", thread_id)
+        logger.debug("Thread %s: no reason to activate, skipping", thread_id)
 
     async def _has_running_subtask(self, thread_id: str) -> bool:
         """Check if any subtask for this thread is still running."""
@@ -475,6 +494,27 @@ class SessionMonitor:
         except Exception:
             return False
 
+    async def _is_user_run_interrupted(self, thread_id: str) -> bool:
+        """Check if the last *user-initiated* run was interrupted.
+
+        Filters out health-monitor activation runs (``metadata.source ==
+        "health_monitor"``) so that activations don't mask the user's
+        original stop intent.
+        """
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            runs = await client.runs.list(thread_id, limit=20)
+            for run in runs:
+                meta = run.get("metadata", {})
+                if meta.get("source") == "health_monitor":
+                    continue  # Skip activation runs
+                return run.get("status") == "interrupted"
+            return False
+        except Exception:
+            return False
+
     async def _has_unfinished_todos(self, thread_id: str) -> bool:
         """Check if the thread has unfinished (in_progress or pending) todos."""
         client = self._get_client()
@@ -500,14 +540,12 @@ class SessionMonitor:
         if client is None:
             return False
         try:
-            runs = await client.runs.list(thread_id, limit=20)
-            for run in runs:
-                meta = run.get("metadata", {})
-                if meta.get("source") == "health_monitor":
-                    continue  # Skip activation runs
-                return run.get("status") == "interrupted"
-            return False
+            state = await client.threads.get_state(thread_id)
+            values = state.get("values", {})
+            todos = values.get("todos", [])
+            return bool(todos)
         except Exception:
+            logger.debug("Failed to check todos for thread %s", thread_id, exc_info=True)
             return False
 
     async def _is_user_run_failed(self, thread_id: str) -> bool:
@@ -537,11 +575,13 @@ class SessionMonitor:
             return False
         try:
             state = await client.threads.get_state(thread_id)
-            values = state.get("values", {})
-            todos = values.get("todos", [])
-            return bool(todos)
+            messages = state.get("values", {}).get("messages", [])
+            for msg in reversed(messages):
+                if msg.get("type") == "ai":
+                    return msg.get("additional_kwargs", {}).get("llm_error", False)
+            return False
         except Exception:
-            logger.debug("Failed to check todos for thread %s", thread_id, exc_info=True)
+            logger.debug("Failed to check last message for thread %s", thread_id, exc_info=True)
             return False
 
     def _get_session_activation_message(self, thread_id: str) -> str:
