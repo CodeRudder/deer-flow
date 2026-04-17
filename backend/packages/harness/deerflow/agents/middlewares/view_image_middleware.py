@@ -184,8 +184,10 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
 
         logger.debug("Injecting image details message with images before LLM call")
 
-        # Return state update with the new message
-        return {"messages": [human_msg]}
+        # Return state update with the new message AND clear viewed_images
+        # to prevent re-injecting the same images on future turns.
+        # The reducer treats {} as a clear signal (merge_viewed_images special case).
+        return {"messages": [human_msg], "viewed_images": {}}
 
     @override
     def before_model(self, state: ViewImageMiddlewareState, runtime: Runtime) -> dict | None:
