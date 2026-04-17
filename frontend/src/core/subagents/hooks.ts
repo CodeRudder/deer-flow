@@ -121,3 +121,32 @@ export async function cancelSubtask(taskId: string): Promise<{
   if (!res.ok) throw new Error("Failed to cancel subtask");
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Main session messages (from conversation.jsonl)
+// ---------------------------------------------------------------------------
+
+export interface ThreadMessagesResponse {
+  messages: SubagentMessage[];
+  total: number;
+  has_more: boolean;
+}
+
+export function useMainSessionMessages(
+  threadId: string,
+  enabled: boolean,
+  limit: number = 100,
+  offset: number = 0,
+) {
+  return useQuery<ThreadMessagesResponse>({
+    queryKey: ["thread-messages", threadId, limit, offset],
+    queryFn: async () => {
+      const res = await fetch(
+        `${getBackendBaseURL()}/api/threads/${threadId}/messages?limit=${limit}&offset=${offset}`,
+      );
+      if (!res.ok) throw new Error("Failed to fetch thread messages");
+      return res.json();
+    },
+    enabled,
+  });
+}

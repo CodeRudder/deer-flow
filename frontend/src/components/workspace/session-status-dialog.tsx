@@ -11,6 +11,8 @@ import {
   Activity,
   CheckCircle2,
   Clock,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   Loader2,
   Square,
@@ -90,6 +92,7 @@ function formatTime(iso: string | null | undefined) {
 
 function MainSessionCard({ session }: { session: MainSessionStatus }) {
   const { t } = useI18n();
+  const { setSelectedTaskId } = useSubtaskContext();
   return (
     <div className="rounded-lg border p-3">
       <div className="flex items-center gap-3">
@@ -113,9 +116,18 @@ function MainSessionCard({ session }: { session: MainSessionStatus }) {
             )}
           </div>
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 shrink-0 text-xs"
+          onClick={() => setSelectedTaskId("__main__")}
+        >
+          <FileText className="mr-1 size-3" />
+          查看消息
+        </Button>
       </div>
       {session.last_message && (
-        <div className="text-xs text-muted-foreground mt-2 line-clamp-2 border-t pt-2">
+        <div className="text-xs text-muted-foreground mt-2 line-clamp-3 break-all border-t pt-2">
           {session.last_message}
         </div>
       )}
@@ -171,7 +183,7 @@ function SubtaskRow({
           )}
         </div>
         {task.last_message && (
-          <div className="text-xs text-muted-foreground mt-1 truncate">
+          <div className="text-xs text-muted-foreground mt-1 line-clamp-3 break-all">
             {task.last_message}
           </div>
         )}
@@ -207,9 +219,13 @@ function SubtaskRow({
   );
 }
 
+const PAGE_SIZE_OPTIONS = [5, 10, 15, 20] as const;
+
 export function SessionStatusButton({ threadId }: { threadId: string }) {
   const [open, setOpen] = useState(false);
   const { data, isLoading, refetch } = useSessionStatus(threadId);
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [page, setPage] = useState(0);
 
   const activeCount = data?.active_subtasks.length ?? 0;
   const isRunning =
@@ -232,7 +248,7 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
           )}
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>会话状态</DialogTitle>
         </DialogHeader>
@@ -269,15 +285,60 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
                   最近任务 ({data.recent_subtasks.length})
                 </h4>
                 <div className="flex flex-col gap-2">
-                  {data.recent_subtasks.map((t) => (
-                    <SubtaskRow
-                      key={t.task_id}
-                      task={t}
-                      threadId={threadId}
-                      onCancelled={() => refetch()}
-                    />
-                  ))}
+                  {data.recent_subtasks
+                    .slice(page * pageSize, (page + 1) * pageSize)
+                    .map((t) => (
+                      <SubtaskRow
+                        key={t.task_id}
+                        task={t}
+                        threadId={threadId}
+                        onCancelled={() => refetch()}
+                      />
+                    ))}
                 </div>
+                {/* Pagination controls */}
+                {data.recent_subtasks.length > pageSize && (
+                  <div className="mt-3 flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground text-xs">每页</span>
+                      <select
+                        className="border-input bg-background h-7 rounded border px-1 text-xs"
+                        value={pageSize}
+                        onChange={(e) => {
+                          setPageSize(Number(e.target.value));
+                          setPage(0);
+                        }}
+                      >
+                        {PAGE_SIZE_OPTIONS.map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        disabled={page === 0}
+                        onClick={() => setPage((p) => p - 1)}
+                      >
+                        <ChevronLeft className="size-4" />
+                      </Button>
+                      <span className="text-muted-foreground text-xs">
+                        {page + 1} / {Math.max(1, Math.ceil(data.recent_subtasks.length / pageSize))}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        disabled={(page + 1) * pageSize >= data.recent_subtasks.length}
+                        onClick={() => setPage((p) => p + 1)}
+                      >
+                        <ChevronRight className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
