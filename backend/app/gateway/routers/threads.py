@@ -1010,3 +1010,64 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
         active_subtasks=active,
         recent_subtasks=recent[:10],
     )
+
+
+# ---------------------------------------------------------------------------
+# Main session messages (from conversation.jsonl)
+# ---------------------------------------------------------------------------
+
+
+class ThreadMessagesResponse(BaseModel):
+    """Paginated messages from the local conversation JSONL file."""
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+@router.get("/{thread_id}/messages", response_model=ThreadMessagesResponse)
+async def get_thread_messages(
+    thread_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> ThreadMessagesResponse:
+    """Get paginated messages from the thread's conversation.jsonl file.
+
+    Returns the last ``limit`` messages starting from ``offset`` from the end.
+    Messages are returned in chronological order (oldest first).
+
+    - ``offset=0, limit=100`` → last 100 messages
+    - ``offset=100, limit=100`` → messages 101-200 from the end
+    """
+    import json as _json
+
+    jsonl_path = get_paths().thread_dir(thread_id) / "conversation.jsonl"
+    if not jsonl_path.exists():
+        return ThreadMessagesResponse(messages=[], total=0, has_more=False)
+
+    # Read all lines (each is a JSON message)
+    try:
+        all_messages: list[dict[str, Any]] = []
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    all_messages.append(_json.loads(line))
+                except _json.JSONDecodeError:
+                    continue
+    except OSError:
+        logger.debug("Failed to read conversation.jsonl for thread %s", thread_id, exc_info=True)
+        return ThreadMessagesResponse(messages=[], total=0, has_more=False)
+
+    total = len(all_messages)
+    # offset=0 means latest, so slice from end
+    end_idx = total - offset
+    start_idx = max(0, end_idx - limit)
+    if end_idx <= 0:
+        return ThreadMessagesResponse(messages=[], total=total, has_more=False)
+
+    page = all_messages[start_idx:end_idx]
+    has_more = start_idx > 0
+
+    return ThreadMessagesResponse(messages=page, total=total, has_more=has_more)
