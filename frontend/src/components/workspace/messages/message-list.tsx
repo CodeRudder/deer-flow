@@ -1,5 +1,5 @@
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Conversation,
@@ -34,6 +34,9 @@ import { SubtaskDetailSheet } from "../subtask-detail-sheet";
 
 export const MESSAGE_LIST_DEFAULT_PADDING_BOTTOM = 160;
 export const MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM = 80;
+
+const INITIAL_RENDER_COUNT = 30;
+const LOAD_MORE_COUNT = 20;
 
 export function MessageList({
   className,
@@ -143,12 +146,55 @@ export function MessageList({
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
   }
+
+  // Group messages once, then paginate the groups
+  const allGroups = groupMessages(messages, (group) => group);
+  const [renderCount, setRenderCount] = useState(INITIAL_RENDER_COUNT);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Reset render count when thread changes
+  const threadIdRef = useRef(threadId);
+  if (threadIdRef.current !== threadId) {
+    threadIdRef.current = threadId;
+    setRenderCount(INITIAL_RENDER_COUNT);
+  }
+
+  // Show the last N groups (most recent messages)
+  const startIndex = Math.max(0, allGroups.length - renderCount);
+  const visibleGroups = allGroups.slice(startIndex);
+  const hasMore = startIndex > 0;
+
+  const loadMore = useCallback(() => {
+    setRenderCount((prev) => prev + LOAD_MORE_COUNT);
+  }, []);
+
+  // Load more on scroll to top
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      if (!hasMore) return;
+      const target = e.currentTarget;
+      if (target.scrollTop < 100) {
+        loadMore();
+      }
+    },
+    [hasMore, loadMore],
+  );
+
   return (
     <Conversation
       className={cn("flex size-full flex-col justify-center", className)}
+      onScroll={handleScroll}
     >
       <ConversationContent className="mx-auto w-full max-w-(--container-width-md) gap-8 pt-12">
-        {groupMessages(messages, (group) => {
+        {hasMore && (
+          <button
+            className="text-muted-foreground mx-auto block py-2 text-sm hover:underline"
+            onClick={loadMore}
+          >
+            加载更多消息...
+          </button>
+        )}
+        {visibleGroups.map((group) => {
           if (group.type === "human" || group.type === "assistant") {
             return group.messages.map((msg) => {
               const meta = thread.getMessagesMetadata(msg);

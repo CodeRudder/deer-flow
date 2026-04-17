@@ -35,7 +35,7 @@ import { CopyButton } from "../copy-button";
 
 import { MarkdownContent } from "./markdown-content";
 
-export function MessageListItem({
+export const MessageListItem = memo(function MessageListItem({
   className,
   message,
   isLoading,
@@ -90,7 +90,7 @@ export function MessageListItem({
       )}
     </AIElementMessage>
   );
-}
+});
 
 /**
  * Custom image component that handles artifact URLs

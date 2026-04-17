@@ -12,7 +12,7 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
 import {
   ChainOfThought,
@@ -34,12 +34,11 @@ import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 import { useArtifacts } from "../artifacts";
-import { FlipDisplay } from "../flip-display";
 import { Tooltip } from "../tooltip";
 
 import { MarkdownContent } from "./markdown-content";
 
-export function MessageGroup({
+export const MessageGroup = memo(function MessageGroup({
   className,
   messages,
   isLoading = false,
@@ -139,7 +138,6 @@ export function MessageGroup({
               ),
             )}
           {lastToolCallStep && (
-            <FlipDisplay uniqueKey={lastToolCallStep.id ?? ""}>
               <ToolCall
                 key={lastToolCallStep.id}
                 {...lastToolCallStep}
@@ -147,7 +145,6 @@ export function MessageGroup({
                 isLoading={isLoading}
                 time={getMessageTime(lastToolCallStep.messageId)}
               />
-            </FlipDisplay>
           )}
         </ChainOfThoughtContent>
       )}
@@ -193,8 +190,7 @@ export function MessageGroup({
       )}
     </ChainOfThought>
   );
-}
-
+});
 function ToolCall({
   id,
   messageId,

@@ -22,3 +22,18 @@ export function textOfMessage(message: Message) {
 export function titleOfThread(thread: AgentThread) {
   return thread.values?.title ?? "Untitled";
 }
+
+export function lastMessagePreview(thread: AgentThread, maxLen = 60): string | null {
+  const messages = thread.values?.messages;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.type !== "human" && msg.type !== "ai") continue;
+    const text = textOfMessage(msg);
+    if (text && text.trim()) {
+      const clean = text.trim().replace(/\s+/g, " ");
+      return clean.length > maxLen ? clean.slice(0, maxLen) + "…" : clean;
+    }
+  }
+  return null;
+}
