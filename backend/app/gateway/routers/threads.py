@@ -190,6 +190,58 @@ async def _store_upsert(store, thread_id: str, *, metadata: dict | None = None, 
         await _store_put(store, val)
 
 
+def _inject_message_timestamps(thread_id: str, serialized_values: dict) -> None:
+    """Inject timestamps from conversation.jsonl into serialized messages.
+
+    Reads the JSONL file to build a msg_id → ts mapping, then sets
+    ``response_metadata.created_at`` on each message that has a matching ID.
+    Modifies ``serialized_values`` in place.  Silently skips on any error.
+    """
+    messages = serialized_values.get("messages")
+    if not messages or not isinstance(messages, list):
+        return
+
+    try:
+        from deerflow.config.paths import get_paths
+
+        jsonl_path = get_paths().thread_dir(thread_id) / "conversation.jsonl"
+        if not jsonl_path.exists():
+            return
+
+        # Build id → ts mapping from JSONL
+        ts_map: dict[str, str] = {}
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    import json as _json
+
+                    entry = _json.loads(line)
+                    mid = entry.get("id")
+                    ts = entry.get("ts")
+                    if mid and ts:
+                        ts_map[mid] = ts
+                except Exception:
+                    continue
+
+        if not ts_map:
+            return
+
+        # Inject into messages
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            mid = msg.get("id")
+            if mid and mid in ts_map:
+                rm = msg.setdefault("response_metadata", {})
+                if not rm.get("created_at"):
+                    rm["created_at"] = ts_map[mid]
+    except Exception:
+        logger.debug("Failed to inject timestamps for thread %s", thread_id, exc_info=True)
+
+
 def _derive_thread_status(checkpoint_tuple) -> str:
     """Derive thread status from checkpoint metadata."""
     if checkpoint_tuple is None:
@@ -532,6 +584,10 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
         checkpoint_id = ckpt_config.get("configurable", {}).get("checkpoint_id")
 
     channel_values = checkpoint.get("channel_values", {})
+    serialized = serialize_channel_values(channel_values)
+
+    # Inject timestamps from conversation.jsonl into messages
+    _inject_message_timestamps(thread_id, serialized)
 
     parent_config = getattr(checkpoint_tuple, "parent_config", None)
     parent_checkpoint_id = None
@@ -543,7 +599,7 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
     tasks = [{"id": getattr(t, "id", ""), "name": getattr(t, "name", "")} for t in tasks_raw]
 
     return ThreadStateResponse(
-        values=serialize_channel_values(channel_values),
+        values=serialized,
         next=next_tasks,
         metadata=metadata,
         checkpoint={"id": checkpoint_id, "ts": str(metadata.get("created_at", ""))},
