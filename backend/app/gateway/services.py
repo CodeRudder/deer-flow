@@ -79,15 +79,22 @@ def normalize_input(raw_input: dict[str, Any] | None) -> dict[str, Any]:
     messages = raw_input.get("messages")
     if messages and isinstance(messages, list):
         converted = []
+        now = time.time()
         for msg in messages:
             if isinstance(msg, dict):
                 role = msg.get("role", msg.get("type", "user"))
                 content = msg.get("content", "")
                 if role in ("user", "human"):
-                    converted.append(HumanMessage(content=content))
+                    converted.append(HumanMessage(
+                        content=content,
+                        response_metadata={"created_at": now},
+                    ))
                 else:
                     # TODO: handle other message types (system, ai, tool)
-                    converted.append(HumanMessage(content=content))
+                    converted.append(HumanMessage(
+                        content=content,
+                        response_metadata={"created_at": now},
+                    ))
             else:
                 converted.append(msg)
         return {**raw_input, "messages": converted}

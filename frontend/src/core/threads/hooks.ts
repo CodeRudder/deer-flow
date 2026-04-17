@@ -208,7 +208,7 @@ export function useThreadStream({
     reconnectOnMount: runMetadataStorageRef.current
       ? () => runMetadataStorageRef.current!
       : false,
-    fetchStateHistory: { limit: 10 },
+    fetchStateHistory: { limit: 1 },
     onCreated(meta) {
       handleStreamStart(meta.thread_id);
       setOnStreamThreadId(meta.thread_id);

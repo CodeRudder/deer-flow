@@ -195,14 +195,16 @@ export function MessageList({
         {visibleGroups.map((group) => {
           if (group.type === "human" || group.type === "assistant") {
             return group.messages.map((msg) => {
-              const meta = thread.getMessagesMetadata(msg);
-              const timestamp = meta?.firstSeenState?.created_at;
+              // Prefer backend-stamped timestamp from response_metadata
+              const rmCreatedAt = msg.response_metadata?.created_at;
+              const metaCreatedAt = thread.getMessagesMetadata(msg)?.firstSeenState?.created_at;
+              const ts = rmCreatedAt ?? metaCreatedAt;
               return (
                 <MessageListItem
                   key={`${group.id}/${msg.id}`}
                   message={msg}
                   isLoading={thread.isLoading}
-                  timestamp={timestamp ? new Date(timestamp) : undefined}
+                  timestamp={ts ? new Date(typeof ts === "number" ? ts * 1000 : ts) : undefined}
                 />
               );
             });
