@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ClipboardListIcon,
   Loader2Icon,
-  MessageSquareIcon,
   XCircleIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,17 +16,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import {
-  useMainSessionMessages,
-  useSubtaskMessages,
-} from "@/core/subagents/hooks";
+import { useSubtaskMessages } from "@/core/subagents/hooks";
 import type { SubagentMessage } from "@/core/subagents/hooks";
 import { useSubtaskContext } from "@/core/tasks/context";
 
 import { MarkdownContent } from "./messages/markdown-content";
 
-const MAIN_SESSION_ID = "__main__";
-const MESSAGES_PER_PAGE = 100;
 const MIN_SHEET_WIDTH = 360;
 const MAX_SHEET_WIDTH = 960;
 const DEFAULT_SHEET_WIDTH = 540;
@@ -152,79 +146,6 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
   return null;
 }
 
-function MainSessionMessages({ threadId }: { threadId: string }) {
-  const [offset, setOffset] = useState(0);
-  const [allMessages, setAllMessages] = useState<SubagentMessage[]>([]);
-  const { data, isLoading } = useMainSessionMessages(
-    threadId,
-    true,
-    MESSAGES_PER_PAGE,
-    offset,
-  );
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const isInitialLoad = useRef(true);
-
-  // When data arrives, merge into allMessages
-  useEffect(() => {
-    if (!data?.messages) return;
-    if (offset === 0) {
-      setAllMessages(data.messages);
-      isInitialLoad.current = true;
-    } else {
-      // Prepend older messages
-      setAllMessages((prev) => [...data.messages, ...prev]);
-    }
-  }, [data, offset]);
-
-  // Auto-scroll to bottom on initial load
-  useEffect(() => {
-    if (isInitialLoad.current && allMessages.length > 0) {
-      requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: "instant" });
-      });
-      isInitialLoad.current = false;
-    }
-  }, [allMessages]);
-
-  const handleLoadMore = useCallback(() => {
-    setOffset((prev) => prev + MESSAGES_PER_PAGE);
-  }, []);
-
-  const hasMore = data?.has_more ?? false;
-
-  return (
-    <>
-      <div className="text-muted-foreground mb-3 flex items-center gap-2 text-xs">
-        <MessageSquareIcon className="size-3.5" />
-        <span>主会话消息</span>
-        <span>·</span>
-        <span>共 {data?.total ?? 0} 条</span>
-      </div>
-      {hasMore && (
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-foreground mb-2 flex w-full items-center justify-center gap-1 py-1 text-xs hover:underline"
-          onClick={handleLoadMore}
-          disabled={isLoading}
-        >
-          {isLoading ? (
-            <Loader2Icon className="size-3 animate-spin" />
-          ) : (
-            "加载更多消息..."
-          )}
-        </button>
-      )}
-      <div className="flex flex-col gap-3">
-        {allMessages.map((msg, i) => (
-          <MessageItem key={msg.id ?? `msg-${i}`} msg={msg} />
-        ))}
-        <div ref={bottomRef} />
-      </div>
-    </>
-  );
-}
-
 function SubtaskMessages({
   threadId,
   taskId,
@@ -291,8 +212,6 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
   const startX = useRef(0);
   const startWidth = useRef(0);
 
-  const isMainSession = selectedTaskId === MAIN_SESSION_ID;
-
   // Drag-to-resize handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -342,24 +261,13 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
         />
         <SheetHeader className="shrink-0 px-6 pt-6 pb-2">
           <SheetTitle className="flex items-center gap-2">
-            {isMainSession ? (
-              <>
-                <MessageSquareIcon className="size-4" />
-                <span>主会话消息</span>
-              </>
-            ) : (
-              <>
-                <ClipboardListIcon className="size-4" />
-                <span>子任务详情</span>
-              </>
-            )}
+            <ClipboardListIcon className="size-4" />
+            <span>子任务详情</span>
           </SheetTitle>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-2">
-          {isMainSession ? (
-            <MainSessionMessages threadId={threadId} />
-          ) : selectedTaskId ? (
+          {selectedTaskId ? (
             <SubtaskMessages threadId={threadId} taskId={selectedTaskId} />
           ) : null}
         </div>

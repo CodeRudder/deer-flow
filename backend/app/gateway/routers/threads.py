@@ -117,13 +117,121 @@ class HistoryEntry(BaseModel):
 class ThreadHistoryRequest(BaseModel):
     """Request body for checkpoint history."""
 
-    limit: int = Field(default=10, ge=1, le=100, description="Maximum entries")
+    limit: int = Field(default=25, ge=1, le=500, description="Maximum entries")
     before: str | None = Field(default=None, description="Cursor for pagination")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Fields to keep in values when returning search results.
+_SEARCH_VALUES_KEEP = {"title"}
+
+
+def _extract_search_values(vals: dict[str, Any]) -> dict[str, Any]:
+    """Extract lightweight values for thread search results.
+
+    Returns a dict with ``title`` and a single-element ``messages`` list
+    containing the last human/ai message preview (max 120 chars).
+    """
+    result: dict[str, Any] = {}
+    if isinstance(vals, dict):
+        for k in _SEARCH_VALUES_KEEP:
+            if k in vals:
+                result[k] = vals[k]
+        # Extract last message preview
+        messages = vals.get("messages")
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") not in ("human", "ai"):
+                    continue
+                content = msg.get("content", "")
+                text = ""
+                if isinstance(content, str):
+                    text = content.strip()
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text = (part.get("text") or "").strip()
+                            break
+                if text:
+                    preview = text.replace("\n", " ")
+                    if len(preview) > 120:
+                        preview = preview[:120] + "…"
+                    result["messages"] = [{"type": msg["type"], "content": preview}]
+                    break
+    return result
+
+
+# Message trimming thresholds
+_HEAD_MESSAGES = 10
+_TAIL_MESSAGES = 40
+_MAX_CONTENT_CHARS = 4000
+
+
+def _truncate_content(msg: dict[str, Any]) -> dict[str, Any]:
+    """Truncate oversized content in a single message.
+
+    Handles both string content and list-of-parts content (multi-modal).
+    Large blobs (e.g. base64 images, huge tool output) are replaced with
+    a size indicator.
+    """
+    content = msg.get("content")
+    if isinstance(content, str) and len(content) > _MAX_CONTENT_CHARS:
+        truncated = content[:_MAX_CONTENT_CHARS]
+        return {**msg, "content": truncated + f"\n… [截断，原始 {len(content)} 字符]"}
+    if isinstance(content, list):
+        new_parts: list[Any] = []
+        for part in content:
+            if not isinstance(part, dict):
+                new_parts.append(part)
+                continue
+            # Drop image_url parts entirely (base64 blobs)
+            if part.get("type") == "image_url":
+                new_parts.append({"type": "text", "text": "[图片已省略]"})
+                continue
+            text = part.get("text", "")
+            if isinstance(text, str) and len(text) > _MAX_CONTENT_CHARS:
+                new_parts.append({**part, "text": text[:_MAX_CONTENT_CHARS] + f"\n… [截断，原始 {len(text)} 字符]"})
+            else:
+                new_parts.append(part)
+        return {**msg, "content": new_parts}
+    return msg
+
+
+def _trim_messages(values: dict[str, Any]) -> dict[str, Any]:
+    """Trim messages in channel values to keep first 10 + last 40 entries.
+
+    Also truncates oversized content within each message to avoid
+    multi-megabyte JSON responses.  Middle messages are replaced with
+    a single placeholder.
+    """
+    messages = values.get("messages")
+    if not isinstance(messages, list):
+        return values
+
+    threshold = _HEAD_MESSAGES + _TAIL_MESSAGES
+    if len(messages) <= threshold:
+        trimmed = [_truncate_content(m) for m in messages]
+    else:
+        head = [_truncate_content(m) for m in messages[:_HEAD_MESSAGES]]
+        omitted = len(messages) - _HEAD_MESSAGES - _TAIL_MESSAGES
+        placeholder = {
+            "type": "system",
+            "content": f"… 省略 {omitted} 条消息 …",
+            "id": "__omitted__",
+            "name": "omitted",
+        }
+        tail = [_truncate_content(m) for m in messages[-_TAIL_MESSAGES:]]
+        trimmed = head + [placeholder] + tail
+
+    # Drop heavy state fields that bloat the response
+    cleaned = {**values, "messages": trimmed}
+    cleaned.pop("viewed_images", None)
+    return cleaned
 
 
 def _delete_thread_data(thread_id: str, paths: Paths | None = None) -> ThreadDeleteResponse:
@@ -410,19 +518,16 @@ async def search_threads(body: ThreadSearchRequest, request: Request) -> list[Th
 
     Two-phase approach:
 
-    **Phase 1 — Store (fast path, O(threads))**: returns threads that were
-    created or run through this Gateway.  Store records are tiny metadata
-    dicts so fetching all of them at once is cheap.
+    **Phase 1 — Store (fast path)**: returns threads that were created or
+    run through this Gateway.  Store records are tiny metadata dicts so
+    fetching all of them at once is cheap.
 
-    **Phase 2 — Checkpointer supplement (lazy migration)**: threads that
-    were created directly by LangGraph Server (and therefore absent from the
-    Store) are discovered here by iterating the shared checkpointer.  Any
-    newly found thread is immediately written to the Store so that the next
-    search skips Phase 2 for that thread — the Store converges to a full
-    index over time without a one-shot migration job.
+    **Phase 2 — LangGraph Server supplement (lazy migration)**: threads
+    not yet in the Store are discovered by querying the LangGraph server.
+    Newly found threads are written to the Store so subsequent searches
+    find them via Phase 1.
     """
     store = get_store(request)
-    checkpointer = get_checkpointer(request)
 
     # -----------------------------------------------------------------------
     # Phase 1: Store
@@ -448,51 +553,56 @@ async def search_threads(body: ThreadSearchRequest, request: Request) -> list[Th
             )
 
     # -----------------------------------------------------------------------
-    # Phase 2: Checkpointer supplement
+    # Phase 2: LangGraph Server supplement
     # Discovers threads not yet in the Store (e.g. created by LangGraph
     # Server) and lazily migrates them so future searches skip this phase.
     # -----------------------------------------------------------------------
     try:
-        async for checkpoint_tuple in checkpointer.alist(None):
-            cfg = getattr(checkpoint_tuple, "config", {})
-            thread_id = cfg.get("configurable", {}).get("thread_id")
-            if not thread_id or thread_id in merged:
+        import httpx
+
+        from deerflow.config import get_app_config
+
+        app_cfg = get_app_config()
+        _extra = app_cfg.model_extra or {}
+        _channels = _extra.get("channels", {}) or {}
+        _lg_url = _channels.get("langgraph_url", "http://localhost:2024")
+        _mon = _extra.get("session_monitor", {}) or {}
+        if isinstance(_mon, dict):
+            _lg_url = _mon.get("langgraph_url", _lg_url)
+
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{_lg_url}/threads/search",
+                json={"limit": 200, "sortBy": "updated_at", "sortOrder": "desc"},
+            )
+            resp.raise_for_status()
+            lg_threads = resp.json()
+
+        for t in lg_threads:
+            tid = t.get("thread_id", "")
+            if not tid or tid in merged:
                 continue
+            vals = t.get("values", {})
+            ckpt_values = _extract_search_values(vals)
 
-            # Skip sub-graph checkpoints (checkpoint_ns is non-empty for those)
-            if cfg.get("configurable", {}).get("checkpoint_ns", ""):
-                continue
-
-            ckpt_meta = getattr(checkpoint_tuple, "metadata", {}) or {}
-            # Strip LangGraph internal keys from the user-visible metadata dict
-            user_meta = {k: v for k, v in ckpt_meta.items() if k not in ("created_at", "updated_at", "step", "source", "writes", "parents")}
-
-            # Extract state values (title) from the checkpoint's channel_values
-            checkpoint_data = getattr(checkpoint_tuple, "checkpoint", {}) or {}
-            channel_values = checkpoint_data.get("channel_values", {})
-            ckpt_values = {}
-            if title := channel_values.get("title"):
-                ckpt_values["title"] = title
-
-            thread_resp = ThreadResponse(
-                thread_id=thread_id,
-                status=_derive_thread_status(checkpoint_tuple),
-                created_at=str(ckpt_meta.get("created_at", "")),
-                updated_at=str(ckpt_meta.get("updated_at", ckpt_meta.get("created_at", ""))),
-                metadata=user_meta,
+            t_meta = t.get("metadata", {})
+            merged[tid] = ThreadResponse(
+                thread_id=tid,
+                status=t.get("status", "idle"),
+                created_at=t.get("created_at", ""),
+                updated_at=t.get("updated_at", ""),
+                metadata=t_meta,
                 values=ckpt_values,
             )
-            merged[thread_id] = thread_resp
 
-            # Lazy migration — write to Store so the next search finds it there
-            if store is not None:
+            # Lazy migration
+            if store is not None and ckpt_values:
                 try:
-                    await _store_upsert(store, thread_id, metadata=user_meta, values=ckpt_values or None)
+                    await _store_upsert(store, tid, metadata=t_meta, values=ckpt_values)
                 except Exception:
-                    logger.debug("Failed to migrate thread %s to store (non-fatal)", thread_id)
+                    logger.debug("Failed to migrate thread %s to store (non-fatal)", tid)
     except Exception:
-        logger.exception("Checkpointer scan failed during thread search")
-        # Don't raise — return whatever was collected from Store + partial scan
+        logger.debug("LangGraph thread search supplement failed (non-fatal)", exc_info=True)
 
     # -----------------------------------------------------------------------
     # Phase 3: Filter → sort → paginate
@@ -731,49 +841,48 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     )
 
 
-@router.post("/{thread_id}/history", response_model=list[HistoryEntry])
-async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request: Request) -> list[HistoryEntry]:
-    """Get checkpoint history for a thread."""
-    checkpointer = get_checkpointer(request)
+@router.post("/{thread_id}/history")
+async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request: Request):
+    """Proxy history request to LangGraph server with message trimming.
 
-    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
-    if body.before:
-        config["configurable"]["checkpoint_id"] = body.before
+    Forwards the request to the LangGraph server and trims the ``messages``
+    array in each checkpoint's ``values`` to the first 10 + last 90 entries,
+    replacing the middle portion with a placeholder.
+    """
+    import httpx
 
-    entries: list[HistoryEntry] = []
+    from deerflow.config import get_app_config
+
+    cfg = get_app_config()
+    extra = cfg.model_extra or {}
+    channels_cfg = extra.get("channels", {}) or {}
+    langgraph_url = channels_cfg.get("langgraph_url", "http://localhost:2024")
+    monitor_cfg = extra.get("session_monitor", {}) or {}
+    if isinstance(monitor_cfg, dict):
+        langgraph_url = monitor_cfg.get("langgraph_url", langgraph_url)
+
     try:
-        async for checkpoint_tuple in checkpointer.alist(config, limit=body.limit):
-            ckpt_config = getattr(checkpoint_tuple, "config", {})
-            parent_config = getattr(checkpoint_tuple, "parent_config", None)
-            metadata = getattr(checkpoint_tuple, "metadata", {}) or {}
-            checkpoint = getattr(checkpoint_tuple, "checkpoint", {}) or {}
-
-            checkpoint_id = ckpt_config.get("configurable", {}).get("checkpoint_id", "")
-            parent_id = None
-            if parent_config:
-                parent_id = parent_config.get("configurable", {}).get("checkpoint_id")
-
-            channel_values = checkpoint.get("channel_values", {})
-
-            # Derive next tasks
-            tasks_raw = getattr(checkpoint_tuple, "tasks", []) or []
-            next_tasks = [t.name for t in tasks_raw if hasattr(t, "name")]
-
-            entries.append(
-                HistoryEntry(
-                    checkpoint_id=checkpoint_id,
-                    parent_checkpoint_id=parent_id,
-                    metadata=metadata,
-                    values=serialize_channel_values(channel_values),
-                    created_at=str(metadata.get("created_at", "")),
-                    next=next_tasks,
-                )
+        proxy_body: dict[str, Any] = {"limit": body.limit}
+        if body.before:
+            proxy_body["before"] = body.before
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.post(
+                f"{langgraph_url}/threads/{thread_id}/history",
+                json=proxy_body,
             )
+            resp.raise_for_status()
+            data = resp.json()
     except Exception:
-        logger.exception("Failed to get history for thread %s", thread_id)
-        raise HTTPException(status_code=500, detail="Failed to get thread history")
+        logger.exception("Failed to proxy history for thread %s", thread_id)
+        raise HTTPException(status_code=502, detail="Failed to fetch history from LangGraph server")
 
-    return entries
+    # Trim messages in each entry
+    for entry in data:
+        values = entry.get("values")
+        if isinstance(values, dict):
+            entry["values"] = _trim_messages(values)
+
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -846,34 +955,8 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
                 metadata = last_run.get("metadata", {})
                 if metadata.get("cancelled_by") == "user":
                     main_status.status = "interrupted"
-            # else: idle or completed
     except Exception:
         logger.debug("Failed to get main session status for thread %s", thread_id, exc_info=True)
-
-    # --- Last message from main session ---
-    try:
-        from langgraph_sdk import get_client as _get_client
-
-        _client = _get_client(url="http://localhost:2024")
-        state = await _client.threads.get_state(thread_id)
-        values = state.get("values", {})
-        messages = values.get("messages", [])
-        # Find the last AI or human message with text content
-        for msg in reversed(messages):
-            role = msg.get("type", msg.get("role", ""))
-            content = msg.get("content", "")
-            if role in ("ai", "human") and content:
-                text = content if isinstance(content, str) else ""
-                if isinstance(content, list):
-                    text = " ".join(
-                        p.get("text", "") for p in content
-                        if isinstance(p, dict) and p.get("text")
-                    )
-                if text.strip():
-                    main_status.last_message = text.strip()[:200]
-                    break
-    except Exception:
-        logger.debug("Failed to get last message for thread %s", thread_id, exc_info=True)
 
     # --- Subtask statuses ---
     active: list[SubtaskStatus] = []
