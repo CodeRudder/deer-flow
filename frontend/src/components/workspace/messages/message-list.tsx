@@ -143,30 +143,29 @@ export function MessageList({
     }
   }, [messages, thread.isLoading, updateSubtask]);
 
+  // Pagination state — must be before any early return (Rules of Hooks)
+  const [renderCount, setRenderCount] = useState(INITIAL_RENDER_COUNT);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const threadIdRef = useRef(threadId);
+  if (threadIdRef.current !== threadId) {
+    threadIdRef.current = threadId;
+    setRenderCount(INITIAL_RENDER_COUNT);
+  }
+  const loadMore = useCallback(() => {
+    setRenderCount((prev) => prev + LOAD_MORE_COUNT);
+  }, []);
+
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
   }
 
   // Group messages once, then paginate the groups
   const allGroups = groupMessages(messages, (group) => group);
-  const [renderCount, setRenderCount] = useState(INITIAL_RENDER_COUNT);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Reset render count when thread changes
-  const threadIdRef = useRef(threadId);
-  if (threadIdRef.current !== threadId) {
-    threadIdRef.current = threadId;
-    setRenderCount(INITIAL_RENDER_COUNT);
-  }
 
   // Show the last N groups (most recent messages)
   const startIndex = Math.max(0, allGroups.length - renderCount);
   const visibleGroups = allGroups.slice(startIndex);
   const hasMore = startIndex > 0;
-
-  const loadMore = useCallback(() => {
-    setRenderCount((prev) => prev + LOAD_MORE_COUNT);
-  }, []);
 
   // Load more on scroll to top
   const handleScroll = useCallback(
