@@ -147,7 +147,7 @@ async def run_agent(
                     logger.info("Run %s abort requested — stopping", run_id)
                     break
                 sse_event = _lg_mode_to_sse_event(single_mode)
-                await bridge.publish(run_id, sse_event, serialize(chunk, mode=single_mode))
+                await bridge.publish(run_id, sse_event, serialize(chunk, mode=single_mode, slim=(single_mode == "values")))
         else:
             # Multiple modes or subgraphs: astream yields tuples
             async for item in agent.astream(
@@ -165,7 +165,7 @@ async def run_agent(
                     continue
 
                 sse_event = _lg_mode_to_sse_event(mode)
-                await bridge.publish(run_id, sse_event, serialize(chunk, mode=mode))
+                await bridge.publish(run_id, sse_event, serialize(chunk, mode=mode, slim=(mode == "values")))
 
         # 8. Final status
         if record.abort_event.is_set():

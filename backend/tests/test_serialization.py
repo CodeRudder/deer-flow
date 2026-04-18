@@ -157,3 +157,110 @@ def test_serialize_dispatcher_default_mode():
 
     result = serialize(_FakePydanticV1())
     assert result == {"key": "v1"}
+
+
+# ---------------------------------------------------------------------------
+# Slim mode tests
+# ---------------------------------------------------------------------------
+
+
+def _image_url_part(b64: str = "aaaa", mime: str = "image/png") -> dict:
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+def _text_part(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+def _make_msg(content: list) -> dict:
+    return {"role": "user", "content": content, "id": "m1"}
+
+
+class TestSlimMessage:
+    def test_replaces_image_url_with_placeholder(self):
+        from deerflow.runtime.serialization import _slim_message
+
+        msg = _make_msg([_text_part("hello"), _image_url_part("A" * 1000)])
+        result = _slim_message(msg)
+        parts = result["content"]
+        assert len(parts) == 2
+        assert parts[0] == _text_part("hello")
+        assert parts[1] == {"type": "text", "text": "[图片已省略]"}
+        # Original not mutated
+        assert msg["content"][1]["type"] == "image_url"
+
+    def test_truncates_long_text(self):
+        from deerflow.runtime.serialization import _slim_message, _MAX_CONTENT_CHARS
+
+        long_text = "x" * (_MAX_CONTENT_CHARS + 500)
+        msg = _make_msg([_text_part(long_text)])
+        result = _slim_message(msg)
+        text = result["content"][0]["text"]
+        assert len(text) < len(long_text)
+        assert text.endswith("...[truncated]")
+
+    def test_short_text_untouched(self):
+        from deerflow.runtime.serialization import _slim_message
+
+        msg = _make_msg([_text_part("short")])
+        result = _slim_message(msg)
+        assert result["content"][0] == _text_part("short")
+
+    def test_string_content_unchanged(self):
+        from deerflow.runtime.serialization import _slim_message
+
+        msg = {"role": "user", "content": "plain text", "id": "m1"}
+        result = _slim_message(msg)
+        assert result == msg
+
+    def test_non_dict_returned_as_is(self):
+        from deerflow.runtime.serialization import _slim_message
+
+        assert _slim_message("hello") == "hello"
+
+
+class TestSerializeChannelValuesSlim:
+    def test_slim_strips_viewed_images(self):
+        from deerflow.runtime.serialization import serialize_channel_values
+
+        raw = {"messages": [], "viewed_images": {"/a.png": {"base64": "xxx"}}}
+        result = serialize_channel_values(raw, slim=True)
+        assert "viewed_images" not in result
+
+    def test_slim_strips_images_from_messages(self):
+        from deerflow.runtime.serialization import serialize_channel_values
+
+        raw = {"messages": [{"content": [_image_url_part()], "id": "m1"}]}
+        result = serialize_channel_values(raw, slim=True)
+        msgs = result["messages"]
+        assert msgs[0]["content"][0]["text"] == "[图片已省略]"
+
+    def test_no_slim_preserves_everything(self):
+        from deerflow.runtime.serialization import serialize_channel_values
+
+        raw = {"messages": [], "viewed_images": {"a": 1}}
+        result = serialize_channel_values(raw, slim=False)
+        assert "viewed_images" in result
+
+
+class TestSerializeSlim:
+    def test_serialize_values_slim(self):
+        from deerflow.runtime.serialization import serialize
+
+        raw = {"messages": [{"content": [_image_url_part()], "id": "m1"}], "__pregel_x": True}
+        result = serialize(raw, mode="values", slim=True)
+        assert "__pregel_x" not in result
+        assert result["messages"][0]["content"][0]["text"] == "[图片已省略]"
+
+    def test_serialize_values_no_slim(self):
+        from deerflow.runtime.serialization import serialize
+
+        raw = {"messages": [{"content": [_image_url_part()], "id": "m1"}]}
+        result = serialize(raw, mode="values", slim=False)
+        assert result["messages"][0]["content"][0]["type"] == "image_url"
+
+    def test_serialize_messages_mode_ignores_slim(self):
+        from deerflow.runtime.serialization import serialize
+
+        result = serialize(("chunk", {"node": "x"}), mode="messages", slim=True)
+        assert result == ["chunk", {"node": "x"}]
