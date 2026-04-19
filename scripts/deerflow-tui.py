@@ -18,6 +18,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import httpx
+from rich.markup import escape as _markup_escape
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -56,6 +57,13 @@ ROLE_STYLES = {
 def _format_ts(ts: str | None) -> str:
     if not ts:
         return "-"
+    # Try Unix epoch (float)
+    try:
+        dt = datetime.fromtimestamp(float(ts), tz=CST)
+        return dt.strftime("%m-%d %H:%M")
+    except (ValueError, OSError):
+        pass
+    # Try ISO format
     try:
         dt = datetime.fromisoformat(ts)
         local = dt.astimezone(CST)
@@ -76,6 +84,11 @@ def _truncate(text: str | None, max_len: int) -> str:
 def _status_text(status: str) -> str:
     color = STATUS_COLORS.get(status, "dim")
     return f"[{color}]{status}[/]"
+
+
+class FocusableStatic(Static):
+    """Static widget that can receive keyboard focus."""
+    can_focus = True
 
 
 # ── API Client ───────────────────────────────────────────────────────────
@@ -198,6 +211,7 @@ class ThreadListScreen(Screen):
         self.client = client
         self._all_threads: list[dict] = []
         self._filter_text = ""
+        self._auto_refresh_interval: Any | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("[dim]Filter: (press / to filter)[/]", classes="filter-bar", id="filter-label")
@@ -209,6 +223,9 @@ class ThreadListScreen(Screen):
     def on_mount(self) -> None:
         self._load_threads()
 
+    def on_unmount(self) -> None:
+        self._stop_auto_refresh()
+
     @work(exclusive=True)
     async def _load_threads(self) -> None:
         table = self.query_one("#thread-table", DataTable)
@@ -216,6 +233,7 @@ class ThreadListScreen(Screen):
         try:
             self._all_threads = await self.client.search_threads()
             self._apply_filter()
+            self._maybe_start_auto_refresh()
         except Exception as e:
             self.notify(f"Failed to load threads: {e}", severity="error")
         finally:
@@ -269,6 +287,32 @@ class ThreadListScreen(Screen):
         self._filter_text = ""
         self._apply_filter()
 
+    def _maybe_start_auto_refresh(self) -> None:
+        has_running = any(t.get("status") == "running" for t in self._all_threads)
+        if has_running:
+            self._start_auto_refresh()
+        else:
+            self._stop_auto_refresh()
+
+    def _start_auto_refresh(self) -> None:
+        if self._auto_refresh_interval is not None:
+            return
+        self._auto_refresh_interval = self.set_interval(10, self._auto_refresh_tick)
+
+    def _stop_auto_refresh(self) -> None:
+        if self._auto_refresh_interval is not None:
+            self._auto_refresh_interval.stop()
+            self._auto_refresh_interval = None
+
+    @work(exclusive=True)
+    async def _auto_refresh_tick(self) -> None:
+        try:
+            self._all_threads = await self.client.search_threads()
+            self._apply_filter()
+            self._maybe_start_auto_refresh()
+        except Exception:
+            pass
+
 
 # ── Thread Detail Screen ────────────────────────────────────────────────
 
@@ -300,7 +344,6 @@ class ThreadDetailScreen(Screen):
         self.thread_id = thread_id
         self.title = title
         self._todos_visible = True
-        self._focus_todos = False
         self._session_status: dict = {}
         self._state: dict = {}
         self._subagents: list[dict] = []
@@ -309,7 +352,7 @@ class ThreadDetailScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Label(f"[bold]Threads > {self.title[:40]}[/]  [dim]{self.thread_id[:16]}[/]", classes="breadcrumb")
         yield Label("Session: loading...", classes="session-bar", id="session-label")
-        yield Label("Todos: loading...", classes="todos-panel", id="todos-label")
+        yield FocusableStatic("Todos: loading...", classes="todos-panel", id="todos-label")
         table: DataTable = DataTable(id="subtask-table")
         table.add_columns("#", "Task ID", "Agent", "Description", "Status", "Started", "Updated", "Msgs")
         table.cursor_type = "row"
@@ -351,7 +394,7 @@ class ThreadDetailScreen(Screen):
         label.update(f"Session: {_status_text(status)}  Run: [dim]{run_id}[/]  Started: {started}")
 
     def _render_todos(self) -> None:
-        label = self.query_one("#todos-label", Label)
+        label = self.query_one("#todos-label", FocusableStatic)
         todos = self._state.get("values", {}).get("todos", [])
         if not todos:
             label.update("[dim]No todos[/]")
@@ -509,13 +552,12 @@ class ThreadDetailScreen(Screen):
     def action_focus_next_area(self) -> None:
         """Toggle focus between todos panel and subtask table."""
         table = self.query_one("#subtask-table", DataTable)
-        if self._focus_todos:
-            self._focus_todos = False
-            table.cursor_type = "row"
-            table.focus()
+        todos = self.query_one("#todos-label", FocusableStatic)
+        if self.focused is table:
+            todos.focus()
         else:
-            self._focus_todos = True
-            table.cursor_type = "none"
+            table.focus()
+            table.focus()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
@@ -529,6 +571,9 @@ class MessageViewerScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("g", "scroll_top", "Top"),
+        Binding("G", "scroll_bottom", "Bottom"),
         Binding("n", "next_page", "Next"),
         Binding("p", "prev_page", "Prev"),
         Binding("c", "cancel_subtask", "Cancel"),
@@ -569,7 +614,7 @@ class MessageViewerScreen(Screen):
             header_text = f"[bold]Session Messages[/]  [dim]{self.thread_id[:16]}[/]"
         yield Label(header_text, classes="msg-header", id="msg-title")
         yield VerticalScroll(id="msg-scroll")
-        yield Label("[dim]n:Next  p:Prev  c:Cancel  Esc:Back[/]", classes="msg-footer-bar")
+        yield Label("[dim]r:Refresh  g:Top  G:Bottom  n:Next  p:Prev  c:Cancel  Esc:Back[/]", classes="msg-footer-bar")
 
     def on_mount(self) -> None:
         self._load_messages()
@@ -593,8 +638,17 @@ class MessageViewerScreen(Screen):
                 messages = data.get("messages", [])
                 self._total = data.get("total", 0)
                 self._has_more = data.get("has_more", False)
+                self._last_msg_count = len(messages)
                 self._render_messages(messages)
                 self._update_page_info()
+                # Check if session is running for auto-refresh
+                try:
+                    status_data = await self.client.get_thread_status(self.thread_id)
+                    main = status_data.get("main_session", {})
+                    if main.get("status") == "running":
+                        self._start_auto_refresh()
+                except Exception:
+                    pass
         except Exception as e:
             self.notify(f"Failed to load messages: {e}", severity="error")
 
@@ -605,45 +659,69 @@ class MessageViewerScreen(Screen):
             child.remove()
 
         for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            ts = _format_ts(msg.get("ts"))
-
-            # Handle list content (multi-part)
-            if isinstance(content, list):
-                parts = []
-                for part in content:
-                    if isinstance(part, str):
-                        parts.append(part)
-                    elif isinstance(part, dict):
-                        parts.append(part.get("text", str(part)))
-                content = " ".join(parts)
-
-            style, label = ROLE_STYLES.get(role, ("dim", role))
-            tool_name = msg.get("name", "")
-            if role == "tool" and tool_name:
-                label = f"Tool: {tool_name}"
-
-            # Tool calls in AI messages
-            tool_calls = msg.get("tool_calls", [])
-            tool_text = ""
-            if tool_calls:
-                tc_parts = []
-                for tc in tool_calls:
-                    fn = tc.get("name", "?")
-                    args = tc.get("args", {})
-                    args_str = str(args)[:80] if args else ""
-                    tc_parts.append(f"  → {fn}({args_str})")
-                tool_text = "\n" + "\n".join(tc_parts)
-
-            text = f"[{style}][{label}][/] [dim]{ts}[/]\n{content}{tool_text}"
-            scroll.mount(Static(text, classes="msg-item"))
+            self._mount_message(msg)
 
         if status:
             title = self.query_one("#msg-title", Label)
             extra = f"  {_status_text(status)}"
             base = f"[bold]Subtask: {(self.description or '')[:30]}[/]  [dim]{self.task_id[:16]}[/]"
             title.update(base + extra)
+
+        # Auto-scroll to bottom on initial load
+        if messages:
+            scroll.call_after_refresh(scroll.scroll_end)
+
+    def _mount_message(self, msg: dict) -> None:
+        scroll = self.query_one("#msg-scroll", VerticalScroll)
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        ts = _format_ts(msg.get("ts"))
+
+        # Handle list content (multi-part)
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.append(part.get("text", str(part)))
+            content = " ".join(parts)
+        elif content is None:
+            content = ""
+
+        content_str = str(content)
+        # Truncate long messages
+        if len(content_str) > 2000:
+            content_str = content_str[:2000] + f"\n[dim]... (truncated, {len(content_str)} chars total)[/dim]"
+
+        style, label = ROLE_STYLES.get(role, ("dim", role))
+        tool_name = msg.get("name", "")
+        if role == "tool" and tool_name:
+            label = f"Tool: {_markup_escape(tool_name)}"
+
+        # Tool calls in AI messages
+        tool_calls = msg.get("tool_calls", [])
+        tool_text = ""
+        if tool_calls:
+            tc_parts = []
+            for tc in tool_calls:
+                fn = _markup_escape(tc.get("name", "?"))
+                args = tc.get("args", {})
+                if args:
+                    args_str = str(args)
+                    if len(args_str) > 2048:
+                        args_display = args_str[:1024] + f"\n  ... ({len(args_str)} chars, truncated)\n" + args_str[-1024:]
+                    else:
+                        args_display = args_str
+                    args_escaped = _markup_escape(args_display)
+                else:
+                    args_escaped = ""
+                tc_parts.append(f"  → {fn}({args_escaped})")
+            tool_text = "\n" + "\n".join(tc_parts)
+
+        escaped = _markup_escape(content_str)
+        text = f"[{style}][{label}][/] [dim]{ts}[/]\n{escaped}{tool_text}"
+        scroll.mount(Static(text, classes="msg-item"))
 
     def _update_page_info(self) -> None:
         footer = self.query_one(".msg-footer-bar", Label)
@@ -665,17 +743,62 @@ class MessageViewerScreen(Screen):
     @work(exclusive=True)
     async def _auto_refresh_tick(self) -> None:
         try:
-            data = await self.client.get_subagent_detail(self.thread_id, self.task_id)
-            messages = data.get("messages", [])
-            status = data.get("status", "unknown")
-            if len(messages) != self._last_msg_count:
-                self._last_msg_count = len(messages)
-                self._render_messages(messages, status)
-            if status != "running":
-                self._stop_auto_refresh()
-                self._render_messages(messages, status)
+            if self.mode == "subtask":
+                data = await self.client.get_subagent_detail(self.thread_id, self.task_id)
+                messages = data.get("messages", [])
+                status = data.get("status", "unknown")
+                new_count = len(messages)
+                if new_count != self._last_msg_count:
+                    old_count = self._last_msg_count
+                    self._last_msg_count = new_count
+                    # Append only new messages
+                    scroll = self.query_one("#msg-scroll", VerticalScroll)
+                    at_bottom = scroll.is_vertical_scroll_end
+                    for msg in messages[old_count:]:
+                        self._mount_message(msg)
+                    if at_bottom:
+                        scroll.call_after_refresh(scroll.scroll_end)
+                if status != "running":
+                    self._stop_auto_refresh()
+                    if new_count != self._last_msg_count:
+                        self._render_messages(messages, status)
+            else:
+                # Session mode: reload and append new messages
+                data = await self.client.get_messages(self.thread_id, limit=self._page_size, offset=self._offset)
+                messages = data.get("messages", [])
+                self._total = data.get("total", 0)
+                self._has_more = data.get("has_more", False)
+                new_count = len(messages)
+                if new_count != self._last_msg_count:
+                    scroll = self.query_one("#msg-scroll", VerticalScroll)
+                    at_bottom = scroll.is_vertical_scroll_end
+                    for msg in messages[self._last_msg_count:]:
+                        self._mount_message(msg)
+                    self._last_msg_count = new_count
+                    if at_bottom:
+                        scroll.call_after_refresh(scroll.scroll_end)
+                self._update_page_info()
+                # Check if still running
+                try:
+                    status_data = await self.client.get_thread_status(self.thread_id)
+                    main = status_data.get("main_session", {})
+                    if main.get("status") != "running":
+                        self._stop_auto_refresh()
+                except Exception:
+                    pass
         except Exception:
             pass
+
+    def action_refresh(self) -> None:
+        self._load_messages()
+
+    def action_scroll_top(self) -> None:
+        scroll = self.query_one("#msg-scroll", VerticalScroll)
+        scroll.scroll_home()
+
+    def action_scroll_bottom(self) -> None:
+        scroll = self.query_one("#msg-scroll", VerticalScroll)
+        scroll.scroll_end()
 
     def action_next_page(self) -> None:
         if self.mode == "session" and self._has_more:
