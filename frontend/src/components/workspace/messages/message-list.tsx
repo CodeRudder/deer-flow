@@ -204,7 +204,7 @@ export function MessageList({
                   key={`${group.id}/${msg.id}`}
                   message={msg}
                   isLoading={thread.isLoading}
-                  timestamp={ts ? new Date(typeof ts === "number" ? ts * 1000 : ts) : undefined}
+                  timestamp={ts ? new Date(typeof ts === "number" ? ts * 1000 : String(ts)) : undefined}
                 />
               );
             });
