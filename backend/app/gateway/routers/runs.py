@@ -143,28 +143,72 @@ class CancelSubtaskResponse(BaseModel):
 async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskResponse:
     """Cancel a running sub-agent task by task_id.
 
-    If the task is not found in memory (e.g. after service restart),
-    marks the on-disk session as interrupted so it stops appearing as
-    running in the status API.
+    Cancellation strategy (in order of preference):
+    1. Same process (Gateway mode): directly call request_cancel_background_task
+    2. Cross-process (standard mode): cancel the LangGraph run hosting the task_tool,
+       which triggers asyncio.CancelledError → request_cancel_background_task
+    3. Fallback: update on-disk session status to "cancelled"
     """
     from deerflow.subagents.executor import get_background_task_result, request_cancel_background_task
 
+    # ── Path 1: same process (Gateway mode) ──────────────────────────────
     result = get_background_task_result(task_id)
     if result is not None:
         if result.status.value not in ("running", "pending"):
             return CancelSubtaskResponse(task_id=task_id, cancelled=False, error=f"Task is {result.status.value}")
 
         request_cancel_background_task(task_id)
-        logger.info("Cancelled subtask %s via API (in-memory)", task_id)
+        logger.info("Cancelled subtask %s via API (in-memory, same process)", task_id)
         return CancelSubtaskResponse(task_id=task_id, cancelled=True)
 
-    # Not in memory — mark on-disk session as interrupted
-    try:
-        import json
+    # ── Path 2: cross-process via cancel marker file ──────────────────────
+    thread_id = _find_thread_id_for_task(task_id)
+    if thread_id:
+        try:
+            from deerflow.subagents.session import SubagentSession
 
+            session = SubagentSession(
+                thread_id=thread_id, task_id=task_id,
+                subagent_name="", description="",
+            )
+            session.request_cancel()
+            logger.info("Wrote cancel marker for task %s (thread %s)", task_id, thread_id)
+            return CancelSubtaskResponse(task_id=task_id, cancelled=True)
+        except Exception:
+            logger.exception("Failed to write cancel marker for task %s", task_id)
+
+    # ── Path 3: fallback — update on-disk session ────────────────────────
+    return await _cancel_subtask_on_disk(task_id)
+
+
+def _find_thread_id_for_task(task_id: str) -> str | None:
+    """Find thread_id by scanning subagent session files."""
+    try:
         from deerflow.config.paths import get_paths
 
-        # Find the session across all threads
+        threads_dir = get_paths().base_dir / "threads"
+        if not threads_dir.exists():
+            return None
+        for thread_dir in threads_dir.iterdir():
+            if not thread_dir.is_dir():
+                continue
+            subagents_dir = thread_dir / "subagents"
+            if subagents_dir.exists():
+                summary = subagents_dir / f"{task_id}.summary.json"
+                if summary.exists():
+                    return thread_dir.name
+    except Exception:
+        logger.debug("Failed to find thread_id for task %s", task_id, exc_info=True)
+    return None
+
+
+async def _cancel_subtask_on_disk(task_id: str) -> CancelSubtaskResponse:
+    """Fallback: mark subtask as cancelled on disk when no running process found."""
+    import json
+
+    from deerflow.config.paths import get_paths
+
+    try:
         threads_dir = get_paths().base_dir / "threads"
         if threads_dir.exists():
             for thread_dir in threads_dir.iterdir():
@@ -183,6 +227,6 @@ async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskRespons
                     logger.info("Marked subtask %s as cancelled on disk (thread %s)", task_id, thread_dir.name)
                     return CancelSubtaskResponse(task_id=task_id, cancelled=True)
     except Exception:
-        logger.exception("Failed to mark subtask %s as interrupted on disk", task_id)
+        logger.exception("Failed to mark subtask %s as cancelled on disk", task_id)
 
     return CancelSubtaskResponse(task_id=task_id, cancelled=False, error="Task not found")

@@ -131,6 +131,30 @@ class SubagentSession:
             self._summary_path = d / f"{self.task_id}.summary.json"
         return self._summary_path
 
+    @property
+    def cancel_marker_path(self) -> Path:
+        """Path to the cross-process cancel marker file."""
+        d = get_paths().subagent_dir(self.thread_id)
+        return d / f"{self.task_id}.cancel"
+
+    def request_cancel(self) -> None:
+        """Write a cancel marker file for cross-process cancellation."""
+        marker = self.cancel_marker_path
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("cancelled", encoding="utf-8")
+        logger.info("Wrote cancel marker for task %s (thread %s)", self.task_id, self.thread_id)
+
+    def is_cancel_requested(self) -> bool:
+        """Check if a cancel marker file exists for this task."""
+        return self.cancel_marker_path.exists()
+
+    def clear_cancel_marker(self) -> None:
+        """Remove the cancel marker file."""
+        try:
+            self.cancel_marker_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     # ── Write operations ────────────────────────────────────────────────
 
     def append_message(self, msg: BaseMessage) -> None:

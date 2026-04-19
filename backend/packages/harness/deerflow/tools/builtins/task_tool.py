@@ -295,6 +295,11 @@ async def task_tool(
                 logger.info(f"[trace={trace_id}] Task {task_id} status: {result.status.value}")
                 last_status = result.status
 
+            # Cross-process cancel: detect marker file written by Gateway
+            if session is not None and session.is_cancel_requested():
+                request_cancel_background_task(task_id)
+                logger.info(f"[trace={trace_id}] Task {task_id} cancel marker detected")
+
             # Check for new AI messages and send task_running events
             current_message_count = len(result.ai_messages)
             if current_message_count > last_message_count:

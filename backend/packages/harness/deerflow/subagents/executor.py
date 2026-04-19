@@ -264,7 +264,7 @@ class SubagentExecutor:
             final_state = None
 
             # Pre-check: bail out immediately if already cancelled before streaming starts
-            if result.cancel_event.is_set():
+            if result.cancel_event.is_set() or (self.session is not None and self.session.is_cancel_requested()):
                 logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled before streaming")
                 with _background_tasks_lock:
                     if result.status == SubagentStatus.RUNNING:
@@ -276,20 +276,21 @@ class SubagentExecutor:
                 return result
 
             async for chunk in agent.astream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
-                # Cooperative cancellation: check if parent requested stop.
-                # Note: cancellation is only detected at astream iteration boundaries,
-                # so long-running tool calls within a single iteration will not be
-                # interrupted until the next chunk is yielded.
-                if result.cancel_event.is_set():
-                    logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled by parent")
+                # Cooperative cancellation: check cancel_event (same-process) and
+                # cross-process cancel marker file (Gateway → LangGraph).
+                cancelled = result.cancel_event.is_set()
+                if not cancelled and self.session is not None:
+                    cancelled = self.session.is_cancel_requested()
+                if cancelled:
+                    logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled")
                     with _background_tasks_lock:
                         if result.status == SubagentStatus.RUNNING:
                             result.status = SubagentStatus.CANCELLED
                             result.error = "Cancelled by user"
                             result.completed_at = datetime.now()
-                    # ⑤ Mark cancelled on cancellation
                     if self.session is not None:
                         self.session.mark_cancelled(message_count=_session_msg_count)
+                        self.session.clear_cancel_marker()
                     return result
 
                 final_state = chunk
