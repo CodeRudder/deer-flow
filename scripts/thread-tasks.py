@@ -29,9 +29,34 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import unicodedata
 from urllib.request import urlopen
 from urllib.error import URLError
 import json
+
+
+# ── CJK-aware string padding ────────────────────────────────────────────
+
+
+def _display_width(s: str) -> int:
+    """Return the terminal display width of *s*, counting CJK chars as 2."""
+    w = 0
+    for ch in s:
+        eaw = unicodedata.east_asian_width(ch)
+        w += 2 if eaw in ("W", "F") else 1
+    return w
+
+
+def _pad(s: str, width: int) -> str:
+    """Left-align *s* in *width* terminal columns (CJK-aware)."""
+    dw = _display_width(s)
+    return s + " " * max(0, width - dw)
+
+
+def _rpad(s: str, width: int) -> str:
+    """Right-align *s* in *width* terminal columns (CJK-aware)."""
+    dw = _display_width(s)
+    return " " * max(0, width - dw) + s
 
 
 # ── ANSI Colors ──────────────────────────────────────────────────────────
@@ -81,22 +106,42 @@ def _extract_thread_id(arg: str) -> str:
     return arg
 
 
-def _truncate(text: str, max_len: int) -> str:
+def _truncate(text: str, max_width: int) -> str:
+    """Truncate text to fit *max_width* terminal columns (CJK-aware)."""
     text = text.replace("\n", " ").strip()
-    if len(text) <= max_len:
+    w = _display_width(text)
+    if w <= max_width:
         return text
-    return text[: max_len - 3] + "..."
+    # Trim characters until we fit (leave room for "...")
+    result = []
+    cur = 0
+    for ch in text:
+        cw = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if cur + cw > max_width - 3:
+            break
+        result.append(ch)
+        cur += cw
+    return "".join(result) + "..."
 
 
 def _format_ts(ts: str) -> str:
-    """Format ISO timestamp to a shorter form."""
+    """Format ISO timestamp to a shorter form, converted to CST (UTC+8)."""
     if not ts:
         return "-"
-    # "2026-04-14T12:10:52+00:00" → "04-14 12:10"
-    m = re.match(r"\d{4}-(\d{2}-\d{2})T(\d{2}:\d{2})", ts)
-    if m:
-        return f"{m.group(1)} {m.group(2)}"
-    return ts[:16]
+    # Parse ISO timestamp and convert to CST
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})", ts)
+    if not m:
+        return ts[:16]
+    from datetime import datetime, timezone, timedelta
+
+    CST = timezone(timedelta(hours=8))
+    try:
+        # Try parsing with timezone info
+        dt = datetime.fromisoformat(ts)
+        dt_cst = dt.astimezone(CST)
+    except (ValueError, OSError):
+        return ts[:16]
+    return dt_cst.strftime("%m-%d %H:%M")
 
 
 def _ts_sort_key(ts: str) -> str:
@@ -148,8 +193,16 @@ def show_subtasks(
     if status_filter:
         all_tasks = [t for t in all_tasks if t.get("status") == status_filter]
 
-    # Sort by most recent activity (completed_at > started_at), descending
-    all_tasks.sort(key=lambda t: _ts_sort_key(t.get("completed_at") or t.get("started_at")), reverse=True)
+    # Sort: running/pending first, then by most recent activity descending
+    _active_order = {"running": 0, "pending": 1}
+
+    def _sort_key(t):
+        status = t.get("status", "")
+        order = _active_order.get(status, 2)
+        ts = _ts_sort_key(t.get("completed_at") or t.get("started_at"))
+        return (order, ts)
+
+    all_tasks.sort(key=_sort_key)
 
     total = len(all_tasks)
     tasks = all_tasks[offset : offset + page_size]
@@ -171,18 +224,18 @@ def show_subtasks(
     # Header
     header = (
         f"{'#':>3}  "
-        f"{'Task ID':<{id_w}}  "
-        f"{'Agent':<{agent_w}}  "
-        f"{'Description':<{desc_w}}  "
-        f"{'Status'}  "
-        f"{'Last Active':<{time_w}}  "
-        f"{'Started':<{time_w}}  "
+        f"{_pad('Task ID', id_w)}  "
+        f"{_pad('Agent', agent_w)}  "
+        f"{_pad('Description', desc_w)}  "
+        f"{'Status':12}  "
+        f"{_pad('Last Active', time_w)}  "
+        f"{_pad('Started', time_w)}  "
         f"{'Msgs':>4}"
     )
     if show_last_msg:
-        header += f"  {'Last Message':<{msg_w}}"
+        header += f"  {_pad('Last Message', msg_w)}"
     print(f"{BOLD}{header}{RESET}")
-    print("─" * len(header))
+    print("─" * 120)
 
     for i, t in enumerate(tasks, start=offset + 1):
         task_id = t.get("task_id", "")[:id_w]
@@ -195,18 +248,18 @@ def show_subtasks(
 
         row = (
             f"{i:>3}  "
-            f"{DIM}{task_id:<{id_w}}{RESET}  "
-            f"{CYAN}{agent:<{agent_w}}{RESET}  "
-            f"{desc:<{desc_w}}  "
+            f"{DIM}{_pad(task_id, id_w)}{RESET}  "
+            f"{CYAN}{_pad(agent, agent_w)}{RESET}  "
+            f"{_pad(desc, desc_w)}  "
             f"{_status_label(status)}  "
-            f"{last_active:<{time_w}}  "
-            f"{started:<{time_w}}  "
+            f"{_pad(last_active, time_w)}  "
+            f"{_pad(started, time_w)}  "
             f"{msgs:>4}"
         )
 
         if show_last_msg:
             last_msg = _get_last_message(gateway, thread_id, t["task_id"])
-            row += f"  {DIM}{last_msg:<{msg_w}}{RESET}"
+            row += f"  {DIM}{_pad(last_msg, msg_w)}{RESET}"
 
         print(row)
 
