@@ -98,6 +98,18 @@ def _fetch_json(url: str) -> object:
         sys.exit(1)
 
 
+def _post_json(url: str) -> object:
+    from urllib.request import Request
+
+    req = Request(url, method="POST", data=b"", headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except URLError as e:
+        print(f"{RED}POST {url} failed: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _extract_thread_id(arg: str) -> str:
     """Extract thread_id from URL or return as-is."""
     m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", arg)
@@ -304,12 +316,58 @@ def show_todos(langgraph: str, thread_id: str) -> None:
     print(f"\n{DIM}{completed}/{len(todos)} completed{RESET}")
 
 
+# ── Cancel ──────────────────────────────────────────────────────────────
+
+
+def cancel_tasks(gateway: str, thread_id: str, task_ids: list[str], status_filter: str | None) -> None:
+    """Cancel one or more subtasks."""
+    if not task_ids and not status_filter:
+        print(f"{RED}Specify task IDs or --status to select tasks to cancel.{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Resolve task IDs
+    targets: list[str] = list(task_ids)
+
+    if status_filter:
+        all_tasks = _fetch_json(f"{gateway}/api/threads/{thread_id}/subagents?limit=200&offset=0")
+        if isinstance(all_tasks, list):
+            filtered = [t["task_id"] for t in all_tasks if t.get("status") == status_filter]
+            if not filtered:
+                print(f"{DIM}No tasks with status '{status_filter}' found.{RESET}")
+                return
+            print(f"{DIM}Found {len(filtered)} task(s) with status '{status_filter}'.{RESET}")
+            targets.extend(filtered)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for tid in targets:
+        if tid not in seen:
+            seen.add(tid)
+            unique.append(tid)
+
+    cancelled = 0
+    failed = 0
+
+    for tid in unique:
+        result = _post_json(f"{gateway}/api/runs/subtasks/{tid}/cancel")
+        if result.get("cancelled"):
+            print(f"  {GREEN}✓{RESET} {tid} cancelled")
+            cancelled += 1
+        else:
+            error = result.get("error", "unknown")
+            print(f"  {RED}✗{RESET} {tid} — {error}")
+            failed += 1
+
+    print(f"\n{BOLD}{cancelled} cancelled, {failed} failed{RESET}")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="View subtask list and todos for a DeerFlow thread",
+        description="View and manage subtasks for a DeerFlow thread",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -318,19 +376,42 @@ Examples:
   %(prog)s <id> --page 2 --page-size 10
   %(prog)s <id> --status interrupted --last-message
   %(prog)s <id> --todos-only
+  %(prog)s <id> cancel call_abc123 call_def456
+  %(prog)s <id> cancel --status interrupted
+  %(prog)s <id> cancel --all-running
         """,
     )
     parser.add_argument("thread", help="Thread ID or URL")
+    parser.add_argument("--gateway", default="http://localhost:8001", help="Gateway URL")
+    parser.add_argument("--langgraph", default="http://localhost:2024", help="LangGraph URL")
+
+    sub = parser.add_subparsers(dest="command")
+
+    # cancel subcommand
+    cancel_parser = sub.add_parser("cancel", help="Cancel subtask(s)")
+    cancel_parser.add_argument("task_ids", nargs="*", help="Task IDs to cancel")
+    cancel_parser.add_argument("--status", help="Cancel all tasks with this status (e.g. interrupted)")
+    cancel_parser.add_argument("--all-running", action="store_true", help="Cancel all running/pending tasks")
+
+    # List options (when no subcommand)
     parser.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
     parser.add_argument("--page-size", type=int, default=15, help="Items per page (default: 15)")
     parser.add_argument("--status", help="Filter by status (running/interrupted/completed/failed/cancelled)")
     parser.add_argument("--last-message", action="store_true", help="Show last AI message per task (slower)")
     parser.add_argument("--todos-only", action="store_true", help="Only show todos, skip subtask list")
-    parser.add_argument("--gateway", default="http://localhost:8001", help="Gateway URL (default: http://localhost:8001)")
-    parser.add_argument("--langgraph", default="http://localhost:2024", help="LangGraph URL (default: http://localhost:2024)")
 
     args = parser.parse_args()
     thread_id = _extract_thread_id(args.thread)
+
+    if args.command == "cancel":
+        status_filter = args.status
+        if args.all_running:
+            # Cancel both running and pending
+            cancel_tasks(args.gateway, thread_id, args.task_ids, "running")
+            cancel_tasks(args.gateway, thread_id, [], "pending")
+        else:
+            cancel_tasks(args.gateway, thread_id, args.task_ids, status_filter)
+        return
 
     if args.todos_only:
         show_todos(args.langgraph, thread_id)
