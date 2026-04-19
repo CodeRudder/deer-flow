@@ -20,6 +20,14 @@ Usage:
     # Only show todos
     python scripts/thread-tasks.py <thread_id> --todos-only
 
+    # Stop the main session
+    python scripts/thread-tasks.py <thread_id> stop
+    python scripts/thread-tasks.py <thread_id> stop --with-subtasks
+
+    # Cancel subtasks
+    python scripts/thread-tasks.py <thread_id> cancel call_abc123
+    python scripts/thread-tasks.py <thread_id> cancel --all-running
+
     # Custom backend URL
     python scripts/thread-tasks.py <thread_id> --gateway http://host:8001 --langgraph http://host:2024
 """
@@ -319,6 +327,42 @@ def show_todos(langgraph: str, thread_id: str) -> None:
 # ── Cancel ──────────────────────────────────────────────────────────────
 
 
+def stop_session(langgraph: str, gateway: str, thread_id: str, cancel_subtasks: bool) -> None:
+    """Stop the main session by cancelling all active runs."""
+    cancelled_runs = 0
+    failed_runs = 0
+
+    # Step 1: Cancel active LangGraph runs
+    runs = _fetch_json(f"{langgraph}/threads/{thread_id}/runs?limit=10")
+    if isinstance(runs, list):
+        for run in runs:
+            if run.get("status") in ("running", "pending"):
+                run_id = run.get("run_id", "")
+                try:
+                    _post_json(f"{langgraph}/threads/{thread_id}/runs/{run_id}/cancel")
+                    print(f"  {GREEN}✓{RESET} Run {run_id[:20]}... cancelled")
+                    cancelled_runs += 1
+                except SystemExit:
+                    failed_runs += 1
+
+    if cancelled_runs == 0 and failed_runs == 0:
+        print(f"{DIM}No active runs found.{RESET}")
+
+    # Step 2: Optionally cancel running subtasks
+    if cancel_subtasks:
+        print()
+        subagents = _fetch_json(f"{gateway}/api/threads/{thread_id}/subagents?limit=200&offset=0")
+        if isinstance(subagents, list):
+            active = [t for t in subagents if t.get("status") in ("running", "pending")]
+            if active:
+                print(f"{BOLD}Cancelling {len(active)} active subtask(s)...{RESET}")
+                cancel_tasks(gateway, thread_id, [t["task_id"] for t in active], None)
+            else:
+                print(f"{DIM}No active subtasks.{RESET}")
+
+    print(f"\n{BOLD}{cancelled_runs} run(s) cancelled, {failed_runs} failed{RESET}")
+
+
 def cancel_tasks(gateway: str, thread_id: str, task_ids: list[str], status_filter: str | None) -> None:
     """Cancel one or more subtasks."""
     if not task_ids and not status_filter:
@@ -379,6 +423,8 @@ Examples:
   %(prog)s <id> cancel call_abc123 call_def456
   %(prog)s <id> cancel --status interrupted
   %(prog)s <id> cancel --all-running
+  %(prog)s <id> stop
+  %(prog)s <id> stop --with-subtasks
         """,
     )
     parser.add_argument("thread", help="Thread ID or URL")
@@ -392,6 +438,10 @@ Examples:
     cancel_parser.add_argument("task_ids", nargs="*", help="Task IDs to cancel")
     cancel_parser.add_argument("--status", help="Cancel all tasks with this status (e.g. interrupted)")
     cancel_parser.add_argument("--all-running", action="store_true", help="Cancel all running/pending tasks")
+
+    # stop subcommand
+    stop_parser = sub.add_parser("stop", help="Stop the main session (cancel active runs)")
+    stop_parser.add_argument("--with-subtasks", action="store_true", help="Also cancel all running subtasks")
 
     # List options (when no subcommand)
     parser.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
@@ -411,6 +461,10 @@ Examples:
             cancel_tasks(args.gateway, thread_id, [], "pending")
         else:
             cancel_tasks(args.gateway, thread_id, args.task_ids, status_filter)
+        return
+
+    if args.command == "stop":
+        stop_session(args.langgraph, args.gateway, thread_id, args.with_subtasks)
         return
 
     if args.todos_only:
