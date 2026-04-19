@@ -432,3 +432,119 @@ class TestReadLastMessageTs:
         jsonl.write_text(json.dumps({"ts": "2026-04-13T12:00:00+00:00", "role": "human", "content": "hi"}) + "\n")
 
         assert session.read_last_message_ts() == "2026-04-13T12:00:00+00:00"
+
+
+# ── Cancel Marker Tests ─────────────────────────────────────────────────
+
+
+class TestCancelMarker:
+    """Test cross-process cancel marker file operations."""
+
+    def test_request_cancel_writes_marker(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.request_cancel()
+
+        marker = session.cancel_marker_path
+        assert marker.exists()
+        assert marker.read_text(encoding="utf-8") == "cancelled"
+
+    def test_is_cancel_requested_true(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.request_cancel()
+        assert session.is_cancel_requested() is True
+
+    def test_is_cancel_requested_false(self, mock_paths, tmp_path):
+        session = _make_session()
+        assert session.is_cancel_requested() is False
+
+    def test_clear_cancel_marker_removes_file(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.request_cancel()
+        assert session.cancel_marker_path.exists()
+
+        session.clear_cancel_marker()
+        assert not session.cancel_marker_path.exists()
+
+    def test_clear_cancel_marker_noop_when_absent(self, mock_paths, tmp_path):
+        session = _make_session()
+        # Should not raise
+        session.clear_cancel_marker()
+        assert not session.cancel_marker_path.exists()
+
+    def test_cancel_marker_path_under_subagent_dir(self, mock_paths, tmp_path):
+        session = _make_session(task_id="tc-42")
+        assert session.cancel_marker_path.name == "tc-42.cancel"
+        assert session.cancel_marker_path.parent == mock_paths.subagent_dir.return_value
+
+    def test_request_cancel_creates_parent_dir(self, tmp_path):
+        """Ensure request_cancel works even when subagent dir doesn't exist yet."""
+        from deerflow.subagents.session import SubagentSession
+
+        deep_dir = tmp_path / "threads" / "t1" / "subagents"
+        # Don't create deep_dir — request_cancel should mkdir it via cancel_marker_path
+        session = SubagentSession.__new__(SubagentSession)
+        session.thread_id = "t1"
+        session.task_id = "tc-99"
+        session._jsonl_path = deep_dir / "tc-99.jsonl"
+        session._summary_path = deep_dir / "tc-99.summary.json"
+
+        # Mock cancel_marker_path to point to the non-existent dir
+        marker_path = deep_dir / "tc-99.cancel"
+        with patch.object(type(session), "cancel_marker_path", new_callable=lambda: property(lambda self: marker_path)):
+            session.request_cancel()
+
+        assert marker_path.exists()
+
+
+# ── mark_cancelled Tests ────────────────────────────────────────────────
+
+
+class TestMarkCancelled:
+    """Test mark_cancelled method and its effect on is_terminal."""
+
+    def test_mark_cancelled_writes_status_marker(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="work"))
+        session.mark_cancelled(message_count=2)
+
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        lines = jsonl.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["status"] == "cancelled"
+        assert last["message_count"] == 2
+
+    def test_mark_cancelled_writes_summary(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="work"))
+        session.mark_cancelled(message_count=1)
+
+        summary_path = mock_paths.subagent_dir.return_value / "task-001.summary.json"
+        assert summary_path.exists()
+        s = json.loads(summary_path.read_text())
+        assert s["status"] == "cancelled"
+        assert s["task_id"] == "task-001"
+        assert s["message_count"] == 1
+
+    def test_is_terminal_when_cancelled(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="work"))
+        session.mark_cancelled(message_count=1)
+        assert session.is_terminal is True
+
+    def test_find_interrupted_excludes_cancelled(self, mock_paths, tmp_path):
+        """Cancelled sessions should not appear in find_interrupted results."""
+        from deerflow.subagents.session import SubagentSession
+
+        d = mock_paths.subagent_dir.return_value
+        # Create a cancelled session
+        (d / "task-cancel.jsonl").write_text(
+            json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n"
+            + json.dumps({"ts": "t", "status": "cancelled", "message_count": 1}) + "\n"
+        )
+        (d / "task-cancel.summary.json").write_text(
+            json.dumps({"subagent_name": "dev", "description": "cancel me", "started_at": "t"})
+        )
+
+        interrupted = SubagentSession.find_interrupted("test-thread")
+        task_ids = [s.task_id for s in interrupted]
+        assert "task-cancel" not in task_ids

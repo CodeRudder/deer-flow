@@ -1163,3 +1163,87 @@ class TestSessionIntegration:
             from deerflow.subagents.executor import cleanup_background_task
 
             cleanup_background_task(task_id)
+
+
+# ── Cross-process cancel marker tests ──────────────────────────────────
+
+
+class TestCancelMarkerIntegration:
+    """Test that executor detects cross-process cancel marker files."""
+
+    @pytest.mark.anyio
+    async def test_cancelled_via_marker_before_streaming(self, classes, base_config, mock_agent, msg):
+        """Test that _aexecute returns CANCELLED when cancel marker exists before streaming."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentResult = classes["SubagentResult"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        mock_session = MagicMock()
+        mock_session.is_cancel_requested.return_value = True
+
+        result_holder = SubagentResult(
+            task_id="marker-before",
+            trace_id="test-trace",
+            status=SubagentStatus.RUNNING,
+            started_at=datetime.now(),
+        )
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=mock_session,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            result = await executor._aexecute("Task", result_holder=result_holder)
+
+        assert result.status == SubagentStatus.CANCELLED
+        assert result.error == "Cancelled by user"
+        mock_session.mark_cancelled.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_cancelled_via_marker_mid_stream(self, classes, base_config, msg):
+        """Test that _aexecute returns CANCELLED when marker appears during streaming."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentResult = classes["SubagentResult"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        # Marker starts as False, becomes True after first chunk
+        marker_state = [False]
+
+        mock_session = MagicMock()
+
+        def is_cancel_requested():
+            return marker_state[0]
+
+        mock_session.is_cancel_requested.side_effect = is_cancel_requested
+
+        async def mock_astream(*args, **kwargs):
+            yield {"messages": [msg.human("Task"), msg.ai("First", "msg-1")]}
+            marker_state[0] = True  # Simulate marker appearing
+            yield {"messages": [msg.human("Task"), msg.ai("Should not appear", "msg-2")]}
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+
+        result_holder = SubagentResult(
+            task_id="marker-mid",
+            trace_id="test-trace",
+            status=SubagentStatus.RUNNING,
+            started_at=datetime.now(),
+        )
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=mock_session,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            result = await executor._aexecute("Task", result_holder=result_holder)
+
+        assert result.status == SubagentStatus.CANCELLED
+        mock_session.mark_cancelled.assert_called_once()
+        mock_session.clear_cancel_marker.assert_called_once()

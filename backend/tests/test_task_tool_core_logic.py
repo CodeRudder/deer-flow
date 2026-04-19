@@ -657,3 +657,81 @@ def test_task_tool_returns_cancelled_message(monkeypatch):
     assert output == "Task cancelled by user."
     assert any(e.get("type") == "task_cancelled" for e in events)
     assert cleanup_calls == ["tc-poll-cancelled"]
+
+
+def test_polling_detects_cancel_marker_and_calls_request_cancel(monkeypatch):
+    """Verify polling loop detects cancel marker file and calls request_cancel_background_task."""
+    config = _make_subagent_config()
+    events = []
+    cancel_requests = []
+    poll_count = 0
+
+    # Mock session: first is_cancel_requested=False, then True
+    mock_session = MagicMock()
+    mock_session.is_cancel_requested.side_effect = [False, True]
+    # Prevent _write_summary from hitting the filesystem
+    mock_session._write_summary = MagicMock()
+
+    def get_result(_: str):
+        nonlocal poll_count
+        poll_count += 1
+        # Stay RUNNING for several polls so marker check has time to trigger
+        if poll_count <= 3:
+            return _make_result(FakeSubagentStatus.RUNNING, ai_messages=[])
+        # After marker triggers request_cancel_background_task, status becomes CANCELLED
+        return _make_result(FakeSubagentStatus.CANCELLED, error="Cancelled by user")
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def execute_async(self, prompt, task_id=None, description=None):
+            return task_id
+
+    _cancel_check_count = 0
+
+    class FakeSubagentSession:
+        """SubagentSession mock: is_cancel_requested returns True on 2nd call."""
+        def __init__(self, thread_id, task_id, subagent_name, description=""):
+            pass
+
+        @staticmethod
+        def find_interrupted(thread_id):
+            return []
+
+        def _write_summary(self, *args, **kwargs):
+            pass
+
+        def is_cancel_requested(self):
+            nonlocal _cancel_check_count
+            _cancel_check_count += 1
+            return _cancel_check_count >= 2  # False first, True after
+
+    monkeypatch.setattr(task_tool_module, "SubagentSession", FakeSubagentSession)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
+    monkeypatch.setattr(task_tool_module, "get_background_task_result", get_result)
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
+    monkeypatch.setattr(
+        task_tool_module,
+        "request_cancel_background_task",
+        lambda task_id: cancel_requests.append(task_id),
+    )
+    monkeypatch.setattr(task_tool_module, "cleanup_background_task", lambda task_id: None)
+
+    output = _run_task_tool(
+        runtime=_make_runtime(),
+        description="marker cancel test",
+        prompt="do work",
+        subagent_type="general-purpose",
+        tool_call_id="tc-marker-cancel",
+    )
+
+    # Marker was detected → request_cancel_background_task called
+    assert "tc-marker-cancel" in cancel_requests
+    assert output == "Task cancelled by user."
