@@ -323,6 +323,7 @@ class ThreadDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("enter", "open_subtask", "Messages"),
+        Binding("tab", "focus_next_area", "Jump", priority=True),
         Binding("m", "open_session_messages", "Session Msgs"),
         Binding("s", "stop_session", "Stop"),
         Binding("c", "cancel_subtask", "Cancel"),
@@ -544,11 +545,6 @@ class ThreadDetailScreen(Screen):
         self._todos_visible = not self._todos_visible
         todos.set_class(not self._todos_visible, "hidden")
 
-    def key_tab(self, event) -> None:
-        """Override default Tab to toggle between todos and tasks."""
-        event.prevent_default()
-        self.action_focus_next_area()
-
     def action_focus_next_area(self) -> None:
         """Toggle focus between todos panel and subtask table."""
         table = self.query_one("#subtask-table", DataTable)
@@ -574,8 +570,8 @@ class MessageViewerScreen(Screen):
         Binding("r", "refresh", "Refresh"),
         Binding("g", "scroll_top", "Top"),
         Binding("G", "scroll_bottom", "Bottom"),
-        Binding("n", "next_page", "Next"),
-        Binding("p", "prev_page", "Prev"),
+        Binding("n", "next_page", "Next", priority=True),
+        Binding("p", "prev_page", "Prev", priority=True),
         Binding("c", "cancel_subtask", "Cancel"),
     ]
 
