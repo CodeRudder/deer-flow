@@ -191,18 +191,23 @@ export function SubtaskCard({
                     </span>
                   </div>
                 )}
-                {task.status === "in_progress" && !collapsed && (
+                {task.status === "in_progress" && (
                   <Button
                     variant="ghost"
                     size="icon"
                     className="size-6"
+                    title="取消任务"
                     disabled={cancelling}
                     onClick={(e) => {
                       e.stopPropagation();
                       setConfirmOpen(true);
                     }}
                   >
-                    <SquareIcon className="size-3" />
+                    {cancelling ? (
+                      <Loader2Icon className="size-3 animate-spin" />
+                    ) : (
+                      <SquareIcon className="size-3" />
+                    )}
                   </Button>
                 )}
                 {task.status === "failed" && !collapsed && (

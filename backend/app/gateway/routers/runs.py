@@ -176,11 +176,11 @@ async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskRespons
 
                 with open(summary_path, encoding="utf-8") as f:
                     summary = json.load(f)
-                if summary.get("status") in ("running", "pending", "unknown"):
-                    summary["status"] = "interrupted"
+                if summary.get("status") in ("running", "pending", "unknown", "interrupted"):
+                    summary["status"] = "cancelled"
                     with open(summary_path, "w", encoding="utf-8") as f:
                         json.dump(summary, f, indent=2, ensure_ascii=False)
-                    logger.info("Marked subtask %s as interrupted on disk (thread %s)", task_id, thread_dir.name)
+                    logger.info("Marked subtask %s as cancelled on disk (thread %s)", task_id, thread_dir.name)
                     return CancelSubtaskResponse(task_id=task_id, cancelled=True)
     except Exception:
         logger.exception("Failed to mark subtask %s as interrupted on disk", task_id)

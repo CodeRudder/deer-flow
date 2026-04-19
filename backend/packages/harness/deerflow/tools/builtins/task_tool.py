@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import replace
+from datetime import datetime
 from typing import Annotated
 
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
@@ -127,6 +128,34 @@ async def task_tool(
         return await _action_resume(runtime, task_id, tool_call_id, description, prompt, subagent_type, max_turns)
 
     # ── Default: action="create" ────────────────────────────────────────
+
+    # Check if this task_id was previously cancelled — skip re-execution
+    if tool_call_id:
+        existing_result = get_background_task_result(tool_call_id)
+        if existing_result is not None and existing_result.status == SubagentStatus.CANCELLED:
+            logger.info("Task %s was previously cancelled, skipping re-execution", tool_call_id)
+            return f"Task {tool_call_id} was previously cancelled by user. Skipping."
+        # Also check on-disk session for cancelled status
+        thread_id_for_check = None
+        if runtime is not None:
+            thread_id_for_check = runtime.context.get("thread_id") if runtime.context else None
+            if thread_id_for_check is None:
+                thread_id_for_check = runtime.config.get("configurable", {}).get("thread_id")
+        if thread_id_for_check and tool_call_id:
+            try:
+                session_check = SubagentSession(
+                    thread_id=thread_id_for_check,
+                    task_id=tool_call_id,
+                    subagent_name="",
+                    description="",
+                )
+                summary = session_check.read_summary()
+                if summary and summary.get("status") == "cancelled":
+                    logger.info("Task %s has cancelled session on disk, skipping re-execution", tool_call_id)
+                    return f"Task {tool_call_id} was previously cancelled by user. Skipping."
+            except Exception:
+                pass
+
     available_subagent_names = get_available_subagent_names()
 
     # Get subagent configuration
@@ -367,20 +396,40 @@ async def task_tool(
 
 
 async def _action_cancel(task_id: str | None) -> str:
-    """Cancel a running subtask."""
+    """Cancel a running or interrupted subtask."""
     if not task_id:
         return "Error: task_id is required for cancel action"
 
     result = get_background_task_result(task_id)
     if result is None:
+        # Check on-disk session
+        thread_id = _find_thread_id_for_task(task_id)
+        if thread_id:
+            try:
+                session = SubagentSession(thread_id=thread_id, task_id=task_id, subagent_name="", description="")
+                summary = session.read_summary()
+                if summary and summary.get("status") in ("running", "pending", "unknown", "interrupted"):
+                    session._write_summary("cancelled", message_count=summary.get("message_count", 0))
+                    logger.info("Marked interrupted task %s as cancelled on disk", task_id)
+                    return f"Task {task_id} cancelled successfully."
+            except Exception:
+                logger.exception("Failed to cancel task %s on disk", task_id)
         return f"Error: Task {task_id} not found"
 
-    if result.status.value not in ("running", "pending"):
-        return f"Error: Task {task_id} is {result.status.value}, cannot cancel"
+    if result.status.value in ("running", "pending"):
+        request_cancel_background_task(task_id)
+        logger.info("Cancelled subtask %s via task tool", task_id)
+        return f"Task {task_id} cancelled successfully."
 
-    request_cancel_background_task(task_id)
-    logger.info("Cancelled subtask %s via task tool", task_id)
-    return f"Task {task_id} cancelled successfully."
+    if result.status.value == "interrupted":
+        result.status = SubagentStatus.CANCELLED
+        result.error = "Cancelled by user"
+        result.completed_at = datetime.now()
+        cleanup_background_task(task_id)
+        logger.info("Marked interrupted task %s as cancelled", task_id)
+        return f"Task {task_id} cancelled successfully."
+
+    return f"Error: Task {task_id} is {result.status.value}, cannot cancel"
 
 
 async def _action_query(task_id: str | None) -> str:

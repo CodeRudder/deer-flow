@@ -199,6 +199,11 @@ class SubagentSession:
         # so is_terminal returns True and the session won't be re-reported.
         self._write_summary("interrupted", message_count=message_count)
 
+    def mark_cancelled(self, message_count: int = 0) -> None:
+        """Mark session as cancelled by user (do not recover/resume)."""
+        self._append_status_line("cancelled", message_count=message_count)
+        self._write_summary("cancelled", message_count=message_count)
+
     # ── Read operations ─────────────────────────────────────────────────
 
     def read_messages(self) -> list[dict[str, Any]]:
@@ -272,7 +277,7 @@ class SubagentSession:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if entry.get("status") in ("completed", "failed", "interrupted"):
+            if entry.get("status") in ("completed", "failed", "interrupted", "cancelled"):
                 return True
             break
         return False

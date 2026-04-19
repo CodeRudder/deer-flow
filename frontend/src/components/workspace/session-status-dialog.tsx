@@ -42,6 +42,8 @@ function statusIcon(status: string) {
       return <XCircle className="size-4 text-red-500" />;
     case "interrupted":
       return <AlertTriangle className="size-4 text-yellow-500" />;
+    case "cancelled":
+      return <XCircle className="size-4 text-orange-500" />;
     default:
       return <Clock className="size-4 text-muted-foreground" />;
   }
@@ -67,6 +69,8 @@ function statusLabel(status: string, detail?: string) {
       return "失败";
     case "interrupted":
       return "已中断";
+    case "cancelled":
+      return "已取消";
     case "timed_out":
       return "超时";
     case "idle":
@@ -189,12 +193,12 @@ function SubtaskRow({
         )}
       </div>
       <div className="flex items-center gap-1 shrink-0">
-        {task.status === "running" && (
+        {(task.status === "running" || task.status === "interrupted") && (
           <Button
             variant="ghost"
             size="icon"
             className="size-7"
-            title="停止任务"
+            title="取消任务"
             onClick={handleCancel}
             disabled={cancelling}
           >

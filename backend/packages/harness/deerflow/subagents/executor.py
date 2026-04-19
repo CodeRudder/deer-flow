@@ -272,7 +272,7 @@ class SubagentExecutor:
                         result.error = "Cancelled by user"
                         result.completed_at = datetime.now()
                 if self.session is not None:
-                    self.session.mark_interrupted(message_count=_session_msg_count)
+                    self.session.mark_cancelled(message_count=_session_msg_count)
                 return result
 
             async for chunk in agent.astream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
@@ -287,9 +287,9 @@ class SubagentExecutor:
                             result.status = SubagentStatus.CANCELLED
                             result.error = "Cancelled by user"
                             result.completed_at = datetime.now()
-                    # ⑤ Mark interrupted on cancellation
+                    # ⑤ Mark cancelled on cancellation
                     if self.session is not None:
-                        self.session.mark_interrupted(message_count=_session_msg_count)
+                        self.session.mark_cancelled(message_count=_session_msg_count)
                     return result
 
                 final_state = chunk
