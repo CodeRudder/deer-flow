@@ -20,7 +20,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0.0", "ruff>=0.14.11"]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8.0.0",
+    "ruff>=0.14.11",
+    "textual>=8.2.4",
+]
 
 [tool.uv.workspace]
 members = ["packages/harness"]
