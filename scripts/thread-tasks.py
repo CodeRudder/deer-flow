@@ -213,16 +213,15 @@ def show_subtasks(
     if status_filter:
         all_tasks = [t for t in all_tasks if t.get("status") == status_filter]
 
-    # Sort: running/pending first, then by most recent activity descending
-    _active_order = {"running": 0, "pending": 1}
-
+    # Sort: running first, then by started_at descending
     def _sort_key(t):
-        status = t.get("status", "")
-        order = _active_order.get(status, 2)
-        ts = _ts_sort_key(t.get("completed_at") or t.get("started_at"))
-        return (order, ts)
+        is_running = 0 if t.get("status") == "running" else 1
+        started = _ts_sort_key(t.get("started_at", ""))
+        return (is_running, "", started) if is_running == 0 else (is_running, started, "")
 
-    all_tasks.sort(key=_sort_key)
+    all_tasks.sort(key=_sort_key, reverse=True)
+    # Re-sort to keep running tasks at top (reverse flips running group too)
+    all_tasks.sort(key=lambda t: 0 if t.get("status") == "running" else 1)
 
     total = len(all_tasks)
     tasks = all_tasks[offset : offset + page_size]
@@ -248,8 +247,8 @@ def show_subtasks(
         f"{_pad('Agent', agent_w)}  "
         f"{_pad('Description', desc_w)}  "
         f"{'Status':12}  "
-        f"{_pad('Last Active', time_w)}  "
         f"{_pad('Started', time_w)}  "
+        f"{_pad('Last Update', time_w)}  "
         f"{'Msgs':>4}"
     )
     if show_last_msg:
@@ -263,7 +262,7 @@ def show_subtasks(
         desc = _truncate(t.get("description", ""), desc_w)
         status = t.get("status", "unknown")
         started = _format_ts(t.get("started_at", ""))
-        last_active = _format_ts(t.get("completed_at", "")) or started
+        last_update = _format_ts(t.get("completed_at", "")) or "-"
         msgs = t.get("message_count", 0)
 
         row = (
@@ -272,8 +271,8 @@ def show_subtasks(
             f"{CYAN}{_pad(agent, agent_w)}{RESET}  "
             f"{_pad(desc, desc_w)}  "
             f"{_status_label(status)}  "
-            f"{_pad(last_active, time_w)}  "
             f"{_pad(started, time_w)}  "
+            f"{_pad(last_update, time_w)}  "
             f"{msgs:>4}"
         )
 
