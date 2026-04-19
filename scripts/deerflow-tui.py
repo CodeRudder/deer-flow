@@ -64,7 +64,9 @@ def _format_ts(ts: str | None) -> str:
         return ts[:16] if len(ts) >= 16 else ts
 
 
-def _truncate(text: str, max_len: int) -> str:
+def _truncate(text: str | None, max_len: int) -> str:
+    if not text:
+        return ""
     text = text.replace("\n", " ").strip()
     if len(text) <= max_len:
         return text
@@ -288,7 +290,7 @@ class ThreadDetailScreen(Screen):
     ThreadDetailScreen { layout: vertical; }
     .breadcrumb { dock: top; height: 1; padding: 0 1; background: $surface; }
     .session-bar { dock: top; height: auto; padding: 0 1; background: $surface; }
-    .todos-panel { dock: top; height: auto; max-height: 10; padding: 0 1; border-bottom: solid $primary; }
+    .todos-panel { dock: top; height: auto; max-height: 15; padding: 0 1; border-bottom: solid $primary; overflow-y: auto; }
     .todos-panel.hidden { display: none; }
     """
 
@@ -298,6 +300,7 @@ class ThreadDetailScreen(Screen):
         self.thread_id = thread_id
         self.title = title
         self._todos_visible = True
+        self._focus_todos = False
         self._session_status: dict = {}
         self._state: dict = {}
         self._subagents: list[dict] = []
@@ -354,8 +357,11 @@ class ThreadDetailScreen(Screen):
             label.update("[dim]No todos[/]")
             return
         completed = sum(1 for t in todos if t.get("status") == "completed")
+        # Sort: in_progress first, then pending, then completed
+        priority = {"in_progress": 0, "pending": 1, "completed": 2}
+        sorted_todos = sorted(todos, key=lambda t: priority.get(t.get("status", ""), 3))
         lines = [f"[bold]Todos ({completed}/{len(todos)}):[/]"]
-        for todo in todos:
+        for todo in sorted_todos:
             icon = TODO_ICONS.get(todo.get("status", ""), " ")
             color = STATUS_COLORS.get(todo.get("status", ""), "dim")
             lines.append(f"  [{color}]{icon}[/{color}]  {todo.get('content', '')}")
@@ -427,7 +433,7 @@ class ThreadDetailScreen(Screen):
         desc = ""
         for t in self._subagents:
             if t.get("task_id") == task_id:
-                desc = t.get("description", "")
+                desc = t.get("description") or ""
                 break
         self.app.push_screen(MessageViewerScreen(self.client, self.thread_id, mode="subtask", task_id=task_id, description=desc))
 
@@ -495,6 +501,22 @@ class ThreadDetailScreen(Screen):
         self._todos_visible = not self._todos_visible
         todos.set_class(not self._todos_visible, "hidden")
 
+    def key_tab(self, event) -> None:
+        """Override default Tab to toggle between todos and tasks."""
+        event.prevent_default()
+        self.action_focus_next_area()
+
+    def action_focus_next_area(self) -> None:
+        """Toggle focus between todos panel and subtask table."""
+        table = self.query_one("#subtask-table", DataTable)
+        if self._focus_todos:
+            self._focus_todos = False
+            table.cursor_type = "row"
+            table.focus()
+        else:
+            self._focus_todos = True
+            table.cursor_type = "none"
+
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
@@ -531,8 +553,8 @@ class MessageViewerScreen(Screen):
         self.client = client
         self.thread_id = thread_id
         self.mode = mode
-        self.task_id = task_id
-        self.description = description
+        self.task_id = task_id or ""
+        self.description = description or ""
         self._offset = 0
         self._total = 0
         self._has_more = False
@@ -542,7 +564,7 @@ class MessageViewerScreen(Screen):
 
     def compose(self) -> ComposeResult:
         if self.mode == "subtask":
-            header_text = f"[bold]Subtask: {self.description[:30]}[/]  [dim]{self.task_id[:16]}[/]"
+            header_text = f"[bold]Subtask: {(self.description or '')[:30]}[/]  [dim]{self.task_id[:16]}[/]"
         else:
             header_text = f"[bold]Session Messages[/]  [dim]{self.thread_id[:16]}[/]"
         yield Label(header_text, classes="msg-header", id="msg-title")
@@ -620,7 +642,7 @@ class MessageViewerScreen(Screen):
         if status:
             title = self.query_one("#msg-title", Label)
             extra = f"  {_status_text(status)}"
-            base = f"[bold]Subtask: {self.description[:30]}[/]  [dim]{self.task_id[:16]}[/]"
+            base = f"[bold]Subtask: {(self.description or '')[:30]}[/]  [dim]{self.task_id[:16]}[/]"
             title.update(base + extra)
 
     def _update_page_info(self) -> None:

@@ -1403,3 +1403,141 @@ class TestNavigationPaths:
             assert detail._todos_visible is False
             await pilot.press("t")
             assert detail._todos_visible is True
+
+
+class TestTUIOptimizations:
+    """Tests for TUI optimization fixes."""
+
+    @pytest.mark.anyio
+    async def test_none_description_no_crash(self):
+        """Entering a subtask with None description should not crash."""
+        # Use _client_with_threads() as base — proven to work for navigation
+        client = _client_with_threads()
+        # Override subagent to have description=None
+        client.list_subagents = AsyncMock(return_value=[
+            {
+                "task_id": "task-1",
+                "subagent_name": "general",
+                "description": None,
+                "status": "completed",
+                "started_at": "2026-04-19T10:00:00+00:00",
+                "completed_at": "2026-04-19T11:00:00+00:00",
+                "message_count": 5,
+            }
+        ])
+
+        detail = tui.ThreadDetailScreen(client, "thread-1", "Test")
+        app = _make_app(client)
+        async with app.run_test() as pilot:
+            app.push_screen(detail)
+            await pilot.pause()
+            await pilot.pause()
+
+            # Select subtask row and press enter
+            table = detail.query_one("#subtask-table", tui.DataTable)
+            table.move_cursor(row=0)
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            # Should navigate to MessageViewerScreen without crash
+            assert isinstance(app.screen, tui.MessageViewerScreen)
+
+    @pytest.mark.anyio
+    async def test_empty_string_description_no_crash(self):
+        """MessageViewerScreen with empty string description works."""
+        client = _mock_thread_client()
+        client.get_subagent_detail = AsyncMock(return_value={
+            "task_id": "t1", "subagent_name": "test", "status": "completed", "messages": [],
+        })
+        msg = tui.MessageViewerScreen(client, "thread-1", mode="subtask", task_id="t1", description="")
+        app = _make_app(client)
+        async with app.run_test() as pilot:
+            app.push_screen(msg)
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, tui.MessageViewerScreen)
+
+    @pytest.mark.anyio
+    async def test_none_description_direct_construction(self):
+        """MessageViewerScreen constructed with description=None should not crash."""
+        client = _mock_thread_client()
+        client.get_subagent_detail = AsyncMock(return_value={
+            "task_id": "t1", "subagent_name": "test", "status": "completed", "messages": [],
+        })
+        msg = tui.MessageViewerScreen(client, "thread-1", mode="subtask", task_id="t1", description=None)
+        app = _make_app(client)
+        async with app.run_test() as pilot:
+            app.push_screen(msg)
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, tui.MessageViewerScreen)
+            assert msg.description == ""  # Should be normalized to ""
+
+    @pytest.mark.anyio
+    async def test_tab_focus_toggle(self):
+        """Tab key toggles focus between subtask table and todos area."""
+        client = _client_with_threads()
+        detail = tui.ThreadDetailScreen(client, "thread-1", "Test")
+        app = _make_app(client)
+        async with app.run_test() as pilot:
+            app.push_screen(detail)
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+
+            table = detail.query_one("#subtask-table", tui.DataTable)
+
+            # Set focus on table first
+            table.focus()
+            await pilot.pause()
+            assert not detail._focus_todos
+
+            # Tab → should switch to todos area
+            await pilot.press("tab")
+            await pilot.pause()
+            assert detail._focus_todos is True
+
+            # Tab → should switch back to table
+            await pilot.press("tab")
+            await pilot.pause()
+            assert detail._focus_todos is False
+
+    @pytest.mark.anyio
+    async def test_todos_sorted_in_progress_first(self):
+        """Todos should be sorted with in_progress first."""
+        client = _mock_thread_client()
+        client.get_thread_state = AsyncMock(return_value={
+            "values": {
+                "todos": [
+                    {"content": "Completed task", "status": "completed"},
+                    {"content": "Active task", "status": "in_progress"},
+                    {"content": "Pending task", "status": "pending"},
+                    {"content": "Another done", "status": "completed"},
+                ]
+            }
+        })
+        client.get_thread_status = AsyncMock(return_value={"main_session": {"status": "idle"}})
+        client.list_subagents = AsyncMock(return_value=[])
+
+        detail = tui.ThreadDetailScreen(client, "t1", "Test")
+        app = _make_app(client)
+        async with app.run_test() as pilot:
+            app.push_screen(detail)
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+
+            # Verify the sorted order by checking the internal render
+            label = detail.query_one("#todos-label", tui.Label)
+            # Get text content from the label
+            from rich.text import Text
+            content = label.render()
+            str_text = str(content)
+            # in_progress should appear before completed
+            active_pos = str_text.find("Active task")
+            completed_pos = str_text.find("Completed task")
+            assert active_pos > 0, "Active task should be in the rendered text"
+            assert completed_pos > 0, "Completed task should be in the rendered text"
+            assert active_pos < completed_pos, "Active task should appear before completed"
+
