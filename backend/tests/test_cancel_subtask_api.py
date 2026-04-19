@@ -178,7 +178,7 @@ class TestCancelSubtaskEndpoint:
 
     @pytest.mark.anyio
     async def test_path2_file_marker_cancel(self, tmp_path, monkeypatch):
-        """Task not in memory, found on disk → file marker cancellation."""
+        """Task not in memory, found on disk → file marker + summary.json update."""
         import deerflow.subagents.executor as executor_mod
 
         monkeypatch.setattr(executor_mod, "get_background_task_result", lambda _: None)
@@ -187,7 +187,8 @@ class TestCancelSubtaskEndpoint:
         threads_dir = tmp_path / "threads"
         subagents = threads_dir / "thread-1" / "subagents"
         subagents.mkdir(parents=True)
-        (subagents / "tc-marker.summary.json").write_text('{"status":"running"}')
+        summary_file = subagents / "tc-marker.summary.json"
+        summary_file.write_text(json.dumps({"status": "running"}))
 
         mock_paths = MagicMock()
         mock_paths.base_dir = tmp_path
@@ -211,6 +212,42 @@ class TestCancelSubtaskEndpoint:
         result = await runs_module.cancel_subtask("tc-marker", request=MagicMock())
         assert result.cancelled is True
         assert "tc-marker" in marker_created
+        # Verify summary.json also updated for zombie protection
+        updated = json.loads(summary_file.read_text())
+        assert updated["status"] == "cancelled"
+
+    @pytest.mark.anyio
+    async def test_path2_skips_completed_summary(self, tmp_path, monkeypatch):
+        """Path 2 should not overwrite already-completed summary.json."""
+        import deerflow.subagents.executor as executor_mod
+
+        monkeypatch.setattr(executor_mod, "get_background_task_result", lambda _: None)
+
+        threads_dir = tmp_path / "threads"
+        subagents = threads_dir / "thread-1" / "subagents"
+        subagents.mkdir(parents=True)
+        summary_file = subagents / "tc-done.summary.json"
+        summary_file.write_text(json.dumps({"status": "completed", "result": "ok"}))
+
+        mock_paths = MagicMock()
+        mock_paths.base_dir = tmp_path
+        monkeypatch.setattr("deerflow.config.paths.get_paths", lambda: mock_paths)
+
+        class FakeSession:
+            def __init__(self, thread_id, task_id, subagent_name, description=""):
+                pass
+
+            def request_cancel(self):
+                pass
+
+        import deerflow.subagents.session as session_mod
+
+        monkeypatch.setattr(session_mod, "SubagentSession", FakeSession)
+
+        await runs_module.cancel_subtask("tc-done", request=MagicMock())
+        # completed status should NOT be overwritten
+        updated = json.loads(summary_file.read_text())
+        assert updated["status"] == "completed"
 
     @pytest.mark.anyio
     async def test_path3_disk_fallback(self, tmp_path, monkeypatch):

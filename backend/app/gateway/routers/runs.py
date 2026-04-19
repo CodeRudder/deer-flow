@@ -173,12 +173,35 @@ async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskRespons
             )
             session.request_cancel()
             logger.info("Wrote cancel marker for task %s (thread %s)", task_id, thread_id)
+            # Also update summary.json in case the process is already dead (zombie)
+            _mark_summary_cancelled(thread_id, task_id)
             return CancelSubtaskResponse(task_id=task_id, cancelled=True)
         except Exception:
             logger.exception("Failed to write cancel marker for task %s", task_id)
 
     # ── Path 3: fallback — update on-disk session ────────────────────────
     return await _cancel_subtask_on_disk(task_id)
+
+
+def _mark_summary_cancelled(thread_id: str, task_id: str) -> None:
+    """Update summary.json to cancelled (guards against zombie tasks)."""
+    import json
+
+    from deerflow.config.paths import get_paths
+
+    summary_path = get_paths().base_dir / "threads" / thread_id / "subagents" / f"{task_id}.summary.json"
+    if not summary_path.exists():
+        return
+    try:
+        with open(summary_path, encoding="utf-8") as f:
+            summary = json.load(f)
+        if summary.get("status") in ("running", "pending", "unknown", "interrupted"):
+            summary["status"] = "cancelled"
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
+            logger.info("Marked zombie task %s as cancelled in summary.json", task_id)
+    except Exception:
+        logger.debug("Failed to update summary for task %s", task_id, exc_info=True)
 
 
 def _find_thread_id_for_task(task_id: str) -> str | None:
