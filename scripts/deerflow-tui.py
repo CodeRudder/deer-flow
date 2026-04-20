@@ -24,12 +24,22 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import DataTable, Footer, Header, Label, Static
+from textual.widgets import DataTable, Footer, Header, Label, Markdown, Static
 from textual.widgets.data_table import CellType
 
 # ── Constants ────────────────────────────────────────────────────────────
 
 CST = timezone(timedelta(hours=8))
+_LOG_PATH = "/tmp/tui_debug.log"
+_DEBUG = False
+
+
+def _log(msg: str) -> None:
+    if _DEBUG:
+        with open(_LOG_PATH, "a") as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:12]} {msg}\n")
+
+
 STATUS_COLORS = {
     "completed": "green",
     "running": "cyan",
@@ -131,7 +141,15 @@ class DeerFlowClient:
     async def get_subagent_detail(self, thread_id: str, task_id: str) -> dict:
         r = await self.http.get(f"{self.gateway}/api/threads/{thread_id}/subagents/{task_id}")
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if not data.get("messages"):
+            agents = await self.list_subagents(thread_id, limit=200)
+            for a in agents:
+                if a.get("task_id", "").startswith(task_id) and a["task_id"] != task_id:
+                    r2 = await self.http.get(f"{self.gateway}/api/threads/{thread_id}/subagents/{a['task_id']}")
+                    r2.raise_for_status()
+                    return r2.json()
+        return data
 
     async def get_messages(self, thread_id: str, limit: int = 100, offset: int = 0) -> dict:
         r = await self.http.get(f"{self.gateway}/api/threads/{thread_id}/messages", params={"limit": limit, "offset": offset})
@@ -241,6 +259,7 @@ class ThreadListScreen(Screen):
 
     def _apply_filter(self) -> None:
         table = self.query_one("#thread-table", DataTable)
+        saved_cursor = table.cursor_row
         table.clear()
         filtered = self._all_threads
         if self._filter_text:
@@ -254,6 +273,9 @@ class ThreadListScreen(Screen):
             tid = t.get("thread_id", "")[:16]
             table.add_row(i, title, _status_text(status), updated, tid, key=t.get("thread_id"))
 
+        if saved_cursor and saved_cursor < len(filtered):
+            table.move_cursor(row=saved_cursor, animate=False)
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_open_thread()
 
@@ -263,7 +285,7 @@ class ThreadListScreen(Screen):
             row_data = table.get_row_at(table.cursor_row)
         except Exception:
             return
-        tid_cell = row_data[-1] if isinstance(row_data, (list, tuple)) else str(row_data)
+        tid_cell = str(row_data[-1]) if isinstance(row_data, (list, tuple)) else str(row_data)
         thread_id = tid_cell
         for t in self._all_threads:
             if t.get("thread_id", "").startswith(tid_cell):
@@ -274,7 +296,7 @@ class ThreadListScreen(Screen):
             if t.get("thread_id") == thread_id:
                 title = t.get("values", {}).get("title", "") or "Untitled"
                 break
-        self.app.push_screen(ThreadDetailScreen(self.client, thread_id, title))
+        self.app.push_screen(ThreadDetailScreen(self.client, str(thread_id), str(title)))
 
     def action_refresh(self) -> None:
         self._load_threads()
@@ -335,8 +357,8 @@ class ThreadDetailScreen(Screen):
     ThreadDetailScreen { layout: vertical; }
     .breadcrumb { dock: top; height: 1; padding: 0 1; background: $surface; }
     .session-bar { dock: top; height: auto; padding: 0 1; background: $surface; }
-    .todos-panel { dock: top; height: auto; max-height: 15; padding: 0 1; border-bottom: solid $primary; overflow-y: auto; }
-    .todos-panel.hidden { display: none; }
+    #todos-table { dock: top; max-height: 12; border-bottom: solid $primary; }
+    #todos-table.hidden { display: none; }
     """
 
     def __init__(self, client: DeerFlowClient, thread_id: str, title: str = "") -> None:
@@ -351,9 +373,14 @@ class ThreadDetailScreen(Screen):
         self._auto_refresh_interval: Any | None = None
 
     def compose(self) -> ComposeResult:
-        yield Label(f"[bold]Threads > {self.title[:40]}[/]  [dim]{self.thread_id[:16]}[/]", classes="breadcrumb")
+        title = str(self.title or "")[:40]
+        tid = str(self.thread_id or "")[:16]
+        yield Label(f"[bold]Threads > {title}[/]  [dim]{tid}[/]", classes="breadcrumb")
         yield Label("Session: loading...", classes="session-bar", id="session-label")
-        yield FocusableStatic("Todos: loading...", classes="todos-panel", id="todos-label")
+        todos_table = DataTable(id="todos-table")
+        todos_table.add_columns("Status", "Content")
+        todos_table.cursor_type = "row"
+        yield todos_table
         table: DataTable = DataTable(id="subtask-table")
         table.add_columns("#", "Task ID", "Agent", "Description", "Status", "Started", "Updated", "Msgs")
         table.cursor_type = "row"
@@ -361,6 +388,7 @@ class ThreadDetailScreen(Screen):
 
     def on_mount(self) -> None:
         self._load_all()
+        self.query_one("#subtask-table", DataTable).focus()
 
     def on_unmount(self) -> None:
         self._stop_auto_refresh()
@@ -382,9 +410,15 @@ class ThreadDetailScreen(Screen):
             self.notify(f"Failed to load: {e}", severity="error")
 
     def _render_all(self) -> None:
-        self._render_session()
-        self._render_todos()
-        self._render_subagents()
+        for name, fn in [
+            ("session", self._render_session),
+            ("todos", self._render_todos),
+            ("subagents", self._render_subagents),
+        ]:
+            try:
+                fn()
+            except Exception as e:
+                self.notify(f"Render {name} error: {e}", severity="error")
 
     def _render_session(self) -> None:
         label = self.query_one("#session-label", Label)
@@ -392,36 +426,34 @@ class ThreadDetailScreen(Screen):
         status = main.get("status", "unknown")
         run_id = (main.get("run_id") or "")[:12]
         started = _format_ts(main.get("started_at"))
-        label.update(f"Session: {_status_text(status)}  Run: [dim]{run_id}[/]  Started: {started}")
+        label.update(f"Session: {_status_text(status)}  Run: [dim]{run_id}[/]  Started: {started}  [bold cyan]m:查看消息[/]")
 
     def _render_todos(self) -> None:
-        label = self.query_one("#todos-label", FocusableStatic)
+        table = self.query_one("#todos-table", DataTable)
+        table.clear()
         todos = self._state.get("values", {}).get("todos", [])
         if not todos:
-            label.update("[dim]No todos[/]")
+            table.add_row("", "[dim]No todos[/]")
             return
-        completed = sum(1 for t in todos if t.get("status") == "completed")
-        # Sort: in_progress first, then pending, then completed
         priority = {"in_progress": 0, "pending": 1, "completed": 2}
         sorted_todos = sorted(todos, key=lambda t: priority.get(t.get("status", ""), 3))
-        lines = [f"[bold]Todos ({completed}/{len(todos)}):[/]"]
-        for todo in sorted_todos:
+        for idx, todo in enumerate(sorted_todos):
             icon = TODO_ICONS.get(todo.get("status", ""), " ")
             color = STATUS_COLORS.get(todo.get("status", ""), "dim")
-            lines.append(f"  [{color}]{icon}[/{color}]  {todo.get('content', '')}")
-        label.update("\n".join(lines))
+            status_text = f"[{color}]{icon}[/{color}]"
+            content = todo.get("content", "")
+            table.add_row(status_text, content, key=f"todo-{idx}")
 
     def _render_subagents(self) -> None:
         table = self.query_one("#subtask-table", DataTable)
         table.clear()
-        # Sort: running first, then by started_at descending
         running = [t for t in self._subagents if t.get("status") == "running"]
         others = [t for t in self._subagents if t.get("status") != "running"]
         others.sort(key=lambda t: t.get("started_at", ""), reverse=True)
         ordered = running + others
 
         for i, t in enumerate(ordered, 1):
-            tid = t.get("task_id", "")[:16]
+            tid = t.get("task_id", "")
             agent = t.get("subagent_name", "")[:12]
             desc = _truncate(t.get("description", ""), 30)
             status = _status_text(t.get("status", "unknown"))
@@ -468,12 +500,9 @@ class ThreadDetailScreen(Screen):
             row_data = table.get_row_at(table.cursor_row)
         except Exception:
             return
-        tid_cell = row_data[1] if isinstance(row_data, (list, tuple)) and len(row_data) > 1 else str(row_data)
-        task_id = tid_cell
-        for t in self._subagents:
-            if t.get("task_id", "").startswith(tid_cell):
-                task_id = t["task_id"]
-                break
+        task_id = str(row_data[1]) if isinstance(row_data, (list, tuple)) and len(row_data) > 1 else ""
+        if not task_id:
+            return
         desc = ""
         for t in self._subagents:
             if t.get("task_id") == task_id:
@@ -541,19 +570,18 @@ class ThreadDetailScreen(Screen):
         self._load_all()
 
     def action_toggle_todos(self) -> None:
-        todos = self.query_one("#todos-label")
+        todos = self.query_one("#todos-table", DataTable)
         self._todos_visible = not self._todos_visible
         todos.set_class(not self._todos_visible, "hidden")
 
     def action_focus_next_area(self) -> None:
         """Toggle focus between todos panel and subtask table."""
-        table = self.query_one("#subtask-table", DataTable)
-        todos = self.query_one("#todos-label", FocusableStatic)
-        if self.focused is table:
-            todos.focus()
+        subtask_table = self.query_one("#subtask-table", DataTable)
+        todos_table = self.query_one("#todos-table", DataTable)
+        if self.focused is subtask_table:
+            todos_table.focus()
         else:
-            table.focus()
-            table.focus()
+            subtask_table.focus()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
@@ -570,8 +598,8 @@ class MessageViewerScreen(Screen):
         Binding("r", "refresh", "Refresh"),
         Binding("g", "scroll_top", "Top"),
         Binding("G", "scroll_bottom", "Bottom"),
-        Binding("n", "next_page", "Next", priority=True),
-        Binding("p", "prev_page", "Prev", priority=True),
+        Binding("n", "next_page", "PgDown", priority=True),
+        Binding("p", "prev_page", "PgUp", priority=True),
         Binding("c", "cancel_subtask", "Cancel"),
     ]
 
@@ -579,7 +607,7 @@ class MessageViewerScreen(Screen):
     MessageViewerScreen { layout: vertical; }
     .msg-header { dock: top; height: auto; padding: 0 1; background: $surface; border-bottom: solid $primary; }
     .msg-footer-bar { dock: bottom; height: 1; padding: 0 1; background: $surface; }
-    #msg-scroll { padding: 0 1; }
+    #msg-scroll { height: 1fr; padding: 0 1; }
     """
 
     def __init__(
@@ -596,6 +624,7 @@ class MessageViewerScreen(Screen):
         self.mode = mode
         self.task_id = task_id or ""
         self.description = description or ""
+        _log(f"MsgViewer.init: thread={thread_id!r}, task={task_id!r}, mode={mode}")
         self._offset = 0
         self._total = 0
         self._has_more = False
@@ -626,6 +655,7 @@ class MessageViewerScreen(Screen):
                 data = await self.client.get_subagent_detail(self.thread_id, self.task_id)
                 messages = data.get("messages", [])
                 status = data.get("status", "unknown")
+                _log(f"_load_messages: fetched {len(messages)} msgs, status={status}")
                 self._render_messages(messages, status)
                 if status == "running":
                     self._start_auto_refresh()
@@ -635,6 +665,7 @@ class MessageViewerScreen(Screen):
                 self._total = data.get("total", 0)
                 self._has_more = data.get("has_more", False)
                 self._last_msg_count = len(messages)
+                _log(f"_load_messages: session fetched {len(messages)} msgs, total={self._total}")
                 self._render_messages(messages)
                 self._update_page_info()
                 # Check if session is running for auto-refresh
@@ -646,16 +677,24 @@ class MessageViewerScreen(Screen):
                 except Exception:
                     pass
         except Exception as e:
+            _log(f"_load_messages FAILED: {e}")
             self.notify(f"Failed to load messages: {e}", severity="error")
 
     def _render_messages(self, messages: list[dict], status: str = "") -> None:
         scroll = self.query_one("#msg-scroll", VerticalScroll)
+        _log(f"_render_messages: {len(messages)} msgs, children before={len(scroll.children)}")
         # Remove old message widgets
         for child in list(scroll.children):
             child.remove()
 
-        for msg in messages:
-            self._mount_message(msg)
+        for i, msg in enumerate(messages):
+            try:
+                self._mount_message(msg)
+            except Exception as e:
+                _log(f"_render_messages: mount msg[{i}] FAILED: {e}")
+
+        _log(f"_render_messages: children after={len(scroll.children)}, "
+             f"virtual_size={scroll.virtual_size}, size={scroll.size}")
 
         if status:
             title = self.query_one("#msg-title", Label)
@@ -665,7 +704,7 @@ class MessageViewerScreen(Screen):
 
         # Auto-scroll to bottom on initial load
         if messages:
-            scroll.call_after_refresh(scroll.scroll_end)
+            scroll.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _mount_message(self, msg: dict) -> None:
         scroll = self.query_one("#msg-scroll", VerticalScroll)
@@ -790,21 +829,21 @@ class MessageViewerScreen(Screen):
 
     def action_scroll_top(self) -> None:
         scroll = self.query_one("#msg-scroll", VerticalScroll)
-        scroll.scroll_home()
+        scroll.scroll_home(animate=False)
 
     def action_scroll_bottom(self) -> None:
         scroll = self.query_one("#msg-scroll", VerticalScroll)
-        scroll.scroll_end()
+        scroll.scroll_end(animate=False)
 
     def action_next_page(self) -> None:
-        if self.mode == "session" and self._has_more:
-            self._offset += self._page_size
-            self._load_messages()
+        scroll = self.query_one("#msg-scroll", VerticalScroll)
+        page_height = scroll.window_region.height
+        scroll.scroll_to(0, min(scroll.scroll_y + page_height, scroll.max_scroll_y), animate=False)
 
     def action_prev_page(self) -> None:
-        if self.mode == "session" and self._offset > 0:
-            self._offset = max(0, self._offset - self._page_size)
-            self._load_messages()
+        scroll = self.query_one("#msg-scroll", VerticalScroll)
+        page_height = scroll.window_region.height
+        scroll.scroll_to(0, max(scroll.scroll_y - page_height, 0), animate=False)
 
     def action_cancel_subtask(self) -> None:
         if self.mode != "subtask":
@@ -843,6 +882,10 @@ class DeerFlowTUI(App):
     CSS = """
     Screen { background: $surface; }
     DataTable { height: 1fr; }
+    VerticalScroll > .scrollbar { background: $primary-darken-2; }
+    VerticalScroll > .scrollbar:hover { background: $primary; }
+    VerticalScroll > .scrollbar-thumb { background: $primary-lighten-1; min-height: 1; }
+    VerticalScroll > .scrollbar-thumb:hover { background: $primary-lighten-2; }
     .confirm-dialog {
         align: center middle;
         width: 50;
@@ -863,13 +906,35 @@ class DeerFlowTUI(App):
         Binding("question_mark", "show_help", "Help", key_display="?"),
     ]
 
-    def __init__(self, gateway: str = "http://localhost:8001", langgraph: str = "http://localhost:2024") -> None:
+    def __init__(
+        self,
+        gateway: str = "http://localhost:8001",
+        langgraph: str = "http://localhost:2024",
+        thread_id: str = "",
+        task_id: str = "",
+        session_mode: bool = False,
+    ) -> None:
         super().__init__()
         self.client = DeerFlowClient(gateway=gateway, langgraph=langgraph)
+        self._df_thread_id = thread_id
+        self._df_task_id = task_id
+        self._df_session_mode = session_mode
 
     def on_mount(self) -> None:
-        if not self._test_mode:
-            self.push_screen(ThreadListScreen(self.client))
+        if self._test_mode:
+            return
+        _log(f"on_mount: thread={self._df_thread_id!r}, task={self._df_task_id!r}")
+        self.push_screen(ThreadListScreen(self.client))
+        if self._df_thread_id:
+            if self._df_session_mode:
+                self.set_timer(0.2, lambda: self.push_screen(
+                    MessageViewerScreen(self.client, self._df_thread_id, mode="session")))
+            elif self._df_task_id:
+                self.set_timer(0.2, lambda: self.push_screen(
+                    MessageViewerScreen(self.client, self._df_thread_id, mode="subtask", task_id=self._df_task_id)))
+            else:
+                self.set_timer(0.2, lambda: self.push_screen(
+                    ThreadDetailScreen(self.client, self._df_thread_id)))
 
     async def action_quit(self) -> None:
         await self.client.close()
@@ -885,6 +950,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeerFlow TUI")
     parser.add_argument("--gateway", default="http://localhost:8001", help="Gateway URL")
     parser.add_argument("--langgraph", default="http://localhost:2024", help="LangGraph URL")
+    parser.add_argument("--thread", default="", help="Thread ID — skip to thread detail or messages")
+    parser.add_argument("--task", default="", help="Task ID — open subtask messages directly (requires --thread)")
+    parser.add_argument("--session", action="store_true", help="Open session messages (requires --thread)")
+    parser.add_argument("--debug", action="store_true", help=f"Enable debug logging to {_LOG_PATH}")
     args = parser.parse_args()
-    app = DeerFlowTUI(gateway=args.gateway, langgraph=args.langgraph)
+    if args.debug:
+        _DEBUG = True  # noqa: PLW0603 — module-level global
+        with open(_LOG_PATH, "w") as f:
+            f.write(f"--- TUI debug log {datetime.now().isoformat()} ---\n")
+    if args.task and not args.thread:
+        parser.error("--task requires --thread")
+    if args.session and not args.thread:
+        parser.error("--session requires --thread")
+    app = DeerFlowTUI(
+        gateway=args.gateway,
+        langgraph=args.langgraph,
+        thread_id=args.thread,
+        task_id=args.task,
+        session_mode=args.session,
+    )
     app.run()

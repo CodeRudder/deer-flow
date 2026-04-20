@@ -2,6 +2,9 @@
 """View subtask list and todos for a DeerFlow thread.
 
 Usage:
+    # List all threads
+    python scripts/thread-tasks.py list
+
     # By thread ID
     python scripts/thread-tasks.py <thread_id>
 
@@ -192,6 +195,70 @@ def _get_last_message(gateway: str, thread_id: str, task_id: str) -> str:
 # ── Display ──────────────────────────────────────────────────────────────
 
 
+def show_threads(gateway: str, status_filter: str | None = None) -> None:
+    """List all threads with ID and title."""
+    from urllib.request import Request
+
+    body = json.dumps({"limit": 200}).encode()
+    req = Request(
+        f"{gateway}/api/threads/search",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req, timeout=30) as resp:
+            threads = json.loads(resp.read())
+    except URLError as e:
+        print(f"{RED}Failed to fetch threads: {e}{RESET}", file=sys.stderr)
+        return
+
+    if not isinstance(threads, list):
+        print(f"{RED}Unexpected response{RESET}", file=sys.stderr)
+        return
+
+    if status_filter:
+        threads = [t for t in threads if t.get("status") == status_filter]
+
+    if not threads:
+        print(f"{DIM}No threads found.{RESET}")
+        return
+
+    # Sort: running first, then by updated_at descending
+    threads.sort(key=lambda t: (0 if t.get("status") == "running" else 1, t.get("updated_at", "")), reverse=True)
+    threads.sort(key=lambda t: 0 if t.get("status") == "running" else 1)
+
+    id_w = 38
+    title_w = 40
+    time_w = 11
+
+    header = (
+        f"{'#':>3}  "
+        f"{_pad('Thread ID', id_w)}  "
+        f"{_pad('Title', title_w)}  "
+        f"{'Status':12}  "
+        f"{_pad('Updated', time_w)}"
+    )
+    print(f"{BOLD}{header}{RESET}")
+    print("─" * 110)
+
+    for i, t in enumerate(threads, 1):
+        tid = t.get("thread_id", "")
+        title = _truncate(t.get("values", {}).get("title", "") or "Untitled", title_w)
+        status = t.get("status", "unknown")
+        updated = _format_ts(t.get("updated_at", ""))
+
+        row = (
+            f"{i:>3}  "
+            f"{DIM}{_pad(tid, id_w)}{RESET}  "
+            f"{_pad(title, title_w)}  "
+            f"{_status_label(status)}  "
+            f"{_pad(updated, time_w)}"
+        )
+        print(row)
+
+    print(f"\n{DIM}{len(threads)} thread(s){RESET}")
+
+
 def show_subtasks(
     gateway: str,
     thread_id: str,
@@ -234,7 +301,7 @@ def show_subtasks(
         return total
 
     # Column widths
-    id_w = 28
+    id_w = 36
     agent_w = 14
     desc_w = 36
     msg_w = show_last_msg and 42 or 0
@@ -257,7 +324,7 @@ def show_subtasks(
     print("─" * 120)
 
     for i, t in enumerate(tasks, start=offset + 1):
-        task_id = t.get("task_id", "")[:id_w]
+        task_id = t.get("task_id", "")
         agent = t.get("subagent_name", "")[:agent_w]
         desc = _truncate(t.get("description", ""), desc_w)
         status = t.get("status", "unknown")
@@ -414,6 +481,8 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  %(prog)s list                          List all threads
+  %(prog)s list --status running         List running threads only
   %(prog)s df886916-d106-4944-ba66-5161ec715bb3
   %(prog)s http://localhost:2026/workspace/chats/df886916-...
   %(prog)s <id> --page 2 --page-size 10
@@ -451,6 +520,11 @@ Examples:
 
     args = parser.parse_args()
     thread_id = _extract_thread_id(args.thread)
+
+    if thread_id == "list":
+        # Extract --status from args for list filtering
+        show_threads(args.gateway, args.status)
+        return
 
     if args.command == "cancel":
         status_filter = args.status
