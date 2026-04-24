@@ -249,8 +249,11 @@ class SubagentExecutor:
             _seen_msg_ids: set[str] = set()
 
             # Build config with thread_id for sandbox access and recursion limit
+            # Use a fixed recursion_limit (200) independent of max_turns,
+            # because each LangGraph step (AI or tool) counts as 1 and the
+            # LLM can under-estimate how many steps a task needs.
             run_config: RunnableConfig = {
-                "recursion_limit": self.config.max_turns,
+                "recursion_limit": 200,
             }
             context = {}
             if self.thread_id:
