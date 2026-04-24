@@ -178,6 +178,7 @@ class ConfirmDialog(ModalScreen[bool]):
 
     BINDINGS = [
         Binding("y", "confirm", "Yes"),
+        Binding("enter", "confirm", "Yes"),
         Binding("n", "cancel", "No"),
         Binding("escape", "cancel", "No"),
     ]
@@ -191,7 +192,7 @@ class ConfirmDialog(ModalScreen[bool]):
         with Container(classes="confirm-dialog"):
             yield Label(f"[bold]{self._title}[/]", classes="confirm-title")
             yield Label(self._message, classes="confirm-message")
-            yield Label("[dim]Y: 确认  N/Escape: 取消[/]", classes="confirm-hint")
+            yield Label("[dim]Y/Enter: 确认  N/Escape: 取消[/]", classes="confirm-hint")
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -210,7 +211,8 @@ class ThreadListScreen(Screen):
         Binding("enter", "open_thread", "Open"),
         Binding("r", "refresh", "Refresh"),
         Binding("/", "filter", "Filter"),
-        Binding("q", "quit", "Quit"),
+        Binding("q", "confirm_quit", "Quit"),
+        Binding("escape", "confirm_quit", "Quit", priority=True),
     ]
 
     CSS = """
@@ -301,6 +303,12 @@ class ThreadListScreen(Screen):
     def action_refresh(self) -> None:
         self._load_threads()
 
+    def action_confirm_quit(self) -> None:
+        self.app.push_screen(
+            ConfirmDialog("退出", "确定退出 DeerFlow TUI？"),
+            lambda confirmed: confirmed and self.app.action_quit(),
+        )
+
     def action_filter(self) -> None:
         # Simple inline filter: toggle between filtered and unfiltered
         # A full Input widget would overlay the table; for simplicity, we cycle through empty -> typed
@@ -343,7 +351,7 @@ class ThreadDetailScreen(Screen):
     """Thread detail: session status, todos, subtask list."""
 
     BINDINGS = [
-        Binding("escape", "go_back", "Back"),
+        Binding("escape", "handle_escape", "Back/Close", priority=True),
         Binding("enter", "open_subtask", "Messages"),
         Binding("tab", "focus_next_area", "Jump", priority=True),
         Binding("m", "open_session_messages", "Session Msgs"),
@@ -351,6 +359,9 @@ class ThreadDetailScreen(Screen):
         Binding("c", "cancel_subtask", "Cancel"),
         Binding("r", "refresh", "Refresh"),
         Binding("t", "toggle_todos", "Todos"),
+        Binding("n", "next_page", "Next Pg", priority=True),
+        Binding("p", "prev_page", "Prev Pg", priority=True),
+        Binding("slash", "toggle_filter", "Filter"),
     ]
 
     CSS = """
@@ -359,6 +370,13 @@ class ThreadDetailScreen(Screen):
     .session-bar { dock: top; height: auto; padding: 0 1; background: $surface; }
     #todos-table { dock: top; max-height: 12; border-bottom: solid $primary; }
     #todos-table.hidden { display: none; }
+    .page-bar {
+        dock: bottom;
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+    }
+    .page-bar.filtering { background: $warning-darken-3; }
     """
 
     def __init__(self, client: DeerFlowClient, thread_id: str, title: str = "") -> None:
@@ -371,6 +389,10 @@ class ThreadDetailScreen(Screen):
         self._state: dict = {}
         self._subagents: list[dict] = []
         self._auto_refresh_interval: Any | None = None
+        self._filter_text = ""
+        self._filtering = False
+        self._page = 1
+        self._page_size = 20
 
     def compose(self) -> ComposeResult:
         title = str(self.title or "")[:40]
@@ -385,6 +407,7 @@ class ThreadDetailScreen(Screen):
         table.add_columns("#", "Task ID", "Agent", "Description", "Status", "Started", "Updated", "Msgs")
         table.cursor_type = "row"
         yield table
+        yield Label("", classes="page-bar", id="page-label")
 
     def on_mount(self) -> None:
         self._load_all()
@@ -399,7 +422,7 @@ class ThreadDetailScreen(Screen):
             state, status, subagents = await asyncio.gather(
                 self.client.get_thread_state(self.thread_id),
                 self.client.get_thread_status(self.thread_id),
-                self.client.list_subagents(self.thread_id),
+                self.client.list_subagents(self.thread_id, limit=500),
             )
             self._state = state
             self._session_status = status
@@ -446,13 +469,40 @@ class ThreadDetailScreen(Screen):
 
     def _render_subagents(self) -> None:
         table = self.query_one("#subtask-table", DataTable)
+        # Preserve selected task across refreshes
+        saved_task_id = None
+        try:
+            if table.row_count > 0:
+                row_data = table.get_row_at(table.cursor_row)
+                if isinstance(row_data, (list, tuple)) and len(row_data) > 1:
+                    saved_task_id = str(row_data[1])
+        except Exception:
+            pass
+
         table.clear()
         running = [t for t in self._subagents if t.get("status") == "running"]
         others = [t for t in self._subagents if t.get("status") != "running"]
         others.sort(key=lambda t: t.get("started_at", ""), reverse=True)
         ordered = running + others
 
-        for i, t in enumerate(ordered, 1):
+        # Apply keyword filter
+        if self._filter_text:
+            ft = self._filter_text.lower()
+            ordered = [
+                t for t in ordered
+                if ft in (t.get("task_id", "") or "").lower()
+                or ft in (t.get("subagent_name", "") or "").lower()
+                or ft in (t.get("description", "") or "").lower()
+            ]
+
+        # Apply pagination
+        total = len(ordered)
+        total_pages = max(1, (total + self._page_size - 1) // self._page_size)
+        self._page = max(1, min(self._page, total_pages))
+        offset = (self._page - 1) * self._page_size
+        page_items = ordered[offset:offset + self._page_size]
+
+        for i, t in enumerate(page_items, start=offset + 1):
             tid = t.get("task_id", "")
             agent = t.get("subagent_name", "")[:12]
             desc = _truncate(t.get("description", ""), 30)
@@ -461,6 +511,32 @@ class ThreadDetailScreen(Screen):
             updated = _format_ts(t.get("completed_at")) or "-"
             msgs = str(t.get("message_count", 0))
             table.add_row(i, tid, agent, desc, status, started, updated, msgs, key=t.get("task_id"))
+
+        # Restore cursor to previously selected task
+        if saved_task_id:
+            for row_idx in range(table.row_count):
+                try:
+                    rd = table.get_row_at(row_idx)
+                    if isinstance(rd, (list, tuple)) and len(rd) > 1 and str(rd[1]) == saved_task_id:
+                        table.move_cursor(row=row_idx, animate=False)
+                        break
+                except Exception:
+                    break
+
+        # Update page info bar
+        page_label = self.query_one("#page-label", Label)
+        page_label.set_class(self._filtering, "filtering")
+        if self._filtering:
+            display = self._filter_text + "▏" if self._filter_text else "▏"
+            page_label.update(
+                f"[bold yellow]FILTER:[/] [white]{_markup_escape(display)}[/] "
+                f"[dim]({total} matched, p{self._page}/{total_pages}) Esc:Cancel Enter:Done[/]"
+            )
+        else:
+            page_label.update(
+                f"[dim]Tasks {offset + 1}-{offset + len(page_items)} of {total}  "
+                f"p{self._page}/{total_pages}  n:Next p:Prev /:Filter[/]"
+            )
 
     def _maybe_start_auto_refresh(self) -> None:
         main = self._session_status.get("main_session", {})
@@ -582,6 +658,59 @@ class ThreadDetailScreen(Screen):
             todos_table.focus()
         else:
             subtask_table.focus()
+
+    def action_next_page(self) -> None:
+        self._page += 1
+        self._render_subagents()
+
+    def action_prev_page(self) -> None:
+        if self._page > 1:
+            self._page -= 1
+        self._render_subagents()
+
+    def action_toggle_filter(self) -> None:
+        """Enter filter mode — bottom bar becomes filter prompt."""
+        if not self._filtering:
+            self._filtering = True
+            self._filter_text = ""
+            self._page = 1
+            self._render_subagents()
+
+    def _close_filter(self) -> None:
+        """Exit filter mode and restore view."""
+        self._filtering = False
+        self._filter_text = ""
+        self._page = 1
+        self._render_subagents()
+
+    def on_key(self, event) -> None:
+        """Handle keys in filter mode: type to filter, Esc to exit, Enter to confirm."""
+        if not self._filtering:
+            return
+        key = event.key
+        if key == "escape":
+            self._close_filter()
+            event.prevent_default()
+        elif key == "enter":
+            self._filtering = False
+            self._render_subagents()
+        elif key == "backspace":
+            self._filter_text = self._filter_text[:-1]
+            self._page = 1
+            self._render_subagents()
+            event.prevent_default()
+        elif len(key) == 1 and key.isprintable():
+            self._filter_text += key
+            self._page = 1
+            self._render_subagents()
+            event.prevent_default()
+
+    def action_handle_escape(self) -> None:
+        """Escape: close filter if active, otherwise go back."""
+        if self._filtering:
+            self._close_filter()
+        else:
+            self.app.pop_screen()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
@@ -902,7 +1031,7 @@ class DeerFlowTUI(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        Binding("ctrl+c", "handle_ctrl_c", "Quit"),
         Binding("question_mark", "show_help", "Help", key_display="?"),
     ]
 
@@ -919,6 +1048,7 @@ class DeerFlowTUI(App):
         self._df_thread_id = thread_id
         self._df_task_id = task_id
         self._df_session_mode = session_mode
+        self._ctrl_c_count = 0
 
     def on_mount(self) -> None:
         if self._test_mode:
@@ -939,6 +1069,17 @@ class DeerFlowTUI(App):
     async def action_quit(self) -> None:
         await self.client.close()
         self.exit()
+
+    def action_handle_ctrl_c(self) -> None:
+        self._ctrl_c_count += 1
+        if self._ctrl_c_count >= 2:
+            self.exit()
+        else:
+            self.notify("再按一次 Ctrl+C 退出", severity="warning")
+            self.set_timer(3, self._reset_ctrl_c)
+
+    def _reset_ctrl_c(self) -> None:
+        self._ctrl_c_count = 0
 
     def action_show_help(self) -> None:
         self.notify("Enter:Open  r:Refresh  s:Stop  c:Cancel  m:Messages  Esc:Back  q:Quit", severity="information")
