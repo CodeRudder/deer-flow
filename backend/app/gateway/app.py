@@ -113,6 +113,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Session health monitor failed to start")
 
+        # Start checkpoint cleanup (periodic retention enforcement)
+        checkpoint_cleaner = None
+        try:
+            from app.gateway.checkpoint_cleaner import CheckpointCleaner
+
+            cleaner_cfg = (app_config.model_extra or {}).get("checkpoint_cleanup", {}) or {}
+            if cleaner_cfg.get("enabled", True):
+                checkpoint_cleaner = CheckpointCleaner(
+                    checkpointer=app.state.checkpointer,
+                    keep=int(cleaner_cfg.get("keep", 100)),
+                    interval=int(cleaner_cfg.get("interval", 3600)),
+                )
+                checkpoint_cleaner.start(asyncio.get_event_loop())
+                app.state.checkpoint_cleaner = checkpoint_cleaner
+                logger.info("Checkpoint cleaner started (keep=%d, interval=%ds)", checkpoint_cleaner._keep, checkpoint_cleaner._interval)
+        except Exception:
+            logger.exception("Checkpoint cleaner failed to start")
+
         yield
 
         # Stop session health monitor
@@ -121,6 +139,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 session_monitor.stop()
             except Exception:
                 logger.exception("Failed to stop session health monitor")
+
+        # Stop checkpoint cleaner
+        if checkpoint_cleaner is not None:
+            try:
+                checkpoint_cleaner.stop()
+            except Exception:
+                logger.exception("Failed to stop checkpoint cleaner")
 
         # Stop channel service on shutdown
         try:

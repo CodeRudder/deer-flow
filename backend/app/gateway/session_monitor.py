@@ -1,8 +1,8 @@
 """Session health monitor — periodic background task for the Gateway.
 
 Detects stalled main sessions where all sub-agent tasks have finished but
-unfinished todos remain.  Action: inject a continuation message into the
-thread state via LangGraph SDK (no run creation or cancellation).
+unfinished todos remain.  Action: send an activation message to resume work,
+using ``multitask_strategy: reject`` so active user runs are never interrupted.
 
 Also supports **auto iteration**: for configured sessions, when all todos are
 completed, automatically sends an iteration prompt to start the next iteration.
@@ -335,7 +335,7 @@ class SessionMonitor:
             },
             "metadata": {"source": "health_monitor"},
             "stream_mode": ["values"],
-            "multitask_strategy": "interrupt",
+            "multitask_strategy": "reject",
             "on_disconnect": "cancel",
         }
         if checkpoint_info:
@@ -351,6 +351,13 @@ class SessionMonitor:
                 if resp.status_code == 200:
                     logger.info("Activation run completed for thread %s", thread_id)
                     return True
+                elif resp.status_code == 409:
+                    # reject strategy: a run is already active — expected, not an error
+                    logger.info(
+                        "Activation rejected for thread %s (run already active)",
+                        thread_id,
+                    )
+                    return False
                 else:
                     logger.error(
                         "Activation failed for thread %s: HTTP %d %s",
