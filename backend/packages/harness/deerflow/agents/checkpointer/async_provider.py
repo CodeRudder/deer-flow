@@ -58,6 +58,28 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
         await asyncio.to_thread(ensure_sqlite_parent_dir, conn_str)
         async with AsyncSqliteSaver.from_conn_string(conn_str) as saver:
             await saver.setup()
+            # Tune SQLite memory and IO behaviour after schema init.
+            # - cache_size: SQLite pager cache (in-memory B-tree pages).
+            #   Default -2000 (2MB) is fine; keep it bounded.
+            # - mmap_size: memory-mapped IO — lets SQLite read pages via mmap
+            #   instead of read() syscalls.  mmap pages are *not* charged to
+            #   cgroup memory.current, so this reduces reported memory usage
+            #   for large DBs.  64 MB is a safe cap.
+            # - wal_autocheckpoint: flush WAL more aggressively (every 1000
+            #   pages = 4 MB) to prevent WAL from growing unbounded.
+            # - temp_store: keep temp tables in memory (faster, less IO).
+            try:
+                async with saver.conn.executescript(
+                    """
+                    PRAGMA cache_size=-8000;
+                    PRAGMA mmap_size=67108864;
+                    PRAGMA wal_autocheckpoint=1000;
+                    PRAGMA temp_store=MEMORY;
+                    """
+                ) as _cur:
+                    pass
+            except Exception:
+                logger.debug("Failed to apply SQLite PRAGMA tuning", exc_info=True)
             yield saver
         return
 

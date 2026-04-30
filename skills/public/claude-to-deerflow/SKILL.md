@@ -173,6 +173,28 @@ curl -s "$DEERFLOW_GATEWAY_URL/api/threads/<thread_id>/uploads/list"
 curl -s "$DEERFLOW_LANGGRAPH_URL/threads/<thread_id>/history"
 ```
 
+**Response format**: The API returns a JSON array directly (not wrapped in an object).
+
+**Parsing response** (Python example):
+```python
+import sys, json
+data = json.load(sys.stdin)
+messages = data if isinstance(data, list) else data.get('messages', [])
+
+for msg in messages:
+    msg_type = msg.get('type', 'unknown')
+    if msg_type == 'human':
+        content = msg.get('content', '')
+        if isinstance(content, list):
+            content = ''.join([c.get('text', '') if isinstance(c, dict) else str(c) for c in content])
+        print(f'👤 Human: {content}')
+    elif msg_type == 'ai':
+        content = msg.get('content', '')
+        if isinstance(content, list):
+            content = ''.join([c.get('text', '') if isinstance(c, dict) else str(c) for c in content])
+        print(f'🤖 AI: {content}')
+```
+
 ### 12. List Threads
 
 ```bash
@@ -180,6 +202,49 @@ curl -s -X POST "$DEERFLOW_LANGGRAPH_URL/threads/search" \
   -H "Content-Type: application/json" \
   -d '{"limit": 20, "sort_by": "updated_at", "sort_order": "desc"}'
 ```
+
+**Response format**: The API returns a JSON array directly (not wrapped in an object).
+
+**Parsing response** (Python example):
+```python
+import sys, json
+data = json.load(sys.stdin)
+threads = data if isinstance(data, list) else data.get('threads', [])
+
+for i, t in enumerate(threads, 1):
+    thread_id = t.get('thread_id', 'N/A')
+    title = t.get('title', 'Untitled')
+    # Thread title might be in values.title
+    values = t.get('values', {})
+    thread_title = values.get('title', title) if values else title
+    status = t.get('status', 'unknown')
+    todos = values.get('todos', []) if values else []
+    artifacts = values.get('artifacts', []) if values else []
+    
+    print(f'{i}. {thread_id}')
+    print(f'   Title: {thread_title}')
+    print(f'   Status: {status}')
+    print(f'   Todos: {len(todos)} items')
+    if todos:
+        for todo in todos:
+            content = todo.get('content', 'N/A')
+            todo_status = todo.get('status', 'unknown')
+            print(f'     - [{todo_status}] {content}')
+    if artifacts:
+        for artifact in artifacts:
+            print(f'     📄 {artifact}')
+```
+
+**Thread data structure**:
+- `thread_id` — Unique thread identifier
+- `title` — Thread title (fallback if values.title not present)
+- `status` — Thread status: idle, busy, error
+- `values` — Thread state containing:
+  - `title` — Actual thread title (overrides top-level title)
+  - `todos` — Array of todo items with `content` and `status`
+  - `artifacts` — Array of artifact file paths
+- `created_at` — Thread creation timestamp
+- `updated_at` — Thread last update timestamp
 
 ## Usage Script
 

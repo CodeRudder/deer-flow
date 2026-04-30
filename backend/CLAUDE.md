@@ -507,6 +507,17 @@ This starts all services and makes the application available at `http://localhos
 
 Gateway mode embeds the agent runtime in Gateway, no LangGraph server.
 
+**Systemd service** (Linux with cgroup v2):
+
+```bash
+sudo systemctl start deerflow      # Start (reads DEER_FLOW_MODE from .env, default: prod)
+sudo systemctl stop deerflow       # Stop
+sudo systemctl restart deerflow    # Restart
+systemctl status deerflow          # Status
+```
+
+Each service runs in a systemd user scope with cgroup v2 resource limits (MemoryMax, CPUQuota, IOWriteBandwidthMax). See [docs/RESOURCE_LIMITS.md](docs/RESOURCE_LIMITS.md) for setup and configuration.
+
 **Nginx routing**:
 - Standard mode: `/api/langgraph/*` → LangGraph Server (2024)
 - Gateway mode: `/api/langgraph/*` → Gateway embedded runtime (8001) (via envsubst)
@@ -594,3 +605,4 @@ See `docs/` directory for detailed documentation:
 - [PATH_EXAMPLES.md](docs/PATH_EXAMPLES.md) - Path types and usage
 - [summarization.md](docs/summarization.md) - Context summarization
 - [plan_mode_usage.md](docs/plan_mode_usage.md) - Plan mode with TodoList
+- [RESOURCE_LIMITS.md](docs/RESOURCE_LIMITS.md) - cgroup v2 resource limits and SQLite memory optimization

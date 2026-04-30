@@ -41,6 +41,54 @@ if [ -f "$REPO_ROOT/.env" ]; then
     set +a
 fi
 
+# ── Resource limits (cgroup v2) ────────────────────────────────────────────────
+# Requires systemd 240+ and cgroup v2.  Detected at runtime; silently skipped
+# when unavailable.
+#
+# Override via environment or .env:
+#   DEER_FLOW_CGROUP=0                    # disable cgroup limits entirely
+#   LANGGRAPH_MEMORY_MAX=6G               # LangGraph memory cap
+#   GATEWAY_MEMORY_MAX=2G                 # Gateway memory cap
+#   FRONTEND_MEMORY_MAX=1G                # Frontend memory cap
+#   LANGGRAPH_CPU_QUOTA=300%              # LangGraph CPU quota (300% = 3 cores)
+#   GATEWAY_CPU_QUOTA=200%                # Gateway CPU quota (200% = 2 cores)
+#   FRONTEND_CPU_QUOTA=100%               # Frontend CPU quota (100% = 1 core)
+#   LANGGRAPH_IO_MAX=50M                  # LangGraph IO write limit (50 MB/s, 0=unlimited)
+#   GATEWAY_IO_MAX=30M                    # Gateway IO write limit (30 MB/s, 0=unlimited)
+#   FRONTEND_IO_MAX=10M                   # Frontend IO write limit (10 MB/s, 0=unlimited)
+
+_can_use_cgroup() {
+    # Quick check: is cgroup v2 + systemd-run --user available?
+    [ "${DEER_FLOW_CGROUP:-1}" = "0" ] && return 1
+    [ ! -f /sys/fs/cgroup/cgroup.controllers ] && return 1
+    command -v systemd-run >/dev/null 2>&1 || return 1
+    # Verify controllers are delegated to user slice
+    local controllers
+    controllers=$(cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers 2>/dev/null)
+    echo "$controllers" | grep -q "memory" || return 1
+    return 0
+}
+
+# Build a systemd-run prefix for resource-constrained execution.
+# IO write limit is applied after scope creation via systemctl set-property
+# (avoids shell quoting issues with space-separated device:value in --property).
+cgroup_wrap() {
+    local name="$1" mem="$2" cpu_quota="${3:-100%}" io_max="${4:-0}"
+    echo "systemd-run --user --scope --unit=$name --property=MemoryMax=$mem --property=CPUQuota=$cpu_quota"
+}
+
+# Apply IO write bandwidth limit to an already-created scope.
+apply_io_limit() {
+    local scope_name="$1" io_max="$2"
+    [ "$io_max" = "0" ] && return 0
+    # Resolve the block device (major:minor) for the filesystem hosting the project
+    local dev_source dev_major_minor
+    dev_source=$(df --output=source "$REPO_ROOT" 2>/dev/null | tail -1)
+    dev_major_minor=$(lsblk -no MAJ:MIN "$dev_source" 2>/dev/null)
+    [ -z "$dev_major_minor" ] && return 0
+    systemctl --user set-property "$scope_name.scope" "IOWriteBandwidthMax=$dev_major_minor $io_max" 2>/dev/null || true
+}
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
 DEV_MODE=true
@@ -230,16 +278,37 @@ trap cleanup INT TERM
 
 # ── Helper: start a service ──────────────────────────────────────────────────
 
-# run_service NAME COMMAND PORT TIMEOUT
+# run_service NAME COMMAND PORT TIMEOUT [CGROUP_ARGS]
+# CGROUP_ARGS: "NAME MEMORY_MAX CPU_WEIGHT IO_WEIGHT" (optional, enables cgroup limits)
 # In daemon mode, wraps with nohup. Waits for port to be ready.
 run_service() {
     local name="$1" cmd="$2" port="$3" timeout="$4"
+    local cgroup_args="${5:-}"
 
-    echo "Starting $name..."
-    if $DAEMON_MODE; then
-        nohup sh -c "$cmd" > /dev/null 2>&1 &
+    local cgroup_prefix=""
+    if [ -n "$cgroup_args" ] && _can_use_cgroup; then
+        # shellcheck disable=SC2086
+        cgroup_prefix=$(cgroup_wrap $cgroup_args)
+        echo "Starting $name (cgroup: memory=$(echo "$cgroup_args" | awk '{print $2}'), cpu=$(echo "$cgroup_args" | awk '{print $3}'), io=$(echo "$cgroup_args" | awk '{print $4}')/s)..."
     else
-        sh -c "$cmd" &
+        echo "Starting $name..."
+    fi
+
+    if [ -n "$cgroup_prefix" ]; then
+        # systemd-run must be the outermost process for cgroup to take effect.
+        # It runs sh -c internally, redirecting to the log file.
+        local logfile="logs/$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-').log"
+        if $DAEMON_MODE; then
+            nohup $cgroup_prefix sh -c "$cmd" > "$logfile" 2>&1 &
+        else
+            $cgroup_prefix sh -c "$cmd" > "$logfile" 2>&1 &
+        fi
+    else
+        if $DAEMON_MODE; then
+            nohup sh -c "$cmd" > /dev/null 2>&1 &
+        else
+            sh -c "$cmd" &
+        fi
     fi
 
     ./scripts/wait-for-port.sh "$port" "$timeout" "$name" || {
@@ -248,6 +317,15 @@ run_service() {
         [ -f "$logfile" ] && tail -20 "$logfile"
         cleanup
     }
+
+    # Apply IO bandwidth limit after scope is created
+    if [ -n "$cgroup_args" ]; then
+        local scope_name io_max
+        scope_name=$(echo "$cgroup_args" | awk '{print $1}')
+        io_max=$(echo "$cgroup_args" | awk '{print $4}')
+        apply_io_limit "$scope_name" "$io_max"
+    fi
+
     echo "✓ $name started on localhost:$port"
 }
 
@@ -274,7 +352,8 @@ if ! $GATEWAY_MODE; then
     fi
     run_service "LangGraph" \
         "cd backend && NO_COLOR=1 uv run langgraph dev --no-browser $LANGGRAPH_ALLOW_BLOCKING_FLAG --n-jobs-per-worker $LANGGRAPH_JOBS_PER_WORKER --server-log-level $LANGGRAPH_LOG_LEVEL $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1" \
-        2024 60
+        2024 60 \
+        "deerflow-langgraph ${LANGGRAPH_MEMORY_MAX:-6G} ${LANGGRAPH_CPU_QUOTA:-300%} ${LANGGRAPH_IO_MAX:-50M}"
 else
     echo "⏩ Skipping LangGraph (Gateway mode — runtime embedded in Gateway)"
 fi
@@ -282,12 +361,14 @@ fi
 # 2. Gateway API
 run_service "Gateway" \
     "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1" \
-    8001 30
+    8001 30 \
+    "deerflow-gateway ${GATEWAY_MEMORY_MAX:-2G} ${GATEWAY_CPU_QUOTA:-200%} ${GATEWAY_IO_MAX:-30M}"
 
 # 3. Frontend
 run_service "Frontend" \
     "cd frontend && $FRONTEND_CMD > ../logs/frontend.log 2>&1" \
-    $FRONTEND_PORT 120
+    $FRONTEND_PORT 120 \
+    "deerflow-frontend ${FRONTEND_MEMORY_MAX:-1G} ${FRONTEND_CPU_QUOTA:-100%} ${FRONTEND_IO_MAX:-10M}"
 
 # 4. Nginx
 run_service "Nginx" \
@@ -314,6 +395,10 @@ echo "           /api/*              →  Gateway REST API (8001)"
 echo ""
 echo "  📋 Logs: logs/{langgraph,gateway,frontend,nginx}.log"
 echo ""
+if _can_use_cgroup; then
+    echo "  cgroup limits: LangGraph=${LANGGRAPH_MEMORY_MAX:-6G}/${LANGGRAPH_CPU_QUOTA:-300%}/${LANGGRAPH_IO_MAX:-50M} Gateway=${GATEWAY_MEMORY_MAX:-2G}/${GATEWAY_CPU_QUOTA:-200%}/${GATEWAY_IO_MAX:-30M} Frontend=${FRONTEND_MEMORY_MAX:-1G}/${FRONTEND_CPU_QUOTA:-100%}/${FRONTEND_IO_MAX:-10M}"
+    echo ""
+fi
 
 if $DAEMON_MODE; then
     echo "  🛑 Stop: make stop"
