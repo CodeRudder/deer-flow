@@ -56,6 +56,9 @@ fi
 #   LANGGRAPH_IO_MAX=50M                  # LangGraph IO write limit (50 MB/s, 0=unlimited)
 #   GATEWAY_IO_MAX=30M                    # Gateway IO write limit (30 MB/s, 0=unlimited)
 #   FRONTEND_IO_MAX=10M                   # Frontend IO write limit (10 MB/s, 0=unlimited)
+#   LANGGRAPH_RESTART_SEC=10              # Seconds between restart attempts (default: 10)
+#   LANGGRAPH_START_LIMIT_BURST=5         # Max restarts in interval (default: 5)
+#   LANGGRAPH_START_LIMIT_SEC=300         # Interval window in seconds (default: 300)
 
 _can_use_cgroup() {
     # Quick check: is cgroup v2 + systemd-run --user available?
@@ -69,15 +72,32 @@ _can_use_cgroup() {
     return 0
 }
 
-# Build a systemd-run prefix for resource-constrained execution.
-# IO write limit is applied after scope creation via systemctl set-property
-# (avoids shell quoting issues with space-separated device:value in --property).
-cgroup_wrap() {
+# Start a transient systemd service with resource limits and auto-restart.
+# Executes systemd-run directly (not via echo) to preserve environment variables.
+# IO write limit is applied after service creation via systemctl set-property.
+cgroup_run() {
     local name="$1" mem="$2" cpu_quota="${3:-100%}" io_max="${4:-0}"
-    echo "systemd-run --user --scope --unit=$name --property=MemoryMax=$mem --property=CPUQuota=$cpu_quota"
+    local restart_sec="${5:-10}" burst="${6:-5}" interval="${7:-300}"
+    local cmd="$8"
+    local logfile="$REPO_ROOT/logs/$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-').log"
+
+    systemd-run --user --unit="$name" \
+         --property=Type=exec \
+         --property=WorkingDirectory="$REPO_ROOT" \
+         --property=MemoryMax="$mem" \
+         --property=CPUQuota="$cpu_quota" \
+         --property=Restart=on-failure \
+         --property=RestartSec="$restart_sec" \
+         --property=StartLimitIntervalSec="$interval" \
+         --property=StartLimitBurst="$burst" \
+         --property=StandardOutput="append:$logfile" \
+         --property=StandardError=inherit \
+         --property=Environment="PATH=$PATH" \
+         --property=Environment="HOME=$HOME" \
+         sh -c "$cmd"
 }
 
-# Apply IO write bandwidth limit to an already-created scope.
+# Apply IO write bandwidth limit to an already-created transient service.
 apply_io_limit() {
     local scope_name="$1" io_max="$2"
     [ "$io_max" = "0" ] && return 0
@@ -86,7 +106,7 @@ apply_io_limit() {
     dev_source=$(df --output=source "$REPO_ROOT" 2>/dev/null | tail -1)
     dev_major_minor=$(lsblk -no MAJ:MIN "$dev_source" 2>/dev/null)
     [ -z "$dev_major_minor" ] && return 0
-    systemctl --user set-property "$scope_name.scope" "IOWriteBandwidthMax=$dev_major_minor $io_max" 2>/dev/null || true
+    systemctl --user set-property "$scope_name.service" "IOWriteBandwidthMax=$dev_major_minor $io_max" 2>/dev/null || true
 }
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -118,6 +138,13 @@ done
 
 stop_all() {
     echo "Stopping all services..."
+    # Stop transient services first (clean, systemd-managed, prevents auto-restart)
+    if _can_use_cgroup; then
+        systemctl --user stop deerflow-langgraph.service 2>/dev/null || true
+        systemctl --user stop deerflow-gateway.service 2>/dev/null || true
+        systemctl --user stop deerflow-frontend.service 2>/dev/null || true
+    fi
+    # Fallback: kill any remaining processes (non-cgroup mode or leftovers)
     pkill -f "langgraph dev" 2>/dev/null || true
     pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
     pkill -f "next dev" 2>/dev/null || true
@@ -279,33 +306,33 @@ trap cleanup INT TERM
 # ── Helper: start a service ──────────────────────────────────────────────────
 
 # run_service NAME COMMAND PORT TIMEOUT [CGROUP_ARGS]
-# CGROUP_ARGS: "NAME MEMORY_MAX CPU_WEIGHT IO_WEIGHT" (optional, enables cgroup limits)
-# In daemon mode, wraps with nohup. Waits for port to be ready.
+# CGROUP_ARGS: "NAME MEM CPU IO [RESTART_SEC] [BURST] [INTERVAL]"
+#   (optional, enables cgroup transient service with auto-restart)
+# When cgroup is available, creates a transient systemd service (auto-restart on failure).
+# Otherwise, backgrounds the process with nohup (daemon) or & (foreground).
 run_service() {
     local name="$1" cmd="$2" port="$3" timeout="$4"
     local cgroup_args="${5:-}"
 
-    local cgroup_prefix=""
     if [ -n "$cgroup_args" ] && _can_use_cgroup; then
-        # shellcheck disable=SC2086
-        cgroup_prefix=$(cgroup_wrap $cgroup_args)
-        echo "Starting $name (cgroup: memory=$(echo "$cgroup_args" | awk '{print $2}'), cpu=$(echo "$cgroup_args" | awk '{print $3}'), io=$(echo "$cgroup_args" | awk '{print $4}')/s)..."
+        # Parse cgroup_args into individual fields
+        local cg_name cg_mem cg_cpu cg_io cg_restart_sec cg_burst cg_interval
+        cg_name=$(echo "$cgroup_args" | awk '{print $1}')
+        cg_mem=$(echo "$cgroup_args" | awk '{print $2}')
+        cg_cpu=$(echo "$cgroup_args" | awk '{print $3}')
+        cg_io=$(echo "$cgroup_args" | awk '{print $4}')
+        cg_restart_sec=$(echo "$cgroup_args" | awk '{print $5}')
+        cg_burst=$(echo "$cgroup_args" | awk '{print $6}')
+        cg_interval=$(echo "$cgroup_args" | awk '{print $7}')
+
+        echo "Starting $name (cgroup service: mem=$cg_mem, cpu=$cg_cpu, io=$cg_io, restart=${cg_restart_sec:-10}s)..."
+        cgroup_run "$cg_name" "$cg_mem" "$cg_cpu" "$cg_io" \
+                   "${cg_restart_sec:-10}" "${cg_burst:-5}" "${cg_interval:-300}" "$cmd"
     else
         echo "Starting $name..."
-    fi
-
-    if [ -n "$cgroup_prefix" ]; then
-        # systemd-run must be the outermost process for cgroup to take effect.
-        # It runs sh -c internally, redirecting to the log file.
-        local logfile="logs/$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-').log"
         if $DAEMON_MODE; then
-            nohup $cgroup_prefix sh -c "$cmd" > "$logfile" 2>&1 &
-        else
-            $cgroup_prefix sh -c "$cmd" > "$logfile" 2>&1 &
-        fi
-    else
-        if $DAEMON_MODE; then
-            nohup sh -c "$cmd" > /dev/null 2>&1 &
+            local logfile="logs/$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-').log"
+            nohup sh -c "$cmd" > "$logfile" 2>&1 &
         else
             sh -c "$cmd" &
         fi
@@ -318,7 +345,7 @@ run_service() {
         cleanup
     }
 
-    # Apply IO bandwidth limit after scope is created
+    # Apply IO bandwidth limit after service is created
     if [ -n "$cgroup_args" ]; then
         local scope_name io_max
         scope_name=$(echo "$cgroup_args" | awk '{print $1}')
@@ -351,28 +378,28 @@ if ! $GATEWAY_MODE; then
         LANGGRAPH_ALLOW_BLOCKING_FLAG="--allow-blocking"
     fi
     run_service "LangGraph" \
-        "cd backend && NO_COLOR=1 uv run langgraph dev --no-browser $LANGGRAPH_ALLOW_BLOCKING_FLAG --n-jobs-per-worker $LANGGRAPH_JOBS_PER_WORKER --server-log-level $LANGGRAPH_LOG_LEVEL $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1" \
+        "cd backend && NO_COLOR=1 uv run langgraph dev --no-browser $LANGGRAPH_ALLOW_BLOCKING_FLAG --n-jobs-per-worker $LANGGRAPH_JOBS_PER_WORKER --server-log-level $LANGGRAPH_LOG_LEVEL $LANGGRAPH_EXTRA_FLAGS" \
         2024 60 \
-        "deerflow-langgraph ${LANGGRAPH_MEMORY_MAX:-6G} ${LANGGRAPH_CPU_QUOTA:-300%} ${LANGGRAPH_IO_MAX:-50M}"
+        "deerflow-langgraph ${LANGGRAPH_MEMORY_MAX:-6G} ${LANGGRAPH_CPU_QUOTA:-300%} ${LANGGRAPH_IO_MAX:-50M} ${LANGGRAPH_RESTART_SEC:-10} ${LANGGRAPH_START_LIMIT_BURST:-5} ${LANGGRAPH_START_LIMIT_SEC:-300}"
 else
     echo "⏩ Skipping LangGraph (Gateway mode — runtime embedded in Gateway)"
 fi
 
 # 2. Gateway API
 run_service "Gateway" \
-    "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1" \
+    "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $GATEWAY_EXTRA_FLAGS" \
     8001 30 \
-    "deerflow-gateway ${GATEWAY_MEMORY_MAX:-2G} ${GATEWAY_CPU_QUOTA:-200%} ${GATEWAY_IO_MAX:-30M}"
+    "deerflow-gateway ${GATEWAY_MEMORY_MAX:-2G} ${GATEWAY_CPU_QUOTA:-200%} ${GATEWAY_IO_MAX:-30M} ${GATEWAY_RESTART_SEC:-10} ${GATEWAY_START_LIMIT_BURST:-5} ${GATEWAY_START_LIMIT_SEC:-300}"
 
 # 3. Frontend
 run_service "Frontend" \
-    "cd frontend && $FRONTEND_CMD > ../logs/frontend.log 2>&1" \
+    "cd frontend && $FRONTEND_CMD" \
     $FRONTEND_PORT 120 \
-    "deerflow-frontend ${FRONTEND_MEMORY_MAX:-1G} ${FRONTEND_CPU_QUOTA:-100%} ${FRONTEND_IO_MAX:-10M}"
+    "deerflow-frontend ${FRONTEND_MEMORY_MAX:-1G} ${FRONTEND_CPU_QUOTA:-100%} ${FRONTEND_IO_MAX:-10M} ${FRONTEND_RESTART_SEC:-10} ${FRONTEND_START_LIMIT_BURST:-5} ${FRONTEND_START_LIMIT_SEC:-300}"
 
-# 4. Nginx
+# 4. Nginx (no cgroup — lightweight reverse proxy)
 run_service "Nginx" \
-    "nginx -g 'daemon off;' -c '$REPO_ROOT/docker/nginx/nginx.local.conf' -p '$REPO_ROOT' > logs/nginx.log 2>&1" \
+    "nginx -g 'daemon off;' -c '$REPO_ROOT/docker/nginx/nginx.local.conf' -p '$REPO_ROOT'" \
     2026 10
 
 # ── Ready ────────────────────────────────────────────────────────────────────
@@ -397,6 +424,7 @@ echo "  📋 Logs: logs/{langgraph,gateway,frontend,nginx}.log"
 echo ""
 if _can_use_cgroup; then
     echo "  cgroup limits: LangGraph=${LANGGRAPH_MEMORY_MAX:-6G}/${LANGGRAPH_CPU_QUOTA:-300%}/${LANGGRAPH_IO_MAX:-50M} Gateway=${GATEWAY_MEMORY_MAX:-2G}/${GATEWAY_CPU_QUOTA:-200%}/${GATEWAY_IO_MAX:-30M} Frontend=${FRONTEND_MEMORY_MAX:-1G}/${FRONTEND_CPU_QUOTA:-100%}/${FRONTEND_IO_MAX:-10M}"
+    echo "  auto-restart:  on-failure (RestartSec=${LANGGRAPH_RESTART_SEC:-10}s, Burst=${LANGGRAPH_START_LIMIT_BURST:-5}/${LANGGRAPH_START_LIMIT_SEC:-300}s)"
     echo ""
 fi
 
@@ -406,5 +434,17 @@ if $DAEMON_MODE; then
     trap - INT TERM
 else
     echo "  Press Ctrl+C to stop all services"
+    # In cgroup mode, monitor transient services; exit when all are inactive.
+    # In non-cgroup mode, just wait for background processes.
+    if _can_use_cgroup; then
+        while true; do
+            # Collect the services that are actually running (LangGraph may be skipped in gateway mode)
+            _mon_services="deerflow-gateway.service deerflow-frontend.service"
+            ! $GATEWAY_MODE && _mon_services="deerflow-langgraph.service $_mon_services"
+            active=$(systemctl --user is-active $_mon_services 2>/dev/null | grep -c "^active$" || true)
+            [ "$active" -eq 0 ] && break
+            sleep 5
+        done &
+    fi
     wait
 fi

@@ -516,7 +516,7 @@ sudo systemctl restart deerflow    # Restart
 systemctl status deerflow          # Status
 ```
 
-Each service runs in a systemd user scope with cgroup v2 resource limits (MemoryMax, CPUQuota, IOWriteBandwidthMax). See [docs/RESOURCE_LIMITS.md](docs/RESOURCE_LIMITS.md) for setup and configuration.
+Each service runs as a systemd transient service with cgroup v2 resource limits (MemoryMax, CPUQuota, IOWriteBandwidthMax) and `Restart=on-failure` for automatic recovery from OOM kills and crashes. See [docs/RESOURCE_LIMITS.md](docs/RESOURCE_LIMITS.md) for setup and configuration.
 
 **Nginx routing**:
 - Standard mode: `/api/langgraph/*` → LangGraph Server (2024)

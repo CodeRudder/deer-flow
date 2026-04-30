@@ -6,12 +6,12 @@ DeerFlow processes run with cgroup v2 resource limits to prevent any single serv
 
 ## Process Architecture
 
-| Process | Port | Scope | Memory | CPU | IO Write |
-|---------|------|-------|--------|-----|----------|
-| LangGraph Server | 2024 | `deerflow-langgraph.scope` | 6 GB | 3 cores (300%) | 50 MB/s |
-| Gateway API | 8001 | `deerflow-gateway.scope` | 2 GB | 2 cores (200%) | 30 MB/s |
-| Frontend (Next.js) | 2025 | `deerflow-frontend.scope` | 1 GB | 1 core (100%) | 10 MB/s |
-| Nginx | 2026 | `deerflow.service` cgroup | — | — | — |
+| Process | Port | Service | Memory | CPU | IO Write | Restart |
+|---------|------|---------|--------|-----|----------|---------|
+| LangGraph Server | 2024 | `deerflow-langgraph.service` | 6 GB | 3 cores (300%) | 50 MB/s | on-failure (10s) |
+| Gateway API | 8001 | `deerflow-gateway.service` | 2 GB | 2 cores (200%) | 30 MB/s | on-failure (10s) |
+| Frontend (Next.js) | 2025 | `deerflow-frontend.service` | 1 GB | 1 core (100%) | 10 MB/s | on-failure (10s) |
+| Nginx | 2026 | (no cgroup) | — | — | — | — |
 
 ## Service Management
 
@@ -49,15 +49,24 @@ After creating: `sudo systemctl daemon-reload`.
 
 ### How It Works
 
-`scripts/serve.sh` wraps each service with `systemd-run --user --scope`:
+`scripts/serve.sh` wraps each service with `systemd-run --user` to create a **transient service** (not scope) with `Restart=on-failure`:
 
 ```
-systemd-run --user --scope \
+systemd-run --user \
   --unit=deerflow-langgraph \
+  --property=Type=exec \
   --property=MemoryMax=6G \
   --property=CPUQuota=300% \
+  --property=Restart=on-failure \
+  --property=RestartSec=10 \
+  --property=StartLimitIntervalSec=300 \
+  --property=StartLimitBurst=5 \
+  --property=StandardOutput=append:/path/to/logs/langgraph.log \
+  --property=StandardError=inherit \
   sh -c "langgraph dev ..."
 ```
+
+**Auto-restart behavior**: When a service crashes or is killed by OOM (SIGKILL → exit 137), systemd automatically restarts it after `RestartSec` seconds. Up to `StartLimitBurst` restarts are allowed within `StartLimitIntervalSec` to prevent restart loops.
 
 IO write bandwidth is applied after scope creation via `systemctl --user set-property` (avoids shell quoting issues):
 
@@ -88,6 +97,12 @@ LANGGRAPH_IO_MAX=50M
 GATEWAY_IO_MAX=30M
 FRONTEND_IO_MAX=10M
 
+# Auto-restart on failure (seconds between restart / max burst / interval window)
+LANGGRAPH_RESTART_SEC=10
+LANGGRAPH_START_LIMIT_BURST=5
+LANGGRAPH_START_LIMIT_SEC=300
+# Same for GATEWAY_* and FRONTEND_* prefixes
+
 # Disable cgroup limits entirely
 DEER_FLOW_CGROUP=0
 ```
@@ -95,14 +110,20 @@ DEER_FLOW_CGROUP=0
 ### Verification
 
 ```bash
-# Check running scopes
-systemctl --user list-units --type=scope | grep deerflow
+# Check running transient services
+systemctl --user list-units --type=service | grep deerflow
 
-# Check limits per scope
-systemctl --user show deerflow-langgraph.scope | grep -E "MemoryMax|CPUQuota|IOWriteBand"
+# Check limits per service
+systemctl --user show deerflow-langgraph.service | grep -E "MemoryMax|CPUQuota|IOWriteBand|Restart"
+
+# Check service status (including restart count)
+systemctl --user status deerflow-langgraph.service
+
+# Check restart count
+systemctl --user show deerflow-langgraph.service | grep NRestarts
 
 # Check actual memory usage
-cat /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/deerflow-langgraph.scope/memory.current | numfmt --to=iec
+cat /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/deerflow-langgraph.service/memory.current | numfmt --to=iec
 ```
 
 ## SQLite Memory Optimization
@@ -197,7 +218,7 @@ sqlite3 ~/.deer-flow/checkpoints.db \
   "SELECT thread_id, COUNT(*) FROM checkpoints GROUP BY thread_id ORDER BY COUNT(*) DESC LIMIT 10"
 
 # Current memory breakdown
-CG="/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/deerflow-langgraph.scope"
+CG="/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/deerflow-langgraph.service"
 echo "total: $(cat $CG/memory.current | numfmt --to=iec)"
 echo "anon:  $(cat $CG/memory.stat | grep '^anon ' | awk '{print $2}' | numfmt --to=iec)"
 echo "cache: $(cat $CG/memory.stat | grep '^file ' | awk '{print $2}' | numfmt --to=iec)"
