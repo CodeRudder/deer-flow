@@ -89,6 +89,8 @@ class SessionMonitor:
         self._running = True
         self._loop = loop
         self._schedule_next()
+        # Schedule one-shot cleanup as a background task (non-blocking)
+        asyncio.ensure_future(self._cancel_all_stale(), loop=loop)
         logger.info(
             "Session health monitor started (interval=%ds, stale_threshold=%ds)",
             self._check_interval,
@@ -102,6 +104,105 @@ class SessionMonitor:
             self._timer.cancel()
             self._timer = None
         logger.info("Session health monitor stopped")
+
+    async def _cancel_all_stale(self) -> None:
+        """Cancel all stale sub-agent sessions and LangGraph runs."""
+        import json
+
+        from deerflow.config.paths import get_paths
+        from deerflow.config.subagents_config import get_subagents_app_config
+
+        subagents_cfg = get_subagents_app_config()
+        base_dir = get_paths().base_dir / "threads"
+        if not base_dir.exists():
+            return
+
+        total_sessions = 0
+        total_runs = 0
+
+        for thread_dir in base_dir.iterdir():
+            if not thread_dir.is_dir():
+                continue
+            subagents_dir = thread_dir / "subagents"
+            if not subagents_dir.is_dir():
+                continue
+
+            thread_id = thread_dir.name
+            stale_count = 0
+
+            for summary_file in subagents_dir.glob("*.summary.json"):
+                try:
+                    with open(summary_file, encoding="utf-8") as f:
+                        summary = json.load(f)
+                    status = summary.get("status", "")
+                    if status in _TERMINAL_STATUSES:
+                        continue
+                except (json.JSONDecodeError, OSError):
+                    continue
+
+                # Check mtime
+                jsonl_path = summary_file.parent / summary_file.name.replace(".summary.json", ".jsonl")
+                try:
+                    mtime = jsonl_path.stat().st_mtime
+                except OSError:
+                    mtime = 0
+                agent_name = summary.get("subagent_name", "")
+                timeout_seconds = subagents_cfg.get_timeout_for(agent_name) if agent_name else subagents_cfg.timeout_seconds
+                age = time.time() - mtime
+                if age < timeout_seconds:
+                    continue  # Still active
+
+                self._cancel_stale_session(summary_file, thread_id, age)
+                stale_count += 1
+
+            if stale_count:
+                logger.info("Startup cleanup: thread %s: cancelled %d stale session(s)", thread_id, stale_count)
+                total_sessions += stale_count
+
+            # Cancel stale LangGraph runs for this thread
+            runs_cancelled = await self._cancel_stale_runs(thread_id)
+            total_runs += runs_cancelled
+
+        if total_sessions or total_runs:
+            logger.info(
+                "Startup cleanup complete: %d stale session(s), %d stale run(s) cancelled",
+                total_sessions, total_runs,
+            )
+
+    async def _cancel_stale_runs(self, thread_id: str) -> int:
+        """Cancel all stale running/pending runs for a thread. Returns count."""
+        client = self._get_client()
+        if client is None:
+            return 0
+        try:
+            from datetime import datetime, timezone
+
+            runs = await client.runs.list(thread_id, limit=50)
+            cancelled = 0
+            for run in runs:
+                if run.get("status") not in ("running", "pending"):
+                    continue
+                created_at = run.get("created_at")
+                if not created_at:
+                    continue
+                try:
+                    if isinstance(created_at, str):
+                        created = datetime.fromisoformat(created_at)
+                    else:
+                        created = created_at
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    age = datetime.now(tz=timezone.utc) - created
+                    if age > self._run_stale_threshold:
+                        run_id = run.get("run_id", "")
+                        await self._cancel_run(thread_id, run_id)
+                        cancelled += 1
+                except (ValueError, TypeError):
+                    pass
+            return cancelled
+        except Exception:
+            logger.debug("Failed to check runs for thread %s", thread_id, exc_info=True)
+            return 0
 
     # ------------------------------------------------------------------
     # Scheduling
