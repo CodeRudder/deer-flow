@@ -238,7 +238,12 @@ class SessionMonitor:
         logger.debug("Thread %s: no reason to activate, skipping", thread_id)
 
     async def _has_running_subtask(self, thread_id: str) -> bool:
-        """Check if any subtask for this thread is still running."""
+        """Check if any subtask for this thread is still running.
+
+        Also cancels stale on-disk sessions that haven't been updated for
+        ``stale_threshold`` seconds — these are left over from crashed or
+        restarted processes.
+        """
         # Check in-memory tasks
         try:
             from deerflow.subagents.executor import (
@@ -255,8 +260,9 @@ class SessionMonitor:
         except Exception:
             logger.debug("Failed to check background tasks", exc_info=True)
 
-        # Check on-disk sessions: a session is considered running if it has
-        # been updated recently AND its summary does not show a terminal status.
+        # Check on-disk sessions via summary files (fast: small JSON files).
+        # A session is "running" only if summary status is non-terminal AND
+        # the JSONL file was updated within the timeout window.
         try:
             import json
 
@@ -267,28 +273,66 @@ class SessionMonitor:
             if not subagents_dir.exists():
                 return False
 
-            for jsonl_file in subagents_dir.glob("*.jsonl"):
-                # Check summary for terminal status
-                summary_path = jsonl_file.parent / jsonl_file.name.replace(".jsonl", ".summary.json")
-                if summary_path.exists():
-                    try:
-                        with open(summary_path, encoding="utf-8") as f:
-                            summary = json.load(f)
-                        if summary.get("status", "") in _TERMINAL_STATUSES:
-                            continue
-                    except (json.JSONDecodeError, OSError):
-                        pass
-                # Also check JSONL itself for terminal marker
-                if self._session_has_terminal_marker(jsonl_file):
+            stale_count = 0
+            for summary_file in subagents_dir.glob("*.summary.json"):
+                try:
+                    with open(summary_file, encoding="utf-8") as f:
+                        summary = json.load(f)
+                    status = summary.get("status", "")
+                    if status in _TERMINAL_STATUSES:
+                        continue
+                except (json.JSONDecodeError, OSError):
                     continue
-                # Check if recently updated (not stale)
-                mtime = jsonl_file.stat().st_mtime
-                if time.time() - mtime < timeout_seconds:
+
+                # Non-terminal status — check if JSONL is actively updating
+                jsonl_path = summary_file.parent / summary_file.name.replace(".summary.json", ".jsonl")
+                try:
+                    mtime = jsonl_path.stat().st_mtime
+                except OSError:
+                    mtime = 0
+                age = time.time() - mtime
+                if age < timeout_seconds:
                     return True  # Still actively updating
+
+                # Stale — mark as cancelled
+                self._cancel_stale_session(summary_file, thread_id, age)
+                stale_count += 1
+
+            if stale_count:
+                logger.info(
+                    "Thread %s: cancelled %d stale sub-agent session(s)",
+                    thread_id, stale_count,
+                )
         except Exception:
             logger.debug("Failed to check disk sessions for thread %s", thread_id, exc_info=True)
 
         return False
+
+    @staticmethod
+    def _cancel_stale_session(summary_path: Path, thread_id: str, age: float) -> None:
+        """Mark a stale on-disk sub-agent session as cancelled.
+
+        Updates the summary JSON to ``status: cancelled`` and appends a
+        terminal marker to the JSONL file.
+        """
+        import json
+
+        try:
+            with open(summary_path, encoding="utf-8") as f:
+                summary = json.load(f)
+            summary["status"] = "cancelled"
+            summary["reason"] = "stale"
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        jsonl_path = summary_path.parent / summary_path.name.replace(".summary.json", ".jsonl")
+        try:
+            with open(jsonl_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"status": "cancelled", "reason": "stale"}) + "\n")
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Main session activation
@@ -445,7 +489,8 @@ class SessionMonitor:
 
         A run is considered active only if it is running/pending AND
         recently created (within 30 minutes).  Stale "running" runs
-        that survived a LangGraph server restart are treated as dead.
+        that survived a LangGraph server restart are **cancelled** on the
+        server so they don't block subsequent activation attempts.
         """
         client = self._get_client()
         if client is None:
@@ -457,6 +502,7 @@ class SessionMonitor:
             stale_threshold = timedelta(minutes=30)
 
             runs = await client.runs.list(thread_id, limit=10)
+            has_active = False
             for run in runs:
                 if run.get("status") in ("running", "pending"):
                     created_at = run.get("created_at")
@@ -470,20 +516,44 @@ class SessionMonitor:
                                 created = created.replace(tzinfo=timezone.utc)
                             age = datetime.now(tz=timezone.utc) - created
                             if age > stale_threshold:
+                                run_id = run.get("run_id", "")
                                 logger.info(
-                                    "Thread %s: stale run %s (%s, age=%.0f min), treating as dead",
+                                    "Thread %s: cancelling stale run %s (%s, age=%.0f min)",
                                     thread_id,
-                                    run.get("run_id", "?")[:12],
+                                    run_id[:12],
                                     run.get("status"),
                                     age.total_seconds() / 60,
                                 )
+                                await self._cancel_run(thread_id, run_id)
                                 continue
                         except (ValueError, TypeError):
                             pass  # If we can't parse, assume active
-                    return True
-            return False
+                    has_active = True
+            return has_active
         except Exception:
             logger.debug("Failed to check active runs for thread %s", thread_id, exc_info=True)
+            return False
+
+    async def _cancel_run(self, thread_id: str, run_id: str) -> bool:
+        """Cancel a run on the LangGraph server. Returns True on success."""
+        import httpx
+
+        url = f"{self._langgraph_url}/threads/{thread_id}/runs/{run_id}/cancel"
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5, read=10, write=5, pool=5),
+            ) as http:
+                resp = await http.post(url)
+                if resp.status_code in (200, 204):
+                    logger.info("Cancelled stale run %s for thread %s", run_id[:12], thread_id)
+                    return True
+                logger.warning(
+                    "Failed to cancel stale run %s for thread %s: HTTP %d",
+                    run_id[:12], thread_id, resp.status_code,
+                )
+                return False
+        except Exception:
+            logger.debug("Failed to cancel run %s for thread %s", run_id[:12], thread_id, exc_info=True)
             return False
 
     async def _thread_exists(self, thread_id: str) -> bool:
@@ -506,18 +576,44 @@ class SessionMonitor:
 
         Filters out health-monitor activation runs (``metadata.source ==
         "health_monitor"``) so that activations don't mask the user's
-        original stop intent.
+        original stop intent.  Also ignores stale interrupted runs (> 30 min
+        old) that were likely cancelled by the health monitor's stale-run
+        cleanup, not by the user.
         """
         client = self._get_client()
         if client is None:
             return False
         try:
+            from datetime import datetime, timezone, timedelta
+
+            stale_threshold = timedelta(minutes=30)
             runs = await client.runs.list(thread_id, limit=20)
             for run in runs:
                 meta = run.get("metadata", {})
                 if meta.get("source") == "health_monitor":
                     continue  # Skip activation runs
-                return run.get("status") == "interrupted"
+                if run.get("status") != "interrupted":
+                    return False
+                # Check if the interruption is recent (user action) or stale
+                created_at = run.get("created_at")
+                if created_at:
+                    try:
+                        if isinstance(created_at, str):
+                            created = datetime.fromisoformat(created_at)
+                        else:
+                            created = created_at
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=timezone.utc)
+                        age = datetime.now(tz=timezone.utc) - created
+                        if age > stale_threshold:
+                            logger.debug(
+                                "Thread %s: stale interrupted run %s (%.0f min ago), ignoring",
+                                thread_id, run.get("run_id", "?")[:12], age.total_seconds() / 60,
+                            )
+                            return False
+                    except (ValueError, TypeError):
+                        pass
+                return True
             return False
         except Exception:
             return False
