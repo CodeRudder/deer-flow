@@ -102,6 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 session_monitor = SessionMonitor(
                     check_interval=int(monitor_cfg.get("check_interval", 180)),
                     stale_threshold=int(monitor_cfg.get("stale_threshold", 300)),
+                    run_stale_minutes=int(monitor_cfg.get("run_stale_minutes", 30)),
                     langgraph_url=str(monitor_cfg.get("langgraph_url", langgraph_url)),
                     activation_message=monitor_cfg.get("activation_message"),
                     session_activation_overrides=session_overrides,

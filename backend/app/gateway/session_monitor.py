@@ -17,7 +17,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +59,7 @@ class SessionMonitor:
         self,
         check_interval: int = 180,
         stale_threshold: int = 300,
+        run_stale_minutes: int = 30,
         langgraph_url: str = "http://localhost:2024",
         activation_message: str | None = None,
         session_activation_overrides: dict[str, str] | None = None,
@@ -66,6 +67,7 @@ class SessionMonitor:
     ) -> None:
         self._check_interval = check_interval
         self._stale_threshold = stale_threshold
+        self._run_stale_threshold = timedelta(minutes=run_stale_minutes)
         self._langgraph_url = langgraph_url
         self._activation_message = activation_message or self.DEFAULT_ACTIVATION_MESSAGE
         self._session_activation_overrides: dict[str, str] = session_activation_overrides or {}
@@ -262,13 +264,14 @@ class SessionMonitor:
 
         # Check on-disk sessions via summary files (fast: small JSON files).
         # A session is "running" only if summary status is non-terminal AND
-        # the JSONL file was updated within the timeout window.
+        # the JSONL file was updated within the configured timeout window.
         try:
             import json
 
             from deerflow.config.paths import get_paths
+            from deerflow.config.subagents_config import get_subagents_app_config
 
-            timeout_seconds = 900  # 15 minutes
+            subagents_cfg = get_subagents_app_config()
             subagents_dir = get_paths().base_dir / "threads" / thread_id / "subagents"
             if not subagents_dir.exists():
                 return False
@@ -291,6 +294,9 @@ class SessionMonitor:
                 except OSError:
                     mtime = 0
                 age = time.time() - mtime
+                # Use per-agent timeout if available, else global default
+                agent_name = summary.get("subagent_name", "")
+                timeout_seconds = subagents_cfg.get_timeout_for(agent_name) if agent_name else subagents_cfg.timeout_seconds
                 if age < timeout_seconds:
                     return True  # Still actively updating
 
@@ -488,7 +494,7 @@ class SessionMonitor:
         """Check if the thread has any running or pending runs.
 
         A run is considered active only if it is running/pending AND
-        recently created (within 30 minutes).  Stale "running" runs
+        recently created (within ``run_stale_minutes``).  Stale "running" runs
         that survived a LangGraph server restart are **cancelled** on the
         server so they don't block subsequent activation attempts.
         """
@@ -497,9 +503,9 @@ class SessionMonitor:
             return False
 
         try:
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timezone
 
-            stale_threshold = timedelta(minutes=30)
+            stale_threshold = self._run_stale_threshold
 
             runs = await client.runs.list(thread_id, limit=10)
             has_active = False
@@ -576,17 +582,17 @@ class SessionMonitor:
 
         Filters out health-monitor activation runs (``metadata.source ==
         "health_monitor"``) so that activations don't mask the user's
-        original stop intent.  Also ignores stale interrupted runs (> 30 min
-        old) that were likely cancelled by the health monitor's stale-run
-        cleanup, not by the user.
+        original stop intent.  Also ignores stale interrupted runs (older
+        than ``run_stale_minutes``) that were likely cancelled by the health
+        monitor's stale-run cleanup, not by the user.
         """
         client = self._get_client()
         if client is None:
             return False
         try:
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timezone
 
-            stale_threshold = timedelta(minutes=30)
+            stale_threshold = self._run_stale_threshold
             runs = await client.runs.list(thread_id, limit=20)
             for run in runs:
                 meta = run.get("metadata", {})
