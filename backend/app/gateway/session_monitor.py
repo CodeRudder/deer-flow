@@ -106,7 +106,12 @@ class SessionMonitor:
         logger.info("Session health monitor stopped")
 
     async def _cancel_all_stale(self) -> None:
-        """Cancel all stale sub-agent sessions and LangGraph runs."""
+        """Cancel stale sub-agent tasks at startup.
+
+        Only cancels expired sub-agent disk sessions (summary.json + jsonl).
+        Does NOT cancel LangGraph runs or interrupt sessions — sessions are
+        long-lived and should only be managed by the periodic check cycle.
+        """
         import json
 
         from deerflow.config.paths import get_paths
@@ -117,8 +122,7 @@ class SessionMonitor:
         if not base_dir.exists():
             return
 
-        total_sessions = 0
-        total_runs = 0
+        total_tasks = 0
 
         for thread_dir in base_dir.iterdir():
             if not thread_dir.is_dir():
@@ -140,7 +144,6 @@ class SessionMonitor:
                 except (json.JSONDecodeError, OSError):
                     continue
 
-                # Check mtime
                 jsonl_path = summary_file.parent / summary_file.name.replace(".summary.json", ".jsonl")
                 try:
                     mtime = jsonl_path.stat().st_mtime
@@ -156,53 +159,11 @@ class SessionMonitor:
                 stale_count += 1
 
             if stale_count:
-                logger.info("Startup cleanup: thread %s: cancelled %d stale session(s)", thread_id, stale_count)
-                total_sessions += stale_count
+                logger.info("Startup cleanup: thread %s: cancelled %d stale sub-agent task(s)", thread_id, stale_count)
+                total_tasks += stale_count
 
-            # Cancel stale LangGraph runs for this thread
-            runs_cancelled = await self._cancel_stale_runs(thread_id)
-            total_runs += runs_cancelled
-
-        if total_sessions or total_runs:
-            logger.info(
-                "Startup cleanup complete: %d stale session(s), %d stale run(s) cancelled",
-                total_sessions, total_runs,
-            )
-
-    async def _cancel_stale_runs(self, thread_id: str) -> int:
-        """Cancel all stale running/pending runs for a thread. Returns count."""
-        client = self._get_client()
-        if client is None:
-            return 0
-        try:
-            from datetime import datetime, timezone
-
-            runs = await client.runs.list(thread_id, limit=50)
-            cancelled = 0
-            for run in runs:
-                if run.get("status") not in ("running", "pending"):
-                    continue
-                created_at = run.get("created_at")
-                if not created_at:
-                    continue
-                try:
-                    if isinstance(created_at, str):
-                        created = datetime.fromisoformat(created_at)
-                    else:
-                        created = created_at
-                    if created.tzinfo is None:
-                        created = created.replace(tzinfo=timezone.utc)
-                    age = datetime.now(tz=timezone.utc) - created
-                    if age > self._run_stale_threshold:
-                        run_id = run.get("run_id", "")
-                        await self._cancel_run(thread_id, run_id)
-                        cancelled += 1
-                except (ValueError, TypeError):
-                    pass
-            return cancelled
-        except Exception:
-            logger.debug("Failed to check runs for thread %s", thread_id, exc_info=True)
-            return 0
+        if total_tasks:
+            logger.info("Startup cleanup complete: %d stale sub-agent task(s) cancelled", total_tasks)
 
     # ------------------------------------------------------------------
     # Scheduling
@@ -595,9 +556,10 @@ class SessionMonitor:
         """Check if the thread has any running or pending runs.
 
         A run is considered active only if it is running/pending AND
-        recently created (within ``run_stale_minutes``).  Stale "running" runs
-        that survived a LangGraph server restart are **cancelled** on the
-        server so they don't block subsequent activation attempts.
+        recently created (within ``run_stale_minutes``).  Stale "running"
+        runs that survived a server restart are treated as dead (not active)
+        but are NOT cancelled — sessions are long-lived and must not be
+        interrupted automatically.
         """
         client = self._get_client()
         if client is None:
@@ -623,44 +585,20 @@ class SessionMonitor:
                                 created = created.replace(tzinfo=timezone.utc)
                             age = datetime.now(tz=timezone.utc) - created
                             if age > stale_threshold:
-                                run_id = run.get("run_id", "")
                                 logger.info(
-                                    "Thread %s: cancelling stale run %s (%s, age=%.0f min)",
+                                    "Thread %s: stale run %s (%s, age=%.0f min), treating as dead",
                                     thread_id,
-                                    run_id[:12],
+                                    run.get("run_id", "?")[:12],
                                     run.get("status"),
                                     age.total_seconds() / 60,
                                 )
-                                await self._cancel_run(thread_id, run_id)
-                                continue
+                                continue  # Treat as dead, don't cancel
                         except (ValueError, TypeError):
                             pass  # If we can't parse, assume active
                     has_active = True
             return has_active
         except Exception:
             logger.debug("Failed to check active runs for thread %s", thread_id, exc_info=True)
-            return False
-
-    async def _cancel_run(self, thread_id: str, run_id: str) -> bool:
-        """Cancel a run on the LangGraph server. Returns True on success."""
-        import httpx
-
-        url = f"{self._langgraph_url}/threads/{thread_id}/runs/{run_id}/cancel"
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=5, read=10, write=5, pool=5),
-            ) as http:
-                resp = await http.post(url)
-                if resp.status_code in (200, 204):
-                    logger.info("Cancelled stale run %s for thread %s", run_id[:12], thread_id)
-                    return True
-                logger.warning(
-                    "Failed to cancel stale run %s for thread %s: HTTP %d",
-                    run_id[:12], thread_id, resp.status_code,
-                )
-                return False
-        except Exception:
-            logger.debug("Failed to cancel run %s for thread %s", run_id[:12], thread_id, exc_info=True)
             return False
 
     async def _thread_exists(self, thread_id: str) -> bool:
