@@ -68,7 +68,8 @@ class CheckpointCleaner:
         self._schedule_next()
         logger.info(
             "Checkpoint cleaner started (keep=%d, interval=%ds)",
-            self._keep, self._interval,
+            self._keep,
+            self._interval,
         )
 
     def stop(self) -> None:
@@ -92,7 +93,8 @@ class CheckpointCleaner:
         try:
             if self._loop and not self._loop.is_closed():
                 future = asyncio.run_coroutine_threadsafe(
-                    self._cleanup_all(), self._loop,
+                    self._cleanup_all(),
+                    self._loop,
                 )
                 future.result(timeout=600)
         except Exception:
@@ -122,18 +124,14 @@ class CheckpointCleaner:
 
         # Safety: abort if keep set is empty (something went wrong)
         if not keep_ids:
-            logger.warning(
-                "Keep set is empty — aborting cleanup to prevent data loss"
-            )
+            logger.warning("Keep set is empty — aborting cleanup to prevent data loss")
             return
 
         # 2. Find and delete orphaned threads
         orphan_deleted = await self._delete_orphan_threads(conn)
 
         # 3. Delete old checkpoints and writes (not in keep set)
-        cp_deleted, cp_freed, wr_deleted, wr_freed = await self._delete_old(
-            conn, all_ids, keep_ids, leaf_ids
-        )
+        cp_deleted, cp_freed, wr_deleted, wr_freed = await self._delete_old(conn, all_ids, keep_ids, leaf_ids)
 
         # 4. Run checkpoint to flush WAL
         try:
@@ -144,12 +142,14 @@ class CheckpointCleaner:
 
         after = await self._db_size(conn)
         logger.info(
-            "Checkpoint cleaner: deleted %d checkpoints (%.0f MB) + %d writes (%.0f MB) + %d orphan threads, "
-            "DB %.1f -> %.1f GB",
-            cp_deleted, cp_freed / 1024**2,
-            wr_deleted, wr_freed / 1024**2,
+            "Checkpoint cleaner: deleted %d checkpoints (%.0f MB) + %d writes (%.0f MB) + %d orphan threads, DB %.1f -> %.1f GB",
+            cp_deleted,
+            cp_freed / 1024**2,
+            wr_deleted,
+            wr_freed / 1024**2,
             orphan_deleted,
-            before / 1024**3, after / 1024**3,
+            before / 1024**3,
+            after / 1024**3,
         )
 
     async def _db_size(self, conn) -> float:
@@ -173,9 +173,7 @@ class CheckpointCleaner:
         All three sets come from the same SELECT, so no race with new checkpoints.
         """
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id FROM checkpoints"
-            )
+            await cur.execute("SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id FROM checkpoints")
             rows = await cur.fetchall()
 
         all_ids: set[str] = set()
@@ -209,7 +207,9 @@ class CheckpointCleaner:
 
         logger.info(
             "Keep computation: %d total checkpoints, %d leaf nodes, %d to keep",
-            len(all_ids), len(leaf_ids), len(keep_ids),
+            len(all_ids),
+            len(leaf_ids),
+            len(keep_ids),
         )
         return all_ids, keep_ids, leaf_ids
 
@@ -241,9 +241,7 @@ class CheckpointCleaner:
         logger.info("Deleted %d orphaned threads", deleted)
         return deleted
 
-    async def _delete_old(
-        self, conn, all_ids: set[str], keep_ids: set[str], leaf_ids: set[str]
-    ) -> tuple[int, int, int, int]:
+    async def _delete_old(self, conn, all_ids: set[str], keep_ids: set[str], leaf_ids: set[str]) -> tuple[int, int, int, int]:
         """Delete checkpoints and writes not in keep_ids. Returns (cp_del, cp_bytes, wr_del, wr_bytes).
 
         Uses batched parameterized DELETE queries — no helper tables.
@@ -280,8 +278,7 @@ class CheckpointCleaner:
             ph = ",".join(["?"] * len(batch))
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"SELECT COUNT(*), COALESCE(SUM(LENGTH(checkpoint)), 0) "
-                    f"FROM checkpoints WHERE checkpoint_id IN ({ph})",
+                    f"SELECT COUNT(*), COALESCE(SUM(LENGTH(checkpoint)), 0) FROM checkpoints WHERE checkpoint_id IN ({ph})",
                     batch,
                 )
                 row = await cur.fetchone()
@@ -289,8 +286,7 @@ class CheckpointCleaner:
                 cp_bytes += row[1]
 
                 await cur.execute(
-                    f"SELECT COUNT(*), COALESCE(SUM(LENGTH(value)), 0) "
-                    f"FROM writes WHERE checkpoint_id IN ({ph})",
+                    f"SELECT COUNT(*), COALESCE(SUM(LENGTH(value)), 0) FROM writes WHERE checkpoint_id IN ({ph})",
                     batch,
                 )
                 row = await cur.fetchone()
@@ -302,12 +298,8 @@ class CheckpointCleaner:
             batch = delete_list[i : i + batch_size]
             ph = ",".join(["?"] * len(batch))
             async with conn.cursor() as cur:
-                await cur.execute(
-                    f"DELETE FROM writes WHERE checkpoint_id IN ({ph})", batch
-                )
-                await cur.execute(
-                    f"DELETE FROM checkpoints WHERE checkpoint_id IN ({ph})", batch
-                )
+                await cur.execute(f"DELETE FROM writes WHERE checkpoint_id IN ({ph})", batch)
+                await cur.execute(f"DELETE FROM checkpoints WHERE checkpoint_id IN ({ph})", batch)
             await conn.commit()
 
         return cp_count, cp_bytes, wr_count, wr_bytes

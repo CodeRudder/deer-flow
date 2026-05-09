@@ -1,12 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useState, useCallback } from "react";
+import { describe, expect, it, vi } from "vitest";
 
-import type { Subtask } from "@/core/tasks/types";
 import {
-  SubtaskContext,
   SubtasksProvider,
   useSubtask,
   useSubtasks,
@@ -45,9 +41,7 @@ function TestConsumer({ taskId }: { taskId: string }) {
       </button>
       <button
         data-testid="set-in-progress"
-        onClick={() =>
-          updateSubtask({ id: taskId, status: "in_progress" })
-        }
+        onClick={() => updateSubtask({ id: taskId, status: "in_progress" })}
       >
         in_progress
       </button>
@@ -65,9 +59,7 @@ function TestConsumer({ taskId }: { taskId: string }) {
 
 function TasksListConsumer() {
   const tasks = useSubtasks();
-  return (
-    <span data-testid="count">{tasks.length}</span>
-  );
+  return <span data-testid="count">{tasks.length}</span>;
 }
 
 describe("SubtaskContext", () => {

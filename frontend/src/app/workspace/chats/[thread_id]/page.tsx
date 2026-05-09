@@ -31,16 +31,15 @@ import { ThreadContext } from "@/components/workspace/messages/context";
 import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
-
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
-import { useI18n } from "@/core/i18n/hooks";
 import { getBackendBaseURL } from "@/core/config";
+import { useI18n } from "@/core/i18n/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useThreadSettings } from "@/core/settings";
+import { useSubtasks, useUpdateSubtask } from "@/core/tasks/context";
 import { useThreadStream } from "@/core/threads/hooks";
 import { textOfMessage } from "@/core/threads/utils";
-import { useSubtasks, useUpdateSubtask } from "@/core/tasks/context";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
@@ -117,7 +116,6 @@ export default function ChatPage() {
     if (stopTargets.mainSession) {
       promises.push(
         thread.stop().then(async () => {
-          let cancelled = false;
           // Cancel only the current thread's run on the server side
           // Do NOT use cancel-all — that would also cancel running subtasks
           try {
@@ -132,7 +130,6 @@ export default function ChatPage() {
                     `${getBackendBaseURL()}/api/langgraph/threads/${encodeURIComponent(threadId ?? "")}/runs/${encodeURIComponent(run.run_id)}/cancel`,
                     { method: "POST" },
                   );
-                  cancelled = true;
                 }
               }
             }
@@ -145,9 +142,7 @@ export default function ChatPage() {
     }
 
     // Cancel selected subtasks
-    for (const [taskId, checked] of Object.entries(
-      stopTargets.subtaskIds,
-    )) {
+    for (const [taskId, checked] of Object.entries(stopTargets.subtaskIds)) {
       if (checked) {
         promises.push(
           (async () => {
@@ -181,14 +176,10 @@ export default function ChatPage() {
     const failed = results.filter((r) => !r.success);
 
     if (succeeded.length > 0) {
-      toast.success(
-        `已停止: ${succeeded.map((r) => r.target).join(", ")}`,
-      );
+      toast.success(`已停止: ${succeeded.map((r) => r.target).join(", ")}`);
     }
     if (failed.length > 0) {
-      toast.error(
-        `停止失败: ${failed.map((r) => r.target).join(", ")}`,
-      );
+      toast.error(`停止失败: ${failed.map((r) => r.target).join(", ")}`);
     }
 
     setStopConfirmOpen(false);
@@ -301,9 +292,7 @@ export default function ChatPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>停止会话</AlertDialogTitle>
-            <AlertDialogDescription>
-              选择要停止的目标：
-            </AlertDialogDescription>
+            <AlertDialogDescription>选择要停止的目标：</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex max-h-60 flex-col gap-3 overflow-y-auto py-2">
             <label className="flex items-center gap-2 text-sm">
@@ -349,7 +338,7 @@ export default function ChatPage() {
                 {runningSubtasks.map((s) => (
                   <label
                     key={s.id}
-                    className="flex items-center gap-2 text-sm pl-4"
+                    className="flex items-center gap-2 pl-4 text-sm"
                   >
                     <input
                       type="checkbox"
@@ -374,7 +363,7 @@ export default function ChatPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive hover:bg-destructive/90 text-white"
               onClick={() => void handleStop()}
               disabled={
                 !stopTargets.mainSession &&

@@ -19,9 +19,9 @@ import signal
 import subprocess
 import threading
 import uuid
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _PERSISTENCE_FILENAME = "background_commands.json"
 
 
-class CommandStatus(str, Enum):
+class CommandStatus(StrEnum):
     """Status of a background command."""
 
     RUNNING = "running"
@@ -150,10 +150,10 @@ def _save_thread_commands(thread_id: str) -> None:
                     commands_data.append(info.to_dict())
 
         # Atomic write via temp + rename
-        tmp_path = path.with_suffix(".tmp")
+        tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({"commands": commands_data}, f, indent=2, ensure_ascii=False)
-        tmp_path.rename(path)
+        os.replace(tmp_path, path)
     except Exception as e:
         logger.warning("Failed to persist commands for thread %s: %s", thread_id, e)
 
@@ -191,7 +191,7 @@ def _load_all_commands() -> None:
                     else:
                         # Process died while we were away
                         info.status = CommandStatus.FAILED
-                        info.completed_at = datetime.now(timezone.utc).isoformat()
+                        info.completed_at = datetime.now(UTC).isoformat()
                         info.return_code = -1
                         changed = True
                         logger.info("Marked orphan command as failed: %s (PID %d was dead)", info.command_id, info.pid)
@@ -261,7 +261,7 @@ def _reader_loop(info: CommandInfo) -> None:
         with info._lock:
             if info.status == CommandStatus.RUNNING:
                 info.return_code = proc.returncode
-                info.completed_at = datetime.now(timezone.utc).isoformat()
+                info.completed_at = datetime.now(UTC).isoformat()
                 info.status = CommandStatus.COMPLETED if proc.returncode == 0 else CommandStatus.FAILED
         # Persist state change
         _save_thread_commands(info.thread_id)
@@ -301,7 +301,7 @@ def start(
         preexec_fn=os.setsid,
     )
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     info = CommandInfo(
         command_id=command_id,
         command=command,
@@ -404,20 +404,25 @@ def kill(command_id: str) -> tuple[bool, str]:
         info = _commands.get(command_id)
     if info is None:
         return False, f"Command {command_id} not found."
-    if info.status != CommandStatus.RUNNING:
-        return False, f"Command {command_id} is not running (status: {info.status})."
+    with info._lock:
+        if info.status != CommandStatus.RUNNING:
+            return False, f"Command {command_id} is not running (status: {info.status})."
 
-    pid = info.pid
+        pid = info.pid
+        proc = info._process
+        info.status = CommandStatus.KILLED
+        info.return_code = -9
+        info.completed_at = datetime.now(UTC).isoformat()
 
     # Kill by process group if we have the Popen
-    if info._process is not None:
+    if proc is not None:
         try:
-            os.killpg(os.getpgid(info._process.pid), signal.SIGTERM)
-            info._process.wait(timeout=3)
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=3)
         except Exception:
             try:
-                os.killpg(os.getpgid(info._process.pid), signal.SIGKILL)
-                info._process.wait(timeout=5)
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait(timeout=5)
             except Exception:
                 pass
     elif pid and _is_pid_alive(pid):
@@ -432,10 +437,6 @@ def kill(command_id: str) -> tuple[bool, str]:
                     os.kill(pid, signal.SIGKILL)
                 except Exception:
                     pass
-
-    info.status = CommandStatus.KILLED
-    info.return_code = -9
-    info.completed_at = datetime.now(timezone.utc).isoformat()
 
     _save_thread_commands(info.thread_id)
     logger.info("Background command killed: %s", command_id)

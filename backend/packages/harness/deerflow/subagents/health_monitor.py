@@ -13,7 +13,6 @@ unexpectedly are recovered.
 import json
 import logging
 import threading
-import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -21,7 +20,9 @@ from deerflow.subagents.executor import (
     SubagentStatus,
     _background_tasks,
     _background_tasks_lock,
-    request_cancel_background_task,
+)
+from deerflow.subagents.executor import (
+    request_cancel_background_task as request_cancel_background_task,
 )
 
 if TYPE_CHECKING:
@@ -138,11 +139,7 @@ class SubagentHealthMonitor:
     def _check_all(self) -> None:
         """Check RUNNING sub-agent tasks whose executor may have silently died."""
         with _background_tasks_lock:
-            running = {
-                tid: r
-                for tid, r in _background_tasks.items()
-                if r.status == SubagentStatus.RUNNING
-            }
+            running = {tid: r for tid, r in _background_tasks.items() if r.status == SubagentStatus.RUNNING}
 
         if not running:
             return
@@ -236,13 +233,7 @@ class SubagentHealthMonitor:
 
         msg_count = _count_messages(jsonl_path) if jsonl_path else 0
         original = result.original_prompt or ""
-        recovery_prompt = (
-            f"<recovery>\n任务因 {reason} 被中断。已执行 {msg_count} 步。"
-            f"\n最后完成的工作：{recovery_summary}\n"
-            f"原始任务：{original[:500]}\n"
-            f"请继续完成剩余工作，不要重复已完成的步骤。\n</recovery>\n\n"
-            f"{original}"
-        )
+        recovery_prompt = f"<recovery>\n任务因 {reason} 被中断。已执行 {msg_count} 步。\n最后完成的工作：{recovery_summary}\n原始任务：{original[:500]}\n请继续完成剩余工作，不要重复已完成的步骤。\n</recovery>\n\n{original}"
 
         # Create new executor and submit
         try:

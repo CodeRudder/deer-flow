@@ -62,9 +62,7 @@ def find_keep_checkpoint_ids(conn: sqlite3.Connection, keep: int) -> set[str]:
     with no children), we walk back `keep` steps along the parent chain.
     """
     # Build parent -> children map to find leaves (nodes with no children)
-    all_rows = conn.execute(
-        "SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id FROM checkpoints"
-    ).fetchall()
+    all_rows = conn.execute("SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id FROM checkpoints").fetchall()
 
     has_child: set[str] = set()
     id_to_parent: dict[str, str | None] = {}
@@ -136,9 +134,7 @@ def _measure_not_in(conn: sqlite3.Connection, table: str, id_col: str, size_col:
     conn.execute("CREATE TEMP TABLE IF NOT EXISTS _keep_ids (id TEXT PRIMARY KEY)")
     conn.execute("DELETE FROM _keep_ids")
     conn.executemany("INSERT OR IGNORE INTO _keep_ids VALUES (?)", [(cid,) for cid in keep_ids])
-    r = conn.execute(
-        f"SELECT COUNT(*), COALESCE(SUM(LENGTH({size_col})), 0) FROM {table} WHERE {id_col} NOT IN (SELECT id FROM _keep_ids)"
-    ).fetchone()
+    r = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(LENGTH({size_col})), 0) FROM {table} WHERE {id_col} NOT IN (SELECT id FROM _keep_ids)").fetchone()
     return r[0], r[1]
 
 
@@ -163,9 +159,7 @@ def prune_old_checkpoints(conn: sqlite3.Connection, *, keep: int = 1, dry_run: b
     return 0
 
 
-def remove_orphan_threads(
-    conn: sqlite3.Connection, store_threads: set[str], *, dry_run: bool = False
-) -> int:
+def remove_orphan_threads(conn: sqlite3.Connection, store_threads: set[str], *, dry_run: bool = False) -> int:
     """Remove threads not tracked in the store."""
     all_threads = get_all_thread_ids(conn)
     orphaned = all_threads - store_threads

@@ -145,6 +145,8 @@ class DeerFlowClient:
         if not data.get("messages"):
             agents = await self.list_subagents(thread_id, limit=200)
             for a in agents:
+                if not isinstance(a, dict):
+                    continue
                 if a.get("task_id", "").startswith(task_id) and a["task_id"] != task_id:
                     r2 = await self.http.get(f"{self.gateway}/api/threads/{thread_id}/subagents/{a['task_id']}")
                     r2.raise_for_status()
@@ -399,6 +401,7 @@ class ThreadDetailScreen(Screen):
         tid = str(self.thread_id or "")[:16]
         yield Label(f"[bold]Threads > {title}[/]  [dim]{tid}[/]", classes="breadcrumb")
         yield Label("Session: loading...", classes="session-bar", id="session-label")
+        yield FocusableStatic("", id="todos-label")
         todos_table = DataTable(id="todos-table")
         todos_table.add_columns("Status", "Content")
         todos_table.cursor_type = "row"
@@ -453,19 +456,24 @@ class ThreadDetailScreen(Screen):
 
     def _render_todos(self) -> None:
         table = self.query_one("#todos-table", DataTable)
+        label = self.query_one("#todos-label", FocusableStatic)
         table.clear()
         todos = self._state.get("values", {}).get("todos", [])
         if not todos:
             table.add_row("", "[dim]No todos[/]")
+            label.update("[dim]No todos[/]")
             return
         priority = {"in_progress": 0, "pending": 1, "completed": 2}
         sorted_todos = sorted(todos, key=lambda t: priority.get(t.get("status", ""), 3))
+        label_lines = []
         for idx, todo in enumerate(sorted_todos):
             icon = TODO_ICONS.get(todo.get("status", ""), " ")
             color = STATUS_COLORS.get(todo.get("status", ""), "dim")
             status_text = f"[{color}]{icon}[/{color}]"
             content = todo.get("content", "")
             table.add_row(status_text, content, key=f"todo-{idx}")
+            label_lines.append(f"{icon} {content}")
+        label.update("\n".join(label_lines))
 
     def _render_subagents(self) -> None:
         table = self.query_one("#subtask-table", DataTable)
@@ -653,9 +661,9 @@ class ThreadDetailScreen(Screen):
     def action_focus_next_area(self) -> None:
         """Toggle focus between todos panel and subtask table."""
         subtask_table = self.query_one("#subtask-table", DataTable)
-        todos_table = self.query_one("#todos-table", DataTable)
+        todos_label = self.query_one("#todos-label", FocusableStatic)
         if self.focused is subtask_table:
-            todos_table.focus()
+            todos_label.focus()
         else:
             subtask_table.focus()
 
@@ -965,11 +973,21 @@ class MessageViewerScreen(Screen):
         scroll.scroll_end(animate=False)
 
     def action_next_page(self) -> None:
+        if self.mode == "session":
+            if self._has_more or self._offset + self._page_size < self._total:
+                self._offset += self._page_size
+                self._load_messages()
+            return
         scroll = self.query_one("#msg-scroll", VerticalScroll)
         page_height = scroll.window_region.height
         scroll.scroll_to(0, min(scroll.scroll_y + page_height, scroll.max_scroll_y), animate=False)
 
     def action_prev_page(self) -> None:
+        if self.mode == "session":
+            if self._offset > 0:
+                self._offset = max(0, self._offset - self._page_size)
+                self._load_messages()
+            return
         scroll = self.query_one("#msg-scroll", VerticalScroll)
         page_height = scroll.window_region.height
         scroll.scroll_to(0, max(scroll.scroll_y - page_height, 0), animate=False)

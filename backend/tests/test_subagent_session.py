@@ -12,8 +12,6 @@ Covers:
 
 import json
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -173,7 +171,7 @@ class TestAppendAndRead:
 
         lines = jsonl.read_text().strip().split("\n")
         assert len(lines) == 4
-        roles = [json.loads(l)["role"] for l in lines]
+        roles = [json.loads(line)["role"] for line in lines]
         assert roles == ["human", "ai", "tool", "ai"]
 
     def test_read_messages_excludes_status_markers(self, mock_paths, tmp_path):
@@ -195,7 +193,6 @@ class TestAppendAndRead:
 
     def test_read_messages_empty_file(self, mock_paths, tmp_path):
         session = _make_session()
-        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
 
         # File doesn't exist yet
         messages = session.read_messages()
@@ -327,10 +324,7 @@ class TestFindInterrupted:
 
         # Create a completed session
         jsonl2 = d / "task-done.jsonl"
-        jsonl2.write_text(
-            json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n"
-            + json.dumps({"ts": "t", "status": "completed", "result": "done"}) + "\n"
-        )
+        jsonl2.write_text(json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n" + json.dumps({"ts": "t", "status": "completed", "result": "done"}) + "\n")
 
         interrupted = SubagentSession.find_interrupted("test-thread")
         task_ids = [s.task_id for s in interrupted]
@@ -353,13 +347,8 @@ class TestListSessions:
         d = mock_paths.subagent_dir.return_value
         # Create two sessions with summaries
         for tid in ["task-a", "task-b"]:
-            (d / f"{tid}.jsonl").write_text(
-                json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n"
-                + json.dumps({"ts": "t", "status": "completed", "result": "done"}) + "\n"
-            )
-            (d / f"{tid}.summary.json").write_text(
-                json.dumps({"subagent_name": "dev", "description": f"task {tid}", "started_at": "t"})
-            )
+            (d / f"{tid}.jsonl").write_text(json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n" + json.dumps({"ts": "t", "status": "completed", "result": "done"}) + "\n")
+            (d / f"{tid}.summary.json").write_text(json.dumps({"subagent_name": "dev", "description": f"task {tid}", "started_at": "t"}))
 
         sessions = SubagentSession.list_sessions("test-thread")
         assert len(sessions) == 2
@@ -537,13 +526,8 @@ class TestMarkCancelled:
 
         d = mock_paths.subagent_dir.return_value
         # Create a cancelled session
-        (d / "task-cancel.jsonl").write_text(
-            json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n"
-            + json.dumps({"ts": "t", "status": "cancelled", "message_count": 1}) + "\n"
-        )
-        (d / "task-cancel.summary.json").write_text(
-            json.dumps({"subagent_name": "dev", "description": "cancel me", "started_at": "t"})
-        )
+        (d / "task-cancel.jsonl").write_text(json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n" + json.dumps({"ts": "t", "status": "cancelled", "message_count": 1}) + "\n")
+        (d / "task-cancel.summary.json").write_text(json.dumps({"subagent_name": "dev", "description": "cancel me", "started_at": "t"}))
 
         interrupted = SubagentSession.find_interrupted("test-thread")
         task_ids = [s.task_id for s in interrupted]

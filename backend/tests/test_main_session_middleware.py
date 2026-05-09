@@ -12,7 +12,6 @@ Covers:
 import json
 import sys
 import threading
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -285,9 +284,9 @@ class TestMainSessionMiddleware:
 
         # Step 3: Checkpoint restores all messages + one new
         restored = [
-            HumanMessage(content="Hi", id="h1"),       # already in JSONL
-            AIMessage(content="Hello!", id="a1"),       # already in JSONL
-            HumanMessage(content="Next Q", id="h2"),    # new
+            HumanMessage(content="Hi", id="h1"),  # already in JSONL
+            AIMessage(content="Hello!", id="a1"),  # already in JSONL
+            HumanMessage(content="Next Q", id="h2"),  # new
         ]
 
         new2 = mw2._get_new_messages("test-thread", restored)

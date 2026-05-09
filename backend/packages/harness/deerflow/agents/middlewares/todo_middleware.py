@@ -14,7 +14,7 @@ reducer and keeping backward compatibility with existing checkpoints.
 
 from __future__ import annotations
 
-from typing import Any, override
+from typing import Annotated, Any, override
 
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.todo import PlanningState, Todo
@@ -24,7 +24,6 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 from langgraph.runtime import Runtime
 from langgraph.types import Command
-from typing_extensions import Annotated
 
 from deerflow.agents.thread_state import apply_todo_ops
 
@@ -181,10 +180,7 @@ class TodoMiddleware(TodoListMiddleware):
         if len(write_todos_calls) > 1:
             error_messages = [
                 ToolMessage(
-                    content=(
-                        "Error: The `write_todos` tool should never be called multiple times "
-                        "in parallel. Please call it only once per model invocation."
-                    ),
+                    content=("Error: The `write_todos` tool should never be called multiple times in parallel. Please call it only once per model invocation."),
                     tool_call_id=tc["id"],
                     status="error",
                 )

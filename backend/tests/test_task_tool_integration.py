@@ -8,11 +8,8 @@ Covers:
 - Graceful handling when session creation fails
 """
 
-import json
 import sys
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,7 +37,7 @@ def _mock_heavy_deps():
     if "deerflow.subagents.executor" in sys.modules:
         del sys.modules["deerflow.subagents.executor"]
 
-    from deerflow.subagents.executor import SubagentStatus, SubagentResult
+    from deerflow.subagents.executor import SubagentResult, SubagentStatus
 
     _mock_heavy_deps.status = SubagentStatus
     _mock_heavy_deps.result = SubagentResult
@@ -83,16 +80,8 @@ def _build_recovery_prompt(sessions):
                 last_ai = content[:200]
             else:
                 last_ai = str(content)[:200]
-        parts.append(
-            f"- Task {s.task_id} ({s.subagent_name}): "
-            f"executed {len(messages)} steps, last AI response: {last_ai}"
-        )
-    return (
-        "<recovery_context>\nThe following sub-tasks were previously interrupted. "
-        "Continue from where they left off without repeating completed work:\n"
-        + "\n".join(parts)
-        + "\n</recovery_context>"
-    )
+        parts.append(f"- Task {s.task_id} ({s.subagent_name}): executed {len(messages)} steps, last AI response: {last_ai}")
+    return "<recovery_context>\nThe following sub-tasks were previously interrupted. Continue from where they left off without repeating completed work:\n" + "\n".join(parts) + "\n</recovery_context>"
 
 
 class TestBuildRecoveryPrompt:
@@ -208,7 +197,7 @@ class TestRecoveryInjection:
         # Find the original prompt after the recovery section
         assert original in combined
         idx = combined.index("</recovery_context>")
-        after = combined[idx + len("</recovery_context>"):]
+        after = combined[idx + len("</recovery_context>") :]
         assert original in after
 
 
@@ -282,7 +271,6 @@ class TestSessionCreationPath:
     def test_session_creation_graceful_failure(self):
         """When session creation fails, task should still proceed (no crash)."""
         session = None
-        thread_id = "thread-123"
         try:
             # Simulate a failure (e.g., paths not configured)
             raise RuntimeError("Paths not configured")

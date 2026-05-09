@@ -13,7 +13,7 @@ Covers:
 import importlib
 import sys
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -144,9 +144,7 @@ class TestDeerFlowClient:
         client, mock_http = self._make_client(data)
         result = await client.search_threads()
         assert result == data
-        mock_http.post.assert_called_once_with(
-            "http://gw/api/threads/search", json={"limit": 100}
-        )
+        mock_http.post.assert_called_once_with("http://gw/api/threads/search", json={"limit": 100})
 
     @pytest.mark.anyio
     async def test_get_thread_state(self):
@@ -193,9 +191,7 @@ class TestDeerFlowClient:
         client, mock_http = self._make_client(status_code=202)
         result = await client.cancel_run("tid", "rid")
         assert result is True
-        mock_http.post.assert_called_once_with(
-            "http://lg/threads/tid/runs/rid/cancel"
-        )
+        mock_http.post.assert_called_once_with("http://lg/threads/tid/runs/rid/cancel")
 
     @pytest.mark.anyio
     async def test_cancel_run_failure(self):
@@ -209,9 +205,7 @@ class TestDeerFlowClient:
         client, mock_http = self._make_client(data)
         result = await client.cancel_subtask("t1")
         assert result == data
-        mock_http.post.assert_called_once_with(
-            "http://gw/api/runs/subtasks/t1/cancel"
-        )
+        mock_http.post.assert_called_once_with("http://gw/api/runs/subtasks/t1/cancel")
 
     @pytest.mark.anyio
     async def test_close(self):
@@ -246,7 +240,7 @@ class TestConfirmDialog:
             app.push_screen(dialog)
             await pilot.pause()
             # Press y to confirm
-            result = await pilot.press("y")
+            await pilot.press("y")
             # Dialog should be dismissed with True
             await pilot.pause()
 
@@ -428,23 +422,17 @@ class TestThreadDetailScreen:
     ):
         client = tui.DeerFlowClient()
         client.get_thread_state = AsyncMock(return_value=state or {"values": {}})
-        client.get_thread_status = AsyncMock(
-            return_value=status or {"main_session": {"status": "idle"}}
-        )
+        client.get_thread_status = AsyncMock(return_value=status or {"main_session": {"status": "idle"}})
         client.list_subagents = AsyncMock(return_value=subagents or [])
         client.cancel_run = AsyncMock(return_value=cancel_run_result)
-        client.cancel_subtask = AsyncMock(
-            return_value=cancel_subtask_result or {"cancelled": True, "task_id": "t1"}
-        )
+        client.cancel_subtask = AsyncMock(return_value=cancel_subtask_result or {"cancelled": True, "task_id": "t1"})
         return client
 
     @pytest.mark.anyio
     async def test_loads_and_renders(self):
         state = {"values": {"title": "Test", "todos": [{"content": "Todo1", "status": "completed"}]}}
         status = {"main_session": {"status": "idle", "run_id": "r1", "started_at": "2026-04-19T10:00:00+00:00"}}
-        subagents = [
-            {"task_id": "t1", "subagent_name": "general", "description": "Task 1", "status": "completed", "started_at": "2026-04-19T10:00:00+00:00", "completed_at": "2026-04-19T11:00:00+00:00", "message_count": 5}
-        ]
+        subagents = [{"task_id": "t1", "subagent_name": "general", "description": "Task 1", "status": "completed", "started_at": "2026-04-19T10:00:00+00:00", "completed_at": "2026-04-19T11:00:00+00:00", "message_count": 5}]
         client = self._mock_client(state, status, subagents)
         screen = tui.ThreadDetailScreen(client, "thread-1", "Test")
         app = _make_app()
@@ -487,9 +475,7 @@ class TestThreadDetailScreen:
 
     @pytest.mark.anyio
     async def test_cancel_subtask_with_confirm(self):
-        subagents = [
-            {"task_id": "t1", "subagent_name": "general", "description": "Task", "status": "running", "started_at": "2026-04-19T10:00:00+00:00", "completed_at": "", "message_count": 0}
-        ]
+        subagents = [{"task_id": "t1", "subagent_name": "general", "description": "Task", "status": "running", "started_at": "2026-04-19T10:00:00+00:00", "completed_at": "", "message_count": 0}]
         client = self._mock_client(subagents=subagents)
         screen = tui.ThreadDetailScreen(client, "t1")
         app = _make_app()
@@ -605,15 +591,9 @@ class TestThreadDetailScreen:
 class TestMessageViewerScreen:
     def _mock_client(self, subagent_detail=None, messages=None, cancel_result=None):
         client = tui.DeerFlowClient()
-        client.get_subagent_detail = AsyncMock(
-            return_value=subagent_detail or {"task_id": "t1", "status": "completed", "messages": []}
-        )
-        client.get_messages = AsyncMock(
-            return_value=messages or {"messages": [], "total": 0, "has_more": False}
-        )
-        client.cancel_subtask = AsyncMock(
-            return_value=cancel_result or {"cancelled": True, "task_id": "t1"}
-        )
+        client.get_subagent_detail = AsyncMock(return_value=subagent_detail or {"task_id": "t1", "status": "completed", "messages": []})
+        client.get_messages = AsyncMock(return_value=messages or {"messages": [], "total": 0, "has_more": False})
+        client.cancel_subtask = AsyncMock(return_value=cancel_result or {"cancelled": True, "task_id": "t1"})
         return client
 
     @pytest.mark.anyio
@@ -1052,53 +1032,61 @@ class TestEdgeCases:
 def _client_with_threads():
     """Client that returns threads with subagents for navigation tests."""
     client = _mock_thread_client()
-    client.search_threads = AsyncMock(return_value=[
-        {
-            "thread_id": "thread-1",
-            "status": "idle",
-            "updated_at": "2026-04-19T10:00:00+00:00",
-            "values": {"title": "Test Thread"},
+    client.search_threads = AsyncMock(
+        return_value=[
+            {
+                "thread_id": "thread-1",
+                "status": "idle",
+                "updated_at": "2026-04-19T10:00:00+00:00",
+                "values": {"title": "Test Thread"},
+            }
+        ]
+    )
+    client.get_thread_state = AsyncMock(
+        return_value={
+            "values": {
+                "title": "Test Thread",
+                "todos": [
+                    {"content": "Todo 1", "status": "completed"},
+                    {"content": "Todo 2", "status": "pending"},
+                ],
+            }
         }
-    ])
-    client.get_thread_state = AsyncMock(return_value={
-        "values": {
-            "title": "Test Thread",
-            "todos": [
-                {"content": "Todo 1", "status": "completed"},
-                {"content": "Todo 2", "status": "pending"},
+    )
+    client.get_thread_status = AsyncMock(return_value={"main_session": {"status": "idle", "run_id": None, "started_at": None}})
+    client.list_subagents = AsyncMock(
+        return_value=[
+            {
+                "task_id": "task-1",
+                "subagent_name": "general",
+                "description": "Test task",
+                "status": "completed",
+                "started_at": "2026-04-19T10:00:00+00:00",
+                "completed_at": "2026-04-19T11:00:00+00:00",
+                "message_count": 5,
+            }
+        ]
+    )
+    client.get_subagent_detail = AsyncMock(
+        return_value={
+            "task_id": "task-1",
+            "status": "completed",
+            "messages": [
+                {"role": "human", "content": "Do something", "ts": "2026-04-19T10:00:00+00:00"},
+                {"role": "ai", "content": "Done", "ts": "2026-04-19T10:01:00+00:00"},
             ],
         }
-    })
-    client.get_thread_status = AsyncMock(return_value={
-        "main_session": {"status": "idle", "run_id": None, "started_at": None}
-    })
-    client.list_subagents = AsyncMock(return_value=[
-        {
-            "task_id": "task-1",
-            "subagent_name": "general",
-            "description": "Test task",
-            "status": "completed",
-            "started_at": "2026-04-19T10:00:00+00:00",
-            "completed_at": "2026-04-19T11:00:00+00:00",
-            "message_count": 5,
+    )
+    client.get_messages = AsyncMock(
+        return_value={
+            "messages": [
+                {"role": "human", "content": "Hello", "ts": "2026-04-19T10:00:00+00:00"},
+                {"role": "ai", "content": "Hi", "ts": "2026-04-19T10:01:00+00:00"},
+            ],
+            "total": 2,
+            "has_more": False,
         }
-    ])
-    client.get_subagent_detail = AsyncMock(return_value={
-        "task_id": "task-1",
-        "status": "completed",
-        "messages": [
-            {"role": "human", "content": "Do something", "ts": "2026-04-19T10:00:00+00:00"},
-            {"role": "ai", "content": "Done", "ts": "2026-04-19T10:01:00+00:00"},
-        ],
-    })
-    client.get_messages = AsyncMock(return_value={
-        "messages": [
-            {"role": "human", "content": "Hello", "ts": "2026-04-19T10:00:00+00:00"},
-            {"role": "ai", "content": "Hi", "ts": "2026-04-19T10:01:00+00:00"},
-        ],
-        "total": 2,
-        "has_more": False,
-    })
+    )
     return client
 
 
@@ -1298,9 +1286,7 @@ class TestNavigationPaths:
     async def test_stop_with_confirm_then_cancel(self):
         """Stop session → Confirm dialog → N (cancel) → stays on detail."""
         client = _mock_thread_client()
-        client.get_thread_status = AsyncMock(return_value={
-            "main_session": {"status": "running", "run_id": "run-1"}
-        })
+        client.get_thread_status = AsyncMock(return_value={"main_session": {"status": "running", "run_id": "run-1"}})
         detail = tui.ThreadDetailScreen(client, "t1")
         app = _make_app(client)
         async with app.run_test() as pilot:
@@ -1320,10 +1306,7 @@ class TestNavigationPaths:
     async def test_cancel_subtask_confirm_then_cancel(self):
         """Cancel subtask → Confirm dialog → N (cancel) → stays on detail."""
         client = _mock_thread_client()
-        client.list_subagents = AsyncMock(return_value=[
-            {"task_id": "t1", "subagent_name": "gen", "description": "Task", "status": "running",
-             "started_at": "2026-04-19T10:00:00+00:00", "completed_at": "", "message_count": 0}
-        ])
+        client.list_subagents = AsyncMock(return_value=[{"task_id": "t1", "subagent_name": "gen", "description": "Task", "status": "running", "started_at": "2026-04-19T10:00:00+00:00", "completed_at": "", "message_count": 0}])
         detail = tui.ThreadDetailScreen(client, "t1")
         app = _make_app(client)
         async with app.run_test() as pilot:
@@ -1359,11 +1342,13 @@ class TestNavigationPaths:
     async def test_session_messages_pagination_flow(self):
         """Session mode: load → next page → prev page → escape."""
         client = _mock_thread_client()
-        client.get_messages = AsyncMock(side_effect=[
-            {"messages": [{"role": "human", "content": f"msg{i}", "ts": "2026-04-19T10:00:00+00:00"} for i in range(50)], "total": 150, "has_more": True},
-            {"messages": [{"role": "human", "content": f"msg{i}", "ts": "2026-04-19T11:00:00+00:00"} for i in range(50)], "total": 150, "has_more": True},
-            {"messages": [{"role": "human", "content": f"msg{i}", "ts": "2026-04-19T10:00:00+00:00"} for i in range(50)], "total": 150, "has_more": True},
-        ])
+        client.get_messages = AsyncMock(
+            side_effect=[
+                {"messages": [{"role": "human", "content": f"msg{i}", "ts": "2026-04-19T10:00:00+00:00"} for i in range(50)], "total": 150, "has_more": True},
+                {"messages": [{"role": "human", "content": f"msg{i}", "ts": "2026-04-19T11:00:00+00:00"} for i in range(50)], "total": 150, "has_more": True},
+                {"messages": [{"role": "human", "content": f"msg{i}", "ts": "2026-04-19T10:00:00+00:00"} for i in range(50)], "total": 150, "has_more": True},
+            ]
+        )
         msg = tui.MessageViewerScreen(client, "tid", mode="session")
         app = _make_app(client)
         async with app.run_test() as pilot:
@@ -1414,17 +1399,19 @@ class TestTUIOptimizations:
         # Use _client_with_threads() as base — proven to work for navigation
         client = _client_with_threads()
         # Override subagent to have description=None
-        client.list_subagents = AsyncMock(return_value=[
-            {
-                "task_id": "task-1",
-                "subagent_name": "general",
-                "description": None,
-                "status": "completed",
-                "started_at": "2026-04-19T10:00:00+00:00",
-                "completed_at": "2026-04-19T11:00:00+00:00",
-                "message_count": 5,
-            }
-        ])
+        client.list_subagents = AsyncMock(
+            return_value=[
+                {
+                    "task_id": "task-1",
+                    "subagent_name": "general",
+                    "description": None,
+                    "status": "completed",
+                    "started_at": "2026-04-19T10:00:00+00:00",
+                    "completed_at": "2026-04-19T11:00:00+00:00",
+                    "message_count": 5,
+                }
+            ]
+        )
 
         detail = tui.ThreadDetailScreen(client, "thread-1", "Test")
         app = _make_app(client)
@@ -1447,9 +1434,14 @@ class TestTUIOptimizations:
     async def test_empty_string_description_no_crash(self):
         """MessageViewerScreen with empty string description works."""
         client = _mock_thread_client()
-        client.get_subagent_detail = AsyncMock(return_value={
-            "task_id": "t1", "subagent_name": "test", "status": "completed", "messages": [],
-        })
+        client.get_subagent_detail = AsyncMock(
+            return_value={
+                "task_id": "t1",
+                "subagent_name": "test",
+                "status": "completed",
+                "messages": [],
+            }
+        )
         msg = tui.MessageViewerScreen(client, "thread-1", mode="subtask", task_id="t1", description="")
         app = _make_app(client)
         async with app.run_test() as pilot:
@@ -1462,9 +1454,14 @@ class TestTUIOptimizations:
     async def test_none_description_direct_construction(self):
         """MessageViewerScreen constructed with description=None should not crash."""
         client = _mock_thread_client()
-        client.get_subagent_detail = AsyncMock(return_value={
-            "task_id": "t1", "subagent_name": "test", "status": "completed", "messages": [],
-        })
+        client.get_subagent_detail = AsyncMock(
+            return_value={
+                "task_id": "t1",
+                "subagent_name": "test",
+                "status": "completed",
+                "messages": [],
+            }
+        )
         msg = tui.MessageViewerScreen(client, "thread-1", mode="subtask", task_id="t1", description=None)
         app = _make_app(client)
         async with app.run_test() as pilot:
@@ -1502,16 +1499,18 @@ class TestTUIOptimizations:
     async def test_todos_sorted_in_progress_first(self):
         """Todos should be sorted with in_progress first."""
         client = _mock_thread_client()
-        client.get_thread_state = AsyncMock(return_value={
-            "values": {
-                "todos": [
-                    {"content": "Completed task", "status": "completed"},
-                    {"content": "Active task", "status": "in_progress"},
-                    {"content": "Pending task", "status": "pending"},
-                    {"content": "Another done", "status": "completed"},
-                ]
+        client.get_thread_state = AsyncMock(
+            return_value={
+                "values": {
+                    "todos": [
+                        {"content": "Completed task", "status": "completed"},
+                        {"content": "Active task", "status": "in_progress"},
+                        {"content": "Pending task", "status": "pending"},
+                        {"content": "Another done", "status": "completed"},
+                    ]
+                }
             }
-        })
+        )
         client.get_thread_status = AsyncMock(return_value={"main_session": {"status": "idle"}})
         client.list_subagents = AsyncMock(return_value=[])
 
@@ -1526,7 +1525,6 @@ class TestTUIOptimizations:
             # Verify the sorted order by checking the internal render
             label = detail.query_one("#todos-label", tui.FocusableStatic)
             # Get text content from the label
-            from rich.text import Text
             content = label.render()
             str_text = str(content)
             # in_progress should appear before completed
@@ -1535,4 +1533,3 @@ class TestTUIOptimizations:
             assert active_pos > 0, "Active task should be in the rendered text"
             assert completed_pos > 0, "Completed task should be in the rendered text"
             assert active_pos < completed_pos, "Active task should appear before completed"
-

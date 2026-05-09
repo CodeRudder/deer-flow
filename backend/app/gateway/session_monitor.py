@@ -16,8 +16,8 @@ import asyncio
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +33,7 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted", "cancelled
 @dataclass
 class _IterationState:
     """In-memory state for a single auto-iteration session."""
+
     iteration_count: int = 0
     cycle_start_time: float | None = None
 
@@ -182,12 +183,12 @@ class SessionMonitor:
         try:
             if self._loop and not self._loop.is_closed():
                 future = asyncio.run_coroutine_threadsafe(
-                    self._check_all(), self._loop,
+                    self._check_all(),
+                    self._loop,
                 )
                 future.result(timeout=60)
             else:
-                logger.warning("Health monitor: event loop is not available (loop=%s, closed=%s)",
-                               self._loop is not None, self._loop.is_closed() if self._loop else "N/A")
+                logger.warning("Health monitor: event loop is not available (loop=%s, closed=%s)", self._loop is not None, self._loop.is_closed() if self._loop else "N/A")
         except Exception:
             logger.exception("Session health monitor check cycle failed")
         self._schedule_next()
@@ -281,7 +282,10 @@ class SessionMonitor:
             msg = self._get_session_activation_message(thread_id)
             logger.info(
                 "Activating stalled thread %s (attempt %d/%d, reason: %s)",
-                thread_id, count, self._max_activations, reason,
+                thread_id,
+                count,
+                self._max_activations,
+                reason,
             )
             success = await self._activate_thread(thread_id, message=msg)
             if success:
@@ -316,11 +320,15 @@ class SessionMonitor:
             )
 
             with _background_tasks_lock:
+                has_thread_task = False
                 for result in _background_tasks.values():
                     if result.thread_id == thread_id:
+                        has_thread_task = True
                         status = result.status.value if hasattr(result.status, "value") else str(result.status)
                         if status == "running":
                             return True
+                if has_thread_task:
+                    return False
         except Exception:
             logger.debug("Failed to check background tasks", exc_info=True)
 
@@ -339,6 +347,7 @@ class SessionMonitor:
                 return False
 
             stale_count = 0
+            seen_jsonl_paths: set[Path] = set()
             for summary_file in subagents_dir.glob("*.summary.json"):
                 try:
                     with open(summary_file, encoding="utf-8") as f:
@@ -351,6 +360,7 @@ class SessionMonitor:
 
                 # Non-terminal status — check if JSONL is actively updating
                 jsonl_path = summary_file.parent / summary_file.name.replace(".summary.json", ".jsonl")
+                seen_jsonl_paths.add(jsonl_path)
                 try:
                     mtime = jsonl_path.stat().st_mtime
                 except OSError:
@@ -366,10 +376,20 @@ class SessionMonitor:
                 self._cancel_stale_session(summary_file, thread_id, age)
                 stale_count += 1
 
+            for jsonl_path in subagents_dir.glob("*.jsonl"):
+                if jsonl_path in seen_jsonl_paths:
+                    continue
+                if self._session_has_terminal_marker(jsonl_path):
+                    continue
+                age = time.time() - jsonl_path.stat().st_mtime
+                if age < subagents_cfg.timeout_seconds:
+                    return True
+
             if stale_count:
                 logger.info(
                     "Thread %s: cancelled %d stale sub-agent session(s)",
-                    thread_id, stale_count,
+                    thread_id,
+                    stale_count,
                 )
         except Exception:
             logger.debug("Failed to check disk sessions for thread %s", thread_id, exc_info=True)
@@ -433,11 +453,13 @@ class SessionMonitor:
         payload: dict[str, Any] = {
             "assistant_id": "lead_agent",
             "input": {
-                "messages": [{
-                    "type": "human",
-                    "content": [{"type": "text", "text": msg}],
-                    "additional_kwargs": {},
-                }],
+                "messages": [
+                    {
+                        "type": "human",
+                        "content": [{"type": "text", "text": msg}],
+                        "additional_kwargs": {},
+                    }
+                ],
             },
             "config": {"recursion_limit": 1000},
             "context": {
@@ -473,7 +495,9 @@ class SessionMonitor:
                 else:
                     logger.error(
                         "Activation failed for thread %s: HTTP %d %s",
-                        thread_id, resp.status_code, resp.text[:200],
+                        thread_id,
+                        resp.status_code,
+                        resp.text[:200],
                     )
                     return False
         except httpx.TimeoutException:
@@ -566,7 +590,7 @@ class SessionMonitor:
             return False
 
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             stale_threshold = self._run_stale_threshold
 
@@ -582,8 +606,8 @@ class SessionMonitor:
                             else:
                                 created = created_at
                             if created.tzinfo is None:
-                                created = created.replace(tzinfo=timezone.utc)
-                            age = datetime.now(tz=timezone.utc) - created
+                                created = created.replace(tzinfo=UTC)
+                            age = datetime.now(tz=UTC) - created
                             if age > stale_threshold:
                                 logger.info(
                                     "Thread %s: stale run %s (%s, age=%.0f min), treating as dead",
@@ -629,7 +653,7 @@ class SessionMonitor:
         if client is None:
             return False
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             stale_threshold = self._run_stale_threshold
             runs = await client.runs.list(thread_id, limit=20)
@@ -648,12 +672,14 @@ class SessionMonitor:
                         else:
                             created = created_at
                         if created.tzinfo is None:
-                            created = created.replace(tzinfo=timezone.utc)
-                        age = datetime.now(tz=timezone.utc) - created
+                            created = created.replace(tzinfo=UTC)
+                        age = datetime.now(tz=UTC) - created
                         if age > stale_threshold:
                             logger.debug(
                                 "Thread %s: stale interrupted run %s (%.0f min ago), ignoring",
-                                thread_id, run.get("run_id", "?")[:12], age.total_seconds() / 60,
+                                thread_id,
+                                run.get("run_id", "?")[:12],
+                                age.total_seconds() / 60,
                             )
                             return False
                     except (ValueError, TypeError):
@@ -767,16 +793,15 @@ class SessionMonitor:
 
         state = self._iteration_states.setdefault(thread_id, _IterationState())
         now = time.time()
-        duration_exceeded = (
-            state.cycle_start_time is not None
-            and now - state.cycle_start_time >= max_duration_seconds
-        )
+        duration_exceeded = state.cycle_start_time is not None and now - state.cycle_start_time >= max_duration_seconds
         limits_reached = state.iteration_count >= max_iterations or duration_exceeded
 
         if limits_reached:
             logger.info(
                 "Auto iteration thread %s: limits reached (count=%d/%d), stopping until next user message",
-                thread_id, state.iteration_count, max_iterations,
+                thread_id,
+                state.iteration_count,
+                max_iterations,
             )
             return
 
@@ -785,16 +810,19 @@ class SessionMonitor:
 
         logger.info(
             "Auto iteration thread %s: sending iteration prompt (count=%d/%d)",
-            thread_id, state.iteration_count + 1, max_iterations,
+            thread_id,
+            state.iteration_count + 1,
+            max_iterations,
         )
         success = await self._activate_thread(thread_id, message=iteration_prompt)
         if success:
             state.iteration_count += 1
 
     @staticmethod
-    def _session_has_terminal_marker(jsonl_path: "Path") -> bool:
+    def _session_has_terminal_marker(jsonl_path: Path) -> bool:
         """Return True if the JSONL file's last non-empty line has a terminal status marker."""
         import json as _json
+
         try:
             with open(jsonl_path, encoding="utf-8") as f:
                 f.seek(0, 2)

@@ -47,7 +47,10 @@ export const MessageGroup = memo(function MessageGroup({
   className?: string;
   messages: Message[];
   isLoading?: boolean;
-  getMessagesMetadata?: (message: Message, index?: number) => { firstSeenState?: { created_at?: string | null } } | undefined;
+  getMessagesMetadata?: (
+    message: Message,
+    index?: number,
+  ) => { firstSeenState?: { created_at?: string | null } } | undefined;
 }) {
   const { t } = useI18n();
   const [showAbove, setShowAbove] = useState(
@@ -78,7 +81,9 @@ export const MessageGroup = memo(function MessageGroup({
     }
   }, [lastToolCallStep, steps]);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
-  const getMessageTime = (messageId: string | undefined): string | undefined => {
+  const getMessageTime = (
+    messageId: string | undefined,
+  ): string | undefined => {
     if (!messageId || !getMessagesMetadata) return undefined;
     const msg = messages.find((m) => m.id === messageId);
     if (!msg) return undefined;
@@ -134,17 +139,22 @@ export const MessageGroup = memo(function MessageGroup({
                   }
                 ></ChainOfThoughtStep>
               ) : (
-                <ToolCall key={step.id} {...step} isLoading={isLoading} time={getMessageTime(step.messageId)} />
+                <ToolCall
+                  key={step.id}
+                  {...step}
+                  isLoading={isLoading}
+                  time={getMessageTime(step.messageId)}
+                />
               ),
             )}
           {lastToolCallStep && (
-              <ToolCall
-                key={lastToolCallStep.id}
-                {...lastToolCallStep}
-                isLast={true}
-                isLoading={isLoading}
-                time={getMessageTime(lastToolCallStep.messageId)}
-              />
+            <ToolCall
+              key={lastToolCallStep.id}
+              {...lastToolCallStep}
+              isLast={true}
+              isLoading={isLoading}
+              time={getMessageTime(lastToolCallStep.messageId)}
+            />
           )}
         </ChainOfThoughtContent>
       )}
@@ -220,7 +230,11 @@ function ToolCall({
       label = t.toolCalls.searchOnWebFor(args.query);
     }
     return (
-      <ChainOfThoughtStep key={id} label={<StepLabel label={label} time={time} />} icon={SearchIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={<StepLabel label={label} time={time} />}
+        icon={SearchIcon}
+      >
         {Array.isArray(result) && (
           <ChainOfThoughtSearchResults>
             {result.map((item) => (
@@ -250,7 +264,11 @@ function ToolCall({
       }
     )?.results;
     return (
-      <ChainOfThoughtStep key={id} label={<StepLabel label={label} time={time} />} icon={SearchIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={<StepLabel label={label} time={time} />}
+        icon={SearchIcon}
+      >
         {Array.isArray(results) && (
           <ChainOfThoughtSearchResults>
             {Array.isArray(results) &&
@@ -315,7 +333,11 @@ function ToolCall({
     }
     const path: string | undefined = (args as { path: string })?.path;
     return (
-      <ChainOfThoughtStep key={id} label={<StepLabel label={description} time={time} />} icon={FolderOpenIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={<StepLabel label={description} time={time} />}
+        icon={FolderOpenIcon}
+      >
         {path && (
           <ChainOfThoughtSearchResult className="cursor-pointer">
             {path}
@@ -331,7 +353,11 @@ function ToolCall({
     }
     const { path } = args as { path: string; content: string };
     return (
-      <ChainOfThoughtStep key={id} label={<StepLabel label={description} time={time} />} icon={BookOpenTextIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={<StepLabel label={description} time={time} />}
+        icon={BookOpenTextIcon}
+      >
         {path && (
           <ChainOfThoughtSearchResult className="cursor-pointer">
             {path}
@@ -426,7 +452,12 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={<StepLabel label={description ?? t.toolCalls.useTool(name)} time={time} />}
+        label={
+          <StepLabel
+            label={description ?? t.toolCalls.useTool(name)}
+            time={time}
+          />
+        }
         icon={WrenchIcon}
       ></ChainOfThoughtStep>
     );

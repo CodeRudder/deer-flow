@@ -10,10 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.gateway.deps import get_checkpointer, get_run_manager, get_stream_bridge
@@ -168,8 +168,10 @@ async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskRespons
             from deerflow.subagents.session import SubagentSession
 
             session = SubagentSession(
-                thread_id=thread_id, task_id=task_id,
-                subagent_name="", description="",
+                thread_id=thread_id,
+                task_id=task_id,
+                subagent_name="",
+                description="",
             )
             session.request_cancel()
             logger.info("Wrote cancel marker for task %s (thread %s)", task_id, thread_id)

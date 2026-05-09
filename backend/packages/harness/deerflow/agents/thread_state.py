@@ -1,5 +1,5 @@
 import copy
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 
 from langchain.agents import AgentState
 

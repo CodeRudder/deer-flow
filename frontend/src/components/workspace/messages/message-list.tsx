@@ -1,5 +1,5 @@
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Conversation,
@@ -24,13 +24,13 @@ import { cn } from "@/lib/utils";
 
 import { ArtifactFileList } from "../artifacts/artifact-file-list";
 import { StreamingIndicator } from "../streaming-indicator";
+import { SubtaskDetailSheet } from "../subtask-detail-sheet";
 
 import { MarkdownContent } from "./markdown-content";
 import { MessageGroup } from "./message-group";
 import { MessageListItem } from "./message-list-item";
 import { MessageListSkeleton } from "./skeleton";
 import { SubtaskCard } from "./subtask-card";
-import { SubtaskDetailSheet } from "../subtask-detail-sheet";
 
 export const MESSAGE_LIST_DEFAULT_PADDING_BOTTOM = 160;
 export const MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM = 80;
@@ -67,7 +67,11 @@ export function MessageList({
     prevStatusFingerprintRef.current = fp;
     for (const s of subtaskStatuses) {
       const status = s.status as Subtask["status"];
-      if (status === "completed" || status === "failed" || status === "interrupted") {
+      if (
+        status === "completed" ||
+        status === "failed" ||
+        status === "interrupted"
+      ) {
         updateSubtaskRef.current({
           id: s.task_id,
           status,
@@ -84,9 +88,7 @@ export function MessageList({
 
   useEffect(() => {
     // Build a quick fingerprint of message ids + types to skip redundant work
-    const fingerprint = messages
-      .map((m) => `${m.id}:${m.type}`)
-      .join(",");
+    const fingerprint = messages.map((m) => `${m.id}:${m.type}`).join(",");
     if (fingerprint === prevMsgIdsRef.current) return;
     prevMsgIdsRef.current = fingerprint;
 
@@ -145,7 +147,6 @@ export function MessageList({
 
   // Pagination state — must be before any early return (Rules of Hooks)
   const [renderCount, setRenderCount] = useState(INITIAL_RENDER_COUNT);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const threadIdRef = useRef(threadId);
   if (threadIdRef.current !== threadId) {
     threadIdRef.current = threadId;
@@ -156,15 +157,12 @@ export function MessageList({
   }, []);
   const loadMoreRef = useRef(loadMore);
   loadMoreRef.current = loadMore;
-  const handleScroll = useCallback(
-    (e: React.UIEvent<HTMLDivElement>) => {
-      const target = e.currentTarget;
-      if (target.scrollTop < 100) {
-        loadMoreRef.current();
-      }
-    },
-    [],
-  );
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    if (target.scrollTop < 100) {
+      loadMoreRef.current();
+    }
+  }, []);
 
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
@@ -197,14 +195,19 @@ export function MessageList({
             return group.messages.map((msg) => {
               // Prefer backend-stamped timestamp from response_metadata
               const rmCreatedAt = msg.response_metadata?.created_at;
-              const metaCreatedAt = thread.getMessagesMetadata(msg)?.firstSeenState?.created_at;
+              const metaCreatedAt =
+                thread.getMessagesMetadata(msg)?.firstSeenState?.created_at;
               const ts = rmCreatedAt ?? metaCreatedAt;
+              const timestamp =
+                typeof ts === "number" || typeof ts === "string"
+                  ? new Date(typeof ts === "number" ? ts * 1000 : ts)
+                  : undefined;
               return (
                 <MessageListItem
                   key={`${group.id}/${msg.id}`}
                   message={msg}
                   isLoading={thread.isLoading}
-                  timestamp={ts ? new Date(typeof ts === "number" ? ts * 1000 : String(ts)) : undefined}
+                  timestamp={timestamp}
                 />
               );
             });

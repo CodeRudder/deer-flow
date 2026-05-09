@@ -16,7 +16,7 @@ Recovery flow:
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def _utc_now_iso() -> str:
     """Return current UTC time as an ISO-8601 string."""
-    return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(tz=UTC).isoformat(timespec="seconds")
 
 
 def serialize_message(msg: BaseMessage, *, max_content_len: int | None = None) -> dict[str, Any]:
@@ -64,10 +64,7 @@ def serialize_message(msg: BaseMessage, *, max_content_len: int | None = None) -
         entry["role"] = "ai"
         entry["content"] = content
         if msg.tool_calls:
-            entry["tool_calls"] = [
-                {"id": tc.get("id"), "name": tc.get("name"), "args": tc.get("args")}
-                for tc in msg.tool_calls
-            ]
+            entry["tool_calls"] = [{"id": tc.get("id"), "name": tc.get("name"), "args": tc.get("args")} for tc in msg.tool_calls]
         # Preserve reasoning/thinking content for debugging
         if hasattr(msg, "reasoning_content") and msg.reasoning_content:
             reasoning = msg.reasoning_content
@@ -160,6 +157,7 @@ class SubagentSession:
     def append_message(self, msg: BaseMessage) -> None:
         """Append a single message to the JSONL file (real-time, line-level atomic)."""
         entry = _serialize_message(msg)
+        self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -169,12 +167,14 @@ class SubagentSession:
         for msg in messages:
             entry = _serialize_message(msg)
             lines.append(json.dumps(entry, ensure_ascii=False))
+        self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.jsonl_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
     def _append_status_line(self, status: str, **extra: Any) -> None:
         """Write a terminal status marker line to the JSONL file."""
         entry: dict[str, Any] = {"ts": _utc_now_iso(), "status": status, **extra}
+        self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -200,6 +200,7 @@ class SubagentSession:
         }
         target = self.summary_path
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             with open(target, "w", encoding="utf-8") as f:
                 json.dump(summary, f, ensure_ascii=False, indent=2)
         except OSError:

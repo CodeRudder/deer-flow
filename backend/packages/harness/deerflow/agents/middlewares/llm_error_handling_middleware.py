@@ -19,10 +19,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
-_EMPTY_RESPONSE_FALLBACK = (
-    "LLM 返回了空响应，已重试多次仍失败。"
-    "请稍后重试，或检查模型服务状态。"
-)
+_EMPTY_RESPONSE_FALLBACK = "LLM 返回了空响应，已重试多次仍失败。请稍后重试，或检查模型服务状态。"
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +247,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     attempt += 1
                     continue
                 logger.warning(
-                    "LLM returned empty response after %d attempt(s)", attempt,
+                    "LLM returned empty response after %d attempt(s)",
+                    attempt,
                 )
                 return AIMessage(
                     content=_EMPTY_RESPONSE_FALLBACK,
@@ -313,7 +311,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     attempt += 1
                     continue
                 logger.warning(
-                    "LLM returned empty response after %d attempt(s)", attempt,
+                    "LLM returned empty response after %d attempt(s)",
+                    attempt,
                 )
                 return AIMessage(
                     content=_EMPTY_RESPONSE_FALLBACK,

@@ -25,7 +25,7 @@ from deerflow.subagents.config import SubagentConfig
 
 
 def _reset_subagents_config(
-    timeout_seconds: int = 900,
+    timeout_seconds: int = 1200,
     *,
     max_turns: int | None = None,
     agents: dict | None = None,
@@ -82,7 +82,7 @@ class TestSubagentOverrideConfig:
 class TestSubagentsAppConfigDefaults:
     def test_default_timeout(self):
         config = SubagentsAppConfig()
-        assert config.timeout_seconds == 900
+        assert config.timeout_seconds == 1200
 
     def test_default_max_turns_override_is_none(self):
         config = SubagentsAppConfig()
@@ -214,7 +214,7 @@ class TestLoadSubagentsConfig:
     def test_load_empty_dict_uses_defaults(self):
         load_subagents_config_from_dict({})
         cfg = get_subagents_app_config()
-        assert cfg.timeout_seconds == 900
+        assert cfg.timeout_seconds == 1200
         assert cfg.max_turns is None
         assert cfg.agents == {}
 
@@ -255,10 +255,10 @@ class TestRegistryGetSubagentConfig:
     def test_default_timeout_preserved_when_no_config(self):
         from deerflow.subagents.registry import get_subagent_config
 
-        _reset_subagents_config(timeout_seconds=900)
+        _reset_subagents_config(timeout_seconds=1200)
         config = get_subagent_config("general-purpose")
-        assert config.timeout_seconds == 900
-        assert config.max_turns == 100
+        assert config.timeout_seconds == 1200
+        assert config.max_turns == 300
 
     def test_global_timeout_override_applied(self):
         from deerflow.subagents.registry import get_subagent_config
@@ -383,7 +383,7 @@ class TestPollingTimeoutCalculation:
     @pytest.mark.parametrize(
         "timeout_seconds, expected_max_polls",
         [
-            (900, 192),  # default 15 min → (900+60)//5 = 192
+            (1200, 252),  # default 20 min → (1200+60)//5 = 252
             (300, 72),  # 5 min → (300+60)//5 = 72
             (1800, 372),  # 30 min → (1800+60)//5 = 372
             (60, 24),  # 1 min → (60+60)//5 = 24

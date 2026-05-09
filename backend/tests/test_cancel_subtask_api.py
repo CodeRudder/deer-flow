@@ -8,9 +8,8 @@ Covers:
 
 import importlib
 import json
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

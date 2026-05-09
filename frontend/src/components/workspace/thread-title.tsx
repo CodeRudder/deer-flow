@@ -7,7 +7,6 @@ import type { AgentThreadState } from "@/core/threads";
 import { useThreadChat } from "./chats";
 
 export function ThreadTitle({
-  threadId,
   thread,
 }: {
   className?: string;

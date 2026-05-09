@@ -1,6 +1,5 @@
-import { describe, expect, it } from "vitest";
-
 import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 
 import { RelativeTime, StatusIcon, statusBadgeClass } from "./helpers";
 import type { CommandStatus } from "./types";
@@ -36,7 +35,13 @@ describe("statusBadgeClass", () => {
 // ---------------------------------------------------------------------------
 
 describe("StatusIcon", () => {
-  it.each(["running", "completed", "failed", "timed_out", "killed"] satisfies CommandStatus[])(
+  it.each([
+    "running",
+    "completed",
+    "failed",
+    "timed_out",
+    "killed",
+  ] satisfies CommandStatus[])(
     "renders without crashing for status=%s",
     (status) => {
       const { container } = render(<StatusIcon status={status} />);

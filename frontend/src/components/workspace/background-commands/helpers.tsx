@@ -40,9 +40,9 @@ export function StatusIcon({ status }: { status: CommandStatus }): ReactNode {
     case "timed_out":
       return <XCircleIcon className="size-4 text-red-500" />;
     case "killed":
-      return <SquareIcon className="size-4 text-muted-foreground" />;
+      return <SquareIcon className="text-muted-foreground size-4" />;
     default:
-      return <TerminalIcon className="size-4 text-muted-foreground" />;
+      return <TerminalIcon className="text-muted-foreground size-4" />;
   }
 }
 

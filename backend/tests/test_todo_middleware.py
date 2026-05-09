@@ -185,10 +185,14 @@ class TestApplyTodoOpsUpdate:
             {"content": "Task A", "status": "pending"},
             {"content": "Task B", "status": "pending"},
         ]
-        result = apply_todo_ops(existing, [
-            {"index": 0, "status": "completed"},
-            {"index": 1, "status": "in_progress"},
-        ], None)
+        result = apply_todo_ops(
+            existing,
+            [
+                {"index": 0, "status": "completed"},
+                {"index": 1, "status": "in_progress"},
+            ],
+            None,
+        )
         assert result[0]["status"] == "completed"
         assert result[0]["content"] == "Task A"
         assert result[1]["status"] == "in_progress"
@@ -229,10 +233,14 @@ class TestApplyTodoOpsRemove:
             {"content": "B", "status": "pending"},
             {"content": "C", "status": "pending"},
         ]
-        result = apply_todo_ops(existing, [
-            {"index": 0, "remove": True},
-            {"index": 2, "remove": True},
-        ], None)
+        result = apply_todo_ops(
+            existing,
+            [
+                {"index": 0, "remove": True},
+                {"index": 2, "remove": True},
+            ],
+            None,
+        )
         assert len(result) == 1
         assert result[0]["content"] == "B"
 
@@ -241,10 +249,14 @@ class TestApplyTodoOpsRemove:
             {"content": "A", "status": "pending"},
             {"content": "B", "status": "pending"},
         ]
-        result = apply_todo_ops(existing, [
-            {"index": 0, "status": "completed"},
-            {"index": 1, "remove": True},
-        ], None)
+        result = apply_todo_ops(
+            existing,
+            [
+                {"index": 0, "status": "completed"},
+                {"index": 1, "remove": True},
+            ],
+            None,
+        )
         assert len(result) == 1
         assert result[0]["content"] == "A"
         assert result[0]["status"] == "completed"

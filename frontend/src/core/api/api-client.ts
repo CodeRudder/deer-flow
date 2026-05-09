@@ -31,25 +31,36 @@ function createCompatibleClient(isMock?: boolean): LangGraphClient {
   // to first 10 + last 40 messages with a placeholder for omitted middle messages.
   type GetHistoryOptions = Parameters<typeof client.threads.getHistory>[1];
   const originalGetHistory = client.threads.getHistory.bind(client.threads);
-  client.threads.getHistory = (async (threadId: string, options?: GetHistoryOptions) => {
+  client.threads.getHistory = (async (
+    threadId: string,
+    options?: GetHistoryOptions,
+  ) => {
     // Extract checkpoint_id from before config if it's a Config object
     let before: string | undefined;
     if (options?.before) {
       const b = options.before as Record<string, unknown>;
       if (typeof b === "string") {
         before = b;
-      } else if (b?.configurable && typeof (b.configurable as Record<string, unknown>)?.checkpoint_id === "string") {
-        before = (b.configurable as Record<string, unknown>).checkpoint_id as string;
+      } else if (
+        b?.configurable &&
+        typeof (b.configurable as Record<string, unknown>)?.checkpoint_id ===
+          "string"
+      ) {
+        before = (b.configurable as Record<string, unknown>)
+          .checkpoint_id as string;
       }
     }
 
     try {
-      const res = await fetch(`${getBackendBaseURL()}/api/threads/${threadId}/history`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ limit: options?.limit ?? 10, before }),
-        signal: options?.signal,
-      });
+      const res = await fetch(
+        `${getBackendBaseURL()}/api/threads/${threadId}/history`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: options?.limit ?? 10, before }),
+          signal: options?.signal,
+        },
+      );
       if (!res.ok) throw new Error("Gateway history fetch failed");
       return res.json();
     } catch {

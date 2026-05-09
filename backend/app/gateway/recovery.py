@@ -1,14 +1,11 @@
 """Automatic task recovery on Gateway startup.
 
 Scans the filesystem for interrupted sub-agent session files (.jsonl without
-a terminal status marker) and notifies the corresponding Lead Agent threads
-via the LangGraph SDK so they can resume work.
+a terminal status marker) and logs the affected Lead Agent threads.
 
 This module is called once from the Gateway ``lifespan()`` handler during cold
-start.  It does **not** auto-restart sub-agents directly — instead it sends a
-recovery message to the Lead Agent thread, letting the Lead Agent decide how
-to continue (matching the interrupt-recovery strategy already in the system
-prompt).
+start. Automatic recovery is intentionally disabled; users can manually resume
+tasks from the UI.
 """
 
 import logging
@@ -63,11 +60,7 @@ def _build_recovery_message(sessions: list[SubagentSession]) -> str:
     Returns:
         Simple recovery prompt to send to the Lead Agent thread.
     """
-    return (
-        "<task_recovery>\n"
-        f"服务已经重启，有 {len(sessions)} 个子任务被中断，请继续处理未完成任务。\n"
-        "</task_recovery>"
-    )
+    return f"<task_recovery>\n服务已经重启，有 {len(sessions)} 个子任务被中断，请继续处理未完成任务。\n</task_recovery>"
 
 
 async def _notify_thread(thread_id: str, message: str) -> None:
@@ -91,7 +84,7 @@ async def _notify_thread(thread_id: str, message: str) -> None:
     async def _send() -> None:
         try:
             # Add message to thread state without creating a run.
-            # Creating a run would block the main session until it completes.
+            # Creating a run would block the main session.
             # The user will see the recovery message when they next interact.
             await client.threads.update_state(
                 thread_id=thread_id,

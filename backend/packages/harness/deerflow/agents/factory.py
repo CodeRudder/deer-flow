@@ -66,7 +66,11 @@ Do NOT combine `todos` with `updates`/`adds`.
 </todo_list_system>
 """
 
-_TODO_TOOL_DESCRIPTION = "Use this tool to create and manage a structured task list for complex work sessions. Supports full replace (todos), incremental updates (updates by index), and adding new tasks (adds with optional position). Only use for complex tasks (3+ steps)."
+_TODO_TOOL_DESCRIPTION = (
+    "Use this tool to create and manage a structured task list for complex work sessions. "
+    "Supports full replace (todos), incremental updates (updates by index), and adding new tasks (adds with optional position). "
+    "Only use for complex tasks (3+ steps)."
+)
 
 
 # ---------------------------------------------------------------------------

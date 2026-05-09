@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 
 
 def _clean_messages(messages: list) -> tuple[list, int]:
@@ -46,9 +45,7 @@ def _clean_messages(messages: list) -> tuple[list, int]:
                     new_parts.append(part)
             if has_images:
                 new_parts.append({"type": "text", "text": "[图片数据已清理]"})
-                cleaned.append(
-                    HumanMessage(content=new_parts, id=getattr(msg, "id", None))
-                )
+                cleaned.append(HumanMessage(content=new_parts, id=getattr(msg, "id", None)))
             else:
                 cleaned.append(msg)
         else:
@@ -97,8 +94,7 @@ async def cleanup_thread(thread_id: str, *, dry_run: bool = False) -> bool:
             print(f"  {thread_id}: clean ({num_msgs} msgs, {original_size / 1024:.0f} KB)")
             return False
 
-        print(f"  {thread_id}: {original_size / 1024 / 1024:.2f} MB ({num_msgs} msgs, "
-              f"{img_bytes / 1024 / 1024:.2f} MB images, {vi_bytes / 1024 / 1024:.2f} MB viewed_images)")
+        print(f"  {thread_id}: {original_size / 1024 / 1024:.2f} MB ({num_msgs} msgs, {img_bytes / 1024 / 1024:.2f} MB images, {vi_bytes / 1024 / 1024:.2f} MB viewed_images)")
 
         if dry_run:
             print(f"    [DRY RUN] Would clean {(img_bytes + vi_bytes) / 1024 / 1024:.2f} MB")
@@ -114,8 +110,7 @@ async def cleanup_thread(thread_id: str, *, dry_run: bool = False) -> bool:
 
         # --- Measure after ---
         cleaned_size = len(json.dumps(channel_values, ensure_ascii=False, default=str))
-        print(f"    Cleaned: {original_size / 1024 / 1024:.2f} → {cleaned_size / 1024 / 1024:.2f} MB "
-              f"(saved {(original_size - cleaned_size) / 1024 / 1024:.2f} MB)")
+        print(f"    Cleaned: {original_size / 1024 / 1024:.2f} → {cleaned_size / 1024 / 1024:.2f} MB (saved {(original_size - cleaned_size) / 1024 / 1024:.2f} MB)")
 
         # --- Write new checkpoint ---
         ckpt["channel_values"] = channel_values

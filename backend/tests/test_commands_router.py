@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 from app.gateway.routers import commands
 from deerflow.sandbox.process_manager import CommandStatus
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -66,8 +65,7 @@ SAMPLE_COMMANDS = [
 
 def test_list_commands_returns_commands(client):
     with patch(
-        "app.gateway.routers.commands.pm_list" if hasattr(commands, "pm_list")
-        else "deerflow.sandbox.process_manager.list_commands",
+        "app.gateway.routers.commands.pm_list" if hasattr(commands, "pm_list") else "deerflow.sandbox.process_manager.list_commands",
         return_value=SAMPLE_COMMANDS,
     ):
         resp = client.get("/api/threads/thread-abc/commands")
@@ -132,10 +130,7 @@ def test_list_commands_preserves_all_fields(client):
 # GET /api/threads/{thread_id}/commands/{command_id}/output — get output
 # ---------------------------------------------------------------------------
 
-SAMPLE_OUTPUT = (
-    "Total lines: 50, showing lines 1-10 (start_line=0, line_count=10), "
-    "40 lines after (use start_line=10 to continue)\n\nLine 1\nLine 2\nLine 3"
-)
+SAMPLE_OUTPUT = "Total lines: 50, showing lines 1-10 (start_line=0, line_count=10), 40 lines after (use start_line=10 to continue)\n\nLine 1\nLine 2\nLine 3"
 
 
 def test_get_output_returns_paginated_output(client):
@@ -143,9 +138,7 @@ def test_get_output_returns_paginated_output(client):
         "deerflow.sandbox.process_manager.get_output",
         return_value=(CommandStatus.RUNNING, SAMPLE_OUTPUT, "/tmp/cmd_001.log"),
     ):
-        resp = client.get(
-            "/api/threads/thread-abc/commands/cmd_001/output?start_line=0&line_count=10"
-        )
+        resp = client.get("/api/threads/thread-abc/commands/cmd_001/output?start_line=0&line_count=10")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -161,17 +154,12 @@ def test_get_output_returns_paginated_output(client):
 
 def test_get_output_tail_mode(client):
     """When start_line is omitted, pagination is parsed from the header."""
-    tail_output = (
-        "Total lines: 30, showing lines 21-30 (start_line=20, line_count=10)\n\n"
-        "Last line"
-    )
+    tail_output = "Total lines: 30, showing lines 21-30 (start_line=20, line_count=10)\n\nLast line"
     with patch(
         "deerflow.sandbox.process_manager.get_output",
         return_value=(CommandStatus.COMPLETED, tail_output, None),
     ):
-        resp = client.get(
-            "/api/threads/thread-abc/commands/cmd_002/output?line_count=10"
-        )
+        resp = client.get("/api/threads/thread-abc/commands/cmd_002/output?line_count=10")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -187,9 +175,7 @@ def test_get_output_missing_command(client):
         "deerflow.sandbox.process_manager.get_output",
         return_value=(CommandStatus.FAILED, error_output, None),
     ):
-        resp = client.get(
-            "/api/threads/thread-abc/commands/missing_cmd/output"
-        )
+        resp = client.get("/api/threads/thread-abc/commands/missing_cmd/output")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -213,14 +199,10 @@ def test_get_output_default_line_count(client):
 
 def test_get_output_line_count_validation(client):
     """line_count must be between 1 and 50."""
-    resp = client.get(
-        "/api/threads/thread-abc/commands/cmd_001/output?line_count=0"
-    )
+    resp = client.get("/api/threads/thread-abc/commands/cmd_001/output?line_count=0")
     assert resp.status_code == 422
 
-    resp = client.get(
-        "/api/threads/thread-abc/commands/cmd_001/output?line_count=51"
-    )
+    resp = client.get("/api/threads/thread-abc/commands/cmd_001/output?line_count=51")
     assert resp.status_code == 422
 
 
@@ -231,9 +213,7 @@ def test_get_output_no_pagination_header(client):
         "deerflow.sandbox.process_manager.get_output",
         return_value=(CommandStatus.RUNNING, plain_output, None),
     ):
-        resp = client.get(
-            "/api/threads/thread-abc/commands/cmd_001/output"
-        )
+        resp = client.get("/api/threads/thread-abc/commands/cmd_001/output")
 
     assert resp.status_code == 200
     data = resp.json()

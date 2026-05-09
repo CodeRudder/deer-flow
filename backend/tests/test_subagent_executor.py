@@ -1135,7 +1135,6 @@ class TestSessionIntegration:
     def test_execute_async_sets_session_fields(self, classes, base_config, mock_agent, msg):
         """Test that execute_async populates thread_id, subagent_name, description on result."""
         SubagentExecutor = classes["SubagentExecutor"]
-        SubagentStatus = classes["SubagentStatus"]
 
         ai_msg = msg.ai("Done", "msg-1")
         final_state = {"messages": [msg.human("Task"), ai_msg]}

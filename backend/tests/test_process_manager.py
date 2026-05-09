@@ -1,9 +1,7 @@
 """Tests for the background command process manager."""
 
 import json
-import os
 import time
-from pathlib import Path
 
 import pytest
 
@@ -197,7 +195,6 @@ class TestKill:
 
         with pm._commands_lock:
             info = pm._commands[cmd_id]
-            pid = info.pid
             info._process = None  # Simulate restart scenario
 
         killed, msg = kill(cmd_id)

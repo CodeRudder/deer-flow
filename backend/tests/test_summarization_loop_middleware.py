@@ -13,7 +13,6 @@ Covers:
 from unittest.mock import MagicMock
 
 import pytest
-
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
@@ -294,16 +293,12 @@ class TestThreadIsolation:
         mw = MW(warn_threshold=2, hard_limit=3)
 
         # Thread A: 2 summaries → soft limit
-        state_a = {
-            "messages": [_summary_msg("S1"), _summary_msg("S2")]
-        }
+        state_a = {"messages": [_summary_msg("S1"), _summary_msg("S2")]}
         result_a = mw._apply(state_a, _make_runtime("thread-a"))
         assert result_a is not None  # soft limit
 
         # Thread B: no summaries → None
-        state_b = {
-            "messages": [HumanMessage(content="Hello"), AIMessage(content="Hi")]
-        }
+        state_b = {"messages": [HumanMessage(content="Hello"), AIMessage(content="Hi")]}
         result_b = mw._apply(state_b, _make_runtime("thread-b"))
         assert result_b is None
 
@@ -312,15 +307,11 @@ class TestThreadIsolation:
         mw = MW(warn_threshold=2, hard_limit=3)
 
         # Thread A: 2 summaries
-        state_a2 = {
-            "messages": [_summary_msg("S1"), _summary_msg("S2")]
-        }
+        state_a2 = {"messages": [_summary_msg("S1"), _summary_msg("S2")]}
         mw._apply(state_a2, _make_runtime("thread-a"))
 
         # Thread B: 3 summaries → hard limit
-        state_b3 = {
-            "messages": [_summary_msg("S1"), _summary_msg("S2"), _summary_msg("S3")]
-        }
+        state_b3 = {"messages": [_summary_msg("S1"), _summary_msg("S2"), _summary_msg("S3")]}
         result_b = mw._apply(state_b3, _make_runtime("thread-b"))
         assert result_b is not None
         # Verify hard stop injected
@@ -416,9 +407,7 @@ class TestAsync:
         MW = _import_middleware()
         mw = MW(warn_threshold=2)
 
-        state = {
-            "messages": [_summary_msg("S1"), _summary_msg("S2")]
-        }
+        state = {"messages": [_summary_msg("S1"), _summary_msg("S2")]}
         result = await mw.abefore_model(state, _make_runtime())
         assert result is not None
 
@@ -427,8 +416,6 @@ class TestAsync:
         MW = _import_middleware()
         mw = MW()
 
-        state = {
-            "messages": [HumanMessage(content="Hello")]
-        }
+        state = {"messages": [HumanMessage(content="Hello")]}
         result = await mw.abefore_model(state, _make_runtime())
         assert result is None

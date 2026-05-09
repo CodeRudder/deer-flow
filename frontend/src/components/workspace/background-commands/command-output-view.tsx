@@ -51,7 +51,7 @@ export function CommandOutputView({
 
   if (loading && !output) {
     return (
-      <div className="flex items-center justify-center py-8 text-muted-foreground">
+      <div className="text-muted-foreground flex items-center justify-center py-8">
         <Loader2Icon className="mr-2 size-4 animate-spin" />
         Loading output...
       </div>
@@ -60,7 +60,7 @@ export function CommandOutputView({
 
   if (!output) {
     return (
-      <div className="py-4 text-center text-sm text-muted-foreground">
+      <div className="text-muted-foreground py-4 text-center text-sm">
         No output available
       </div>
     );
@@ -73,14 +73,12 @@ export function CommandOutputView({
 
   return (
     <div className="flex flex-col gap-2">
-      {header && (
-        <div className="text-xs text-muted-foreground">{header}</div>
-      )}
-      <pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">
+      {header && <div className="text-muted-foreground text-xs">{header}</div>}
+      <pre className="bg-muted max-h-80 overflow-auto rounded-md p-3 text-xs">
         {content || "(no output)"}
       </pre>
       {output.pagination && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className="text-muted-foreground flex items-center justify-between text-xs">
           <span>
             Lines {output.pagination.start_line + 1}-
             {output.pagination.start_line + output.pagination.line_count} of{" "}

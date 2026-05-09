@@ -1102,6 +1102,7 @@ async def get_thread_status(thread_id: str, request: Request) -> SessionStatusRe
 
 class ThreadMessagesResponse(BaseModel):
     """Paginated messages from the local conversation JSONL file."""
+
     messages: list[dict[str, Any]] = Field(default_factory=list)
     total: int = 0
     has_more: bool = False

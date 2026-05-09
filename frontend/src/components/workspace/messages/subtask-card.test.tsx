@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-
 import { render, screen } from "@testing-library/react";
-import { useState, useCallback } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Subtask } from "@/core/tasks/types";
 
 // Mock subtask context with controllable state
 const mockTasks: Record<string, Subtask> = {};
-let mockUpdateSubtask = vi.fn();
+const mockUpdateSubtask = vi.fn();
 
 vi.mock("@/core/tasks/context", () => ({
   useSubtask: (id: string) => mockTasks[id],
@@ -50,7 +48,7 @@ vi.mock("streamdown", () => ({
   ),
 }));
 
-vi.mock("rehype-katex", () => ({ default: () => () => {} }));
+vi.mock("rehype-katex", () => ({ default: () => () => undefined }));
 vi.mock("katex/dist/katex.min.css", () => ({}));
 
 vi.mock("sonner", () => ({
@@ -63,9 +61,7 @@ vi.mock("./context", () => ({
 }));
 
 vi.mock("./markdown-content", () => ({
-  MarkdownContent: ({ content }: { content: string }) => (
-    <span>{content}</span>
-  ),
+  MarkdownContent: ({ content }: { content: string }) => <span>{content}</span>,
 }));
 
 // Import after mocks
@@ -102,11 +98,7 @@ describe("SubtaskCard", () => {
     };
 
     render(
-      <SubtaskCard
-        taskId="task-1"
-        threadId="thread-1"
-        isLoading={false}
-      />,
+      <SubtaskCard taskId="task-1" threadId="thread-1" isLoading={false} />,
     );
 
     expect(screen.getByText("Build feature X")).toBeTruthy();
@@ -124,11 +116,7 @@ describe("SubtaskCard", () => {
     };
 
     render(
-      <SubtaskCard
-        taskId="task-1"
-        threadId="thread-1"
-        isLoading={false}
-      />,
+      <SubtaskCard taskId="task-1" threadId="thread-1" isLoading={false} />,
     );
 
     // Description and status label are visible even when collapsed
@@ -147,11 +135,7 @@ describe("SubtaskCard", () => {
     };
 
     render(
-      <SubtaskCard
-        taskId="task-1"
-        threadId="thread-1"
-        isLoading={false}
-      />,
+      <SubtaskCard taskId="task-1" threadId="thread-1" isLoading={false} />,
     );
 
     expect(screen.getByText("Build feature X")).toBeTruthy();

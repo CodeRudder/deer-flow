@@ -1,12 +1,5 @@
 "use client";
 
-import { useI18n } from "@/core/i18n/hooks";
-import {
-  cancelSubtask,
-  useSessionStatus,
-  type MainSessionStatus,
-  type SubtaskStatusItem,
-} from "@/core/subagents/hooks";
 import {
   Activity,
   CheckCircle2,
@@ -29,6 +22,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  cancelSubtask,
+  useSessionStatus,
+  type MainSessionStatus,
+  type SubtaskStatusItem,
+} from "@/core/subagents/hooks";
 import { useSubtaskContext } from "@/core/tasks/context";
 
 function statusIcon(status: string) {
@@ -45,7 +44,7 @@ function statusIcon(status: string) {
     case "cancelled":
       return <XCircle className="size-4 text-orange-500" />;
     default:
-      return <Clock className="size-4 text-muted-foreground" />;
+      return <Clock className="text-muted-foreground size-4" />;
   }
 }
 
@@ -95,28 +94,31 @@ function formatTime(iso: string | null | undefined) {
 }
 
 function MainSessionCard({ session }: { session: MainSessionStatus }) {
-  const { t } = useI18n();
   const { setSelectedTaskId } = useSubtaskContext();
   return (
     <div className="rounded-lg border p-3">
       <div className="flex items-center gap-3">
         {statusIcon(session.status)}
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">主会话</span>
-            <span className="text-xs text-muted-foreground">
+            <span className="text-muted-foreground text-xs">
               {statusLabel(session.status)}
             </span>
           </div>
-          <div className="text-xs text-muted-foreground mt-0.5">
+          <div className="text-muted-foreground mt-0.5 text-xs">
             {session.run_id && (
               <span>ID: {session.run_id.slice(0, 12)}...</span>
             )}
             {session.started_at && (
-              <span className="ml-2">开始: {formatTime(session.started_at)}</span>
+              <span className="ml-2">
+                开始: {formatTime(session.started_at)}
+              </span>
             )}
             {session.last_updated && (
-              <span className="ml-2">更新: {formatTime(session.last_updated)}</span>
+              <span className="ml-2">
+                更新: {formatTime(session.last_updated)}
+              </span>
             )}
           </div>
         </div>
@@ -131,7 +133,7 @@ function MainSessionCard({ session }: { session: MainSessionStatus }) {
         </Button>
       </div>
       {session.last_message && (
-        <div className="text-xs text-muted-foreground mt-2 line-clamp-3 break-all border-t pt-2">
+        <div className="text-muted-foreground mt-2 line-clamp-3 border-t pt-2 text-xs break-all">
           {session.last_message}
         </div>
       )}
@@ -141,11 +143,9 @@ function MainSessionCard({ session }: { session: MainSessionStatus }) {
 
 function SubtaskRow({
   task,
-  threadId,
   onCancelled,
 }: {
   task: SubtaskStatusItem;
-  threadId: string;
   onCancelled?: () => void;
 }) {
   const { setSelectedTaskId } = useSubtaskContext();
@@ -168,16 +168,16 @@ function SubtaskRow({
   return (
     <div className="flex items-start gap-3 rounded-lg border p-3">
       <div className="mt-0.5">{statusIcon(task.status)}</div>
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium truncate">
+          <span className="truncate text-sm font-medium">
             {task.description || task.task_id.slice(0, 12)}
           </span>
-          <span className="text-xs text-muted-foreground shrink-0">
+          <span className="text-muted-foreground shrink-0 text-xs">
             {statusLabel(task.status, task.detail)}
           </span>
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5">
+        <div className="text-muted-foreground mt-0.5 text-xs">
           <span>{task.subagent_name}</span>
           {task.started_at && (
             <span className="ml-2">开始: {formatTime(task.started_at)}</span>
@@ -187,12 +187,12 @@ function SubtaskRow({
           )}
         </div>
         {task.last_message && (
-          <div className="text-xs text-muted-foreground mt-1 line-clamp-3 break-all">
+          <div className="text-muted-foreground mt-1 line-clamp-3 text-xs break-all">
             {task.last_message}
           </div>
         )}
       </div>
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex shrink-0 items-center gap-1">
         {(task.status === "running" || task.status === "interrupted") && (
           <Button
             variant="ghost"
@@ -232,8 +232,7 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
   const [page, setPage] = useState(0);
 
   const activeCount = data?.active_subtasks.length ?? 0;
-  const isRunning =
-    data?.main_session.status === "running" || activeCount > 0;
+  const isRunning = data?.main_session.status === "running" || activeCount > 0;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -241,25 +240,25 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 relative"
+          className="relative size-8"
           title="会话状态"
         >
           <Activity
             className={`size-4 ${isRunning ? "text-blue-500" : "text-muted-foreground"}`}
           />
           {isRunning && (
-            <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-blue-500 animate-pulse" />
+            <span className="absolute -top-0.5 -right-0.5 size-2 animate-pulse rounded-full bg-blue-500" />
           )}
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>会话状态</DialogTitle>
         </DialogHeader>
 
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
-            <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            <Loader2 className="text-muted-foreground size-6 animate-spin" />
           </div>
         ) : data ? (
           <div className="flex flex-col gap-4">
@@ -267,7 +266,7 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
 
             {data.active_subtasks.length > 0 && (
               <div>
-                <h4 className="text-sm font-medium mb-2">
+                <h4 className="mb-2 text-sm font-medium">
                   活跃任务 ({data.active_subtasks.length})
                 </h4>
                 <div className="flex flex-col gap-2">
@@ -275,7 +274,6 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
                     <SubtaskRow
                       key={t.task_id}
                       task={t}
-                      threadId={threadId}
                       onCancelled={() => refetch()}
                     />
                   ))}
@@ -285,7 +283,7 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
 
             {data.recent_subtasks.length > 0 && (
               <div>
-                <h4 className="text-sm font-medium mb-2">
+                <h4 className="mb-2 text-sm font-medium">
                   最近任务 ({data.recent_subtasks.length})
                 </h4>
                 <div className="flex flex-col gap-2">
@@ -295,7 +293,6 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
                       <SubtaskRow
                         key={t.task_id}
                         task={t}
-                        threadId={threadId}
                         onCancelled={() => refetch()}
                       />
                     ))}
@@ -304,7 +301,9 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
                 {data.recent_subtasks.length > pageSize && (
                   <div className="mt-3 flex items-center justify-between">
                     <div className="flex items-center gap-1">
-                      <span className="text-muted-foreground text-xs">每页</span>
+                      <span className="text-muted-foreground text-xs">
+                        每页
+                      </span>
                       <select
                         className="border-input bg-background h-7 rounded border px-1 text-xs"
                         value={pageSize}
@@ -314,7 +313,9 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
                         }}
                       >
                         {PAGE_SIZE_OPTIONS.map((n) => (
-                          <option key={n} value={n}>{n}</option>
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -329,13 +330,19 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
                         <ChevronLeft className="size-4" />
                       </Button>
                       <span className="text-muted-foreground text-xs">
-                        {page + 1} / {Math.max(1, Math.ceil(data.recent_subtasks.length / pageSize))}
+                        {page + 1} /{" "}
+                        {Math.max(
+                          1,
+                          Math.ceil(data.recent_subtasks.length / pageSize),
+                        )}
                       </span>
                       <Button
                         variant="ghost"
                         size="icon"
                         className="size-7"
-                        disabled={(page + 1) * pageSize >= data.recent_subtasks.length}
+                        disabled={
+                          (page + 1) * pageSize >= data.recent_subtasks.length
+                        }
                         onClick={() => setPage((p) => p + 1)}
                       >
                         <ChevronRight className="size-4" />
@@ -348,13 +355,13 @@ export function SessionStatusButton({ threadId }: { threadId: string }) {
 
             {data.active_subtasks.length === 0 &&
               data.recent_subtasks.length === 0 && (
-                <div className="text-center text-sm text-muted-foreground py-4">
+                <div className="text-muted-foreground py-4 text-center text-sm">
                   暂无子任务
                 </div>
               )}
           </div>
         ) : (
-          <div className="text-center text-sm text-muted-foreground py-4">
+          <div className="text-muted-foreground py-4 text-center text-sm">
             无法获取状态
           </div>
         )}

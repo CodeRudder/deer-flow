@@ -43,7 +43,7 @@ export function CommandCard({
     <div className="rounded-md border p-3">
       <div className="flex items-start gap-3">
         <StatusIcon status={command.status} />
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <p className="truncate text-sm font-medium">
               {command.description}
@@ -54,10 +54,10 @@ export function CommandCard({
               {command.status}
             </span>
           </div>
-          <p className="mt-0.5 truncate text-xs font-mono text-muted-foreground">
+          <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
             {command.command}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="text-muted-foreground mt-1 text-xs">
             <RelativeTime date={command.started_at} />
             {command.pid != null && (
               <span className="ml-2">PID: {command.pid}</span>

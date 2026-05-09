@@ -190,7 +190,7 @@ class TestSlimMessage:
         assert msg["content"][1]["type"] == "image_url"
 
     def test_truncates_long_text(self):
-        from deerflow.runtime.serialization import _slim_message, _MAX_CONTENT_CHARS
+        from deerflow.runtime.serialization import _MAX_CONTENT_CHARS, _slim_message
 
         long_text = "x" * (_MAX_CONTENT_CHARS + 500)
         msg = _make_msg([_text_part(long_text)])

@@ -694,6 +694,7 @@ def test_polling_detects_cancel_marker_and_calls_request_cancel(monkeypatch):
 
     class FakeSubagentSession:
         """SubagentSession mock: is_cancel_requested returns True on 2nd call."""
+
         def __init__(self, thread_id, task_id, subagent_name, description=""):
             pass
 

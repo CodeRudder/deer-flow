@@ -40,9 +40,9 @@ import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
 
 import { CitationLink } from "../citations/citation-link";
+import { useThread } from "../messages/context";
 
 import { MarkdownContent } from "./markdown-content";
-import { useThread } from "../messages/context";
 
 export function SubtaskCard({
   className,
@@ -133,7 +133,11 @@ export function SubtaskCard({
         // Fallback to API if thread submit fails
         const res = await fetch(
           `${getBackendBaseURL()}/api/threads/${threadId}/subagents/${taskId}/resume`,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          },
         );
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -145,7 +149,14 @@ export function SubtaskCard({
     } finally {
       setResuming(false);
     }
-  }, [taskId, threadId, task.description, task.subagent_type, streamThread, updateSubtask]);
+  }, [
+    taskId,
+    threadId,
+    task.description,
+    task.subagent_type,
+    streamThread,
+    updateSubtask,
+  ]);
   const icon = useMemo(() => {
     if (task.status === "completed") {
       return <CheckCircleIcon className="size-3" />;
@@ -313,7 +324,7 @@ export function SubtaskCard({
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive hover:bg-destructive/90 text-white"
               onClick={() => void handleCancel()}
             >
               确认停止

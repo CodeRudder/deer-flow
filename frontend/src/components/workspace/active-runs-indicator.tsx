@@ -1,11 +1,9 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useState } from "react";
-
-import { LoaderIcon, SquareIcon, XIcon } from "lucide-react";
+import { LoaderIcon, SquareIcon } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
@@ -23,7 +22,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-
 import { getBackendBaseURL } from "@/core/config";
 
 // ---------------------------------------------------------------------------
@@ -87,17 +85,15 @@ function RelativeTime({ date }: { date: string }) {
 function RunItem({ run }: { run: ActiveRun }) {
   const shortId = run.thread_id.slice(0, 8);
   return (
-    <div className="flex items-center gap-3 rounded-md px-3 py-2 hover:bg-muted/50">
-      <LoaderIcon className="h-4 w-4 animate-spin text-muted-foreground" />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">
-          Thread {shortId}...
-        </p>
-        <p className="text-xs text-muted-foreground">
+    <div className="hover:bg-muted/50 flex items-center gap-3 rounded-md px-3 py-2">
+      <LoaderIcon className="text-muted-foreground h-4 w-4 animate-spin" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium">Thread {shortId}...</p>
+        <p className="text-muted-foreground text-xs">
           <RelativeTime date={run.created_at} />
         </p>
       </div>
-      <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
+      <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
         {run.status}
       </span>
     </div>
@@ -122,7 +118,9 @@ export function ActiveRunsIndicator() {
   // Poll every 3 seconds
   useEffect(() => {
     void refresh();
-    const id = setInterval(refresh, 3000);
+    const id = setInterval(() => {
+      void refresh();
+    }, 3000);
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -149,10 +147,10 @@ export function ActiveRunsIndicator() {
         <Button
           variant="outline"
           size="icon"
-          className="fixed bottom-4 right-4 z-50 h-12 w-12 rounded-full shadow-lg border-2 border-primary/30 bg-background hover:bg-accent"
+          className="border-primary/30 bg-background hover:bg-accent fixed right-4 bottom-4 z-50 h-12 w-12 rounded-full border-2 shadow-lg"
         >
           <LoaderIcon className="h-5 w-5 animate-spin" />
-          <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+          <span className="bg-primary text-primary-foreground absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold">
             {runs.length}
           </span>
         </Button>
@@ -179,7 +177,7 @@ export function ActiveRunsIndicator() {
             )}
             Stop All Tasks
           </Button>
-          <div className="mt-2 flex flex-col gap-1 max-h-[60vh] overflow-y-auto">
+          <div className="mt-2 flex max-h-[60vh] flex-col gap-1 overflow-y-auto">
             {runs.map((run) => (
               <RunItem key={run.run_id} run={run} />
             ))}
@@ -191,13 +189,14 @@ export function ActiveRunsIndicator() {
           <AlertDialogHeader>
             <AlertDialogTitle>停止所有任务</AlertDialogTitle>
             <AlertDialogDescription>
-              确定要停止所有 {runs.length} 个运行中的任务吗？正在执行的工作将丢失。
+              确定要停止所有 {runs.length}{" "}
+              个运行中的任务吗？正在执行的工作将丢失。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive hover:bg-destructive/90 text-white"
               onClick={() => void handleCancelAll()}
             >
               确认停止

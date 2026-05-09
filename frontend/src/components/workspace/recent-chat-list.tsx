@@ -54,7 +54,11 @@ import {
   useThreads,
 } from "@/core/threads/hooks";
 import type { AgentThread, AgentThreadState } from "@/core/threads/types";
-import { pathOfThread, titleOfThread, lastMessagePreview } from "@/core/threads/utils";
+import {
+  pathOfThread,
+  titleOfThread,
+  lastMessagePreview,
+} from "@/core/threads/utils";
 import { env } from "@/env";
 import { isIMEComposing } from "@/lib/ime";
 
@@ -181,9 +185,11 @@ export function RecentChatList() {
                           className="text-muted-foreground block w-full group-hover/side-menu-item:overflow-hidden"
                           href={pathOfThread(thread.thread_id)}
                         >
-                          <span className="block truncate whitespace-nowrap">{titleOfThread(thread)}</span>
+                          <span className="block truncate whitespace-nowrap">
+                            {titleOfThread(thread)}
+                          </span>
                           {lastMessagePreview(thread) && (
-                            <span className="text-muted-foreground/60 block truncate whitespace-nowrap text-xs">
+                            <span className="text-muted-foreground/60 block truncate text-xs whitespace-nowrap">
                               {lastMessagePreview(thread)}
                             </span>
                           )}

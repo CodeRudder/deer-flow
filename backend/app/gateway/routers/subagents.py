@@ -53,30 +53,34 @@ async def list_subagent_sessions(
     for session in sessions:
         summary = session.read_summary()
         if summary:
-            results.append(SubagentSessionSummary(
-                task_id=session.task_id,
-                subagent_name=session.subagent_name,
-                description=session.description,
-                status=summary.get("status", "unknown"),
-                started_at=summary.get("started_at", ""),
-                completed_at=summary.get("completed_at", ""),
-                message_count=summary.get("message_count", 0),
-            ))
+            results.append(
+                SubagentSessionSummary(
+                    task_id=session.task_id,
+                    subagent_name=session.subagent_name,
+                    description=session.description,
+                    status=summary.get("status", "unknown"),
+                    started_at=summary.get("started_at", ""),
+                    completed_at=summary.get("completed_at", ""),
+                    message_count=summary.get("message_count", 0),
+                )
+            )
         else:
             # No summary file — derive from session metadata
             msg_count = len(session.read_messages())
-            results.append(SubagentSessionSummary(
-                task_id=session.task_id,
-                subagent_name=session.subagent_name,
-                description=session.description,
-                status="running" if not session.is_terminal else "unknown",
-                started_at=session.started_at,
-                message_count=msg_count,
-            ))
+            results.append(
+                SubagentSessionSummary(
+                    task_id=session.task_id,
+                    subagent_name=session.subagent_name,
+                    description=session.description,
+                    status="running" if not session.is_terminal else "unknown",
+                    started_at=session.started_at,
+                    message_count=msg_count,
+                )
+            )
 
     # Sort by started_at descending, paginate
     results.sort(key=lambda s: s.started_at, reverse=True)
-    return results[offset:offset + limit]
+    return results[offset : offset + limit]
 
 
 @router.get("/{task_id}", response_model=SubagentSessionDetail)
@@ -147,11 +151,7 @@ async def resume_subagent_session(
 
     # Build the resume instruction message
     subagent_type = info.get("subagent_type", "general-purpose")
-    message = (
-        f"恢复执行子任务 {task_id}（{description}）。\n"
-        f"请使用 task tool 的 action=\"resume\" 模式恢复执行：\n"
-        f'task(description="{description}", prompt="继续执行", subagent_type="{subagent_type}", action="resume", task_id="{task_id}")'
-    )
+    message = f'恢复执行子任务 {task_id}（{description}）。\n请使用 task tool 的 action="resume" 模式恢复执行：\ntask(description="{description}", prompt="继续执行", subagent_type="{subagent_type}", action="resume", task_id="{task_id}")'
 
     # Send message to the thread via LangGraph client
     try:

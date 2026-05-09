@@ -33,16 +33,9 @@ _DEFAULT_MAX_TRACKED_THREADS = 100
 
 _SUMMARY_PREFIX = "Here is a summary of the conversation to date:"
 
-_WARNING_MSG = (
-    "[SUMMARIZATION LOOP] Context summarization has been triggered multiple times. "
-    "Large tool responses are being truncated. Stop reading large files and produce "
-    "your final answer using the information you already have."
-)
+_WARNING_MSG = "[SUMMARIZATION LOOP] Context summarization has been triggered multiple times. Large tool responses are being truncated. Stop reading large files and produce your final answer using the information you already have."
 
-_HARD_STOP_MSG = (
-    "[FORCED STOP: SUMMARIZATION LOOP] Summarization loop limit reached. "
-    "All tool response content has been cleared. Produce your final answer now."
-)
+_HARD_STOP_MSG = "[FORCED STOP: SUMMARIZATION LOOP] Summarization loop limit reached. All tool response content has been cleared. Produce your final answer now."
 
 
 class SummarizationLoopMiddleware(AgentMiddleware[AgentState]):
@@ -176,9 +169,7 @@ class SummarizationLoopMiddleware(AgentMiddleware[AgentState]):
                         msg.content if isinstance(msg.content, str) else str(msg.content),
                         self.max_tool_content_len,
                     )
-                    updated_messages.append(
-                        msg.model_copy(update={"content": truncated_content})
-                    )
+                    updated_messages.append(msg.model_copy(update={"content": truncated_content}))
                     needs_update = True
                 elif i == last_ai_with_tools:
                     # Remove tool_calls from last AI message to force text output
@@ -211,9 +202,7 @@ class SummarizationLoopMiddleware(AgentMiddleware[AgentState]):
             for i, msg in enumerate(messages):
                 if i in large_tool_indices:
                     truncated_content = self._truncate_content(msg.content, self.max_tool_content_len)
-                    updated_messages.append(
-                        msg.model_copy(update={"content": truncated_content})
-                    )
+                    updated_messages.append(msg.model_copy(update={"content": truncated_content}))
                     needs_update = True
                 else:
                     updated_messages.append(msg)

@@ -10,7 +10,6 @@
 import json
 import sys
 import threading
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -65,6 +64,7 @@ def mock_paths(tmp_path, tmp_thread_dir):
 
 def _make_middleware(dedup_window=10):
     from deerflow.agents.middlewares.main_session_middleware import MainSessionMiddleware
+
     return MainSessionMiddleware(dedup_window=dedup_window)
 
 
@@ -84,7 +84,7 @@ def _write_realistic_jsonl(path, count=5):
                 e["tool_calls"] = [{"id": f"tc-{i}", "name": "bash", "args": {"cmd": f"cmd-{i}"}}]
             entries.append(e)
         else:
-            entries.append({"ts": "2026-04-11T01:00:02+00:00", "role": "tool", "id": f"t-{i:04d}", "content": f"结果 {i}", "tool_call_id": f"tc-{i-1}", "name": "bash"})
+            entries.append({"ts": "2026-04-11T01:00:02+00:00", "role": "tool", "id": f"t-{i:04d}", "content": f"结果 {i}", "tool_call_id": f"tc-{i - 1}", "name": "bash"})
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n")
     return entries
@@ -194,18 +194,21 @@ class TestDedup:
 
         lines = _jsonl_path(tmp_thread_dir).read_text().strip().split("\n")
         assert len(lines) == 4
-        roles = [json.loads(l)["role"] for l in lines]
+        roles = [json.loads(line)["role"] for line in lines]
         assert roles == ["human", "ai", "tool", "ai"]
 
     def test_summarization_dedup(self, mock_paths, tmp_thread_dir):
         """摘要替换消息列表后，已有 ID 的消息被跳过。"""
         mw = _make_middleware()
-        mw._get_new_messages("test-thread", [
-            HumanMessage(content="Q1", id="h1"),
-            AIMessage(content="A1", id="a1"),
-            HumanMessage(content="Q2", id="h2"),
-            AIMessage(content="A2", id="a2"),
-        ])
+        mw._get_new_messages(
+            "test-thread",
+            [
+                HumanMessage(content="Q1", id="h1"),
+                AIMessage(content="A1", id="a1"),
+                HumanMessage(content="Q2", id="h2"),
+                AIMessage(content="A2", id="a2"),
+            ],
+        )
 
         summarized = [
             HumanMessage(content="Summary", id="sum1"),
@@ -227,17 +230,23 @@ class TestDedup:
         """超过窗口大小的旧 ID 被淘汰，可能重复写入。"""
         mw = _make_middleware(dedup_window=3)
         # Write 3 messages (fills window)
-        mw._get_new_messages("test-thread", [
-            HumanMessage(content="M0", id="h0"),
-            AIMessage(content="M1", id="a1"),
-            HumanMessage(content="M2", id="h2"),
-        ])
+        mw._get_new_messages(
+            "test-thread",
+            [
+                HumanMessage(content="M0", id="h0"),
+                AIMessage(content="M1", id="a1"),
+                HumanMessage(content="M2", id="h2"),
+            ],
+        )
         # Write 3 more — h0 evicted from window
-        mw._get_new_messages("test-thread", [
-            AIMessage(content="M3", id="a3"),
-            HumanMessage(content="M4", id="h4"),
-            AIMessage(content="M5", id="a5"),
-        ])
+        mw._get_new_messages(
+            "test-thread",
+            [
+                AIMessage(content="M3", id="a3"),
+                HumanMessage(content="M4", id="h4"),
+                AIMessage(content="M5", id="a5"),
+            ],
+        )
         # h0 is no longer in window → treated as new
         new = mw._get_new_messages("test-thread", [HumanMessage(content="M0", id="h0")])
         assert len(new) == 1  # h0 re-admitted (window evicted it)
@@ -277,7 +286,7 @@ class TestReadByThreadId:
         _write_realistic_jsonl(_jsonl_path(tmp_thread_dir), count=3)
 
         mw = _make_middleware()
-        # 旁路写入不读文件，所有消息都视为新
+        # 新 middleware 实例会读取磁盘上的已有 JSONL ID，避免重启后重复写入。
         restored = [
             HumanMessage(content="问题 0", id="h-0000"),
             AIMessage(content="回答 1", id="a-0001"),
@@ -285,11 +294,12 @@ class TestReadByThreadId:
             HumanMessage(content="新问题", id="h-new"),
         ]
         new = mw._get_new_messages("test-thread", restored)
-        assert len(new) == 4  # 全部写入（旁路，不读文件去重）
+        assert len(new) == 1
+        assert new[0].id == "h-new"
         mw._write_messages(_jsonl_path(tmp_thread_dir), new)
 
         lines = _jsonl_path(tmp_thread_dir).read_text().strip().split("\n")
-        assert len(lines) == 7  # 3 original + 4 new
+        assert len(lines) == 4  # 3 original + 1 new
 
     def test_read_different_threads(self, mock_paths, tmp_path):
         """不同 thread_id 读取各自独立的文件。"""
@@ -301,11 +311,11 @@ class TestReadByThreadId:
 
         mock_paths.thread_dir.return_value = tmp_path / "threads" / "thread-a"
         jsonl_a = mw._get_jsonl_path("thread-a")
-        msgs_a = [json.loads(l.strip()) for l in open(jsonl_a) if l.strip()]
+        msgs_a = [json.loads(line.strip()) for line in open(jsonl_a) if line.strip()]
 
         mock_paths.thread_dir.return_value = tmp_path / "threads" / "thread-b"
         jsonl_b = mw._get_jsonl_path("thread-b")
-        msgs_b = [json.loads(l.strip()) for l in open(jsonl_b) if l.strip()]
+        msgs_b = [json.loads(line.strip()) for line in open(jsonl_b) if line.strip()]
 
         assert len(msgs_a) == 3
         assert len(msgs_b) == 3

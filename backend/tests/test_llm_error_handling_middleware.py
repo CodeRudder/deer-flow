@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
 from deerflow.agents.middlewares.llm_error_handling_middleware import (
-    LLMErrorHandlingMiddleware,
     _EMPTY_RESPONSE_FALLBACK,
+    LLMErrorHandlingMiddleware,
 )
 
 
@@ -176,9 +176,6 @@ def test_retries_400_with_connection_error_message(
     """400 + 'Connection reset' is retriable."""
     middleware = _build_middleware(retry_max_attempts=2, retry_base_delay_ms=10, retry_cap_delay_ms=10)
     attempts = 0
-
-    def fake_sleep(delay: float) -> None:
-        pass
 
     async def handler(_request) -> AIMessage:
         nonlocal attempts

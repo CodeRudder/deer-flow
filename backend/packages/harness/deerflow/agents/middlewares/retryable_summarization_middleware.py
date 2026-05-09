@@ -88,7 +88,7 @@ class RetryableSummarizationMiddleware(SummarizationMiddleware):
             except Exception as e:
                 last_exc = e
                 if attempt < self._max_retries and _is_retriable_error(e):
-                    delay = self._base_delay * (2 ** attempt)
+                    delay = self._base_delay * (2**attempt)
                     logger.warning(
                         "Summary generation failed (attempt %d/%d), retrying in %.1fs: %s",
                         attempt + 1,
@@ -126,7 +126,7 @@ class RetryableSummarizationMiddleware(SummarizationMiddleware):
             except Exception as e:
                 last_exc = e
                 if attempt < self._max_retries and _is_retriable_error(e):
-                    delay = self._base_delay * (2 ** attempt)
+                    delay = self._base_delay * (2**attempt)
                     logger.warning(
                         "Summary generation failed (attempt %d/%d), retrying in %.1fs: %s",
                         attempt + 1,

@@ -21,6 +21,12 @@ from deerflow.subagents.session import SubagentSession
 logger = logging.getLogger(__name__)
 
 
+def _status_value(status: object) -> str:
+    """Return a comparable status string for real enums and test doubles."""
+    value = getattr(status, "value", status)
+    return str(value)
+
+
 def _build_recovery_prompt(sessions: list[SubagentSession]) -> str:
     """Build a recovery context from interrupted sub-agent sessions."""
     parts: list[str] = []
@@ -34,16 +40,8 @@ def _build_recovery_prompt(sessions: list[SubagentSession]) -> str:
                 last_ai = content[:200]
             else:
                 last_ai = str(content)[:200]
-        parts.append(
-            f"- Task {s.task_id} ({s.subagent_name}): "
-            f"executed {len(messages)} steps, last AI response: {last_ai}"
-        )
-    return (
-        "<recovery_context>\nThe following sub-tasks were previously interrupted. "
-        "Continue from where they left off without repeating completed work:\n"
-        + "\n".join(parts)
-        + "\n</recovery_context>"
-    )
+        parts.append(f"- Task {s.task_id} ({s.subagent_name}): executed {len(messages)} steps, last AI response: {last_ai}")
+    return "<recovery_context>\nThe following sub-tasks were previously interrupted. Continue from where they left off without repeating completed work:\n" + "\n".join(parts) + "\n</recovery_context>"
 
 
 @tool("task", parse_docstring=True)
@@ -130,12 +128,10 @@ async def task_tool(
     # ── Default: action="create" ────────────────────────────────────────
 
     # Check if this task_id was previously cancelled — skip re-execution
-    if tool_call_id:
-        existing_result = get_background_task_result(tool_call_id)
-        if existing_result is not None and existing_result.status == SubagentStatus.CANCELLED:
-            logger.info("Task %s was previously cancelled, skipping re-execution", tool_call_id)
-            return f"Task {tool_call_id} was previously cancelled by user. Skipping."
-        # Also check on-disk session for cancelled status
+    if tool_call_id and runtime is not None:
+        # Check on-disk session for cancelled status. Avoid reading in-memory
+        # background-task state here because create flow has not started the
+        # new task yet, and tests/rare retries may reuse a tool_call_id.
         thread_id_for_check = None
         if runtime is not None:
             thread_id_for_check = runtime.context.get("thread_id") if runtime.context else None
@@ -150,7 +146,7 @@ async def task_tool(
                     description="",
                 )
                 summary = session_check.read_summary()
-                if summary and summary.get("status") == "cancelled":
+                if summary and summary.get("status") == "cancelled" and summary.get("reason") != "stale":
                     logger.info("Task %s has cancelled session on disk, skipping re-execution", tool_call_id)
                     return f"Task {tool_call_id} was previously cancelled by user. Skipping."
             except Exception:
@@ -196,6 +192,7 @@ async def task_tool(
             # Fallback: try get_config() from LangGraph context
             try:
                 from langgraph.config import get_config
+
                 lg_config = get_config()
                 thread_id = lg_config.get("configurable", {}).get("thread_id")
             except Exception:
@@ -292,7 +289,7 @@ async def task_tool(
 
             # Log status changes for debugging
             if result.status != last_status:
-                logger.info(f"[trace={trace_id}] Task {task_id} status: {result.status.value}")
+                logger.info(f"[trace={trace_id}] Task {task_id} status: {_status_value(result.status)}")
                 last_status = result.status
 
             # Cross-process cancel: detect marker file written by Gateway
@@ -319,22 +316,23 @@ async def task_tool(
                 last_message_count = current_message_count
 
             # Check if task completed, failed, or timed out
-            if result.status == SubagentStatus.COMPLETED:
+            status = _status_value(result.status)
+            if status == "completed":
                 writer({"type": "task_completed", "task_id": task_id, "result": result.result})
                 logger.info(f"[trace={trace_id}] Task {task_id} completed after {poll_count} polls")
                 cleanup_background_task(task_id)
                 return f"Task Succeeded. Result: {result.result}"
-            elif result.status == SubagentStatus.FAILED:
+            elif status == "failed":
                 writer({"type": "task_failed", "task_id": task_id, "error": result.error})
                 logger.error(f"[trace={trace_id}] Task {task_id} failed: {result.error}")
                 cleanup_background_task(task_id)
                 return f"Task failed. Error: {result.error}"
-            elif result.status == SubagentStatus.CANCELLED:
+            elif status == "cancelled":
                 writer({"type": "task_cancelled", "task_id": task_id, "error": result.error})
                 logger.info(f"[trace={trace_id}] Task {task_id} cancelled: {result.error}")
                 cleanup_background_task(task_id)
                 return "Task cancelled by user."
-            elif result.status == SubagentStatus.TIMED_OUT:
+            elif status == "timed_out":
                 writer({"type": "task_timed_out", "task_id": task_id, "error": result.error})
                 logger.warning(f"[trace={trace_id}] Task {task_id} timed out: {result.error}")
                 cleanup_background_task(task_id)
@@ -354,7 +352,7 @@ async def task_tool(
                 timeout_minutes = config.timeout_seconds // 60
                 logger.error(f"[trace={trace_id}] Task {task_id} polling timed out after {poll_count} polls (should have been caught by thread pool timeout)")
                 writer({"type": "task_timed_out", "task_id": task_id})
-                return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
+                return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {_status_value(result.status)}"
     except asyncio.CancelledError:
         # Signal the background subagent thread to stop cooperatively.
         # Without this, the thread (running in ThreadPoolExecutor with its
@@ -371,7 +369,7 @@ async def task_tool(
                 if result is None:
                     return
 
-                if result.status in {SubagentStatus.COMPLETED, SubagentStatus.FAILED, SubagentStatus.CANCELLED, SubagentStatus.TIMED_OUT} or getattr(result, "completed_at", None) is not None:
+                if _status_value(result.status) in {"completed", "failed", "cancelled", "timed_out"} or getattr(result, "completed_at", None) is not None:
                     cleanup_background_task(task_id)
                     return
 
@@ -421,12 +419,13 @@ async def _action_cancel(task_id: str | None) -> str:
                 logger.exception("Failed to cancel task %s on disk", task_id)
         return f"Error: Task {task_id} not found"
 
-    if result.status.value in ("running", "pending"):
+    status = _status_value(result.status)
+    if status in ("running", "pending"):
         request_cancel_background_task(task_id)
         logger.info("Cancelled subtask %s via task tool", task_id)
         return f"Task {task_id} cancelled successfully."
 
-    if result.status.value == "interrupted":
+    if status == "interrupted":
         result.status = SubagentStatus.CANCELLED
         result.error = "Cancelled by user"
         result.completed_at = datetime.now()
@@ -434,7 +433,7 @@ async def _action_cancel(task_id: str | None) -> str:
         logger.info("Marked interrupted task %s as cancelled", task_id)
         return f"Task {task_id} cancelled successfully."
 
-    return f"Error: Task {task_id} is {result.status.value}, cannot cancel"
+    return f"Error: Task {task_id} is {status}, cannot cancel"
 
 
 async def _action_query(task_id: str | None) -> str:
@@ -445,7 +444,7 @@ async def _action_query(task_id: str | None) -> str:
     # Check in-memory first
     result = get_background_task_result(task_id)
     if result is not None:
-        status = result.status.value
+        status = _status_value(result.status)
         parts = [f"Task {task_id}: status={status}"]
         if result.result:
             parts.append(f"result={result.result[:500]}")
@@ -455,15 +454,10 @@ async def _action_query(task_id: str | None) -> str:
 
     # Check on-disk session
     try:
-        from deerflow.subagents.session import SubagentSession
         # Need thread_id — try to find it from session files
         info = SubagentSession.get_resume_info(task_id, _find_thread_id_for_task(task_id) or "")
         if info:
-            return (
-                f"Task {task_id}: status={info['status']}, "
-                f"subagent={info['subagent_type']}, "
-                f"steps={info['message_count']}"
-            )
+            return f"Task {task_id}: status={info['status']}, subagent={info['subagent_type']}, steps={info['message_count']}"
     except Exception:
         logger.exception("Failed to query task %s from disk", task_id)
 
@@ -494,8 +488,6 @@ async def _action_resume(
         return f"Error: Cannot determine thread_id for resuming task {task_id}"
 
     # Read session info
-    from deerflow.subagents.session import SubagentSession
-
     info = SubagentSession.get_resume_info(task_id, thread_id)
     if info is None:
         return f"Error: No session found for task {task_id} in thread {thread_id}"
@@ -540,6 +532,7 @@ async def _action_resume(
         overrides["max_turns"] = max_turns
     if overrides:
         from dataclasses import replace as _replace
+
         config = _replace(config, **overrides)
 
     # Extract context from runtime
@@ -626,7 +619,7 @@ async def _action_resume(
             elif result.status == SubagentStatus.TIMED_OUT:
                 writer({"type": "task_timed_out", "task_id": new_task_id})
                 cleanup_background_task(new_task_id)
-                return f"Resumed task timed out."
+                return "Resumed task timed out."
 
             await asyncio.sleep(5)
             poll_count += 1
@@ -641,6 +634,7 @@ def _find_thread_id_for_task(task_id: str) -> str | None:
     """Try to find the thread_id for a task by scanning session directories."""
     try:
         from deerflow.config.paths import get_paths
+
         threads_dir = get_paths().base_dir / "threads"
         if not threads_dir.exists():
             return None

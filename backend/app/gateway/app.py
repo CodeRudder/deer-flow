@@ -93,11 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
                 # Auto-iteration sessions
                 auto_iter_cfg = extra.get("auto_iteration", {}) or {}
-                auto_iteration_sessions = (
-                    auto_iter_cfg.get("sessions", [])
-                    if auto_iter_cfg.get("enabled", False)
-                    else []
-                )
+                auto_iteration_sessions = auto_iter_cfg.get("sessions", []) if auto_iter_cfg.get("enabled", False) else []
 
                 session_monitor = SessionMonitor(
                     check_interval=int(monitor_cfg.get("check_interval", 180)),
@@ -296,6 +292,7 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Sub-agent session data (read JSONL conversation logs)
     from app.gateway.routers import subagents
+
     app.include_router(subagents.router)
 
     # Background command management (list, output, kill)

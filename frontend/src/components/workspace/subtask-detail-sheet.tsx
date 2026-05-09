@@ -334,7 +334,7 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
       >
         {/* Drag handle */}
         <div
-          className="absolute top-0 left-0 z-50 h-full w-1 cursor-col-resize hover:bg-primary/20 active:bg-primary/30"
+          className="hover:bg-primary/20 active:bg-primary/30 absolute top-0 left-0 z-50 h-full w-1 cursor-col-resize"
           onMouseDown={handleMouseDown}
         />
         <SheetHeader className="shrink-0 px-6 pt-6 pb-2">

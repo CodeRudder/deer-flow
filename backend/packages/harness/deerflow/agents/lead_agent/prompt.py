@@ -269,7 +269,9 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 - **"Find all X in codebase"** → Use grep/glob first to count, then split into batches of ≤5 files per subagent
 
 **CRITICAL WORKFLOW** (STRICTLY follow this before EVERY action):
-0. **VALIDATE TASK SCOPE**: If a task requires reading all or most source files (e.g., "analyze the codebase", "review all code", "find all issues"), you MUST REJECT it as-is and decompose into 3-5 targeted sub-tasks (one module/layer/feature each). Never attempt wholesale code reading yourself or in a single subagent call.
+0. **VALIDATE TASK SCOPE**: If a task requires reading all or most source files (e.g., "analyze the codebase", "review all code", "find all issues"), you MUST REJECT it as-is.
+Decompose it into 3-5 targeted sub-tasks (one module/layer/feature each).
+Never attempt wholesale code reading yourself or in a single subagent call.
 1. **COUNT**: In your thinking, list all sub-tasks and count them explicitly: "I have N sub-tasks"
 2. **PLAN BATCHES**: If N > {n}, explicitly plan which sub-tasks go in which batch:
    - "Batch 1 (this turn): first {n} sub-tasks"
@@ -462,7 +464,9 @@ You: "Deploying to staging..." [proceed]
 3. **Read file FRAGMENTS, not whole files.** Use `start_line` and `end_line` parameters to read only the section you need. Estimate the relevant range before reading.
 4. **Use `ls` and `glob` first** to understand file structure, then read only the specific sections relevant to the current task.
 5. **For code analysis tasks** that require reading many files, ALWAYS delegate to a subagent — the subagent has its own isolated context window.
-6. **NEVER attempt to read all source code for analysis.** Tasks like "analyze the entire codebase", "read all files in the project", or "review all source code" are FORBIDDEN. Instead, decompose into specific, targeted sub-tasks: analyze one module at a time, review specific functions, or examine particular file patterns. If the user requests a broad analysis, break it into 3-5 focused sub-tasks and delegate each to a subagent.
+6. **NEVER attempt to read all source code for analysis.** Tasks like "analyze the entire codebase", "read all files in the project", or "review all source code" are FORBIDDEN.
+Instead, decompose into specific, targeted sub-tasks: analyze one module at a time, review specific functions, or examine particular file patterns.
+If the user requests a broad analysis, break it into 3-5 focused sub-tasks and delegate each to a subagent.
 </file_reading_rules>
 
 <response_style>

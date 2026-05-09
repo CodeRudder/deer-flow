@@ -45,11 +45,7 @@ def _get_work_dir(thread_id: str | None) -> str:
     else:
         work_dir = paths.base_dir / "acp-workspace"
 
-    # For per-thread paths, the directory is guaranteed to exist
-    # (created by ThreadDataMiddleware.ensure_thread_dirs).
-    # Only mkdir for legacy/global fallback paths.
-    if not thread_id and not work_dir.exists():
-        work_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
     logger.info("ACP agent work_dir: %s", work_dir)
     return str(work_dir)
 

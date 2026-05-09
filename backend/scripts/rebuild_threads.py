@@ -20,7 +20,6 @@ import sqlite3
 import sys
 import time
 
-
 # Thread metadata recovered from the previous store table.
 # Each thread keeps its original ID so the frontend and local thread dirs
 # remain valid.
@@ -81,14 +80,17 @@ def main() -> None:
             skipped += 1
             continue
 
-        record = json.dumps({
-            "thread_id": tid,
-            "status": "idle",
-            "created_at": now,
-            "updated_at": now,
-            "metadata": {"graph_id": "lead_agent", "assistant_id": "bee7d354-5df5-5f26-a978-10ea053f620d"},
-            "values": {"title": t["title"]},
-        }, ensure_ascii=False)
+        record = json.dumps(
+            {
+                "thread_id": tid,
+                "status": "idle",
+                "created_at": now,
+                "updated_at": now,
+                "metadata": {"graph_id": "lead_agent", "assistant_id": "bee7d354-5df5-5f26-a978-10ea053f620d"},
+                "values": {"title": t["title"]},
+            },
+            ensure_ascii=False,
+        )
 
         conn.execute(
             "INSERT INTO store (prefix, key, value, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))",

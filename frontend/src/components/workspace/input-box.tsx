@@ -840,7 +840,7 @@ export function InputBox({
             </Tooltip>
             <PromptInputSubmit
               className="rounded-full"
-              disabled={disabled || status === "streaming"}
+              disabled={disabled === true || status === "streaming"}
               variant="outline"
               status={status === "streaming" ? "ready" : status}
             />

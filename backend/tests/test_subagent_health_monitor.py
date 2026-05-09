@@ -87,10 +87,11 @@ def mock_executor_module():
     mock_bt = {}
     mock_lock = MagicMock()
 
-    with patch("deerflow.subagents.health_monitor._background_tasks", mock_bt), \
-         patch("deerflow.subagents.health_monitor._background_tasks_lock", mock_lock), \
-         patch("deerflow.subagents.health_monitor.request_cancel_background_task") as mock_cancel:
-
+    with (
+        patch("deerflow.subagents.health_monitor._background_tasks", mock_bt),
+        patch("deerflow.subagents.health_monitor._background_tasks_lock", mock_lock),
+        patch("deerflow.subagents.health_monitor.request_cancel_background_task") as mock_cancel,
+    ):
         yield SimpleNamespace(
             background_tasks=mock_bt,
             lock=mock_lock,
@@ -172,10 +173,7 @@ class TestReadLastLine:
         from deerflow.subagents.health_monitor import _read_last_line
 
         f = tmp_path / "test.jsonl"
-        f.write_text(
-            json.dumps({"ts": "1", "role": "human", "content": "first"}) + "\n"
-            + json.dumps({"ts": "2", "role": "ai", "content": "last"}) + "\n"
-        )
+        f.write_text(json.dumps({"ts": "1", "role": "human", "content": "first"}) + "\n" + json.dumps({"ts": "2", "role": "ai", "content": "last"}) + "\n")
         result = _read_last_line(str(f))
         assert result["content"] == "last"
 
@@ -197,11 +195,14 @@ class TestCountMessages:
         from deerflow.subagents.health_monitor import _count_messages
 
         f = tmp_path / "test.jsonl"
-        _write_jsonl(f, [
-            {"ts": "1", "role": "human", "content": "hi"},
-            {"ts": "2", "role": "ai", "content": "hello"},
-            {"ts": "3", "status": "completed", "result": "done"},  # status marker, excluded
-        ])
+        _write_jsonl(
+            f,
+            [
+                {"ts": "1", "role": "human", "content": "hi"},
+                {"ts": "2", "role": "ai", "content": "hello"},
+                {"ts": "3", "status": "completed", "result": "done"},  # status marker, excluded
+            ],
+        )
         assert _count_messages(str(f)) == 2
 
     def test_empty_file_returns_zero(self, tmp_path):
@@ -218,9 +219,7 @@ class TestCountMessages:
 class TestRunningTaskProtection:
     """Running tasks must NEVER be interrupted, regardless of JSONL mtime."""
 
-    def test_does_not_interrupt_running_task_with_stale_jsonl(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_does_not_interrupt_running_task_with_stale_jsonl(self, mock_executor_module, tmp_session_dir):
         """Even a stale JSONL file should NOT trigger reactivation for running tasks."""
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
@@ -229,6 +228,7 @@ class TestRunningTaskProtection:
         # Set mtime to 10 minutes ago
         old_time = time.time() - 600
         import os
+
         os.utime(jsonl, (old_time, old_time))
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.RUNNING)
@@ -236,38 +236,33 @@ class TestRunningTaskProtection:
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), patch.object(monitor, "_reactivate_task") as mock_reactivate:
             monitor._check_task("task-001", result)
             mock_reactivate.assert_not_called()
 
-    def test_does_not_interrupt_running_task_with_no_tool_calls(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_does_not_interrupt_running_task_with_no_tool_calls(self, mock_executor_module, tmp_session_dir):
         """Running task with AI message (no tool_calls) should NOT be interrupted."""
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
-        _write_jsonl(jsonl, [
-            {"ts": "1", "role": "human", "content": "do work"},
-            {"ts": "2", "role": "ai", "content": "I think this is done"},  # no tool_calls
-        ])
+        _write_jsonl(
+            jsonl,
+            [
+                {"ts": "1", "role": "human", "content": "do work"},
+                {"ts": "2", "role": "ai", "content": "I think this is done"},  # no tool_calls
+            ],
+        )
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.RUNNING)
         mock_executor_module.background_tasks["task-001"] = result
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), patch.object(monitor, "_reactivate_task") as mock_reactivate:
             monitor._check_task("task-001", result)
             mock_reactivate.assert_not_called()
 
-    def test_does_not_interrupt_pending_task(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_does_not_interrupt_pending_task(self, mock_executor_module, tmp_session_dir):
         """PENDING tasks should also be protected."""
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
@@ -279,9 +274,7 @@ class TestRunningTaskProtection:
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), patch.object(monitor, "_reactivate_task") as mock_reactivate:
             monitor._check_task("task-001", result)
             mock_reactivate.assert_not_called()
 
@@ -294,18 +287,19 @@ class TestStoppedTaskRecovery:
     status updated. Tasks with no terminal marker are left alone (might still
     be running). Failed tasks are NOT reactivated (main session handles those)."""
 
-    def test_updates_stale_running_task_with_terminal_marker(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_updates_stale_running_task_with_terminal_marker(self, mock_executor_module, tmp_session_dir):
         """RUNNING task with completed marker in JSONL → update in-memory status."""
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
-        _write_jsonl(jsonl, [
-            {"ts": "1", "role": "human", "content": "do work"},
-            {"ts": "2", "role": "ai", "content": "done"},
-            {"ts": "3", "status": "completed", "result": "all done"},
-        ])
+        _write_jsonl(
+            jsonl,
+            [
+                {"ts": "1", "role": "human", "content": "do work"},
+                {"ts": "2", "role": "ai", "content": "done"},
+                {"ts": "3", "status": "completed", "result": "all done"},
+            ],
+        )
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.RUNNING)
         mock_executor_module.background_tasks["task-001"] = result
@@ -318,17 +312,18 @@ class TestStoppedTaskRecovery:
         assert result.status == mock_executor_module.status.COMPLETED
         assert result.result == "all done"
 
-    def test_does_not_touch_running_task_without_terminal_marker(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_does_not_touch_running_task_without_terminal_marker(self, mock_executor_module, tmp_session_dir):
         """RUNNING task with no terminal marker → leave alone."""
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
-        _write_jsonl(jsonl, [
-            {"ts": "1", "role": "human", "content": "do work"},
-            {"ts": "2", "role": "ai", "content": "working..."},
-        ])
+        _write_jsonl(
+            jsonl,
+            [
+                {"ts": "1", "role": "human", "content": "do work"},
+                {"ts": "2", "role": "ai", "content": "working..."},
+            ],
+        )
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.RUNNING)
         mock_executor_module.background_tasks["task-001"] = result
@@ -340,53 +335,49 @@ class TestStoppedTaskRecovery:
 
         assert result.status == mock_executor_module.status.RUNNING
 
-    def test_no_recovery_for_session_with_terminal_marker(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_no_recovery_for_session_with_terminal_marker(self, mock_executor_module, tmp_session_dir):
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
-        _write_jsonl(jsonl, [
-            {"ts": "1", "role": "ai", "content": "done"},
-            {"ts": "2", "status": "completed", "result": "all done"},
-        ])
+        _write_jsonl(
+            jsonl,
+            [
+                {"ts": "1", "role": "ai", "content": "done"},
+                {"ts": "2", "status": "completed", "result": "all done"},
+            ],
+        )
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.FAILED)
         mock_executor_module.background_tasks["task-001"] = result
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), patch.object(monitor, "_reactivate_task") as mock_reactivate:
             monitor._check_task("task-001", result)
             mock_reactivate.assert_not_called()
 
-    def test_no_recovery_for_interrupted_marker(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_no_recovery_for_interrupted_marker(self, mock_executor_module, tmp_session_dir):
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
-        _write_jsonl(jsonl, [
-            {"ts": "1", "role": "ai", "content": "working"},
-            {"ts": "2", "status": "interrupted", "message_count": 2},
-        ])
+        _write_jsonl(
+            jsonl,
+            [
+                {"ts": "1", "role": "ai", "content": "working"},
+                {"ts": "2", "status": "interrupted", "message_count": 2},
+            ],
+        )
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.CANCELLED)
         mock_executor_module.background_tasks["task-001"] = result
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=str(jsonl)), patch.object(monitor, "_reactivate_task") as mock_reactivate:
             monitor._check_task("task-001", result)
             mock_reactivate.assert_not_called()
 
-    def test_no_recovery_when_no_jsonl(
-        self, mock_executor_module
-    ):
+    def test_no_recovery_when_no_jsonl(self, mock_executor_module):
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.FAILED)
@@ -394,9 +385,7 @@ class TestStoppedTaskRecovery:
 
         monitor = SubagentHealthMonitor(check_interval=60)
 
-        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=None), \
-             patch.object(monitor, "_reactivate_task") as mock_reactivate:
-
+        with patch("deerflow.subagents.health_monitor._find_session_jsonl", return_value=None), patch.object(monitor, "_reactivate_task") as mock_reactivate:
             monitor._check_task("task-001", result)
             mock_reactivate.assert_not_called()
 
@@ -407,16 +396,17 @@ class TestStoppedTaskRecovery:
 class TestReactivation:
     """Test the reactivation flow: mark interrupted → restart."""
 
-    def test_reactivate_marks_interrupted_and_restarts(
-        self, mock_executor_module, tmp_session_dir
-    ):
+    def test_reactivate_marks_interrupted_and_restarts(self, mock_executor_module, tmp_session_dir):
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         jsonl = tmp_session_dir / "task-001.jsonl"
-        _write_jsonl(jsonl, [
-            {"ts": "1", "role": "human", "content": "do work"},
-            {"ts": "2", "role": "ai", "content": "Almost done but interrupted"},
-        ])
+        _write_jsonl(
+            jsonl,
+            [
+                {"ts": "1", "role": "human", "content": "do work"},
+                {"ts": "2", "role": "ai", "content": "Almost done but interrupted"},
+            ],
+        )
 
         result = _make_result(task_id="task-001", status=mock_executor_module.status.CANCELLED)
         mock_executor_module.background_tasks["task-001"] = result
@@ -429,16 +419,20 @@ class TestReactivation:
 
         import deerflow.subagents.health_monitor as hm_mod
 
-        with patch.object(hm_mod, "_find_session_jsonl", return_value=str(jsonl)), \
-             patch.object(hm_mod, "_count_messages", return_value=2), \
-             patch.object(hm_mod, "_read_last_line", return_value={"role": "ai", "content": "Almost done but interrupted"}), \
-             patch.dict(sys.modules, {
-                 "deerflow.subagents": MagicMock(get_subagent_config=MagicMock(return_value=mock_config)),
-                 "deerflow.subagents.executor": MagicMock(SubagentExecutor=MagicMock(return_value=mock_executor_instance)),
-                 "deerflow.subagents.session": MagicMock(SubagentSession=MagicMock()),
-                 "deerflow.tools": MagicMock(get_available_tools=MagicMock(return_value=[])),
-             }):
-
+        with (
+            patch.object(hm_mod, "_find_session_jsonl", return_value=str(jsonl)),
+            patch.object(hm_mod, "_count_messages", return_value=2),
+            patch.object(hm_mod, "_read_last_line", return_value={"role": "ai", "content": "Almost done but interrupted"}),
+            patch.dict(
+                sys.modules,
+                {
+                    "deerflow.subagents": MagicMock(get_subagent_config=MagicMock(return_value=mock_config)),
+                    "deerflow.subagents.executor": MagicMock(SubagentExecutor=MagicMock(return_value=mock_executor_instance)),
+                    "deerflow.subagents.session": MagicMock(SubagentSession=MagicMock()),
+                    "deerflow.tools": MagicMock(get_available_tools=MagicMock(return_value=[])),
+                },
+            ),
+        ):
             monitor._reactivate_task("task-001", result, "task stopped without terminal marker")
 
         # Verify new executor was submitted
@@ -481,9 +475,7 @@ class TestTimerScheduling:
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         monitor = SubagentHealthMonitor(check_interval=30)
-        with patch.object(monitor, "_check_all") as mock_check, \
-             patch.object(monitor, "_schedule_next") as mock_schedule:
-
+        with patch.object(monitor, "_check_all") as mock_check, patch.object(monitor, "_schedule_next") as mock_schedule:
             monitor._check_cycle()
             mock_check.assert_called_once()
             mock_schedule.assert_called_once()
@@ -492,9 +484,7 @@ class TestTimerScheduling:
         from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
         monitor = SubagentHealthMonitor(check_interval=30)
-        with patch.object(monitor, "_check_all", side_effect=Exception("boom")), \
-             patch.object(monitor, "_schedule_next") as mock_schedule:
-
+        with patch.object(monitor, "_check_all", side_effect=Exception("boom")), patch.object(monitor, "_schedule_next") as mock_schedule:
             monitor._check_cycle()
             mock_schedule.assert_called_once()  # Still schedules next despite error
 

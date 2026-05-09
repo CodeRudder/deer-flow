@@ -6,13 +6,10 @@ Covers:
 - RunManager.list_active() method
 """
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from deerflow.runtime.runs.manager import RunManager
 from deerflow.runtime.runs.schemas import RunStatus
-
 
 # ── RunManager.list_active Tests ────────────────────────────────────────
 

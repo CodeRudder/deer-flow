@@ -9,11 +9,11 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.thread_state import SandboxState, ThreadDataState, ThreadState
@@ -22,6 +22,9 @@ from deerflow.subagents.config import SubagentConfig
 from deerflow.subagents.session import SubagentSession
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from deerflow.subagents.health_monitor import SubagentHealthMonitor
 
 
 class SubagentStatus(Enum):
@@ -267,7 +270,9 @@ class SubagentExecutor:
             final_state = None
 
             # Pre-check: bail out immediately if already cancelled before streaming starts
-            if result.cancel_event.is_set() or (self.session is not None and self.session.is_cancel_requested()):
+            cancel_event_set = result.cancel_event.is_set()
+            cancel_marker_set = self.session is not None and self.session.is_cancel_requested() is True
+            if cancel_event_set or cancel_marker_set:
                 logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled before streaming")
                 with _background_tasks_lock:
                     if result.status == SubagentStatus.RUNNING:
@@ -275,15 +280,20 @@ class SubagentExecutor:
                         result.error = "Cancelled by user"
                         result.completed_at = datetime.now()
                 if self.session is not None:
-                    self.session.mark_cancelled(message_count=_session_msg_count)
+                    if cancel_marker_set:
+                        self.session.mark_cancelled(message_count=_session_msg_count)
+                    else:
+                        self.session.mark_interrupted(message_count=_session_msg_count)
                 return result
 
             async for chunk in agent.astream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
                 # Cooperative cancellation: check cancel_event (same-process) and
                 # cross-process cancel marker file (Gateway → LangGraph).
-                cancelled = result.cancel_event.is_set()
-                if not cancelled and self.session is not None:
-                    cancelled = self.session.is_cancel_requested()
+                cancel_event_set = result.cancel_event.is_set()
+                cancel_marker_set = False
+                if not cancel_event_set and self.session is not None:
+                    cancel_marker_set = self.session.is_cancel_requested() is True
+                cancelled = cancel_event_set or cancel_marker_set
                 if cancelled:
                     logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled")
                     with _background_tasks_lock:
@@ -292,8 +302,11 @@ class SubagentExecutor:
                             result.error = "Cancelled by user"
                             result.completed_at = datetime.now()
                     if self.session is not None:
-                        self.session.mark_cancelled(message_count=_session_msg_count)
-                        self.session.clear_cancel_marker()
+                        if cancel_marker_set:
+                            self.session.mark_cancelled(message_count=_session_msg_count)
+                            self.session.clear_cancel_marker()
+                        else:
+                            self.session.mark_interrupted(message_count=_session_msg_count)
                     return result
 
                 final_state = chunk
@@ -418,14 +431,14 @@ class SubagentExecutor:
                 "The LLM returned an empty response",
                 "LLM request failed:",
             )
-            is_llm_error = isinstance(result.result, str) and any(
-                result.result.startswith(p) for p in _LLM_ERROR_PREFIXES
-            )
+            is_llm_error = isinstance(result.result, str) and any(result.result.startswith(p) for p in _LLM_ERROR_PREFIXES)
 
             if is_llm_error:
                 logger.warning(
                     "[trace=%s] Subagent %s final result is an LLM error: %s",
-                    self.trace_id, self.config.name, result.result[:100],
+                    self.trace_id,
+                    self.config.name,
+                    result.result[:100],
                 )
                 result.status = SubagentStatus.FAILED
                 result.error = result.result

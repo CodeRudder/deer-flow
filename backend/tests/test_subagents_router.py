@@ -222,11 +222,14 @@ class TestResumeSession:
         assert "not found" in resp.json()["detail"].lower()
 
     def test_returns_400_when_task_completed(self, client):
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "completed",
-            "subagent_type": "developer",
-            "description": "done task",
-        }):
+        with patch(
+            SESSION_PATH + ".get_resume_info",
+            return_value={
+                "status": "completed",
+                "subagent_type": "developer",
+                "description": "done task",
+            },
+        ):
             resp = client.post(
                 "/api/threads/thread-1/subagents/task-done/resume",
                 json={},
@@ -236,11 +239,14 @@ class TestResumeSession:
         assert "completed" in resp.json()["detail"]
 
     def test_returns_400_when_task_running(self, client):
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "running",
-            "subagent_type": "developer",
-            "description": "still running",
-        }):
+        with patch(
+            SESSION_PATH + ".get_resume_info",
+            return_value={
+                "status": "running",
+                "subagent_type": "developer",
+                "description": "still running",
+            },
+        ):
             resp = client.post(
                 "/api/threads/thread-1/subagents/task-running/resume",
                 json={},
@@ -252,14 +258,20 @@ class TestResumeSession:
     def test_resumes_interrupted_task(self, client):
         mock_run_result = {"run_id": "run-resumed-123"}
 
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "interrupted",
-            "subagent_type": "developer",
-            "description": "Feature X",
-            "message_count": 5,
-            "original_prompt": "Implement feature X",
-            "last_ai_content": "halfway done",
-        }), patch(GET_CLIENT_PATH) as mock_get_client:
+        with (
+            patch(
+                SESSION_PATH + ".get_resume_info",
+                return_value={
+                    "status": "interrupted",
+                    "subagent_type": "developer",
+                    "description": "Feature X",
+                    "message_count": 5,
+                    "original_prompt": "Implement feature X",
+                    "last_ai_content": "halfway done",
+                },
+            ),
+            patch(GET_CLIENT_PATH) as mock_get_client,
+        ):
             mock_client = MagicMock()
             mock_client.runs.create = AsyncMock(return_value=mock_run_result)
             mock_get_client.return_value = mock_client
@@ -285,14 +297,20 @@ class TestResumeSession:
     def test_resumes_failed_task(self, client):
         mock_run_result = {"run_id": "run-resumed-456"}
 
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "failed",
-            "subagent_type": "architect",
-            "description": "Design system",
-            "message_count": 3,
-            "original_prompt": "Design the API",
-            "last_ai_content": "drafting...",
-        }), patch(GET_CLIENT_PATH) as mock_get_client:
+        with (
+            patch(
+                SESSION_PATH + ".get_resume_info",
+                return_value={
+                    "status": "failed",
+                    "subagent_type": "architect",
+                    "description": "Design system",
+                    "message_count": 3,
+                    "original_prompt": "Design the API",
+                    "last_ai_content": "drafting...",
+                },
+            ),
+            patch(GET_CLIENT_PATH) as mock_get_client,
+        ):
             mock_client = MagicMock()
             mock_client.runs.create = AsyncMock(return_value=mock_run_result)
             mock_get_client.return_value = mock_client
@@ -315,14 +333,20 @@ class TestResumeSession:
         """Tasks with 'unknown' status should also be resumable."""
         mock_run_result = {"run_id": "run-resumed-789"}
 
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "unknown",
-            "subagent_type": "general-purpose",
-            "description": "Mystery task",
-            "message_count": 0,
-            "original_prompt": "do something",
-            "last_ai_content": "",
-        }), patch(GET_CLIENT_PATH) as mock_get_client:
+        with (
+            patch(
+                SESSION_PATH + ".get_resume_info",
+                return_value={
+                    "status": "unknown",
+                    "subagent_type": "general-purpose",
+                    "description": "Mystery task",
+                    "message_count": 0,
+                    "original_prompt": "do something",
+                    "last_ai_content": "",
+                },
+            ),
+            patch(GET_CLIENT_PATH) as mock_get_client,
+        ):
             mock_client = MagicMock()
             mock_client.runs.create = AsyncMock(return_value=mock_run_result)
             mock_get_client.return_value = mock_client
@@ -336,14 +360,20 @@ class TestResumeSession:
         assert resp.json()["success"] is True
 
     def test_returns_500_when_langgraph_client_fails(self, client):
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "interrupted",
-            "subagent_type": "developer",
-            "description": "task",
-            "message_count": 1,
-            "original_prompt": "work",
-            "last_ai_content": "",
-        }), patch(GET_CLIENT_PATH) as mock_get_client:
+        with (
+            patch(
+                SESSION_PATH + ".get_resume_info",
+                return_value={
+                    "status": "interrupted",
+                    "subagent_type": "developer",
+                    "description": "task",
+                    "message_count": 1,
+                    "original_prompt": "work",
+                    "last_ai_content": "",
+                },
+            ),
+            patch(GET_CLIENT_PATH) as mock_get_client,
+        ):
             mock_client = MagicMock()
             mock_client.runs.create = AsyncMock(side_effect=ConnectionError("refused"))
             mock_get_client.return_value = mock_client
@@ -360,14 +390,20 @@ class TestResumeSession:
         """Custom description in request body overrides session description."""
         mock_run_result = {"run_id": "run-1"}
 
-        with patch(SESSION_PATH + ".get_resume_info", return_value={
-            "status": "interrupted",
-            "subagent_type": "developer",
-            "description": "Original desc",
-            "message_count": 1,
-            "original_prompt": "work",
-            "last_ai_content": "",
-        }), patch(GET_CLIENT_PATH) as mock_get_client:
+        with (
+            patch(
+                SESSION_PATH + ".get_resume_info",
+                return_value={
+                    "status": "interrupted",
+                    "subagent_type": "developer",
+                    "description": "Original desc",
+                    "message_count": 1,
+                    "original_prompt": "work",
+                    "last_ai_content": "",
+                },
+            ),
+            patch(GET_CLIENT_PATH) as mock_get_client,
+        ):
             mock_client = MagicMock()
             mock_client.runs.create = AsyncMock(return_value=mock_run_result)
             mock_get_client.return_value = mock_client

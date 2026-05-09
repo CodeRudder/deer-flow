@@ -41,7 +41,9 @@ export function BackgroundCommandsIndicator({
   // Poll every 5 seconds
   useEffect(() => {
     void refresh();
-    const id = setInterval(refresh, 5000);
+    const id = setInterval(() => {
+      void refresh();
+    }, 5000);
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -74,11 +76,11 @@ export function BackgroundCommandsIndicator({
         <Button
           variant="outline"
           size="icon"
-          className="fixed bottom-4 right-20 z-50 h-12 w-12 rounded-full shadow-lg border-2 border-primary/30 bg-background hover:bg-accent"
+          className="border-primary/30 bg-background hover:bg-accent fixed right-20 bottom-4 z-50 h-12 w-12 rounded-full border-2 shadow-lg"
         >
           <TerminalIcon className="size-5" />
           {runningCount > 0 && (
-            <span className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+            <span className="bg-primary text-primary-foreground absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full text-[10px] font-bold">
               {runningCount}
             </span>
           )}

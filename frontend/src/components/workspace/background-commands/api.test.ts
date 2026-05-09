@@ -62,7 +62,12 @@ describe("fetchOutput", () => {
       command_id: "cmd_1",
       status: "running",
       output: "hello",
-      pagination: { total_lines: 5, start_line: 0, line_count: 5, has_more: false },
+      pagination: {
+        total_lines: 5,
+        start_line: 0,
+        line_count: 5,
+        has_more: false,
+      },
     };
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -85,7 +90,8 @@ describe("fetchOutput", () => {
       json: () => Promise.resolve({}),
     });
     await fetchOutput("thread-1", "cmd_1");
-    const url = mockFetch.mock.calls[0][0] as string;
+    expect(mockFetch).toHaveBeenCalled();
+    const url = mockFetch.mock.calls[0]![0] as string;
     expect(url).not.toContain("start_line");
   });
 
@@ -95,7 +101,8 @@ describe("fetchOutput", () => {
       json: () => Promise.resolve({}),
     });
     await fetchOutput("thread-1", "cmd_1", 10, 20);
-    const url = mockFetch.mock.calls[0][0] as string;
+    expect(mockFetch).toHaveBeenCalled();
+    const url = mockFetch.mock.calls[0]![0] as string;
     expect(url).toContain("start_line=10");
     expect(url).toContain("line_count=20");
   });

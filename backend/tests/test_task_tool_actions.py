@@ -4,9 +4,7 @@ import asyncio
 import importlib
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from deerflow.subagents.config import SubagentConfig
 
@@ -347,7 +345,6 @@ class TestActionResume:
         }
 
         # Mock SubagentSession.get_resume_info to return our mock info
-        original_get_resume_info = task_tool_module.SubagentSession.get_resume_info
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
@@ -496,10 +493,14 @@ class TestActionDispatch:
         monkeypatch.setattr(
             task_tool_module,
             "SubagentExecutor",
-            type("E", (), {
-                "__init__": lambda self, **kw: None,
-                "execute_async": lambda self, p, task_id=None, description=None: task_id,
-            }),
+            type(
+                "E",
+                (),
+                {
+                    "__init__": lambda self, **kw: None,
+                    "execute_async": lambda self, p, task_id=None, description=None: task_id,
+                },
+            ),
         )
         monkeypatch.setattr(
             task_tool_module,

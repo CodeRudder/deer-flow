@@ -34,10 +34,7 @@ export interface SubagentSessionSummary {
   message_count: number;
 }
 
-export function useSubtaskMessages(
-  threadId: string,
-  taskId: string | null,
-) {
+export function useSubtaskMessages(threadId: string, taskId: string | null) {
   return useQuery<SubagentSessionDetail>({
     queryKey: ["subagents", threadId, taskId],
     queryFn: async () => {
@@ -135,8 +132,8 @@ export interface ThreadMessagesResponse {
 export function useMainSessionMessages(
   threadId: string,
   enabled: boolean,
-  limit: number = 100,
-  offset: number = 0,
+  limit = 100,
+  offset = 0,
 ) {
   return useQuery<ThreadMessagesResponse>({
     queryKey: ["thread-messages", threadId, limit, offset],

@@ -7,13 +7,10 @@ Covers:
 - _notify_thread: SDK interaction (mocked)
 """
 
-import json
 import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── Recovery Message Tests ──────────────────────────────────────────────
 
@@ -23,11 +20,7 @@ class TestBuildRecoveryMessage:
 
     def _call(self, sessions):
         """Simulate _build_recovery_message (inline to avoid import chain issues)."""
-        return (
-            "<task_recovery>\n"
-            f"服务已经重启，有 {len(sessions)} 个子任务被中断，请继续处理未完成任务。\n"
-            "</task_recovery>"
-        )
+        return f"<task_recovery>\n服务已经重启，有 {len(sessions)} 个子任务被中断，请继续处理未完成任务。\n</task_recovery>"
 
     def test_single_session(self):
         s = MagicMock()
@@ -111,10 +104,10 @@ class TestScanInterruptedSessions:
 class TestNotifyThread:
     @pytest.mark.anyio
     async def test_sends_message_via_sdk(self):
-        # The recovery uses asyncio.create_task + runs.create (fire-and-forget)
+        # The recovery queues a state update without creating a run.
         mock_client = MagicMock()
-        mock_client.runs = MagicMock()
-        mock_client.runs.create = AsyncMock()
+        mock_client.threads = MagicMock()
+        mock_client.threads.update_state = AsyncMock()
 
         mock_get_client = MagicMock(return_value=mock_client)
 
@@ -128,12 +121,12 @@ class TestNotifyThread:
 
         await asyncio.sleep(0.1)
 
-        mock_client.runs.create.assert_called_once()
+        mock_client.threads.update_state.assert_called_once()
 
     @pytest.mark.anyio
     async def test_handles_sdk_failure(self):
         mock_client = MagicMock()
-        mock_client.runs.create = AsyncMock(side_effect=RuntimeError("Connection refused"))
+        mock_client.threads.update_state = AsyncMock(side_effect=RuntimeError("Connection refused"))
 
         mock_get_client = MagicMock(return_value=mock_client)
 
@@ -163,23 +156,16 @@ class TestAutoRecover:
         with patch.dict(sys.modules, {"langgraph_sdk": MagicMock(get_client=MagicMock(return_value=mock_client))}):
             from app.gateway.recovery import auto_recover_interrupted_tasks
 
-            with patch("app.gateway.recovery._scan_interrupted_sessions", return_value={"thread-1": [mock_session]}), \
-                 patch("app.gateway.recovery._notify_thread", new_callable=AsyncMock) as mock_notify:
-
+            with patch("app.gateway.recovery._scan_interrupted_sessions", return_value={"thread-1": [mock_session]}), patch("app.gateway.recovery._notify_thread", new_callable=AsyncMock) as mock_notify:
                 await auto_recover_interrupted_tasks()
 
-                mock_notify.assert_called_once()
-                assert mock_notify.call_args[0][0] == "thread-1"
-                assert "子任务被中断" in mock_notify.call_args[0][1]
-                assert "请继续处理未完成任务" in mock_notify.call_args[0][1]
+                mock_notify.assert_not_called()
 
     @pytest.mark.anyio
     async def test_no_action_when_no_interrupted(self):
         with patch.dict(sys.modules, {"langgraph_sdk": MagicMock(get_client=MagicMock())}):
             from app.gateway.recovery import auto_recover_interrupted_tasks
 
-            with patch("app.gateway.recovery._scan_interrupted_sessions", return_value={}), \
-                 patch("app.gateway.recovery._notify_thread", new_callable=AsyncMock) as mock_notify:
-
+            with patch("app.gateway.recovery._scan_interrupted_sessions", return_value={}), patch("app.gateway.recovery._notify_thread", new_callable=AsyncMock) as mock_notify:
                 await auto_recover_interrupted_tasks()
                 mock_notify.assert_not_called()

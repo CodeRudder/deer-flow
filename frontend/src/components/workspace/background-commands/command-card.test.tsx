@@ -1,7 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import { CommandCard } from "./command-card";
 import type { BackgroundCommand } from "./types";
@@ -41,7 +40,11 @@ const completedCommand: BackgroundCommand = {
 describe("CommandCard", () => {
   it("renders command description and status", () => {
     render(
-      <CommandCard command={runningCommand} threadId="thread-1" onKilled={vi.fn()} />,
+      <CommandCard
+        command={runningCommand}
+        threadId="thread-1"
+        onKilled={vi.fn()}
+      />,
     );
 
     expect(screen.getByText("Start dev server")).toBeTruthy();
@@ -51,21 +54,33 @@ describe("CommandCard", () => {
 
   it("shows PID for running commands", () => {
     render(
-      <CommandCard command={runningCommand} threadId="thread-1" onKilled={vi.fn()} />,
+      <CommandCard
+        command={runningCommand}
+        threadId="thread-1"
+        onKilled={vi.fn()}
+      />,
     );
     expect(screen.getByText(/PID: 12345/)).toBeTruthy();
   });
 
   it("shows return code for completed commands", () => {
     render(
-      <CommandCard command={completedCommand} threadId="thread-1" onKilled={vi.fn()} />,
+      <CommandCard
+        command={completedCommand}
+        threadId="thread-1"
+        onKilled={vi.fn()}
+      />,
     );
     expect(screen.getByText(/Exit: 0/)).toBeTruthy();
   });
 
   it("shows stop button for running commands", () => {
     render(
-      <CommandCard command={runningCommand} threadId="thread-1" onKilled={vi.fn()} />,
+      <CommandCard
+        command={runningCommand}
+        threadId="thread-1"
+        onKilled={vi.fn()}
+      />,
     );
     // Stop button is present for running commands
     const stopButton = screen.getByRole("button", { name: "" });
@@ -74,7 +89,11 @@ describe("CommandCard", () => {
 
   it("does not show stop button for completed commands", () => {
     render(
-      <CommandCard command={completedCommand} threadId="thread-1" onKilled={vi.fn()} />,
+      <CommandCard
+        command={completedCommand}
+        threadId="thread-1"
+        onKilled={vi.fn()}
+      />,
     );
     // No stop button, only "Output" button
     const buttons = screen.getAllByRole("button");
@@ -85,7 +104,11 @@ describe("CommandCard", () => {
     const user = userEvent.setup();
 
     render(
-      <CommandCard command={completedCommand} threadId="thread-1" onKilled={vi.fn()} />,
+      <CommandCard
+        command={completedCommand}
+        threadId="thread-1"
+        onKilled={vi.fn()}
+      />,
     );
 
     // Output not shown initially

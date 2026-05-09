@@ -6,15 +6,11 @@ import asyncio
 import json
 import os
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from app.gateway.session_monitor import SessionMonitor
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,6 +40,7 @@ def _patch_background_tasks(tasks: dict):
 
 def _patch_lock():
     import threading
+
     return patch("deerflow.subagents.executor._background_tasks_lock", threading.Lock())
 
 
@@ -179,7 +176,7 @@ class TestHasRunningSubtask:
         subagents_dir.mkdir(parents=True)
         jsonl = subagents_dir / "task-1.jsonl"
         _write_jsonl(jsonl, [{"role": "ai", "content": "working"}])
-        old_time = time.time() - 1000
+        old_time = time.time() - 1300
         os.utime(jsonl, (old_time, old_time))
 
         monitor = SessionMonitor()
@@ -424,7 +421,7 @@ class TestActivateThread:
         call_args = mock_http.post.call_args
         payload = call_args[1].get("json") or call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["json"]
         assert payload["assistant_id"] == "lead_agent"
-        assert payload["multitask_strategy"] == "interrupt"
+        assert payload["multitask_strategy"] == "reject"
         assert payload["on_disconnect"] == "cancel"
         # Verify message content
         msg = payload["input"]["messages"][0]
@@ -449,7 +446,7 @@ class TestActivateThread:
 
         payload = mock_http.post.call_args[1]["json"]
         assert "checkpoint" not in payload
-        assert payload["multitask_strategy"] == "interrupt"
+        assert payload["multitask_strategy"] == "reject"
 
     def test_logs_error_when_no_client(self):
         monitor = SessionMonitor()
@@ -498,6 +495,7 @@ class TestCheckAll:
 
     def test_continues_on_exception(self):
         monitor = SessionMonitor()
+
         async def _check_fail(tid):
             if tid == "t1":
                 raise RuntimeError("test error")
@@ -637,6 +635,7 @@ class TestAutoIteration:
         session = _make_auto_iter_session(max_iterations=3)
         monitor = SessionMonitor(auto_iteration_sessions=[session])
         from app.gateway.session_monitor import _IterationState
+
         monitor._iteration_states["t1"] = _IterationState(iteration_count=3, cycle_start_time=1.0)
         mocks = self._base_mocks(_has_any_todos=AsyncMock(return_value=True))
         with (
@@ -653,9 +652,8 @@ class TestAutoIteration:
         session = _make_auto_iter_session(max_iterations=100, max_duration_seconds=60)
         monitor = SessionMonitor(auto_iteration_sessions=[session])
         from app.gateway.session_monitor import _IterationState
-        monitor._iteration_states["t1"] = _IterationState(
-            iteration_count=1, cycle_start_time=time.time() - 120
-        )
+
+        monitor._iteration_states["t1"] = _IterationState(iteration_count=1, cycle_start_time=time.time() - 120)
         mocks = self._base_mocks(_has_any_todos=AsyncMock(return_value=True))
         with (
             patch.multiple(monitor, **mocks),
@@ -691,6 +689,7 @@ class TestAutoIteration:
         session = _make_auto_iter_session()
         monitor = SessionMonitor(auto_iteration_sessions=[session])
         from app.gateway.session_monitor import _IterationState
+
         monitor._iteration_states["t1"] = _IterationState(iteration_count=2, cycle_start_time=1.0)
         with (
             patch.object(monitor, "_thread_exists", new_callable=AsyncMock, return_value=True),
