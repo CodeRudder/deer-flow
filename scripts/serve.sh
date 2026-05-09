@@ -313,8 +313,10 @@ trap cleanup INT TERM
 run_service() {
     local name="$1" cmd="$2" port="$3" timeout="$4"
     local cgroup_args="${5:-}"
+    local used_cgroup=false
 
     if [ -n "$cgroup_args" ] && _can_use_cgroup; then
+        used_cgroup=true
         # Parse cgroup_args into individual fields
         local cg_name cg_mem cg_cpu cg_io cg_restart_sec cg_burst cg_interval
         cg_name=$(echo "$cgroup_args" | awk '{print $1}')
@@ -346,7 +348,7 @@ run_service() {
     }
 
     # Apply IO bandwidth limit after service is created
-    if [ -n "$cgroup_args" ]; then
+    if $used_cgroup; then
         local scope_name io_max
         scope_name=$(echo "$cgroup_args" | awk '{print $1}')
         io_max=$(echo "$cgroup_args" | awk '{print $4}')
