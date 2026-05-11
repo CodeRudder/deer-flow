@@ -206,7 +206,9 @@ export default function ChatPage() {
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
             <div className="flex items-center gap-2">
-              <SessionStatusButton threadId={threadId} />
+              {!isNewThread && (
+                <SessionStatusButton threadId={threadId} enabled />
+              )}
               <TokenUsageIndicator messages={thread.messages} />
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />
@@ -218,6 +220,7 @@ export default function ChatPage() {
                 className={cn("size-full", !isNewThread && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                statusPollingEnabled={!isNewThread}
                 paddingBottom={messageListPaddingBottom}
               />
             </div>

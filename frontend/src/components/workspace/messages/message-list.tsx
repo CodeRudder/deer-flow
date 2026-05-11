@@ -42,11 +42,13 @@ export function MessageList({
   className,
   threadId,
   thread,
+  statusPollingEnabled = true,
   paddingBottom = MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 }: {
   className?: string;
   threadId: string;
   thread: BaseStream<AgentThreadState>;
+  statusPollingEnabled?: boolean;
   paddingBottom?: number;
 }) {
   const { t } = useI18n();
@@ -55,7 +57,10 @@ export function MessageList({
   const messages = thread.messages;
 
   // Sync real subtask statuses from backend API (polls every 10s)
-  const { data: subtaskStatuses } = useSubtaskStatuses(threadId);
+  const { data: subtaskStatuses } = useSubtaskStatuses(
+    threadId,
+    statusPollingEnabled,
+  );
   const prevStatusFingerprintRef = useRef<string>("");
   const updateSubtaskRef = useRef(updateSubtask);
   updateSubtaskRef.current = updateSubtask;

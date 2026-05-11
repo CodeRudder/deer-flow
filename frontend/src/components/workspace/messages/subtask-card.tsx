@@ -174,91 +174,105 @@ export function SubtaskCard({
       <div className="bg-background/95 flex w-full flex-col rounded-lg">
         <div className="flex w-full items-center justify-between p-0.5">
           <Button
-            className="w-full items-start justify-start text-left"
+            asChild
             variant="ghost"
-            onClick={() => setCollapsed(!collapsed)}
+            className="flex min-h-9 w-full cursor-pointer items-start justify-start px-4 py-2 text-left"
           >
-            <div className="flex w-full items-center justify-between">
-              <ChainOfThoughtStep
-                className="font-normal"
-                label={task.description}
-                icon={<ClipboardListIcon />}
-              ></ChainOfThoughtStep>
-              <div className="flex items-center gap-1">
-                {collapsed && (
-                  <div
-                    className={cn(
-                      "text-muted-foreground flex items-center gap-1 text-xs font-normal",
-                      task.status === "failed" ? "text-red-500 opacity-67" : "",
-                    )}
-                  >
-                    {icon}
-                    <span className="max-w-[420px] truncate pb-1">
-                      {task.status === "in_progress" &&
-                      task.latestMessage &&
-                      hasToolCalls(task.latestMessage)
-                        ? explainLastToolCall(task.latestMessage, t)
-                        : t.subtasks[task.status]}
-                    </span>
-                  </div>
-                )}
-                {task.status === "in_progress" && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-6"
-                    title="取消任务"
-                    disabled={cancelling}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmOpen(true);
-                    }}
-                  >
-                    {cancelling ? (
-                      <Loader2Icon className="size-3 animate-spin" />
-                    ) : (
-                      <SquareIcon className="size-3" />
-                    )}
-                  </Button>
-                )}
-                {task.status === "failed" && !collapsed && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs"
-                    disabled={resuming}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleResume();
-                    }}
-                  >
-                    {resuming ? (
-                      <Loader2Icon className="mr-1 size-3 animate-spin" />
-                    ) : (
-                      <RotateCcwIcon className="mr-1 size-3" />
-                    )}
-                    恢复执行
-                  </Button>
-                )}
-                {!collapsed && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedTaskId(taskId);
-                    }}
-                  >
-                    查看详情
-                  </Button>
-                )}
-                <ChevronUp
-                  className={cn(
-                    "text-muted-foreground size-4",
-                    !collapsed ? "" : "rotate-180",
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setCollapsed(!collapsed)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setCollapsed((value) => !value);
+                }
+              }}
+            >
+              <div className="flex w-full items-center justify-between">
+                <ChainOfThoughtStep
+                  className="font-normal"
+                  label={task.description}
+                  icon={<ClipboardListIcon />}
+                ></ChainOfThoughtStep>
+                <div className="flex items-center gap-1">
+                  {collapsed && (
+                    <div
+                      className={cn(
+                        "text-muted-foreground flex items-center gap-1 text-xs font-normal",
+                        task.status === "failed"
+                          ? "text-red-500 opacity-67"
+                          : "",
+                      )}
+                    >
+                      {icon}
+                      <span className="max-w-[420px] truncate pb-1">
+                        {task.status === "in_progress" &&
+                        task.latestMessage &&
+                        hasToolCalls(task.latestMessage)
+                          ? explainLastToolCall(task.latestMessage, t)
+                          : t.subtasks[task.status]}
+                      </span>
+                    </div>
                   )}
-                />
+                  {task.status === "in_progress" && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-6"
+                      title="取消任务"
+                      disabled={cancelling}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmOpen(true);
+                      }}
+                    >
+                      {cancelling ? (
+                        <Loader2Icon className="size-3 animate-spin" />
+                      ) : (
+                        <SquareIcon className="size-3" />
+                      )}
+                    </Button>
+                  )}
+                  {task.status === "failed" && !collapsed && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      disabled={resuming}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleResume();
+                      }}
+                    >
+                      {resuming ? (
+                        <Loader2Icon className="mr-1 size-3 animate-spin" />
+                      ) : (
+                        <RotateCcwIcon className="mr-1 size-3" />
+                      )}
+                      恢复执行
+                    </Button>
+                  )}
+                  {!collapsed && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedTaskId(taskId);
+                      }}
+                    >
+                      查看详情
+                    </Button>
+                  )}
+                  <ChevronUp
+                    className={cn(
+                      "text-muted-foreground size-4",
+                      !collapsed ? "" : "rotate-180",
+                    )}
+                  />
+                </div>
               </div>
             </div>
           </Button>

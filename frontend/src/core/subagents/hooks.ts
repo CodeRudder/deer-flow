@@ -5,7 +5,13 @@ import { getBackendBaseURL } from "../config";
 export interface SubagentMessage {
   ts: string;
   role: "human" | "ai" | "tool";
-  content: string;
+  content:
+    | string
+    | Array<{
+        type?: string;
+        text?: string;
+        image_url?: string | { url?: string };
+      }>;
   id?: string;
   tool_calls?: Array<{
     id: string;
@@ -48,7 +54,7 @@ export function useSubtaskMessages(threadId: string, taskId: string | null) {
   });
 }
 
-export function useSubtaskStatuses(threadId: string) {
+export function useSubtaskStatuses(threadId: string, enabled = true) {
   return useQuery<SubagentSessionSummary[]>({
     queryKey: ["subagents-statuses", threadId],
     queryFn: async () => {
@@ -58,7 +64,8 @@ export function useSubtaskStatuses(threadId: string) {
       if (!res.ok) return [];
       return res.json();
     },
-    refetchInterval: 10000,
+    enabled,
+    refetchInterval: enabled ? 10000 : false,
   });
 }
 
@@ -92,7 +99,7 @@ export interface SessionStatus {
   recent_subtasks: SubtaskStatusItem[];
 }
 
-export function useSessionStatus(threadId: string) {
+export function useSessionStatus(threadId: string, enabled = true) {
   return useQuery<SessionStatus>({
     queryKey: ["session-status", threadId],
     queryFn: async () => {
@@ -102,7 +109,8 @@ export function useSessionStatus(threadId: string) {
       if (!res.ok) throw new Error("Failed to fetch session status");
       return res.json();
     },
-    refetchInterval: 10000,
+    enabled,
+    refetchInterval: enabled ? 10000 : false,
   });
 }
 

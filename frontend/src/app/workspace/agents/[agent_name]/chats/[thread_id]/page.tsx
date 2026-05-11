@@ -148,6 +148,7 @@ export default function AgentChatPage() {
                 className={cn("size-full", !isNewThread && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                statusPollingEnabled={!isNewThread}
                 paddingBottom={messageListPaddingBottom}
               />
             </div>

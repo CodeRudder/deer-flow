@@ -225,9 +225,15 @@ function SubtaskRow({
 
 const PAGE_SIZE_OPTIONS = [5, 10, 15, 20] as const;
 
-export function SessionStatusButton({ threadId }: { threadId: string }) {
+export function SessionStatusButton({
+  threadId,
+  enabled = true,
+}: {
+  threadId: string;
+  enabled?: boolean;
+}) {
   const [open, setOpen] = useState(false);
-  const { data, isLoading, refetch } = useSessionStatus(threadId);
+  const { data, isLoading, refetch } = useSessionStatus(threadId, enabled);
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState(0);
 

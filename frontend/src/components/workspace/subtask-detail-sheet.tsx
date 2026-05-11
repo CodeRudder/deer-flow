@@ -90,8 +90,37 @@ function ToolMessageContent({ content }: { content: string }) {
   );
 }
 
+function messageContentToText(content: SubagentMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (part.type === "text") {
+        return part.text ?? "";
+      }
+      if (part.type === "image_url") {
+        const imageUrl =
+          typeof part.image_url === "string"
+            ? part.image_url
+            : part.image_url?.url;
+        return imageUrl
+          ? `![image](${imageUrl.replace(/\)/g, "%29")})`
+          : "[图片]";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
 function MessageItem({ msg }: { msg: SubagentMessage }) {
   const timeStr = msg.ts ? formatTime(msg.ts) : "";
+  const content = messageContentToText(msg.content);
 
   if (msg.role === "human") {
     return (
@@ -100,7 +129,7 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
           <span>任务</span>
           {timeStr && <span>{timeStr}</span>}
         </div>
-        <div className="text-sm">{msg.content}</div>
+        <div className="text-sm whitespace-pre-wrap">{content}</div>
       </div>
     );
   }
@@ -111,10 +140,10 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
         {timeStr && (
           <div className="text-muted-foreground text-xs">{timeStr}</div>
         )}
-        {msg.content && (
+        {content && (
           <div className="rounded-lg px-3 py-2">
             <MarkdownContent
-              content={msg.content}
+              content={content}
               isLoading={false}
               rehypePlugins={[]}
             />
@@ -145,7 +174,7 @@ function MessageItem({ msg }: { msg: SubagentMessage }) {
           </span>
           {timeStr && <span>{timeStr}</span>}
         </div>
-        <ToolMessageContent content={msg.content} />
+        <ToolMessageContent content={content} />
       </div>
     );
   }
