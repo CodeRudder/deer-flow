@@ -19,14 +19,18 @@ export function useThreadChat() {
   );
 
   useEffect(() => {
-    if (pathname.endsWith("/new")) {
+    const pathThreadId = pathname.split("/").filter(Boolean).at(-1);
+    if (pathThreadId === "new") {
       setIsNewThread(true);
       setThreadId(uuid());
       return;
     }
+    if (!pathThreadId) {
+      return;
+    }
     setIsNewThread(false);
-    setThreadId(threadIdFromPath);
-  }, [pathname, threadIdFromPath]);
+    setThreadId(pathThreadId);
+  }, [pathname]);
   const isMock = searchParams.get("mock") === "true";
   return { threadId, setThreadId, isNewThread, setIsNewThread, isMock };
 }

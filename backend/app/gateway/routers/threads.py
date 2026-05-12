@@ -849,6 +849,12 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
     array in each checkpoint's ``values`` to the first 10 + last 90 entries,
     replacing the middle portion with a placeholder.
     """
+
+    try:
+        uuid.UUID(thread_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid thread ID: must be a UUID")
+
     import httpx
 
     from deerflow.config import get_app_config
