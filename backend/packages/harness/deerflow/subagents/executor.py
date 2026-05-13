@@ -271,7 +271,7 @@ class SubagentExecutor:
 
             # Pre-check: bail out immediately if already cancelled before streaming starts
             cancel_event_set = result.cancel_event.is_set()
-            cancel_marker_set = self.session is not None and self.session.is_cancel_requested() is True
+            cancel_marker_set = self.session is not None and self.session.is_cancel_requested()
             if cancel_event_set or cancel_marker_set:
                 logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled before streaming")
                 with _background_tasks_lock:
@@ -292,7 +292,7 @@ class SubagentExecutor:
                 cancel_event_set = result.cancel_event.is_set()
                 cancel_marker_set = False
                 if not cancel_event_set and self.session is not None:
-                    cancel_marker_set = self.session.is_cancel_requested() is True
+                    cancel_marker_set = self.session.is_cancel_requested()
                 cancelled = cancel_event_set or cancel_marker_set
                 if cancelled:
                     logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled")

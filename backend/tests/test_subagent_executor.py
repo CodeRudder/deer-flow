@@ -1061,6 +1061,7 @@ class TestSessionIntegration:
         mock_agent.astream = lambda *args, **kwargs: async_iterator([final_state])
 
         mock_session = MagicMock()
+        mock_session.is_cancel_requested.return_value = False
 
         executor = SubagentExecutor(
             config=base_config,
@@ -1085,6 +1086,7 @@ class TestSessionIntegration:
 
         mock_agent.astream.side_effect = RuntimeError("API error")
         mock_session = MagicMock()
+        mock_session.is_cancel_requested.return_value = False
 
         executor = SubagentExecutor(
             config=base_config,
@@ -1119,6 +1121,7 @@ class TestSessionIntegration:
         result.cancel_event.set()
 
         mock_session = MagicMock()
+        mock_session.is_cancel_requested.return_value = False
         executor = SubagentExecutor(
             config=base_config,
             tools=[],

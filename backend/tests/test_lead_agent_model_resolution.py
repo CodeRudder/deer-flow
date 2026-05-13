@@ -156,7 +156,7 @@ def test_create_summarization_middleware_uses_configured_model_alias(monkeypatch
         return fake_model
 
     monkeypatch.setattr(lead_agent_module, "create_chat_model", _fake_create_chat_model)
-    monkeypatch.setattr(lead_agent_module, "SummarizationMiddleware", lambda **kwargs: kwargs)
+    monkeypatch.setattr(lead_agent_module, "RetryableSummarizationMiddleware", lambda **kwargs: kwargs)
 
     middleware = lead_agent_module._create_summarization_middleware()
 

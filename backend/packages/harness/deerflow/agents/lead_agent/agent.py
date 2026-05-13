@@ -1,5 +1,4 @@
 import logging
-import sys
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
@@ -26,8 +25,6 @@ from deerflow.models import create_chat_model
 
 logger = logging.getLogger(__name__)
 
-SummarizationMiddleware = RetryableSummarizationMiddleware
-
 
 def _resolve_model_name(requested_model_name: str | None = None) -> str:
     """Resolve a runtime model name safely, falling back to default if invalid. Returns None if no models are configured."""
@@ -44,7 +41,7 @@ def _resolve_model_name(requested_model_name: str | None = None) -> str:
     return default_model_name
 
 
-def _create_summarization_middleware() -> SummarizationMiddleware | None:
+def _create_summarization_middleware() -> RetryableSummarizationMiddleware | None:
     """Create and configure the summarization middleware from config."""
     config = get_summarization_config()
 
@@ -86,7 +83,7 @@ def _create_summarization_middleware() -> SummarizationMiddleware | None:
         # Use task-aware summary prompt that tracks task progress
         kwargs["summary_prompt"] = _TASK_AWARE_SUMMARY_PROMPT
 
-    return SummarizationMiddleware(**kwargs)
+    return RetryableSummarizationMiddleware(**kwargs)
 
 
 _TASK_AWARE_SUMMARY_PROMPT = """<role>
@@ -294,24 +291,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     Returns:
         List of middleware instances.
     """
-    try:
-        middlewares = build_lead_runtime_middlewares(lazy_init=True)
-    except ModuleNotFoundError as exc:
-        # Some unit tests replace deerflow.agents.middlewares with a plain mock
-        # object. Only tolerate failures caused by that object not being a
-        # real package; real missing dependencies should still fail fast.
-        middlewares_module = sys.modules.get("deerflow.agents.middlewares")
-        is_mocked_package = middlewares_module is not None and not hasattr(
-            middlewares_module,
-            "__path__",
-        )
-        if not (is_mocked_package and exc.name is not None and exc.name.startswith("deerflow.agents.middlewares.")):
-            raise
-        logger.debug(
-            "Skipping lead runtime middlewares because middleware package is mocked",
-            exc_info=True,
-        )
-        middlewares = []
+    middlewares = build_lead_runtime_middlewares(lazy_init=True)
 
     # Persist main conversation to local JSONL for debugging (always on)
     middlewares.append(MainSessionMiddleware())
