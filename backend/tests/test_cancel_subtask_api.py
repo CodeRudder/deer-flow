@@ -216,6 +216,50 @@ class TestCancelSubtaskEndpoint:
         assert updated["status"] == "cancelled"
 
     @pytest.mark.anyio
+    async def test_path2_file_marker_cancel_uses_to_thread(self, tmp_path, monkeypatch):
+        import deerflow.subagents.executor as executor_mod
+
+        monkeypatch.setattr(executor_mod, "get_background_task_result", lambda _: None)
+
+        threads_dir = tmp_path / "threads"
+        subagents = threads_dir / "thread-1" / "subagents"
+        subagents.mkdir(parents=True)
+        summary_file = subagents / "tc-marker.summary.json"
+        summary_file.write_text(json.dumps({"status": "running"}))
+
+        mock_paths = MagicMock()
+        mock_paths.base_dir = tmp_path
+        monkeypatch.setattr("deerflow.config.paths.get_paths", lambda: mock_paths)
+
+        marker_created = []
+
+        class FakeSession:
+            def __init__(self, thread_id, task_id, subagent_name, description=""):
+                self.task_id = task_id
+
+            def request_cancel(self):
+                marker_created.append(self.task_id)
+
+        import deerflow.subagents.session as session_mod
+
+        monkeypatch.setattr(session_mod, "SubagentSession", FakeSession)
+
+        to_thread_calls = []
+        original_to_thread = runs_module.asyncio.to_thread
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            to_thread_calls.append(getattr(fn, "__name__", repr(fn)))
+            return await original_to_thread(fn, *args, **kwargs)
+
+        monkeypatch.setattr(runs_module.asyncio, "to_thread", tracking_to_thread)
+
+        result = await runs_module.cancel_subtask("tc-marker", request=MagicMock())
+
+        assert result.cancelled is True
+        assert "request_cancel" in to_thread_calls
+        assert "_mark_summary_cancelled" in to_thread_calls
+
+    @pytest.mark.anyio
     async def test_path2_skips_completed_summary(self, tmp_path, monkeypatch):
         """Path 2 should not overwrite already-completed summary.json."""
         import deerflow.subagents.executor as executor_mod
@@ -254,11 +298,11 @@ class TestCancelSubtaskEndpoint:
         import deerflow.subagents.executor as executor_mod
 
         monkeypatch.setattr(executor_mod, "get_background_task_result", lambda _: None)
-        monkeypatch.setattr(
-            runs_module,
-            "_find_thread_id_for_task",
-            lambda _: None,
-        )
+
+        async def missing_thread(_task_id):
+            return None
+
+        monkeypatch.setattr(runs_module, "_find_thread_id_for_task_async", missing_thread)
 
         # _cancel_subtask_on_disk will also not find it
         result = await runs_module.cancel_subtask("tc-ghost", request=MagicMock())

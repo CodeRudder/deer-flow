@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 
+async def _find_thread_id_for_task_async(task_id: str) -> str | None:
+    def _find() -> str | None:
+        from deerflow.config.paths import get_paths
+
+        threads_dir = get_paths().base_dir / "threads"
+        if not threads_dir.exists():
+            return None
+        for thread_dir in threads_dir.iterdir():
+            if not thread_dir.is_dir():
+                continue
+            subagents_dir = thread_dir / "subagents"
+            if subagents_dir.exists():
+                summary = subagents_dir / f"{task_id}.summary.json"
+                if summary.exists():
+                    return thread_dir.name
+        return None
+
+    return await asyncio.to_thread(_find)
+
+
 def _resolve_thread_id(body: RunCreateRequest) -> str:
     """Return the thread_id from the request body, or generate a new one."""
     thread_id = (body.config or {}).get("configurable", {}).get("thread_id")
@@ -162,7 +182,7 @@ async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskRespons
         return CancelSubtaskResponse(task_id=task_id, cancelled=True)
 
     # ── Path 2: cross-process via cancel marker file ──────────────────────
-    thread_id = _find_thread_id_for_task(task_id)
+    thread_id = await _find_thread_id_for_task_async(task_id)
     if thread_id:
         try:
             from deerflow.subagents.session import SubagentSession
@@ -173,10 +193,10 @@ async def cancel_subtask(task_id: str, request: Request) -> CancelSubtaskRespons
                 subagent_name="",
                 description="",
             )
-            session.request_cancel()
+            await asyncio.to_thread(session.request_cancel)
             logger.info("Wrote cancel marker for task %s (thread %s)", task_id, thread_id)
             # Also update summary.json in case the process is already dead (zombie)
-            _mark_summary_cancelled(thread_id, task_id)
+            await asyncio.to_thread(_mark_summary_cancelled, thread_id, task_id)
             return CancelSubtaskResponse(task_id=task_id, cancelled=True)
         except Exception:
             logger.exception("Failed to write cancel marker for task %s", task_id)
@@ -233,24 +253,31 @@ async def _cancel_subtask_on_disk(task_id: str) -> CancelSubtaskResponse:
 
     from deerflow.config.paths import get_paths
 
-    try:
-        threads_dir = get_paths().base_dir / "threads"
-        if threads_dir.exists():
-            for thread_dir in threads_dir.iterdir():
-                if not thread_dir.is_dir():
-                    continue
-                summary_path = thread_dir / "subagents" / f"{task_id}.summary.json"
-                if not summary_path.exists():
-                    continue
+    def _cancel() -> CancelSubtaskResponse:
+        try:
+            threads_dir = get_paths().base_dir / "threads"
+            if threads_dir.exists():
+                for thread_dir in threads_dir.iterdir():
+                    if not thread_dir.is_dir():
+                        continue
+                    summary_path = thread_dir / "subagents" / f"{task_id}.summary.json"
+                    if not summary_path.exists():
+                        continue
 
-                with open(summary_path, encoding="utf-8") as f:
-                    summary = json.load(f)
-                if summary.get("status") in ("running", "pending", "unknown", "interrupted"):
-                    summary["status"] = "cancelled"
-                    with open(summary_path, "w", encoding="utf-8") as f:
-                        json.dump(summary, f, indent=2, ensure_ascii=False)
-                    logger.info("Marked subtask %s as cancelled on disk (thread %s)", task_id, thread_dir.name)
-                    return CancelSubtaskResponse(task_id=task_id, cancelled=True)
+                    with open(summary_path, encoding="utf-8") as f:
+                        summary = json.load(f)
+                    if summary.get("status") in ("running", "pending", "unknown", "interrupted"):
+                        summary["status"] = "cancelled"
+                        with open(summary_path, "w", encoding="utf-8") as f:
+                            json.dump(summary, f, indent=2, ensure_ascii=False)
+                        logger.info("Marked subtask %s as cancelled on disk (thread %s)", task_id, thread_dir.name)
+                        return CancelSubtaskResponse(task_id=task_id, cancelled=True)
+        except Exception:
+            logger.exception("Failed to mark subtask %s as cancelled on disk", task_id)
+        return CancelSubtaskResponse(task_id=task_id, cancelled=False, error="Task not found")
+
+    try:
+        return await asyncio.to_thread(_cancel)
     except Exception:
         logger.exception("Failed to mark subtask %s as cancelled on disk", task_id)
 

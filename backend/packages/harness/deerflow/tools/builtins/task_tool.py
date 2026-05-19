@@ -44,6 +44,60 @@ def _build_recovery_prompt(sessions: list[SubagentSession]) -> str:
     return "<recovery_context>\nThe following sub-tasks were previously interrupted. Continue from where they left off without repeating completed work:\n" + "\n".join(parts) + "\n</recovery_context>"
 
 
+async def _create_persisted_session(
+    thread_id: str,
+    task_id: str,
+    subagent_name: str,
+    description: str,
+) -> SubagentSession | None:
+    """Create a sub-agent session and write the initial summary off the event loop."""
+
+    def _create() -> SubagentSession:
+        session = SubagentSession(
+            thread_id=thread_id,
+            task_id=task_id,
+            subagent_name=subagent_name,
+            description=description,
+        )
+        session._write_summary("running", message_count=0)
+        return session
+
+    try:
+        return await asyncio.to_thread(_create)
+    except Exception:
+        logger.exception("Failed to create SubagentSession for thread=%s, task=%s", thread_id, task_id)
+        return None
+
+
+async def _find_interrupted_sessions(thread_id: str) -> list[SubagentSession]:
+    """Read interrupted sessions without blocking the event loop."""
+    try:
+        return await asyncio.to_thread(SubagentSession.find_interrupted, thread_id)
+    except Exception:
+        logger.exception("Failed to check interrupted sessions for thread=%s", thread_id)
+        return []
+
+
+async def _find_thread_id_for_task_async(task_id: str) -> str | None:
+    """Look up a task's thread without blocking the event loop."""
+    return await asyncio.to_thread(_find_thread_id_for_task, task_id)
+
+
+async def _get_resume_info_async(task_id: str, thread_id: str) -> dict[str, object] | None:
+    """Read resume metadata without blocking the event loop."""
+    return await asyncio.to_thread(SubagentSession.get_resume_info, task_id, thread_id)
+
+
+async def _write_cancelled_summary(session: SubagentSession, message_count: int) -> None:
+    """Persist a cancelled summary off the event loop."""
+    await asyncio.to_thread(session._write_summary, "cancelled", message_count=message_count)
+
+
+async def _is_cancel_requested(session: SubagentSession) -> bool:
+    """Check the cross-process cancel marker without blocking the event loop."""
+    return await asyncio.to_thread(session.is_cancel_requested)
+
+
 @tool("task", parse_docstring=True)
 async def task_tool(
     runtime: ToolRuntime[ContextT, ThreadState],
@@ -139,13 +193,14 @@ async def task_tool(
                 thread_id_for_check = runtime.config.get("configurable", {}).get("thread_id")
         if thread_id_for_check and tool_call_id:
             try:
-                session_check = SubagentSession(
-                    thread_id=thread_id_for_check,
-                    task_id=tool_call_id,
-                    subagent_name="",
-                    description="",
+                summary = await asyncio.to_thread(
+                    lambda: SubagentSession(
+                        thread_id=thread_id_for_check,
+                        task_id=tool_call_id,
+                        subagent_name="",
+                        description="",
+                    ).read_summary()
                 )
-                summary = session_check.read_summary()
                 if summary and summary.get("status") == "cancelled" and summary.get("reason") != "stale":
                     logger.info("Task %s has cancelled session on disk, skipping re-execution", tool_call_id)
                     return f"Task {tool_call_id} was previously cancelled by user. Skipping."
@@ -233,32 +288,20 @@ async def task_tool(
     # Create session for persistence
     session: SubagentSession | None = None
     if thread_id:
-        try:
-            session = SubagentSession(
-                thread_id=thread_id,
-                task_id=tool_call_id,
-                subagent_name=subagent_type,
-                description=description,
-            )
-            # Write initial summary so the API can return subagent_name immediately
-            session._write_summary("running", message_count=0)
+        session = await _create_persisted_session(thread_id, tool_call_id, subagent_type, description)
+        if session is not None:
             executor.session = session
             logger.info("Created SubagentSession for thread=%s, task=%s, subagent=%s", thread_id, tool_call_id, subagent_type)
-        except Exception:
-            logger.exception("Failed to create SubagentSession for thread=%s, task=%s", thread_id, tool_call_id)
     else:
         logger.warning("No thread_id available — subagent session will NOT be persisted")
 
     # Check for interrupted sessions and inject recovery context
     if thread_id and session is not None:
-        try:
-            interrupted = SubagentSession.find_interrupted(thread_id)
-            if interrupted:
-                recovery = _build_recovery_prompt(interrupted)
-                prompt = recovery + "\n\n" + prompt
-                logger.info("Injected recovery context from %d interrupted session(s)", len(interrupted))
-        except Exception:
-            logger.exception("Failed to check interrupted sessions, continuing without recovery")
+        interrupted = await _find_interrupted_sessions(thread_id)
+        if interrupted:
+            recovery = await asyncio.to_thread(_build_recovery_prompt, interrupted)
+            prompt = recovery + "\n\n" + prompt
+            logger.info("Injected recovery context from %d interrupted session(s)", len(interrupted))
 
     # Start background execution (always async to prevent blocking)
     # Use tool_call_id as task_id for better traceability
@@ -293,7 +336,7 @@ async def task_tool(
                 last_status = result.status
 
             # Cross-process cancel: detect marker file written by Gateway
-            if session is not None and session.is_cancel_requested():
+            if session is not None and await _is_cancel_requested(session):
                 request_cancel_background_task(task_id)
                 logger.info(f"[trace={trace_id}] Task {task_id} cancel marker detected")
 
@@ -406,13 +449,13 @@ async def _action_cancel(task_id: str | None) -> str:
     result = get_background_task_result(task_id)
     if result is None:
         # Check on-disk session
-        thread_id = _find_thread_id_for_task(task_id)
+        thread_id = await _find_thread_id_for_task_async(task_id)
         if thread_id:
             try:
                 session = SubagentSession(thread_id=thread_id, task_id=task_id, subagent_name="", description="")
-                summary = session.read_summary()
+                summary = await asyncio.to_thread(session.read_summary)
                 if summary and summary.get("status") in ("running", "pending", "unknown", "interrupted"):
-                    session._write_summary("cancelled", message_count=summary.get("message_count", 0))
+                    await _write_cancelled_summary(session, message_count=summary.get("message_count", 0))
                     logger.info("Marked interrupted task %s as cancelled on disk", task_id)
                     return f"Task {task_id} cancelled successfully."
             except Exception:
@@ -455,7 +498,10 @@ async def _action_query(task_id: str | None) -> str:
     # Check on-disk session
     try:
         # Need thread_id — try to find it from session files
-        info = SubagentSession.get_resume_info(task_id, _find_thread_id_for_task(task_id) or "")
+        info = None
+        thread_id = await _find_thread_id_for_task_async(task_id)
+        if thread_id:
+            info = await _get_resume_info_async(task_id, thread_id)
         if info:
             return f"Task {task_id}: status={info['status']}, subagent={info['subagent_type']}, steps={info['message_count']}"
     except Exception:
@@ -488,7 +534,7 @@ async def _action_resume(
         return f"Error: Cannot determine thread_id for resuming task {task_id}"
 
     # Read session info
-    info = SubagentSession.get_resume_info(task_id, thread_id)
+    info = await _get_resume_info_async(task_id, thread_id)
     if info is None:
         return f"Error: No session found for task {task_id} in thread {thread_id}"
 
@@ -563,16 +609,9 @@ async def _action_resume(
     )
 
     # Create new session for the resumed run
-    try:
-        session = SubagentSession(
-            thread_id=thread_id,
-            task_id=tool_call_id,
-            subagent_name=effective_subagent_type,
-            description=effective_description,
-        )
+    session = await _create_persisted_session(thread_id, tool_call_id, effective_subagent_type, effective_description)
+    if session is not None:
         executor.session = session
-    except Exception:
-        logger.exception("Failed to create session for resumed task")
 
     # Execute with recovery prompt
     new_task_id = executor.execute_async(recovery, task_id=tool_call_id, description=effective_description)

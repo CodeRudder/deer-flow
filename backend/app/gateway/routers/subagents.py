@@ -6,6 +6,7 @@ and full message history for the frontend detail view.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -33,6 +34,30 @@ class SubagentSessionDetail(BaseModel):
     messages: list[dict[str, Any]] = []
 
 
+async def _read_session_summary(session) -> dict[str, Any] | None:
+    return await asyncio.to_thread(session.read_summary)
+
+
+async def _read_session_messages(session) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(session.read_messages)
+
+
+async def _list_sessions(thread_id: str):
+    from deerflow.subagents.session import SubagentSession
+
+    return await asyncio.to_thread(SubagentSession.list_sessions, thread_id)
+
+
+async def _is_terminal(session) -> bool:
+    return await asyncio.to_thread(lambda: session.is_terminal)
+
+
+async def _get_resume_info(task_id: str, thread_id: str) -> dict[str, Any] | None:
+    from deerflow.subagents.session import SubagentSession
+
+    return await asyncio.to_thread(SubagentSession.get_resume_info, task_id, thread_id)
+
+
 @router.get("", response_model=list[SubagentSessionSummary])
 async def list_subagent_sessions(
     thread_id: str,
@@ -44,14 +69,14 @@ async def list_subagent_sessions(
     from deerflow.subagents.session import SubagentSession
 
     try:
-        sessions = SubagentSession.list_sessions(thread_id)
+        sessions = await _list_sessions(thread_id)
     except Exception:
         logger.exception("Failed to list subagent sessions for thread %s", thread_id)
         return []
 
     results: list[SubagentSessionSummary] = []
     for session in sessions:
-        summary = session.read_summary()
+        summary = await _read_session_summary(session)
         if summary:
             results.append(
                 SubagentSessionSummary(
@@ -66,13 +91,14 @@ async def list_subagent_sessions(
             )
         else:
             # No summary file — derive from session metadata
-            msg_count = len(session.read_messages())
+            msg_count = len(await _read_session_messages(session))
+            terminal = await _is_terminal(session)
             results.append(
                 SubagentSessionSummary(
                     task_id=session.task_id,
                     subagent_name=session.subagent_name,
                     description=session.description,
-                    status="running" if not session.is_terminal else "unknown",
+                    status="running" if not terminal else "unknown",
                     started_at=session.started_at,
                     message_count=msg_count,
                 )
@@ -94,10 +120,10 @@ async def get_subagent_session(thread_id: str, task_id: str, request: Request) -
         subagent_name="unknown",
     )
 
-    messages = session.read_messages()
+    messages = await _read_session_messages(session)
 
     # Try to get status from summary
-    summary = session.read_summary()
+    summary = await _read_session_summary(session)
     status = "unknown"
     subagent_name = "unknown"
     if summary:
@@ -134,10 +160,8 @@ async def resume_subagent_session(
     and the specified task_id.  The agent reads the session history and continues
     from where the subtask left off.
     """
-    from deerflow.subagents.session import SubagentSession
-
     # Check session exists and is resumable
-    info = SubagentSession.get_resume_info(task_id, thread_id)
+    info = await _get_resume_info(task_id, thread_id)
     if info is None:
         raise HTTPException(status_code=404, detail=f"Subtask {task_id} not found in thread {thread_id}")
 

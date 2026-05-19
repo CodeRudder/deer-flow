@@ -6,6 +6,7 @@ Covers:
 - POST /api/threads/{thread_id}/subagents/{task_id}/resume — resume subtask
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -202,6 +203,20 @@ class TestGetSession:
         assert data["status"] == "interrupted"
         assert data["subagent_name"] == "unknown"
 
+    def test_reads_messages_and_summary_off_thread(self, client):
+        mock_session = MagicMock()
+        mock_session.read_messages.return_value = [{"role": "human", "content": "do work"}]
+        mock_session.read_summary.return_value = {"status": "running", "subagent_name": "developer"}
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch(SESSION_PATH, return_value=mock_session), patch("app.gateway.routers.subagents.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread:
+            resp = client.get("/api/threads/thread-1/subagents/task-1")
+
+        assert resp.status_code == 200
+        assert mock_to_thread.call_count >= 2
+
 
 # ---------------------------------------------------------------------------
 # POST /api/threads/{thread_id}/subagents/{task_id}/resume
@@ -220,6 +235,19 @@ class TestResumeSession:
 
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
+
+    def test_resume_info_read_off_thread(self, client):
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch(SESSION_PATH + ".get_resume_info", return_value=None), patch("app.gateway.routers.subagents.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread:
+            resp = client.post(
+                "/api/threads/thread-1/subagents/task-gone/resume",
+                json={},
+            )
+
+        assert resp.status_code == 404
+        mock_to_thread.assert_called()
 
     def test_returns_400_when_task_completed(self, client):
         with patch(

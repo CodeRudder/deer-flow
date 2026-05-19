@@ -137,6 +137,21 @@ class TestActionCancel:
         assert "cancelled successfully" in result
         assert cancel_calls == ["tc-pending"]
 
+    def test_cancel_task_uses_async_thread_lookup(self, monkeypatch):
+        calls = []
+
+        async def find_thread(task_id):
+            calls.append(task_id)
+            return None
+
+        monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: None)
+        monkeypatch.setattr(task_tool_module, "_find_thread_id_for_task_async", find_thread)
+
+        result = asyncio.run(task_tool_module._action_cancel("tc-async"))
+
+        assert "not found" in result
+        assert calls == ["tc-async"]
+
 
 # ---------------------------------------------------------------------------
 # Query action tests
@@ -228,6 +243,26 @@ class TestActionQuery:
         assert "status=interrupted" in result
         assert "subagent=developer" in result
         assert "steps=5" in result
+
+    def test_query_uses_async_disk_lookup(self, monkeypatch):
+        calls = []
+
+        async def find_thread(task_id):
+            calls.append(("find", task_id))
+            return "thread-1"
+
+        async def get_info(task_id, thread_id):
+            calls.append(("resume", task_id, thread_id))
+            return {"status": "interrupted", "subagent_type": "developer", "message_count": 2}
+
+        monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: None)
+        monkeypatch.setattr(task_tool_module, "_find_thread_id_for_task_async", find_thread)
+        monkeypatch.setattr(task_tool_module, "_get_resume_info_async", get_info)
+
+        result = asyncio.run(task_tool_module._action_query("tc-async"))
+
+        assert "status=interrupted" in result
+        assert ("find", "tc-async") in calls
 
 
 # ---------------------------------------------------------------------------

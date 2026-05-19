@@ -130,6 +130,12 @@ def _get_model_name(config: SubagentConfig, parent_model: str | None) -> str | N
     return config.model
 
 
+async def _session_call(session: SubagentSession, method_name: str, *args: Any, **kwargs: Any) -> Any:
+    """Run a session I/O method in a worker thread."""
+    method = getattr(session, method_name)
+    return await asyncio.to_thread(method, *args, **kwargs)
+
+
 class SubagentExecutor:
     """Executor for running subagents."""
 
@@ -246,7 +252,7 @@ class SubagentExecutor:
 
             # ① Write initial HumanMessage to session
             if self.session is not None:
-                self.session.append_message(HumanMessage(content=task))
+                await _session_call(self.session, "append_message", HumanMessage(content=task))
 
             # Track seen message IDs to avoid duplicate session writes
             _seen_msg_ids: set[str] = set()
@@ -271,7 +277,9 @@ class SubagentExecutor:
 
             # Pre-check: bail out immediately if already cancelled before streaming starts
             cancel_event_set = result.cancel_event.is_set()
-            cancel_marker_set = self.session is not None and self.session.is_cancel_requested()
+            cancel_marker_set = (
+                self.session is not None and await _session_call(self.session, "is_cancel_requested")
+            )
             if cancel_event_set or cancel_marker_set:
                 logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled before streaming")
                 with _background_tasks_lock:
@@ -281,9 +289,9 @@ class SubagentExecutor:
                         result.completed_at = datetime.now()
                 if self.session is not None:
                     if cancel_marker_set:
-                        self.session.mark_cancelled(message_count=_session_msg_count)
+                        await _session_call(self.session, "mark_cancelled", message_count=_session_msg_count)
                     else:
-                        self.session.mark_interrupted(message_count=_session_msg_count)
+                        await _session_call(self.session, "mark_interrupted", message_count=_session_msg_count)
                 return result
 
             async for chunk in agent.astream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
@@ -292,7 +300,7 @@ class SubagentExecutor:
                 cancel_event_set = result.cancel_event.is_set()
                 cancel_marker_set = False
                 if not cancel_event_set and self.session is not None:
-                    cancel_marker_set = self.session.is_cancel_requested()
+                    cancel_marker_set = await _session_call(self.session, "is_cancel_requested")
                 cancelled = cancel_event_set or cancel_marker_set
                 if cancelled:
                     logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled")
@@ -303,10 +311,10 @@ class SubagentExecutor:
                             result.completed_at = datetime.now()
                     if self.session is not None:
                         if cancel_marker_set:
-                            self.session.mark_cancelled(message_count=_session_msg_count)
-                            self.session.clear_cancel_marker()
+                            await _session_call(self.session, "mark_cancelled", message_count=_session_msg_count)
+                            await _session_call(self.session, "clear_cancel_marker")
                         else:
-                            self.session.mark_interrupted(message_count=_session_msg_count)
+                            await _session_call(self.session, "mark_interrupted", message_count=_session_msg_count)
                     return result
 
                 final_state = chunk
@@ -328,7 +336,7 @@ class SubagentExecutor:
                             _seen_msg_ids.add(msg_id)
                         new_msgs.append(m)
                     if new_msgs:
-                        self.session.append_messages(new_msgs)
+                        await _session_call(self.session, "append_messages", new_msgs)
                         _session_msg_count += len(new_msgs)
 
                 # Extract AI messages from the current state
@@ -448,7 +456,9 @@ class SubagentExecutor:
 
             # ③ Mark session completed
             if self.session is not None:
-                self.session.mark_completed(
+                await _session_call(
+                    self.session,
+                    "mark_completed",
                     result=result.result or "No response generated",
                     message_count=_session_msg_count,
                 )
@@ -461,7 +471,7 @@ class SubagentExecutor:
 
             # ④ Mark session failed
             if self.session is not None:
-                self.session.mark_failed(error=str(e), message_count=_session_msg_count)
+                await _session_call(self.session, "mark_failed", error=str(e), message_count=_session_msg_count)
 
         return result
 

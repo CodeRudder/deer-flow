@@ -358,6 +358,74 @@ class TestAsyncExecutionPath:
         assert result.status == SubagentStatus.COMPLETED
         assert "Task" in result.result
 
+    @pytest.mark.anyio
+    async def test_aexecute_session_calls_use_thread_offload(self, classes, base_config, mock_agent, msg, monkeypatch):
+        """Test that session persistence calls are routed through asyncio.to_thread."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        final_message = msg.ai("Done", "msg-1")
+        final_state = {
+            "messages": [
+                msg.human("Task"),
+                final_message,
+            ]
+        }
+        mock_agent.astream = lambda *args, **kwargs: async_iterator([final_state])
+
+        session_calls: list[tuple[str, tuple, dict]] = []
+
+        class FakeSession:
+            def append_message(self, *args, **kwargs):
+                session_calls.append(("append_message", args, kwargs))
+
+            def append_messages(self, *args, **kwargs):
+                session_calls.append(("append_messages", args, kwargs))
+
+            def is_cancel_requested(self):
+                session_calls.append(("is_cancel_requested", (), {}))
+                return False
+
+            def mark_completed(self, *args, **kwargs):
+                session_calls.append(("mark_completed", args, kwargs))
+
+            def mark_failed(self, *args, **kwargs):
+                session_calls.append(("mark_failed", args, kwargs))
+
+            def mark_cancelled(self, *args, **kwargs):
+                session_calls.append(("mark_cancelled", args, kwargs))
+
+            def mark_interrupted(self, *args, **kwargs):
+                session_calls.append(("mark_interrupted", args, kwargs))
+
+            def clear_cancel_marker(self, *args, **kwargs):
+                session_calls.append(("clear_cancel_marker", args, kwargs))
+
+        to_thread_calls = []
+        real_to_thread = asyncio.to_thread
+
+        async def tracked_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append(getattr(func, "__name__", repr(func)))
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", tracked_to_thread)
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=FakeSession(),
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            result = await executor._aexecute("Task")
+
+        assert result.status == SubagentStatus.COMPLETED
+        assert "append_message" in to_thread_calls
+        assert "append_messages" in to_thread_calls
+        assert "mark_completed" in to_thread_calls
+        assert "is_cancel_requested" in to_thread_calls
+
 
 # -----------------------------------------------------------------------------
 # Sync Execution Path Tests

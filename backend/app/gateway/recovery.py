@@ -10,6 +10,7 @@ tasks from the UI.
 
 import logging
 from collections import defaultdict
+import asyncio
 
 from deerflow.config.paths import get_paths
 from deerflow.subagents.session import SubagentSession
@@ -120,7 +121,7 @@ async def auto_recover_interrupted_tasks() -> None:
     """
     logger.info("Scanning for interrupted sub-agent sessions...")
 
-    interrupted = _scan_interrupted_sessions()
+    interrupted = await asyncio.to_thread(_scan_interrupted_sessions)
 
     if not interrupted:
         logger.info("No interrupted sub-agent sessions found")
