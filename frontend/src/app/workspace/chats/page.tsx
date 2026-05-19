@@ -15,6 +15,10 @@ import { useThreads } from "@/core/threads/hooks";
 import { pathOfThread, titleOfThread } from "@/core/threads/utils";
 import { formatTimeAgo } from "@/core/utils/datetime";
 
+function safeTimeAgo(value: string | null | undefined) {
+  return value ? formatTimeAgo(value) : null;
+}
+
 export default function ChatsPage() {
   const { t } = useI18n();
   const { data: threads } = useThreads();
@@ -47,23 +51,26 @@ export default function ChatsPage() {
           <main className="min-h-0 flex-1">
             <ScrollArea className="size-full py-4">
               <div className="mx-auto flex size-full max-w-(--container-width-md) flex-col">
-                {filteredThreads?.map((thread) => (
-                  <Link
-                    key={thread.thread_id}
-                    href={pathOfThread(thread.thread_id)}
-                  >
-                    <div className="flex flex-col gap-2 border-b p-4">
-                      <div>
-                        <div>{titleOfThread(thread)}</div>
-                      </div>
-                      {thread.updated_at && (
-                        <div className="text-muted-foreground text-sm">
-                          {formatTimeAgo(thread.updated_at)}
+                {filteredThreads?.map((thread) => {
+                  const updatedAtAgo = safeTimeAgo(thread.updated_at);
+                  return (
+                    <Link
+                      key={thread.thread_id}
+                      href={pathOfThread(thread.thread_id)}
+                    >
+                      <div className="flex flex-col gap-2 border-b p-4">
+                        <div>
+                          <div>{titleOfThread(thread)}</div>
                         </div>
-                      )}
-                    </div>
-                  </Link>
-                ))}
+                        {updatedAtAgo && (
+                          <div className="text-muted-foreground text-sm">
+                            {updatedAtAgo}
+                          </div>
+                        )}
+                      </div>
+                    </Link>
+                  );
+                })}
               </div>
             </ScrollArea>
           </main>

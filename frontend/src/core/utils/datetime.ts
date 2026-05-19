@@ -20,7 +20,11 @@ export function formatTimeAgo(date: Date | string | number, locale?: Locale) {
     (getLocaleFromCookie() as Locale | null) ??
     // Fallback when cookie is missing (or on first render)
     detectLocale();
-  return formatDistanceToNow(date, {
+  const parsed = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(parsed.getTime())) {
+    return "-";
+  }
+  return formatDistanceToNow(parsed, {
     addSuffix: true,
     locale: getDateFnsLocale(effectiveLocale),
   });
