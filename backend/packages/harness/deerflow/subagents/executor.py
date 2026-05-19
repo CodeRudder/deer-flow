@@ -198,17 +198,17 @@ class SubagentExecutor:
             state_schema=ThreadState,
         )
 
-    def _build_initial_state(self, task: str) -> dict[str, Any]:
+    def _build_initial_state(self, initial_message: HumanMessage) -> dict[str, Any]:
         """Build the initial state for agent execution.
 
         Args:
-            task: The task description.
+            initial_message: The task message for the subagent.
 
         Returns:
             Initial state dictionary.
         """
         state: dict[str, Any] = {
-            "messages": [HumanMessage(content=task)],
+            "messages": [initial_message],
         }
 
         # Pass through sandbox and thread data from parent
@@ -248,14 +248,19 @@ class SubagentExecutor:
 
         try:
             agent = self._create_agent()
-            state = self._build_initial_state(task)
+            initial_message = HumanMessage(
+                content=task,
+                id=f"subagent-initial-{result.task_id}",
+            )
+            state = self._build_initial_state(initial_message)
 
             # ① Write initial HumanMessage to session
             if self.session is not None:
-                await _session_call(self.session, "append_message", HumanMessage(content=task))
+                await _session_call(self.session, "append_message", initial_message)
+                _session_msg_count = 1
 
             # Track seen message IDs to avoid duplicate session writes
-            _seen_msg_ids: set[str] = set()
+            _seen_msg_ids: set[str] = {initial_message.id}
 
             # Build config with thread_id for sandbox access and recursion limit
             # Use a fixed recursion_limit (200) independent of max_turns,
@@ -326,11 +331,6 @@ class SubagentExecutor:
                     for m in chunk_messages:
                         msg_id = getattr(m, "id", None) or ""
                         if msg_id and msg_id in _seen_msg_ids:
-                            continue
-                        # Skip the initial HumanMessage (already written at ①)
-                        if isinstance(m, HumanMessage) and not _seen_msg_ids and not msg_id:
-                            if msg_id:
-                                _seen_msg_ids.add(msg_id)
                             continue
                         if msg_id:
                             _seen_msg_ids.add(msg_id)

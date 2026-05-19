@@ -1148,6 +1148,47 @@ class TestSessionIntegration:
         mock_session.mark_completed.assert_called_once()
 
     @pytest.mark.anyio
+    async def test_session_skips_duplicate_initial_human_from_stream(self, classes, base_config, mock_agent, msg):
+        """Test that the initial human message is not written twice when LangGraph assigns an ID."""
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentResult = classes["SubagentResult"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        initial_human = msg.human("Task")
+        initial_human.id = "subagent-initial-task-123"
+        ai_msg = msg.ai("Done", "msg-1")
+        final_state = {"messages": [initial_human, ai_msg]}
+        mock_agent.astream = lambda *args, **kwargs: async_iterator([final_state])
+
+        mock_session = MagicMock()
+        mock_session.is_cancel_requested.return_value = False
+        result_holder = SubagentResult(
+            task_id="task-123",
+            trace_id="test-trace",
+            status=SubagentStatus.RUNNING,
+            started_at=datetime.now(),
+        )
+
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            session=mock_session,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            result = await executor._aexecute("Task", result_holder=result_holder)
+
+        assert result.status == SubagentStatus.COMPLETED
+        mock_session.append_message.assert_called_once()
+        assert mock_session.append_message.call_args.args[0].id == "subagent-initial-task-123"
+        mock_session.append_messages.assert_called_once()
+        appended_messages = mock_session.append_messages.call_args.args[0]
+        assert appended_messages == [ai_msg]
+        mock_session.mark_completed.assert_called_once()
+        assert mock_session.mark_completed.call_args.kwargs["message_count"] == 2
+
+    @pytest.mark.anyio
     async def test_session_mark_failed_on_exception(self, classes, base_config, mock_agent):
         """Test that session.mark_failed is called when execution raises."""
         SubagentExecutor = classes["SubagentExecutor"]
