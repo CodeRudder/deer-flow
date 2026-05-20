@@ -137,6 +137,22 @@ class TestWriteTodosTool:
         assert '"type": "string"' not in schema_json
         assert '"type": "array"' in schema_json
 
+    def test_write_todos_tool_injects_tool_call_id_with_custom_schema(self):
+        mw = TodoMiddleware()
+        tool = mw.tools[0]
+
+        result = tool.invoke(
+            {
+                "args": {"todos": '[{"content": "Task A", "status": "pending"}]'},
+                "name": "write_todos",
+                "type": "tool_call",
+                "id": "call-write-todos",
+            }
+        )
+
+        msg = result.update["messages"][0]
+        assert msg.tool_call_id == "call-write-todos"
+
     def test_write_todos_accepts_stringified_todos(self):
         mw = TodoMiddleware()
         tool = mw.tools[0]

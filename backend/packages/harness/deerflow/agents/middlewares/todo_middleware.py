@@ -12,8 +12,6 @@ and compute the full replacement list, avoiding the need for a channel-level
 reducer and keeping backward compatibility with existing checkpoints.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from typing import Annotated, Any, override
@@ -84,6 +82,8 @@ class WriteTodosArgs(BaseModel):
         default=None,
         description="Add new todo items, optionally at an index.",
     )
+    state: Annotated[dict, InjectedState] = Field(default=None, exclude=True)
+    tool_call_id: Annotated[str, InjectedToolCallId] = Field(default="", exclude=True)
 
     @field_validator("todos", "updates", "adds", mode="before")
     @classmethod
