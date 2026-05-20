@@ -194,12 +194,15 @@ This tool is designed for complex objectives that require systematic tracking:
 The tool supports three modes — use the appropriate one to avoid losing existing tasks:
 
 1. **Full replace** (`todos`): Provide the entire list. Use ONLY when creating a new plan from scratch or explicitly rewriting ALL tasks. AVOID using this for status updates — use `updates` instead.
+   The `todos` argument must be a native JSON array/list, not a quoted JSON string.
 
 2. **Update items** (`updates`): Change status/content of specific items by index. Other items are preserved.
+   The `updates` argument must be a native JSON array/list, not a quoted JSON string.
    Example: `write_todos(updates=[{"index": 0, "status": "completed"}, {"index": 1, "status": "in_progress"}])`
    Remove an item: `write_todos(updates=[{"index": 2, "remove": true}])`
 
 3. **Add items** (`adds`): Insert new tasks. Without `index` → append to end. With `index` → insert at that position.
+   The `adds` argument must be a native JSON array/list, not a quoted JSON string.
    Example: `write_todos(adds=[{"content": "New task", "status": "pending"}])`
    Example with position: `write_todos(adds=[{"content": "Urgent", "status": "in_progress", "index": 0}])`
 
@@ -225,9 +228,9 @@ Writing todos takes time and tokens - use it when helpful for managing complex p
 
 ## Parameters
 
-- `todos`: Full task list — replaces ALL existing tasks. Use ONLY for initial plan creation or explicit full rewrite.
-- `updates`: Update/remove items by index — `[{"index": 0, "status": "completed"}]` or `[{"index": 2, "remove": true}]`
-- `adds`: Insert new tasks — `[{"content": "task desc", "status?": "pending", "index?": 0}]`
+- `todos`: Full task list — replaces ALL existing tasks. Use ONLY for initial plan creation or explicit full rewrite. Pass it as a native JSON array/list, never as a quoted JSON string.
+- `updates`: Update/remove items by index — `[{"index": 0, "status": "completed"}]` or `[{"index": 2, "remove": true}]`. Pass it as a native JSON array/list.
+- `adds`: Insert new tasks — `[{"content": "task desc", "status?": "pending", "index?": 0}]`. Pass it as a native JSON array/list.
 
 Rules:
 - Use ONLY `todos` (full replace) OR `updates`/`adds` (incremental) — never both together.

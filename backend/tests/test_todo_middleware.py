@@ -1,12 +1,14 @@
 """Tests for TodoMiddleware context-loss detection and incremental operations."""
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deerflow.agents.middlewares.todo_middleware import (
     TodoMiddleware,
+    _coerce_json_list,
     _format_todos,
     _reminder_in_messages,
     _todos_in_messages,
@@ -89,6 +91,89 @@ class TestFormatTodos:
         result = _format_todos(todos)
         assert "- [0] [pending] No status" in result
         assert "- [1] [done] " in result
+
+
+class TestCoerceJsonList:
+    def test_accepts_native_list(self):
+        value, error = _coerce_json_list([{"content": "A"}], "todos")
+        assert value == [{"content": "A"}]
+        assert error is None
+
+    def test_parses_json_string_list(self):
+        value, error = _coerce_json_list('[{"content": "A", "status": "pending"}]', "todos")
+        assert value == [{"content": "A", "status": "pending"}]
+        assert error is None
+
+    def test_rejects_json_string_object(self):
+        value, error = _coerce_json_list('{"content": "A"}', "todos")
+        assert value is None
+        assert "JSON must decode to a list" in error
+
+    def test_rejects_invalid_json_string(self):
+        value, error = _coerce_json_list("[bad json", "todos")
+        assert value is None
+        assert "Failed to parse string input" in error
+
+    def test_rejects_json_string_with_non_dict_items(self):
+        value, error = _coerce_json_list('["a", "b", "c"]', "todos")
+        assert value is None
+        assert "items must be objects" in error
+
+    def test_rejects_native_list_with_non_dict_items(self):
+        value, error = _coerce_json_list(["a", "b", "c"], "todos")
+        assert value is None
+        assert "items must be objects" in error
+
+
+class TestWriteTodosTool:
+    def test_write_todos_schema_does_not_advertise_string_inputs(self):
+        mw = TodoMiddleware()
+        schema = mw.tools[0].args_schema.model_json_schema()
+        schema_json = json.dumps(
+            {key: schema["properties"][key] for key in ("todos", "updates", "adds")},
+            ensure_ascii=False,
+        )
+
+        assert '"type": "string"' not in schema_json
+        assert '"type": "array"' in schema_json
+
+    def test_write_todos_accepts_stringified_todos(self):
+        mw = TodoMiddleware()
+        tool = mw.tools[0]
+
+        result = tool.func(
+            todos='[{"content": "Task A", "status": "in_progress"}, {"content": "Task B", "status": "pending"}]',
+            tool_call_id="tc-string",
+        )
+
+        assert result.update["todos"] == [
+            {"content": "Task A", "status": "in_progress"},
+            {"content": "Task B", "status": "pending"},
+        ]
+        assert result.update["messages"][0].tool_call_id == "tc-string"
+
+    def test_write_todos_returns_error_for_invalid_stringified_todos(self):
+        mw = TodoMiddleware()
+        tool = mw.tools[0]
+
+        result = tool.func(todos="[bad json", tool_call_id="tc-bad")
+
+        msg = result.update["messages"][0]
+        assert msg.status == "error"
+        assert msg.tool_call_id == "tc-bad"
+        assert "'todos' must be a list or a JSON array string" in msg.content
+
+    def test_write_todos_accepts_stringified_updates(self):
+        mw = TodoMiddleware()
+        tool = mw.tools[0]
+
+        result = tool.func(
+            updates='[{"index": 0, "status": "completed"}]',
+            state={"todos": [{"content": "Task A", "status": "in_progress"}]},
+            tool_call_id="tc-updates",
+        )
+
+        assert result.update["todos"] == [{"content": "Task A", "status": "completed"}]
 
 
 class TestBeforeModel:

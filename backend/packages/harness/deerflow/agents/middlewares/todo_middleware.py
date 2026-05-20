@@ -14,6 +14,8 @@ reducer and keeping backward compatibility with existing checkpoints.
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Annotated, Any, override
 
 from langchain.agents.middleware import TodoListMiddleware
@@ -24,8 +26,72 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 from langgraph.runtime import Runtime
 from langgraph.types import Command
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from deerflow.agents.thread_state import apply_todo_ops
+
+logger = logging.getLogger(__name__)
+
+
+def _coerce_json_list(value: Any, field_name: str) -> tuple[list[Any] | None, str | None]:
+    """Accept either a native list or a JSON-stringified list."""
+    if value is None:
+        return None, None
+
+    if isinstance(value, list):
+        if value and not all(isinstance(item, dict) for item in value):
+            return None, f"Error: '{field_name}' items must be objects, got {type(value[0]).__name__}."
+        return value, None
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None, f"Error: '{field_name}' cannot be an empty string."
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return None, (
+                f"Error: '{field_name}' must be a list or a JSON array string. "
+                f"Failed to parse string input: {exc.msg}."
+            )
+        if not isinstance(parsed, list):
+            return None, f"Error: '{field_name}' JSON must decode to a list."
+        if parsed and not all(isinstance(item, dict) for item in parsed):
+            return None, f"Error: '{field_name}' items must be objects, got {type(parsed[0]).__name__}."
+        logger.warning("write_todos received stringified JSON for %s; parsed it successfully", field_name)
+        return parsed, None
+
+    return None, f"Error: '{field_name}' must be a list, got {type(value).__name__}."
+
+
+class WriteTodosArgs(BaseModel):
+    """Input schema for write_todos.
+
+    The public schema intentionally exposes only array/null types. The validator
+    accepts JSON-stringified arrays as a compatibility fallback before normal
+    Pydantic validation runs.
+    """
+
+    todos: list[Todo] | None = Field(
+        default=None,
+        description="Full task list. Replaces all existing tasks.",
+    )
+    updates: list[dict] | None = Field(
+        default=None,
+        description="Update or remove existing todo items by index.",
+    )
+    adds: list[dict] | None = Field(
+        default=None,
+        description="Add new todo items, optionally at an index.",
+    )
+
+    @field_validator("todos", "updates", "adds", mode="before")
+    @classmethod
+    def coerce_stringified_json_list(cls, value: Any, info: ValidationInfo) -> Any:
+        coerced, error = _coerce_json_list(value, info.field_name)
+        if error:
+            raise ValueError(error.removeprefix("Error: "))
+        return coerced
 
 
 def _todos_in_messages(messages: list[Any]) -> bool:
@@ -83,7 +149,7 @@ class TodoMiddleware(TodoListMiddleware):
         # Override the tool with our enhanced version
         desc = tool_description or ""
 
-        @tool(description=desc)
+        @tool(description=desc, args_schema=WriteTodosArgs)
         def write_todos(
             todos: list[Todo] | None = None,
             updates: list[dict] | None = None,
@@ -92,6 +158,51 @@ class TodoMiddleware(TodoListMiddleware):
             tool_call_id: Annotated[str, InjectedToolCallId] = "",
         ) -> Command:
             """Create and manage a structured task list for your current work session."""
+            todos, todos_error = _coerce_json_list(todos, "todos")
+            if todos_error:
+                logger.warning("write_todos rejected todos input: tool_call_id=%s error=%s", tool_call_id, todos_error)
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=todos_error,
+                                tool_call_id=tool_call_id,
+                                status="error",
+                            )
+                        ],
+                    }
+                )
+
+            updates, updates_error = _coerce_json_list(updates, "updates")
+            if updates_error:
+                logger.warning("write_todos rejected updates input: tool_call_id=%s error=%s", tool_call_id, updates_error)
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=updates_error,
+                                tool_call_id=tool_call_id,
+                                status="error",
+                            )
+                        ],
+                    }
+                )
+
+            adds, adds_error = _coerce_json_list(adds, "adds")
+            if adds_error:
+                logger.warning("write_todos rejected adds input: tool_call_id=%s error=%s", tool_call_id, adds_error)
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=adds_error,
+                                tool_call_id=tool_call_id,
+                                status="error",
+                            )
+                        ],
+                    }
+                )
+
             has_todos = todos is not None
             has_updates = updates is not None
             has_adds = adds is not None

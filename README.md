@@ -639,6 +639,8 @@ This is the difference between a chatbot with tool access and an agent with an a
 
 **Summarization**: Within a session, DeerFlow manages context aggressively — summarizing completed sub-tasks, offloading intermediate results to the filesystem, compressing what's no longer immediately relevant. This lets it stay sharp across long, multi-step tasks without blowing the context window.
 
+**Plan Mode Todo Robustness**: The `write_todos` planning tool expects native JSON arrays/lists for `todos`, `updates`, and `adds`. To tolerate provider or model quirks, DeerFlow also parses JSON-stringified arrays and emits clearer argument-shape diagnostics when tool validation fails.
+
 ### Long-Term Memory
 
 Most agents forget everything the moment a conversation ends. DeerFlow remembers.

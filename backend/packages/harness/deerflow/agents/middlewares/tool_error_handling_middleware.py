@@ -16,6 +16,27 @@ logger = logging.getLogger(__name__)
 _MISSING_TOOL_CALL_ID = "missing_tool_call_id"
 
 
+def _summarize_tool_args(tool_call: dict) -> str:
+    """Return a compact, non-verbose summary of tool argument shapes."""
+    args = tool_call.get("args")
+    if not isinstance(args, dict):
+        return f"args_type={type(args).__name__}"
+
+    parts: list[str] = []
+    for key, value in args.items():
+        if isinstance(value, str):
+            preview = value[:80].replace("\n", "\\n")
+            suffix = "..." if len(value) > 80 else ""
+            parts.append(f"{key}=str(len={len(value)}, preview={preview!r}{suffix})")
+        elif isinstance(value, list | tuple | set):
+            parts.append(f"{key}={type(value).__name__}(len={len(value)})")
+        elif isinstance(value, dict):
+            parts.append(f"{key}=dict(keys={list(value.keys())[:8]!r})")
+        else:
+            parts.append(f"{key}={type(value).__name__}")
+    return ", ".join(parts) or "no_args"
+
+
 class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     """Convert tool exceptions into error ToolMessages so the run can continue."""
 
@@ -26,7 +47,11 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         if len(detail) > 500:
             detail = detail[:497] + "..."
 
-        content = f"Error: Tool '{tool_name}' failed with {exc.__class__.__name__}: {detail}. Continue with available context, or choose an alternative tool."
+        args_summary = _summarize_tool_args(request.tool_call)
+        content = (
+            f"Error: Tool '{tool_name}' failed with {exc.__class__.__name__}: {detail}. "
+            f"Argument summary: {args_summary}. Continue with available context, or choose an alternative tool."
+        )
         return ToolMessage(
             content=content,
             tool_call_id=tool_call_id,
@@ -46,7 +71,12 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             # Preserve LangGraph control-flow signals (interrupt/pause/resume).
             raise
         except Exception as exc:
-            logger.exception("Tool execution failed (sync): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
+            logger.exception(
+                "Tool execution failed (sync): name=%s id=%s %s",
+                request.tool_call.get("name"),
+                request.tool_call.get("id"),
+                _summarize_tool_args(request.tool_call),
+            )
             return self._build_error_message(request, exc)
 
     @override
@@ -61,7 +91,12 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             # Preserve LangGraph control-flow signals (interrupt/pause/resume).
             raise
         except Exception as exc:
-            logger.exception("Tool execution failed (async): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
+            logger.exception(
+                "Tool execution failed (async): name=%s id=%s %s",
+                request.tool_call.get("name"),
+                request.tool_call.get("id"),
+                _summarize_tool_args(request.tool_call),
+            )
             return self._build_error_message(request, exc)
 
 

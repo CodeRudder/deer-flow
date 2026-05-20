@@ -4,13 +4,15 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphInterrupt
 
-from deerflow.agents.middlewares.tool_error_handling_middleware import ToolErrorHandlingMiddleware
+from deerflow.agents.middlewares.tool_error_handling_middleware import ToolErrorHandlingMiddleware, _summarize_tool_args
 
 
-def _request(name: str = "web_search", tool_call_id: str | None = "tc-1"):
+def _request(name: str = "web_search", tool_call_id: str | None = "tc-1", args: dict | None = None):
     tool_call = {"name": name}
     if tool_call_id is not None:
         tool_call["id"] = tool_call_id
+    if args is not None:
+        tool_call["args"] = args
     return SimpleNamespace(tool_call=tool_call)
 
 
@@ -26,7 +28,7 @@ def test_wrap_tool_call_passthrough_on_success():
 
 def test_wrap_tool_call_returns_error_tool_message_on_exception():
     middleware = ToolErrorHandlingMiddleware()
-    req = _request(name="web_search", tool_call_id="tc-42")
+    req = _request(name="web_search", tool_call_id="tc-42", args={"query": "latest news"})
 
     def _boom(_req):
         raise RuntimeError("network down")
@@ -39,6 +41,8 @@ def test_wrap_tool_call_returns_error_tool_message_on_exception():
     assert result.status == "error"
     assert "Tool 'web_search' failed" in result.text
     assert "network down" in result.text
+    assert "Argument summary" in result.text
+    assert "query=str" in result.text
 
 
 def test_wrap_tool_call_uses_fallback_tool_call_id_when_missing():
@@ -65,6 +69,22 @@ def test_wrap_tool_call_reraises_graph_interrupt():
 
     with pytest.raises(GraphInterrupt):
         middleware.wrap_tool_call(req, _interrupt)
+
+
+def test_summarize_tool_args_includes_argument_shapes():
+    summary = _summarize_tool_args(
+        {
+            "args": {
+                "todos": '[{"content":"A","status":"pending"}]',
+                "updates": [{"index": 0, "status": "completed"}],
+                "metadata": {"thread_id": "t1"},
+            }
+        }
+    )
+
+    assert "todos=str" in summary
+    assert "updates=list(len=1)" in summary
+    assert "metadata=dict" in summary
 
 
 @pytest.mark.anyio

@@ -164,7 +164,7 @@ Middlewares execute in strict order in `packages/harness/deerflow/agents/lead_ag
 4. **DanglingToolCallMiddleware** - Injects placeholder ToolMessages for AIMessage tool_calls that lack responses (e.g., due to user interruption)
 5. **GuardrailMiddleware** - Pre-tool-call authorization via pluggable `GuardrailProvider` protocol (optional, if `guardrails.enabled` in config). Evaluates each tool call and returns error ToolMessage on deny. Three provider options: built-in `AllowlistProvider` (zero deps), OAP policy providers (e.g. `aport-agent-guardrails`), or custom providers. See [docs/GUARDRAILS.md](docs/GUARDRAILS.md) for setup, usage, and how to implement a provider.
 6. **SummarizationMiddleware** - Context reduction when approaching token limits (optional, if enabled)
-7. **TodoListMiddleware** - Task tracking with `write_todos` tool (optional, if plan_mode)
+7. **TodoListMiddleware** - Task tracking with `write_todos` tool (optional, if plan_mode); accepts native list arguments and tolerates JSON-stringified arrays for `todos`, `updates`, and `adds` while logging argument-shape diagnostics on tool failures
 8. **TitleMiddleware** - Auto-generates thread title after first complete exchange and normalizes structured message content before prompting the title model
 9. **MemoryMiddleware** - Queues conversations for async memory update (filters to user + final AI responses)
 10. **ViewImageMiddleware** - Injects base64 image data before LLM call (conditional on vision support)

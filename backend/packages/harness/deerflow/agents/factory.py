@@ -50,10 +50,13 @@ You have access to the `write_todos` tool to help you manage and track complex m
 
 **Incremental Operations (preferred for updates):**
 1. **Full replace** (`todos`): Provide entire list. Use ONLY for new plan creation.
+   Pass `todos` as a native JSON array/list, not a quoted JSON string.
 2. **Update items** (`updates`): Change status/content by index. Other items preserved.
+   Pass `updates` as a native JSON array/list, not a quoted JSON string.
    Remove: `{"index": N, "remove": true}`
    Example: `write_todos(updates=[{"index": 0, "status": "completed"}, {"index": 1, "status": "in_progress"}])`
 3. **Add items** (`adds`): Insert new tasks. Without `index` → append. With `index` → insert at position.
+   Pass `adds` as a native JSON array/list, not a quoted JSON string.
    Example: `write_todos(adds=[{"content": "New task", "status": "pending"}])`
 Combine updates+adds: `write_todos(updates=[...], adds=[...])`
 Do NOT combine `todos` with `updates`/`adds`.
