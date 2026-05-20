@@ -12,7 +12,7 @@ consume both main and sub-agent conversation logs uniformly.
 Design:
   - Uses ``aafter_model`` to capture messages in real-time after each
     model response.
-  - Tracks last N written message IDs per thread to avoid duplicates
+  - Tracks written message IDs per thread to avoid duplicates
     (handles summarization which may shrink the message list).
   - Optional truncation for large content.
   - Thread-safe via ``threading.Lock``.
@@ -21,7 +21,6 @@ Design:
 import json
 import logging
 import threading
-from collections import deque
 from typing import Any, override
 
 from langchain.agents import AgentState
@@ -34,7 +33,7 @@ from deerflow.subagents.session import serialize_message
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DEDUP_WINDOW = 10  # only check last N message IDs per thread
+_DEFAULT_DEDUP_WINDOW = 10  # kept for backwards-compatible constructor signature
 _DEFAULT_THREAD_CACHE_SIZE = 100
 
 
@@ -60,9 +59,9 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
     """Persists main conversation messages to local JSONL for debugging.
 
     Runs after each model response (``aafter_model``) to capture messages
-    in real-time.  Uses a small sliding window of recent message IDs per
-    thread to avoid duplicates, which correctly handles SummarizationMiddleware
-    shrinking the message list.
+    in real-time.  Tracks all written message IDs for active threads to avoid
+    duplicates, which correctly handles SummarizationMiddleware shrinking the
+    message list and later preserving old messages with their original IDs.
 
     The JSONL format is identical to ``SubagentSession`` so that the same
     tooling can process both main and sub-agent logs.
@@ -77,16 +76,16 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
         self._dedup_window = dedup_window
         self._max_content_len = max_content_len
         self._thread_cache_size = thread_cache_size
-        # thread_id -> deque of recent written message IDs
-        self._written_ids: dict[str, deque[str]] = {}
+        # thread_id -> all written message IDs for active cached threads
+        self._written_ids: dict[str, set[str]] = {}
         self._lock = threading.Lock()
 
     def _get_jsonl_path(self, thread_id: str) -> "Any":
         """Return the JSONL file path for a thread."""
         return get_paths().thread_dir(thread_id) / "conversation.jsonl"
 
-    def _load_written_ids_from_disk(self, thread_id: str, ids: deque[str]) -> None:
-        """Populate recent written message IDs from an existing JSONL file."""
+    def _load_written_ids_from_disk(self, thread_id: str, ids: set[str]) -> None:
+        """Populate written message IDs from an existing JSONL file."""
         jsonl_path = self._get_jsonl_path(thread_id)
         if not jsonl_path.exists():
             return
@@ -103,7 +102,7 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
                         continue
                     msg_id = entry.get("id")
                     if msg_id:
-                        ids.append(str(msg_id))
+                        ids.add(str(msg_id))
         except OSError:
             logger.exception("Failed to load conversation IDs from %s", jsonl_path)
 
@@ -114,11 +113,11 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
             del self._written_ids[oldest_thread_id]
 
     def _get_new_messages(self, thread_id: str, messages: list[BaseMessage]) -> list[BaseMessage]:
-        """Return messages not yet written for this thread (sliding window dedup)."""
+        """Return messages not yet written for this thread."""
         with self._lock:
             ids = self._written_ids.get(thread_id)
             if ids is None:
-                ids = deque(maxlen=self._dedup_window)
+                ids = set()
                 self._load_written_ids_from_disk(thread_id, ids)
                 self._written_ids[thread_id] = ids
                 self._evict_old_threads_locked()
@@ -130,7 +129,7 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
                     continue
                 new_msgs.append(msg)
                 if msg_id:
-                    ids.append(msg_id)
+                    ids.add(msg_id)
 
             return new_msgs
 

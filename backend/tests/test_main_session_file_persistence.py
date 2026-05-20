@@ -2,7 +2,7 @@
 
 验证 MainSessionMiddleware：
 1. 写入消息到 conversation.jsonl，字段完整，不截断
-2. 同一会话内按 ID 去重（滑动窗口，最近 10 条）
+2. 同一会话内按 ID 去重
 3. 通过 thread_id 读取文件会话数据，验证结构正确
 4. 路径格式 {base_dir}/threads/{thread_id}/conversation.jsonl
 """
@@ -166,7 +166,7 @@ class TestWrite:
 
 
 class TestDedup:
-    """同一会话内按消息 ID 去重（滑动窗口）。"""
+    """同一会话内按消息 ID 去重。"""
 
     def test_dedup_same_session(self, mock_paths, tmp_thread_dir):
         """相同消息不重复写入。"""
@@ -226,10 +226,9 @@ class TestDedup:
         new2 = mw._get_new_messages("test-thread", [HumanMessage(content="no-id")])
         assert len(new2) == 1  # 无 ID，无法去重
 
-    def test_sliding_window_eviction(self, mock_paths, tmp_thread_dir):
-        """超过窗口大小的旧 ID 被淘汰，可能重复写入。"""
+    def test_old_ids_remain_deduped_after_many_messages(self, mock_paths, tmp_thread_dir):
+        """超过旧窗口大小的 ID 仍被去重，避免 summary 后重复写入。"""
         mw = _make_middleware(dedup_window=3)
-        # Write 3 messages (fills window)
         mw._get_new_messages(
             "test-thread",
             [
@@ -238,7 +237,6 @@ class TestDedup:
                 HumanMessage(content="M2", id="h2"),
             ],
         )
-        # Write 3 more — h0 evicted from window
         mw._get_new_messages(
             "test-thread",
             [
@@ -247,9 +245,37 @@ class TestDedup:
                 AIMessage(content="M5", id="a5"),
             ],
         )
-        # h0 is no longer in window → treated as new
         new = mw._get_new_messages("test-thread", [HumanMessage(content="M0", id="h0")])
-        assert len(new) == 1  # h0 re-admitted (window evicted it)
+        assert len(new) == 0
+
+    def test_summarization_preserved_old_messages_do_not_repeat(self, mock_paths, tmp_thread_dir):
+        """摘要后保留的旧消息带原 ID 回到 state 时，不会被再次写入。"""
+        mw = _make_middleware(dedup_window=3)
+        history = [
+            HumanMessage(content="Q0", id="h0"),
+            AIMessage(content="A1", id="a1"),
+            ToolMessage(content="R2", tool_call_id="tc2", name="task", id="t2"),
+            HumanMessage(content="Q3", id="h3"),
+            AIMessage(content="A4", id="a4"),
+            ToolMessage(content="R5", tool_call_id="tc5", name="task", id="t5"),
+            HumanMessage(content="Q6", id="h6"),
+            AIMessage(content="A7", id="a7"),
+            ToolMessage(content="R8", tool_call_id="tc8", name="task", id="t8"),
+            AIMessage(content="A9", id="a9"),
+            ToolMessage(content="R10", tool_call_id="tc10", name="task", id="t10"),
+            AIMessage(content="A11", id="a11"),
+            ToolMessage(content="R12", tool_call_id="tc12", name="task", id="t12"),
+        ]
+        mw._get_new_messages("test-thread", history)
+
+        summarized_state = [
+            HumanMessage(content="Here is a summary of the conversation to date:\n\n...", id="sum1"),
+            *history[2:],
+            AIMessage(content="Final", id="a-final"),
+        ]
+        new = mw._get_new_messages("test-thread", summarized_state)
+
+        assert [m.id for m in new] == ["sum1", "a-final"]
 
 
 # ── 读取验证 ────────────────────────────────────────────────────────────────
@@ -283,7 +309,7 @@ class TestReadByThreadId:
 
     def test_read_then_write_new(self, mock_paths, tmp_thread_dir):
         """读取已有文件后，通过中间件追加新消息，文件追加正确。"""
-        _write_realistic_jsonl(_jsonl_path(tmp_thread_dir), count=3)
+        _write_realistic_jsonl(_jsonl_path(tmp_thread_dir), count=12)
 
         mw = _make_middleware()
         # 新 middleware 实例会读取磁盘上的已有 JSONL ID，避免重启后重复写入。
@@ -299,7 +325,7 @@ class TestReadByThreadId:
         mw._write_messages(_jsonl_path(tmp_thread_dir), new)
 
         lines = _jsonl_path(tmp_thread_dir).read_text().strip().split("\n")
-        assert len(lines) == 4  # 3 original + 1 new
+        assert len(lines) == 13  # 12 original + 1 new
 
     def test_read_different_threads(self, mock_paths, tmp_path):
         """不同 thread_id 读取各自独立的文件。"""
