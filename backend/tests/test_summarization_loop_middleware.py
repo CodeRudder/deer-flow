@@ -4,7 +4,7 @@ Covers:
 - Summary message detection and counting
 - No-loop passthrough (returns None)
 - Soft limit: ToolMessage truncation + warning injection
-- Hard limit: all ToolMessage truncation + tool_calls removal + forced stop
+- Hard limit: all ToolMessage truncation + tool_calls preservation + forced stop
 - Counter reset when no summary messages present
 - Multi-thread isolation
 - LRU eviction
@@ -225,9 +225,9 @@ class TestSoftLimit:
 
 
 class TestHardLimit:
-    """Test hard limit behavior: truncate all ToolMessages + strip tool_calls."""
+    """Test hard limit behavior: truncate all ToolMessages + preserve tool_calls."""
 
-    def test_strips_tool_calls_from_last_ai(self):
+    def test_preserves_tool_calls_on_last_ai(self):
         MW = _import_middleware()
         mw = MW(warn_threshold=2, hard_limit=3, max_tool_content_len=100)
 
@@ -248,11 +248,12 @@ class TestHardLimit:
 
         updated = result["messages"]
 
-        # Last AI message should have no tool_calls
+        # Last AI message should keep tool_calls so ToolMessages remain paired.
         ai_msgs = [m for m in updated if isinstance(m, AIMessage)]
         last_ai = ai_msgs[-1]
-        assert last_ai.tool_calls == []
+        assert last_ai.tool_calls == [{"id": "tc1", "name": "read_file", "args": {"path": "/big"}, "type": "tool_call"}]
         assert "FORCED STOP" in last_ai.content
+        assert "Do not call any more tools" in last_ai.content
 
         # ToolMessage should be truncated
         tool_msgs = [m for m in updated if isinstance(m, ToolMessage)]

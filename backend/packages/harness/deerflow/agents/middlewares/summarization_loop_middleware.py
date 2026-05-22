@@ -35,7 +35,7 @@ _SUMMARY_PREFIX = "Here is a summary of the conversation to date:"
 
 _WARNING_MSG = "[SUMMARIZATION LOOP] Context summarization has been triggered multiple times. Large tool responses are being truncated. Stop reading large files and produce your final answer using the information you already have."
 
-_HARD_STOP_MSG = "[FORCED STOP: SUMMARIZATION LOOP] Summarization loop limit reached. All tool response content has been cleared. Produce your final answer now."
+_HARD_STOP_MSG = "[FORCED STOP: SUMMARIZATION LOOP] Summarization loop limit reached. Tool response content has been truncated. Do not call any more tools. Produce your final answer now using the information already available."
 
 
 class SummarizationLoopMiddleware(AgentMiddleware[AgentState]):
@@ -151,7 +151,8 @@ class SummarizationLoopMiddleware(AgentMiddleware[AgentState]):
         needs_update = False
 
         if current_count >= self.hard_limit:
-            # Hard stop: truncate ALL ToolMessages + remove tool_calls from last AI
+            # Hard stop: truncate ALL ToolMessages and inject a strong stop instruction.
+            # Keep AI tool_calls intact so historical AIMessage/ToolMessage pairs remain valid.
             logger.error(
                 "Summarization loop hard limit reached — forcing stop",
                 extra={"thread_id": thread_id, "summary_count": current_count},
@@ -172,11 +173,9 @@ class SummarizationLoopMiddleware(AgentMiddleware[AgentState]):
                     updated_messages.append(msg.model_copy(update={"content": truncated_content}))
                     needs_update = True
                 elif i == last_ai_with_tools:
-                    # Remove tool_calls from last AI message to force text output
                     updated_messages.append(
                         msg.model_copy(
                             update={
-                                "tool_calls": [],
                                 "content": self._append_text(msg.content, _HARD_STOP_MSG),
                             }
                         )
