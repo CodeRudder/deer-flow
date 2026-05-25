@@ -10,5 +10,8 @@
   },
   "checkpointer": {
     "path": "./packages/harness/deerflow/agents/checkpointer/async_provider.py:make_checkpointer"
+  },
+  "store": {
+    "path": "./packages/harness/deerflow/runtime/store/async_provider.py:make_store"
   }
 }
