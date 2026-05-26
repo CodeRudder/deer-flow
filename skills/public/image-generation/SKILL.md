@@ -194,7 +194,8 @@ Read the following template file only when matching the user request.
 After generation:
 
 - Images are typically saved in `/mnt/user-data/outputs/`
-- Share generated images with user using present_files tool
+- Share generated images with user using `present_files` tool
+- Do NOT call `view_image` for generated output images. `view_image` is only for model-side visual inspection when image analysis is explicitly needed, not for presenting generated images to the user.
 - Provide brief description of the generation result
 - Offer to iterate if adjustments needed
 
