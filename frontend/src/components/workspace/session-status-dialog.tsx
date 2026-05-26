@@ -238,7 +238,7 @@ export function SessionStatusButton({
   const { data, isLoading, refetch } = useSessionStatus(
     threadId,
     enabled,
-    open || forcePolling,
+    forcePolling,
   );
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState(0);
