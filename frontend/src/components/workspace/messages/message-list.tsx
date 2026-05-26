@@ -60,6 +60,7 @@ export function MessageList({
   const { data: subtaskStatuses } = useSubtaskStatuses(
     threadId,
     statusPollingEnabled,
+    thread.isLoading,
   );
   const prevStatusFingerprintRef = useRef<string>("");
   const updateSubtaskRef = useRef(updateSubtask);

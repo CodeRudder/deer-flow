@@ -228,20 +228,33 @@ const PAGE_SIZE_OPTIONS = [5, 10, 15, 20] as const;
 export function SessionStatusButton({
   threadId,
   enabled = true,
+  forcePolling = false,
 }: {
   threadId: string;
   enabled?: boolean;
+  forcePolling?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const { data, isLoading, refetch } = useSessionStatus(threadId, enabled);
+  const { data, isLoading, refetch } = useSessionStatus(
+    threadId,
+    enabled,
+    open || forcePolling,
+  );
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState(0);
 
   const activeCount = data?.active_subtasks.length ?? 0;
   const isRunning = data?.main_session.status === "running" || activeCount > 0;
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) {
+      void refetch();
+    }
+  };
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
           variant="ghost"

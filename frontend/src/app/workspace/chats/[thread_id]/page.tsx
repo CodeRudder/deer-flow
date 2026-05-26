@@ -207,7 +207,11 @@ export default function ChatPage() {
             </div>
             <div className="flex items-center gap-2">
               {!isNewThread && (
-                <SessionStatusButton threadId={threadId} enabled />
+                <SessionStatusButton
+                  threadId={threadId}
+                  enabled
+                  forcePolling={thread.isLoading}
+                />
               )}
               <TokenUsageIndicator messages={thread.messages} />
               <ExportTrigger threadId={threadId} />

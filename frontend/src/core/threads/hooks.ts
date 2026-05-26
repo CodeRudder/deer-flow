@@ -36,6 +36,14 @@ type SendMessageOptions = {
   additionalKwargs?: Record<string, unknown>;
 };
 
+const TASK_STATUS_EVENT_TYPES = new Set([
+  "task_started",
+  "task_completed",
+  "task_failed",
+  "task_cancelled",
+  "task_timed_out",
+]);
+
 function normalizeStoredRunId(runId: string | null): string | null {
   if (!runId) {
     return null;
@@ -190,6 +198,18 @@ export function useThreadStream({
 
   const queryClient = useQueryClient();
   const updateSubtask = useUpdateSubtask();
+  const invalidateThreadStatus = useCallback(
+    (id: string | null | undefined) => {
+      if (!id) return;
+      void queryClient.invalidateQueries({
+        queryKey: ["session-status", id],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["subagents-statuses", id],
+      });
+    },
+    [queryClient],
+  );
   const runMetadataStorageRef = useRef<
     ReturnType<typeof getRunMetadataStorage> | undefined
   >(undefined);
@@ -212,6 +232,7 @@ export function useThreadStream({
     onCreated(meta) {
       handleStreamStart(meta.thread_id);
       setOnStreamThreadId(meta.thread_id);
+      invalidateThreadStatus(meta.thread_id);
     },
     onLangChainEvent(event) {
       if (event.event === "on_tool_end") {
@@ -251,6 +272,16 @@ export function useThreadStream({
       }
     },
     onCustomEvent(event: unknown) {
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
+        typeof event.type === "string" &&
+        TASK_STATUS_EVENT_TYPES.has(event.type)
+      ) {
+        invalidateThreadStatus(threadIdRef.current);
+      }
+
       if (
         typeof event === "object" &&
         event !== null &&
@@ -374,6 +405,7 @@ export function useThreadStream({
       // uses the real server-generated thread id.
       if (threadIdRef.current) {
         _handleOnStart(threadId);
+        invalidateThreadStatus(threadId);
       }
 
       let uploadedFileInfo: UploadedFileInfo[] = [];
@@ -453,7 +485,7 @@ export function useThreadStream({
           }),
         );
 
-        await thread.submit(
+        const submitPromise = thread.submit(
           {
             messages: [
               {
@@ -499,6 +531,8 @@ export function useThreadStream({
             },
           },
         );
+        invalidateThreadStatus(threadIdRef.current ?? threadId);
+        await submitPromise;
         void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
       } catch (error) {
         setOptimisticMessages([]);
@@ -508,7 +542,14 @@ export function useThreadStream({
         sendInFlightRef.current = false;
       }
     },
-    [thread, _handleOnStart, t.uploads.uploadingFiles, context, queryClient],
+    [
+      thread,
+      _handleOnStart,
+      t.uploads.uploadingFiles,
+      context,
+      queryClient,
+      invalidateThreadStatus,
+    ],
   );
 
   // Merge thread with optimistic messages for display
