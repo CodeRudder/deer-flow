@@ -557,6 +557,18 @@ skills:
 # - ["skill-name"]: load only specific skills
 
 # ============================================================================
+# Image Generation Skill Configuration
+# ============================================================================
+# Select the default image generation provider.
+# Provider-specific defaults live in each provider implementation.
+# API keys and bearer tokens should remain in environment variables, not here.
+
+image_generation:
+  # Default provider when --provider and IMAGE_GENERATION_PROVIDER are not set.
+  # Supported: gemini, qwen_image
+  provider: qwen_image
+
+# ============================================================================
 # Title Generation Configuration
 # ============================================================================
 # Automatic conversation title generation settings

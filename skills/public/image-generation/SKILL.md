@@ -49,6 +49,30 @@ Parameters:
 - `--reference-images`: Absolute paths to reference images (optional, space-separated)
 - `--output-file`: Absolute path to output image file (required)
 - `--aspect-ratio`: Aspect ratio of the generated image (optional, default: 16:9)
+- `--provider`: Image generation provider (optional, default: `gemini`; use `qwen_image` for Qwen-Image)
+- `--model`: Provider model name (optional)
+- `--negative-prompt`: Negative prompt for providers that support it (optional)
+- `--prompt-extend`: Whether the provider should extend the prompt, `true` or `false` (optional)
+- `--watermark`: Whether the provider should add a watermark, `true` or `false` (optional)
+
+Provider can also be configured with environment variables:
+
+- `IMAGE_GENERATION_PROVIDER`: override provider, e.g. `gemini` or `qwen_image`
+- `IMAGE_GENERATION_MODEL`: override provider model
+- `GEMINI_API_KEY`: API key for Gemini
+- `QWEN_IMAGE_API_KEY`: Bearer token for Qwen-Image
+- `QWEN_IMAGE_BASE_URL`: Qwen API base URL (optional, default: `https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1`)
+
+Non-secret defaults can be configured in `config.yaml`:
+
+```yaml
+image_generation:
+  provider: qwen_image
+```
+
+Only the default provider belongs in `config.yaml`. Provider-specific defaults such as model, base URL, timeout, prompt extension, and watermark live in the provider implementation and can be overridden with CLI arguments or environment variables when needed.
+
+Priority: CLI arguments > environment variables > `config.yaml` provider > provider built-in defaults.
 
 [!NOTE]
 Do NOT read the python file, just call it with the parameters.
@@ -85,6 +109,22 @@ python /mnt/skills/public/image-generation/scripts/generate.py \
   --output-file /mnt/user-data/outputs/cyberpunk-hacker-01.jpg \
   --aspect-ratio 2:3
 ```
+
+Using Qwen-Image:
+```bash
+python /mnt/skills/public/image-generation/scripts/generate.py \
+  --provider qwen_image \
+  --model qwen-image-2.0-pro \
+  --prompt-file /mnt/user-data/workspace/cyberpunk-hacker.json \
+  --output-file /mnt/user-data/outputs/cyberpunk-hacker-01.png \
+  --aspect-ratio 1:1 \
+  --prompt-extend true \
+  --watermark false
+```
+
+Qwen-Image currently supports text-to-image only in this skill. Do not pass `--reference-images` when using `--provider qwen_image`.
+
+If Qwen-Image returns `DataInspectionFailed` or `Green net check failed for input text`, the prompt did not pass provider safety inspection. Rewrite the prompt with more neutral wording and remove sensitive entities, real people, political, military, national-security, violent, sexual, or other restricted content before retrying.
 
 With reference images:
 ```json

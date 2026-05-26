@@ -1,30 +1,117 @@
-import base64
+import json
 import os
+from pathlib import Path
 
-import requests
 from PIL import Image
+
+from providers import PROVIDERS
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+
+def _find_config_path() -> Path | None:
+    explicit_path = os.getenv("DEER_FLOW_CONFIG_PATH")
+    if explicit_path:
+        path = Path(explicit_path)
+        return path if path.exists() else None
+
+    candidates = [
+        Path.cwd() / "config.yaml",
+        Path.cwd().parent / "config.yaml",
+        Path(__file__).resolve().parents[4] / "config.yaml",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _load_image_generation_config() -> dict:
+    if yaml is None:
+        return {}
+
+    config_path = _find_config_path()
+    if not config_path:
+        return {}
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"Warning: failed to load image_generation config from {config_path}: {e}")
+        return {}
+
+    image_generation = config.get("image_generation", {})
+    return image_generation if isinstance(image_generation, dict) else {}
+
+
+def _config_value(config: dict, key: str, env_var: str, default=None):
+    env_value = os.getenv(env_var)
+    if env_value is not None:
+        return env_value
+    return config.get(key, default)
 
 
 def validate_image(image_path: str) -> bool:
     """
     Validate if an image file can be opened and is not corrupted.
-    
+
     Args:
         image_path: Path to the image file
-        
+
     Returns:
         True if the image is valid and can be opened, False otherwise
     """
     try:
         with Image.open(image_path) as img:
-            img.verify()  # Verify that it's a valid image
-        # Re-open to check if it can be fully loaded (verify() may not catch all issues)
+            img.verify()
         with Image.open(image_path) as img:
-            img.load()  # Force load the image data
+            img.load()
         return True
     except Exception as e:
         print(f"Warning: Image '{image_path}' is invalid or corrupted: {e}")
         return False
+
+
+def _read_prompt(prompt_file: str, provider: str) -> tuple[str, str | None]:
+    prompt_text = Path(prompt_file).read_text(encoding="utf-8")
+    negative_prompt = None
+
+    if provider == "qwen_image":
+        try:
+            prompt_json = json.loads(prompt_text)
+        except json.JSONDecodeError:
+            return prompt_text, None
+
+        if isinstance(prompt_json, dict):
+            prompt = prompt_json.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                prompt_text = prompt
+            prompt_negative = prompt_json.get("negative_prompt")
+            if isinstance(prompt_negative, str) and prompt_negative.strip():
+                negative_prompt = prompt_negative
+
+    return prompt_text, negative_prompt
+
+
+def _parse_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
+
+
+def _coerce_optional_bool(value) -> bool | None:
+    if value is None or isinstance(value, bool):
+        return value
+    return _parse_bool(str(value))
 
 
 def generate_image(
@@ -32,68 +119,62 @@ def generate_image(
     reference_images: list[str],
     output_file: str,
     aspect_ratio: str = "16:9",
+    provider: str | None = None,
+    model: str | None = None,
+    negative_prompt: str | None = None,
+    prompt_extend: bool | None = None,
+    watermark: bool | None = None,
 ) -> str:
-    with open(prompt_file, "r", encoding="utf-8") as f:
-        prompt = f.read()
-    parts = []
-    i = 0
-    
-    # Filter out invalid reference images
+    image_generation_config = _load_image_generation_config()
+    selected_provider = provider or _config_value(
+        image_generation_config,
+        "provider",
+        "IMAGE_GENERATION_PROVIDER",
+        "gemini",
+    )
+    if selected_provider not in PROVIDERS:
+        supported = ", ".join(sorted(PROVIDERS))
+        raise ValueError(f"Unknown image generation provider: {selected_provider}. Supported: {supported}")
+
     valid_reference_images = []
     for ref_img in reference_images:
         if validate_image(ref_img):
             valid_reference_images.append(ref_img)
         else:
             print(f"Skipping invalid reference image: {ref_img}")
-    
+
     if len(valid_reference_images) < len(reference_images):
-        print(f"Note: {len(reference_images) - len(valid_reference_images)} reference image(s) were skipped due to validation failure.")
-    
-    for reference_image in valid_reference_images:
-        i += 1
-        with open(reference_image, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("utf-8")
-        parts.append(
-            {
-                "inlineData": {
-                    "mimeType": "image/jpeg",
-                    "data": image_b64,
-                }
-            }
+        print(
+            "Note: "
+            f"{len(reference_images) - len(valid_reference_images)} reference image(s) "
+            "were skipped due to validation failure."
         )
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return "GEMINI_API_KEY is not set"
-    response = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
-        headers={
-            "x-goog-api-key": api_key,
-            "Content-Type": "application/json",
-        },
-        json={
-            "generationConfig": {"imageConfig": {"aspectRatio": aspect_ratio}},
-            "contents": [{"parts": [*parts, {"text": prompt}]}],
-        },
+    prompt_text, prompt_negative = _read_prompt(prompt_file, selected_provider)
+    return PROVIDERS[selected_provider](
+        prompt_text=prompt_text,
+        reference_images=valid_reference_images,
+        output_file=output_file,
+        aspect_ratio=aspect_ratio,
+        model=model or os.getenv("IMAGE_GENERATION_MODEL"),
+        negative_prompt=negative_prompt or prompt_negative,
+        prompt_extend=_coerce_optional_bool(
+            prompt_extend
+            if prompt_extend is not None
+            else os.getenv("IMAGE_GENERATION_PROMPT_EXTEND")
+        ),
+        watermark=_coerce_optional_bool(
+            watermark
+            if watermark is not None
+            else os.getenv("IMAGE_GENERATION_WATERMARK")
+        ),
     )
-    response.raise_for_status()
-    json = response.json()
-    parts: list[dict] = json["candidates"][0]["content"]["parts"]
-    image_parts = [part for part in parts if part.get("inlineData", False)]
-    if len(image_parts) == 1:
-        base64_image = image_parts[0]["inlineData"]["data"]
-        # Save the image to a file
-        with open(output_file, "wb") as f:
-            f.write(base64.b64decode(base64_image))
-        return f"Successfully generated image to {output_file}"
-    else:
-        raise Exception("Failed to generate image")
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Generate images using Gemini API")
+    parser = argparse.ArgumentParser(description="Generate images using a configured provider")
     parser.add_argument(
         "--prompt-file",
         required=True,
@@ -116,6 +197,36 @@ if __name__ == "__main__":
         default="16:9",
         help="Aspect ratio of the generated image",
     )
+    parser.add_argument(
+        "--provider",
+        required=False,
+        default=None,
+        help="Image generation provider, e.g. gemini or qwen_image",
+    )
+    parser.add_argument(
+        "--model",
+        required=False,
+        default=None,
+        help="Provider model name",
+    )
+    parser.add_argument(
+        "--negative-prompt",
+        required=False,
+        default=None,
+        help="Negative prompt for providers that support it",
+    )
+    parser.add_argument(
+        "--prompt-extend",
+        required=False,
+        default=None,
+        help="Whether to let the provider extend the prompt. true/false.",
+    )
+    parser.add_argument(
+        "--watermark",
+        required=False,
+        default=None,
+        help="Whether to add provider watermark. true/false.",
+    )
 
     args = parser.parse_args()
 
@@ -126,6 +237,11 @@ if __name__ == "__main__":
                 args.reference_images,
                 args.output_file,
                 args.aspect_ratio,
+                args.provider,
+                args.model,
+                args.negative_prompt,
+                _parse_bool(args.prompt_extend),
+                _parse_bool(args.watermark),
             )
         )
     except Exception as e:
