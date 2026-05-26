@@ -34,7 +34,7 @@ import { urlOfArtifact } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import { installSkill } from "@/core/skills/api";
 import { streamdownPlugins } from "@/core/streamdown";
-import { checkCodeFile, getFileName } from "@/core/utils/files";
+import { checkCodeFile, getFileName, isImageFile } from "@/core/utils/files";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +43,7 @@ import { useThread } from "../messages/context";
 import { Tooltip } from "../tooltip";
 
 import { useArtifacts } from "./context";
+import { ImageLightbox } from "./image-lightbox";
 
 export function ArtifactFileDetail({
   className,
@@ -68,6 +69,9 @@ export function ArtifactFileDetail({
   const isSkillFile = useMemo(() => {
     return filepath.endsWith(".skill");
   }, [filepath]);
+  const isImageArtifact = useMemo(() => {
+    return !isWriteFile && isImageFile(filepath);
+  }, [filepath, isWriteFile]);
   const { isCodeFile, language } = useMemo(() => {
     if (isWriteFile) {
       let language = checkCodeFile(filepath).language;
@@ -92,6 +96,7 @@ export function ArtifactFileDetail({
   const displayContent = content ?? "";
 
   const [viewMode, setViewMode] = useState<"code" | "preview">("code");
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const { isMock } = useThread();
   useEffect(() => {
@@ -123,6 +128,17 @@ export function ArtifactFileDetail({
       setIsInstalling(false);
     }
   }, [threadId, filepath, isInstalling]);
+  const closeLightbox = useCallback(() => {
+    setLightboxOpen(false);
+  }, []);
+
+  const artifactUrl = useMemo(() => {
+    return urlOfArtifact({ filepath, threadId, isMock });
+  }, [filepath, isMock, threadId]);
+  const artifactDownloadUrl = useMemo(() => {
+    return urlOfArtifact({ filepath, threadId, download: true });
+  }, [filepath, threadId]);
+
   return (
     <Artifact className={cn(className)}>
       <ArtifactHeader className="px-2">
@@ -261,7 +277,25 @@ export function ArtifactFileDetail({
             readonly
           />
         )}
-        {!isCodeFile && (
+        {isImageArtifact && (
+          <div className="bg-muted/20 flex size-full items-center justify-center overflow-hidden p-4">
+            <img
+              className="max-h-full max-w-full cursor-zoom-in object-contain"
+              src={artifactUrl}
+              alt={getFileName(filepath)}
+              onClick={() => setLightboxOpen(true)}
+            />
+            <ImageLightbox
+              alt={getFileName(filepath)}
+              downloadUrl={artifactDownloadUrl}
+              onClose={closeLightbox}
+              open={lightboxOpen}
+              openUrl={artifactUrl}
+              src={artifactUrl}
+            />
+          </div>
+        )}
+        {!isCodeFile && !isImageArtifact && (
           <iframe
             className="size-full"
             src={urlOfArtifact({ filepath, threadId, isMock })}
