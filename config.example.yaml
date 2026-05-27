@@ -574,6 +574,7 @@ image_generation:
       models:
         - name: qwen-image-2.0-pro
           display_name: Qwen Image 2.0 Pro
+          description: 擅长文本渲染，能精准生成贴合物理材质的中英文，适合生成图表、海报和PPT等。
     - name: gemini
       display_name: Gemini
       api_key: $GEMINI_API_KEY

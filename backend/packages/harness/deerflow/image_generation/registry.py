@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class ImageGenerationModel(BaseModel):
     name: str = Field(..., description="Provider model identifier passed to the image-generation skill")
     display_name: str = Field(..., description="Human-readable model name")
+    description: str | None = Field(default=None, description="Model selection guidance shown in the frontend")
 
 
 class ImageGenerationProvider(BaseModel):
@@ -96,9 +97,11 @@ def _model_from_config(value: Any) -> ImageGenerationModel | None:
         return None
 
     display_name = value.get("display_name")
+    description = value.get("description")
     return ImageGenerationModel(
         name=name,
         display_name=display_name if isinstance(display_name, str) and display_name else name,
+        description=description if isinstance(description, str) and description else None,
     )
 
 

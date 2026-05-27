@@ -16,6 +16,11 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useI18n } from "@/core/i18n/hooks";
 import { useImageGenerationProviders } from "@/core/image-generation";
 import { cn } from "@/lib/utils";
@@ -51,17 +56,24 @@ export function ImageGenerationSelector({
 
   return (
     <PromptInputActionMenu>
-      <PromptInputActionMenuTrigger
-        aria-label={t.inputBox.imageGeneration}
-        className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
-      >
-        <ImageIcon className={cn("size-3", hasSelection && "text-[#2aa7c9]")} />
-        {hasSelection && (
-          <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
-            {triggerLabel}
-          </span>
-        )}
-      </PromptInputActionMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PromptInputActionMenuTrigger
+            aria-label={t.inputBox.imageGeneration}
+            className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
+          >
+            <ImageIcon
+              className={cn("size-3", hasSelection && "text-[#2aa7c9]")}
+            />
+            {hasSelection && (
+              <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
+                {triggerLabel}
+              </span>
+            )}
+          </PromptInputActionMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{t.inputBox.imageGeneration}</TooltipContent>
+      </Tooltip>
       <PromptInputActionMenuContent className="w-56">
         <DropdownMenuGroup>
           <PromptInputActionMenuItem
@@ -141,9 +153,8 @@ export function ImageGenerationSelector({
                             provider.name &&
                           selection.image_generation_model === model.name;
 
-                        return (
+                        const item = (
                           <PromptInputActionMenuItem
-                            key={`${provider.name}:${model.name}`}
                             className={cn(
                               "h-9 pl-4",
                               isSelected
@@ -166,6 +177,23 @@ export function ImageGenerationSelector({
                               <div className="ml-auto size-4" />
                             )}
                           </PromptInputActionMenuItem>
+                        );
+
+                        return model.description ? (
+                          <Tooltip key={`${provider.name}:${model.name}`}>
+                            <TooltipTrigger asChild>{item}</TooltipTrigger>
+                            <TooltipContent
+                              side="right"
+                              align="start"
+                              className="max-w-72 leading-relaxed whitespace-normal"
+                            >
+                              {model.description}
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <div key={`${provider.name}:${model.name}`}>
+                            {item}
+                          </div>
                         );
                       })
                     )}

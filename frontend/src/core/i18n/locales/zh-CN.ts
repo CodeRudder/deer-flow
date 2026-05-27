@@ -92,7 +92,7 @@ export const zhCN: Translations = {
     ultraMode: "Ultra",
     ultraModeDescription:
       "继承自 Pro 模式，可调用子代理分工协作，适合复杂多步骤任务，能力最强",
-    imageGeneration: "图片生成模型",
+    imageGeneration: "生图模型",
     imageGenerationDefault: "默认",
     imageGenerationDefaultDescription:
       "不指定图片生成模型，由后端配置和技能默认策略决定",

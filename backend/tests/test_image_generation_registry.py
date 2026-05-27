@@ -62,6 +62,7 @@ def test_registry_reads_selectable_models_from_config_in_order(monkeypatch):
                                 {
                                     "name": "custom-image-v1",
                                     "display_name": "Custom Image V1",
+                                    "description": "Best for custom image generation.",
                                 },
                                 "custom-image-v2",
                             ],
@@ -90,6 +91,8 @@ def test_registry_reads_selectable_models_from_config_in_order(monkeypatch):
         ("custom-image-v1", "Custom Image V1"),
         ("custom-image-v2", "custom-image-v2"),
     ]
+    assert provider.models[0].description == "Best for custom image generation."
+    assert provider.models[1].description is None
     assert response.providers[1].configured is False
 
 
