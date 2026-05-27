@@ -53,14 +53,11 @@ export function ImageGenerationSelector({
     <PromptInputActionMenu>
       <PromptInputActionMenuTrigger
         aria-label={t.inputBox.imageGeneration}
-        className={cn(
-          "gap-1! px-2!",
-          hasSelection && "text-accent-foreground",
-        )}
+        className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
       >
-        <ImageIcon className="size-3" />
+        <ImageIcon className={cn("size-3", hasSelection && "text-[#2aa7c9]")} />
         {hasSelection && (
-          <span className="max-w-28 truncate text-xs font-normal">
+          <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
             {triggerLabel}
           </span>
         )}
