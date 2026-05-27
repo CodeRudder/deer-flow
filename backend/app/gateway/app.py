@@ -12,6 +12,7 @@ from app.gateway.routers import (
     assistants_compat,
     channels,
     commands,
+    image_generation,
     mcp,
     memory,
     models,
@@ -206,6 +207,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
                 "description": "Manage skills and their configurations",
             },
             {
+                "name": "image-generation",
+                "description": "Query selectable image generation providers exposed by the image-generation skill",
+            },
+            {
                 "name": "artifacts",
                 "description": "Access and download thread artifacts and generated files",
             },
@@ -262,6 +267,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Skills API is mounted at /api/skills
     app.include_router(skills.router)
+
+    # Image Generation API is mounted at /api/image-generation
+    app.include_router(image_generation.router)
 
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)

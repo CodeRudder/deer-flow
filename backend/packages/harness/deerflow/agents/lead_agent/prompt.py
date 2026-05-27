@@ -5,6 +5,7 @@ from datetime import datetime
 from functools import lru_cache
 
 from deerflow.config.agents_config import load_agent_soul
+from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.skills import load_skills
 from deerflow.skills.types import Skill
 from deerflow.subagents import get_available_subagent_names, list_subagents
@@ -161,6 +162,40 @@ After completing a task, consider creating or updating a skill when:
 If you used a skill and encountered issues not covered by it, patch it immediately.
 Prefer patch over edit. Before creating a new skill, confirm with the user first.
 Skip simple one-off tasks.
+"""
+
+
+def _build_image_generation_runtime_section(image_generation: ImageGenerationPreference | None) -> str:
+    if image_generation is None or image_generation.is_empty:
+        return ""
+
+    command_parts = [
+        "python /mnt/skills/public/image-generation/scripts/generate.py",
+        "--prompt-file <prompt-json>",
+        "--output-file <output-image>",
+    ]
+    if image_generation.provider:
+        command_parts.append(f"--provider {image_generation.provider}")
+    if image_generation.model:
+        command_parts.append(f"--model {image_generation.model}")
+
+    selected = []
+    if image_generation.provider:
+        selected.append(f"- Provider: `{image_generation.provider}`")
+    if image_generation.model:
+        selected.append(f"- Model: `{image_generation.model}`")
+
+    return f"""
+## Runtime Image Generation Preference
+The user selected an image generation preference for the current run:
+{chr(10).join(selected)}
+
+This selection is only a preference for image generation tasks. It does not mean the user is asking for an image.
+- If the current user request is normal chat, answer normally and do not use the image-generation skill.
+- If the current user request asks to create, edit, visualize, or otherwise generate an image, use the built-in image-generation skill and pass the selected provider/model explicitly.
+- The current run preference supersedes older provider/model choices mentioned in conversation history.
+- When executing the skill, include these arguments in the command:
+  `{" ".join(command_parts)}`
 """
 
 
@@ -719,7 +754,14 @@ def _build_custom_mounts_section() -> str:
     return f"\n**Custom Mounted Directories:**\n{mounts_list}\n- If the user needs files outside `/mnt/user-data`, use these absolute container paths directly when they match the requested directory"
 
 
-def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagents: int = 3, *, agent_name: str | None = None, available_skills: set[str] | None = None) -> str:
+def apply_prompt_template(
+    subagent_enabled: bool = False,
+    max_concurrent_subagents: int = 3,
+    *,
+    agent_name: str | None = None,
+    available_skills: set[str] | None = None,
+    image_generation: ImageGenerationPreference | None = None,
+) -> str:
     # Get memory context
     memory_context = _get_memory_context(agent_name)
 
@@ -747,6 +789,7 @@ def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagen
 
     # Get skills section
     skills_section = get_skills_prompt_section(available_skills)
+    image_generation_runtime_section = _build_image_generation_runtime_section(image_generation)
 
     # Get deferred tools section (tool_search)
     deferred_tools_section = get_deferred_tools_prompt_section()
@@ -760,7 +803,7 @@ def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagen
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
         soul=get_agent_soul(agent_name),
-        skills_section=skills_section,
+        skills_section="\n".join(section for section in (skills_section, image_generation_runtime_section) if section),
         deferred_tools_section=deferred_tools_section,
         memory_context=memory_context,
         subagent_section=subagent_section,

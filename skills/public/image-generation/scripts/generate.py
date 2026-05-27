@@ -48,11 +48,50 @@ def _load_image_generation_config() -> dict:
     return image_generation if isinstance(image_generation, dict) else {}
 
 
-def _config_value(config: dict, key: str, env_var: str, default=None):
-    env_value = os.getenv(env_var)
-    if env_value is not None:
-        return env_value
-    return config.get(key, default)
+def _provider_configs(config: dict) -> list[dict]:
+    providers = config.get("providers")
+    if not isinstance(providers, list):
+        return []
+    return [provider for provider in providers if isinstance(provider, dict)]
+
+
+def _first_configured_provider(config: dict) -> str | None:
+    for provider_config in _provider_configs(config):
+        provider = provider_config.get("name")
+        if isinstance(provider, str) and provider:
+            return provider
+    return None
+
+
+def _provider_config(config: dict, provider: str) -> dict:
+    for provider_config in _provider_configs(config):
+        if provider_config.get("name") == provider:
+            return provider_config
+    return {}
+
+
+def _first_model(provider_config: dict) -> str | None:
+    models = provider_config.get("models")
+    if not isinstance(models, list):
+        return None
+    for model_config in models:
+        if isinstance(model_config, str) and model_config:
+            return model_config
+        if not isinstance(model_config, dict):
+            continue
+        model = model_config.get("name") or model_config.get("model")
+        if isinstance(model, str) and model:
+            return model
+    return None
+
+
+def _resolve_model(config: dict, provider: str, model: str | None) -> str | None:
+    if model:
+        return model
+    env_model = os.getenv("IMAGE_GENERATION_MODEL")
+    if env_model:
+        return env_model
+    return _first_model(_provider_config(config, provider))
 
 
 def validate_image(image_path: str) -> bool:
@@ -126,11 +165,12 @@ def generate_image(
     watermark: bool | None = None,
 ) -> str:
     image_generation_config = _load_image_generation_config()
-    selected_provider = provider or _config_value(
-        image_generation_config,
-        "provider",
-        "IMAGE_GENERATION_PROVIDER",
-        "gemini",
+    selected_provider = (
+        provider
+        or os.getenv("IMAGE_GENERATION_PROVIDER")
+        or _first_configured_provider(image_generation_config)
+        # Keep this fallback in sync with harness/deerflow/image_generation/registry.py.
+        or "qwen_image"
     )
     if selected_provider not in PROVIDERS:
         supported = ", ".join(sorted(PROVIDERS))
@@ -156,7 +196,7 @@ def generate_image(
         reference_images=valid_reference_images,
         output_file=output_file,
         aspect_ratio=aspect_ratio,
-        model=model or os.getenv("IMAGE_GENERATION_MODEL"),
+        model=_resolve_model(image_generation_config, selected_provider, model),
         negative_prompt=negative_prompt or prompt_negative,
         prompt_extend=_coerce_optional_bool(
             prompt_extend

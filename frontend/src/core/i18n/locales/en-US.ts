@@ -94,6 +94,13 @@ export const enUS: Translations = {
     ultraMode: "Ultra",
     ultraModeDescription:
       "Pro mode with subagents to divide work; best for complex multi-step tasks",
+    imageGeneration: "Image generation model",
+    imageGenerationDefault: "Default",
+    imageGenerationDefaultDescription:
+      "Do not pin an image model; use backend configuration and skill defaults",
+    imageGenerationNotConfigured: "API key not configured",
+    imageGenerationSkillDisabled: "image-generation skill is disabled",
+    imageGenerationLoadFailed: "Failed to load image generation models",
     reasoningEffort: "Reasoning Effort",
     reasoningEffortMinimal: "Minimal",
     reasoningEffortMinimalDescription: "Retrieval + Direct Output",

@@ -103,6 +103,7 @@ class AppConfig(BaseModel):
         # Check config version before processing
         cls._check_config_version(config_data, resolved_path)
 
+        cls._resolve_optional_image_generation_api_keys(config_data)
         config_data = cls.resolve_env_variables(config_data)
 
         # Load title config if present
@@ -216,6 +217,30 @@ class AppConfig(BaseModel):
         elif isinstance(config, list):
             return [cls.resolve_env_variables(item) for item in config]
         return config
+
+    @classmethod
+    def _resolve_optional_image_generation_api_keys(cls, config_data: dict[str, Any]) -> None:
+        """Resolve optional image-generation API key references without failing config load.
+
+        Image generation providers are selectable in the UI even when their API
+        keys are not configured; the providers endpoint reports that state with
+        ``configured=false``. Keep that optional behavior while preserving the
+        stricter global ``$VAR`` handling for required config fields.
+        """
+        image_generation = config_data.get("image_generation")
+        if not isinstance(image_generation, dict):
+            return
+
+        providers = image_generation.get("providers")
+        if not isinstance(providers, list):
+            return
+
+        for provider in providers:
+            if not isinstance(provider, dict):
+                continue
+            api_key = provider.get("api_key")
+            if isinstance(api_key, str) and api_key.startswith("$"):
+                provider["api_key"] = os.getenv(api_key[1:], "")
 
     def get_model_config(self, name: str) -> ModelConfig | None:
         """Get the model config by name.

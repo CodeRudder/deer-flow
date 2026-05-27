@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.thread_state import SandboxState, ThreadDataState, ThreadState
+from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.models import create_chat_model
 from deerflow.subagents.config import SubagentConfig
 from deerflow.subagents.session import SubagentSession
@@ -148,6 +149,7 @@ class SubagentExecutor:
         thread_data: ThreadDataState | None = None,
         thread_id: str | None = None,
         trace_id: str | None = None,
+        image_generation: ImageGenerationPreference | None = None,
         session: SubagentSession | None = None,
     ):
         """Initialize the executor.
@@ -160,6 +162,7 @@ class SubagentExecutor:
             thread_data: Thread data from parent agent.
             thread_id: Thread ID for sandbox operations.
             trace_id: Trace ID from parent for distributed tracing.
+            image_generation: Parent run image generation preference.
             session: Optional session for conversation persistence.
         """
         self.config = config
@@ -167,6 +170,7 @@ class SubagentExecutor:
         self.sandbox_state = sandbox_state
         self.thread_data = thread_data
         self.thread_id = thread_id
+        self.image_generation = image_generation or ImageGenerationPreference()
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
         self.session = session
@@ -269,10 +273,16 @@ class SubagentExecutor:
             run_config: RunnableConfig = {
                 "recursion_limit": 200,
             }
+            configurable = {}
             context = {}
             if self.thread_id:
-                run_config["configurable"] = {"thread_id": self.thread_id}
+                configurable["thread_id"] = self.thread_id
                 context["thread_id"] = self.thread_id
+            image_generation_values = self.image_generation.as_configurable()
+            configurable.update(image_generation_values)
+            context.update(image_generation_values)
+            if configurable:
+                run_config["configurable"] = configurable
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} starting async execution with max_turns={self.config.max_turns}")
 

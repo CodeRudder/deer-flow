@@ -330,7 +330,10 @@ def test_generate_reads_provider_defaults_from_config(monkeypatch, tmp_path):
     config_file.write_text(
         """
 image_generation:
-  provider: fake-provider
+  providers:
+    - name: fake-provider
+      models:
+        - fake-model-v1
 """,
         encoding="utf-8",
     )
@@ -356,7 +359,7 @@ image_generation:
     )
 
     assert result == "ok"
-    assert calls["model"] is None
+    assert calls["model"] == "fake-model-v1"
     assert calls["prompt_extend"] is None
     assert calls["watermark"] is None
 

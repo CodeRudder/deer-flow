@@ -174,6 +174,55 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
     assert events[-1]["result"] == "all done"
 
 
+def test_task_tool_appends_image_generation_preference_to_subagent_prompt(monkeypatch):
+    config = _make_subagent_config()
+    runtime = _make_runtime()
+    runtime.context.update(
+        {
+            "image_generation_provider": "qwen_image",
+            "image_generation_model": "qwen-image-2.0-pro",
+        }
+    )
+    captured = {}
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None, description=None):
+            captured["prompt"] = prompt
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
+    monkeypatch.setattr(
+        task_tool_module,
+        "get_background_task_result",
+        lambda _: _make_result(FakeSubagentStatus.COMPLETED, result="done"),
+    )
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: lambda event: None)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
+
+    output = _run_task_tool(
+        runtime=runtime,
+        description="生成图片",
+        prompt="create an image",
+        subagent_type="general-purpose",
+        tool_call_id="tc-image",
+    )
+
+    assert output == "Task Succeeded. Result: done"
+    assert "image_generation_runtime_preference" in captured["prompt"]
+    assert "--provider qwen_image" in captured["prompt"]
+    assert "--model qwen-image-2.0-pro" in captured["prompt"]
+    image_generation = captured["executor_kwargs"]["image_generation"]
+    assert image_generation.provider == "qwen_image"
+    assert image_generation.model == "qwen-image-2.0-pro"
+
+
 def test_task_tool_returns_failed_message(monkeypatch):
     config = _make_subagent_config()
     events = []

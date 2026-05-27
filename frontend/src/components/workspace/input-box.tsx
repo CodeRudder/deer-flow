@@ -80,11 +80,21 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
+import { ImageGenerationSelector } from "./image-generation-selector";
 import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
 import { Tooltip } from "./tooltip";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
+type InputBoxContext = Omit<
+  AgentThreadContext,
+  "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
+> & {
+  mode: InputMode | undefined;
+  reasoning_effort?: "minimal" | "low" | "medium" | "high";
+  image_generation_provider?: string;
+  image_generation_model?: string;
+};
 
 function getResolvedMode(
   mode: InputMode | undefined,
@@ -118,26 +128,12 @@ export function InputBox({
   assistantId?: string | null;
   status?: ChatStatus;
   disabled?: boolean;
-  context: Omit<
-    AgentThreadContext,
-    "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
-  > & {
-    mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
-    reasoning_effort?: "minimal" | "low" | "medium" | "high";
-  };
+  context: InputBoxContext;
   extraHeader?: React.ReactNode;
   isNewThread?: boolean;
   threadId: string;
   initialValue?: string;
-  onContextChange?: (
-    context: Omit<
-      AgentThreadContext,
-      "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
-    > & {
-      mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
-      reasoning_effort?: "minimal" | "low" | "medium" | "high";
-    },
-  ) => void;
+  onContextChange?: (context: InputBoxContext) => void;
   onFollowupsVisibilityChange?: (visible: boolean) => void;
   onSubmit?: (message: PromptInputMessage) => void;
   onStop?: () => void;
@@ -244,6 +240,19 @@ export function InputBox({
       });
     },
     [onContextChange, context],
+  );
+
+  const handleImageGenerationSelectionChange = useCallback(
+    (selection: {
+      image_generation_provider?: string;
+      image_generation_model?: string;
+    }) => {
+      onContextChange?.({
+        ...context,
+        ...selection,
+      });
+    },
+    [context, onContextChange],
   );
 
   const handleSubmit = useCallback(
@@ -669,6 +678,13 @@ export function InputBox({
                 </DropdownMenuGroup>
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>
+            <ImageGenerationSelector
+              selection={{
+                image_generation_provider: context.image_generation_provider,
+                image_generation_model: context.image_generation_model,
+              }}
+              onSelectionChange={handleImageGenerationSelectionChange}
+            />
             {supportReasoningEffort && context.mode !== "flash" && (
               <PromptInputActionMenu>
                 <PromptInputActionMenuTrigger className="gap-1! px-2!">

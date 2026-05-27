@@ -559,14 +559,27 @@ skills:
 # ============================================================================
 # Image Generation Skill Configuration
 # ============================================================================
-# Select the default image generation provider.
-# Provider-specific defaults live in each provider implementation.
+# Configure selectable image generation providers/models for the frontend.
 # API keys and bearer tokens should remain in environment variables, not here.
 
 image_generation:
-  # Default provider when --provider and IMAGE_GENERATION_PROVIDER are not set.
-  # Supported: gemini, qwen_image
-  provider: qwen_image
+  # Providers shown by GET /api/image-generation/providers.
+  # The first provider and its first model are treated as the default order.
+  # If this section is removed, the backend falls back to built-in provider defaults.
+  # `api_key` can reference an environment variable; secret values are never returned.
+  providers:
+    - name: qwen_image
+      display_name: Qwen Image
+      api_key: $QWEN_IMAGE_API_KEY
+      models:
+        - name: qwen-image-2.0-pro
+          display_name: Qwen Image 2.0 Pro
+    - name: gemini
+      display_name: Gemini
+      api_key: $GEMINI_API_KEY
+      models:
+        - name: gemini-3-pro-image-preview
+          display_name: Gemini 3 Pro Image Preview
 
 # ============================================================================
 # Title Generation Configuration

@@ -28,6 +28,33 @@ def _write_config(path: Path, *, model_name: str, supports_thinking: bool) -> No
     )
 
 
+def _write_config_with_image_generation_api_key(path: Path) -> None:
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
+                "models": [
+                    {
+                        "name": "first-model",
+                        "use": "langchain_openai:ChatOpenAI",
+                        "model": "gpt-test",
+                    }
+                ],
+                "image_generation": {
+                    "providers": [
+                        {
+                            "name": "qwen_image",
+                            "api_key": "$QWEN_IMAGE_API_KEY",
+                            "models": ["qwen-image-2.0-pro"],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_extensions_config(path: Path) -> None:
     path.write_text(json.dumps({"mcpServers": {}, "skills": {}}), encoding="utf-8")
 
@@ -77,5 +104,24 @@ def test_get_app_config_reloads_when_config_path_changes(tmp_path, monkeypatch):
         second = get_app_config()
         assert second.models[0].name == "model-b"
         assert second is not first
+    finally:
+        reset_app_config()
+
+
+def test_image_generation_api_key_env_reference_is_optional(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    extensions_path = tmp_path / "extensions_config.json"
+    _write_extensions_config(extensions_path)
+    _write_config_with_image_generation_api_key(config_path)
+
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("DEER_FLOW_EXTENSIONS_CONFIG_PATH", str(extensions_path))
+    monkeypatch.delenv("QWEN_IMAGE_API_KEY", raising=False)
+    reset_app_config()
+
+    try:
+        config = get_app_config()
+        provider = config.model_extra["image_generation"]["providers"][0]
+        assert provider["api_key"] == ""
     finally:
         reset_app_config()

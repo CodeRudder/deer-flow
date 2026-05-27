@@ -8,6 +8,8 @@ export const DEFAULT_LOCAL_SETTINGS: LocalSettings = {
     model_name: undefined,
     mode: undefined,
     reasoning_effort: undefined,
+    image_generation_provider: undefined,
+    image_generation_model: undefined,
   },
 };
 

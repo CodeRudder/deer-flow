@@ -13,6 +13,7 @@ from langgraph.typing import ContextT
 
 from deerflow.agents.lead_agent.prompt import get_skills_prompt_section
 from deerflow.agents.thread_state import ThreadState
+from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.subagents import SubagentExecutor, get_available_subagent_names, get_subagent_config
 from deerflow.subagents.executor import SubagentStatus, cleanup_background_task, get_background_task_result, request_cancel_background_task
@@ -25,6 +26,65 @@ def _status_value(status: object) -> str:
     """Return a comparable status string for real enums and test doubles."""
     value = getattr(status, "value", status)
     return str(value)
+
+
+def _runtime_value(runtime: ToolRuntime[ContextT, ThreadState] | None, key: str):
+    if runtime is None:
+        return None
+    if runtime.context and key in runtime.context:
+        return runtime.context[key]
+    if runtime.config:
+        context = runtime.config.get("context", {})
+        if isinstance(context, dict) and key in context:
+            return context[key]
+        configurable = runtime.config.get("configurable", {})
+        if isinstance(configurable, dict) and key in configurable:
+            return configurable[key]
+    return None
+
+
+def _append_image_generation_preference(prompt: str, image_generation: ImageGenerationPreference | None) -> str:
+    if image_generation is None or image_generation.is_empty:
+        return prompt
+
+    command_args = []
+    if image_generation.provider:
+        command_args.append(f"--provider {image_generation.provider}")
+    if image_generation.model:
+        command_args.append(f"--model {image_generation.model}")
+
+    details = []
+    if image_generation.provider:
+        details.append(f"- Provider: `{image_generation.provider}`")
+    if image_generation.model:
+        details.append(f"- Model: `{image_generation.model}`")
+
+    preference = (
+        "<image_generation_runtime_preference>\n"
+        "The parent run selected the following image generation preference for the current run:\n"
+        f"{chr(10).join(details)}\n"
+        "This is only a preference. If this subtask is not an image generation task, ignore it and proceed normally.\n"
+        "If this subtask uses the image-generation skill, call generate.py with these explicit arguments:\n"
+        f"`{' '.join(command_args)}`\n"
+        "</image_generation_runtime_preference>"
+    )
+    return f"{prompt}\n\n{preference}"
+
+
+def _image_generation_preference_from_runtime(runtime: ToolRuntime[ContextT, ThreadState] | None) -> ImageGenerationPreference:
+    if runtime is None:
+        return ImageGenerationPreference()
+
+    metadata = runtime.config.get("metadata", {}) if runtime.config else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return ImageGenerationPreference.from_mapping(
+        {
+            "image_generation_provider": _runtime_value(runtime, "image_generation_provider") or metadata.get("image_generation_provider"),
+            "image_generation_model": _runtime_value(runtime, "image_generation_model") or metadata.get("image_generation_model"),
+        }
+    )
 
 
 def _build_recovery_prompt(sessions: list[SubagentSession]) -> str:
@@ -236,6 +296,7 @@ async def task_tool(
     thread_id = None
     parent_model = None
     trace_id = None
+    image_generation = ImageGenerationPreference()
 
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
@@ -265,6 +326,9 @@ async def task_tool(
 
         # Get or generate trace_id for distributed tracing
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
+        image_generation = _image_generation_preference_from_runtime(runtime)
+
+    prompt = _append_image_generation_preference(prompt, image_generation)
 
     # Get available tools (excluding task tool to prevent nesting)
     # Lazy import to avoid circular dependency
@@ -282,6 +346,7 @@ async def task_tool(
         thread_data=thread_data,
         thread_id=thread_id,
         trace_id=trace_id,
+        image_generation=image_generation,
         session=None,  # will be set below
     )
 
@@ -586,12 +651,14 @@ async def _action_resume(
     thread_data = None
     parent_model = None
     trace_id = None
+    image_generation = ImageGenerationPreference()
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
         thread_data = runtime.state.get("thread_data")
         metadata = runtime.config.get("metadata", {})
         parent_model = metadata.get("model_name")
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
+        image_generation = _image_generation_preference_from_runtime(runtime)
 
     from deerflow.tools import get_available_tools
 
@@ -605,6 +672,7 @@ async def _action_resume(
         thread_data=thread_data,
         thread_id=thread_id,
         trace_id=trace_id,
+        image_generation=image_generation,
         session=None,
     )
 
@@ -612,6 +680,8 @@ async def _action_resume(
     session = await _create_persisted_session(thread_id, tool_call_id, effective_subagent_type, effective_description)
     if session is not None:
         executor.session = session
+
+    recovery = _append_image_generation_preference(recovery, image_generation)
 
     # Execute with recovery prompt
     new_task_id = executor.execute_async(recovery, task_id=tool_call_id, description=effective_description)

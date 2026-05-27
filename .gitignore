@@ -52,7 +52,7 @@ sandbox_image_cache.tar
 web/
 
 # ignore the legacy `bug` folder
-bug/
+issue/
 
 # Deployment artifacts
 backend/Dockerfile.langgraph

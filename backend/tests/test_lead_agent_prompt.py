@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import anyio
 
 from deerflow.agents.lead_agent import prompt as prompt_module
+from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.skills.types import Skill
 
 
@@ -48,6 +49,28 @@ def test_apply_prompt_template_includes_custom_mounts(monkeypatch):
 
     assert "`/home/user/shared`" in prompt
     assert "Custom Mounted Directories" in prompt
+
+
+def test_apply_prompt_template_includes_runtime_image_generation_preference(monkeypatch):
+    monkeypatch.setattr(prompt_module, "_get_enabled_skills", lambda: [])
+    monkeypatch.setattr(prompt_module, "get_deferred_tools_prompt_section", lambda: "")
+    monkeypatch.setattr(prompt_module, "_build_acp_section", lambda: "")
+    monkeypatch.setattr(prompt_module, "_build_custom_mounts_section", lambda: "")
+    monkeypatch.setattr(prompt_module, "_get_memory_context", lambda agent_name=None: "")
+    monkeypatch.setattr(prompt_module, "get_agent_soul", lambda agent_name=None: "")
+
+    prompt = prompt_module.apply_prompt_template(
+        image_generation=ImageGenerationPreference(
+            provider="qwen_image",
+            model="qwen-image-2.0-pro",
+        ),
+    )
+
+    assert "Runtime Image Generation Preference" in prompt
+    assert "--provider qwen_image" in prompt
+    assert "--model qwen-image-2.0-pro" in prompt
+    assert "It does not mean the user is asking for an image" in prompt
+    assert "supersedes older provider/model choices" in prompt
 
 
 def test_refresh_skills_system_prompt_cache_async_reloads_immediately(monkeypatch, tmp_path):

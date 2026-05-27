@@ -75,6 +75,12 @@ export interface Translations {
     proModeDescription: string;
     ultraMode: string;
     ultraModeDescription: string;
+    imageGeneration: string;
+    imageGenerationDefault: string;
+    imageGenerationDefaultDescription: string;
+    imageGenerationNotConfigured: string;
+    imageGenerationSkillDisabled: string;
+    imageGenerationLoadFailed: string;
     reasoningEffort: string;
     reasoningEffortMinimal: string;
     reasoningEffortMinimalDescription: string;
