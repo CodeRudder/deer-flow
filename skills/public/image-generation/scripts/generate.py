@@ -157,7 +157,7 @@ def generate_image(
     prompt_file: str,
     reference_images: list[str],
     output_file: str,
-    aspect_ratio: str = "16:9",
+    aspect_ratio: str = "1:1",
     provider: str | None = None,
     model: str | None = None,
     negative_prompt: str | None = None,
@@ -234,7 +234,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--aspect-ratio",
         required=False,
-        default="16:9",
+        default="1:1",
         help="Aspect ratio of the generated image",
     )
     parser.add_argument(

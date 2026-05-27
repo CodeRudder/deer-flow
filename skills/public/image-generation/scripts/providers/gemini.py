@@ -12,7 +12,7 @@ def generate(
     prompt_text: str,
     reference_images: list[str],
     output_file: str,
-    aspect_ratio: str = "16:9",
+    aspect_ratio: str = "1:1",
     model: str | None = None,
     negative_prompt: str | None = None,
     prompt_extend: bool | None = None,
