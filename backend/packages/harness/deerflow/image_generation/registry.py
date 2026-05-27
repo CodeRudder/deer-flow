@@ -39,6 +39,7 @@ class _ProviderDefinition:
     display_name: str
     api_key_env: str
     models: tuple[ImageGenerationModel, ...]
+    fallback_api_key_envs: tuple[str, ...] = ()
 
 
 _PROVIDERS: tuple[_ProviderDefinition, ...] = (
@@ -61,6 +62,19 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
             ImageGenerationModel(
                 name="gemini-3-pro-image-preview",
                 display_name="Gemini 3 Pro Image Preview",
+            ),
+        ),
+    ),
+    _ProviderDefinition(
+        name="openai_image",
+        display_name="ChatGPT Image",
+        api_key_env="OPENAI_IMAGE_API_KEY",
+        fallback_api_key_envs=("OPENAI_API_KEY",),
+        models=(
+            ImageGenerationModel(
+                name="gpt-image-2",
+                display_name="GPT Image 2",
+                description="通过 OpenAI-compatible Image API 生成图片；当前可接中转站，后续可切换官方兼容渠道。",
             ),
         ),
     ),
@@ -116,11 +130,13 @@ def _api_key_configured(provider_config: dict[str, Any], builtin: _ProviderDefin
     api_key = provider_config.get("api_key")
     if isinstance(api_key, str):
         if api_key.startswith("$"):
-            return bool(os.getenv(api_key[1:]))
+            if os.getenv(api_key[1:]):
+                return True
+            return bool(builtin and any(os.getenv(env_name) for env_name in builtin.fallback_api_key_envs))
         return bool(api_key)
 
     if builtin:
-        return bool(os.getenv(builtin.api_key_env))
+        return bool(os.getenv(builtin.api_key_env) or any(os.getenv(env_name) for env_name in builtin.fallback_api_key_envs))
 
     return True
 

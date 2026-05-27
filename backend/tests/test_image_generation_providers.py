@@ -31,6 +31,10 @@ gemini_module = _load_module(
     "image_generation_gemini",
     SCRIPT_DIR / "providers" / "gemini.py",
 )
+openai_image_module = _load_module(
+    "image_generation_openai_image",
+    SCRIPT_DIR / "providers" / "openai_image.py",
+)
 
 
 def test_qwen_aspect_ratio_to_size():
@@ -38,6 +42,35 @@ def test_qwen_aspect_ratio_to_size():
     assert qwen_module._aspect_ratio_to_size("16:9") == "2048*1152"
     assert qwen_module._aspect_ratio_to_size("9:16") == "1152*2048"
     assert qwen_module._aspect_ratio_to_size("5:4") == "2048*1632"
+
+
+def test_openai_image_aspect_ratio_to_size():
+    assert openai_image_module._aspect_ratio_to_size("1:1") == "2048x2048"
+    assert openai_image_module._aspect_ratio_to_size("16:9") == "3840x2160"
+    assert openai_image_module._aspect_ratio_to_size("9:16") == "2160x3840"
+    assert openai_image_module._aspect_ratio_to_size("5:4") == "2048x1632"
+
+
+def test_openai_image_build_payload_uses_openai_compatible_shape(monkeypatch):
+    monkeypatch.delenv("OPENAI_IMAGE_QUALITY", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_OUTPUT_FORMAT", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_RESPONSE_FORMAT", raising=False)
+
+    payload = openai_image_module._build_payload(
+        prompt_text="A quiet bookstore",
+        model="gpt-image-2",
+        aspect_ratio="16:9",
+    )
+
+    assert payload == {
+        "model": "gpt-image-2",
+        "prompt": "A quiet bookstore",
+        "size": "3840x2160",
+        "quality": "high",
+        "output_format": "png",
+        "response_format": "url",
+        "n": 1,
+    }
 
 
 def test_qwen_build_payload_uses_expected_shape():
@@ -239,6 +272,115 @@ def test_qwen_uses_token_plan_base_url_by_default(monkeypatch, tmp_path):
         "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1"
         "/services/aigc/multimodal-generation/generation"
     )
+
+
+def test_openai_image_missing_api_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = openai_image_module.generate(
+        prompt_text="prompt",
+        reference_images=[],
+        output_file=str(tmp_path / "out.png"),
+        aspect_ratio="1:1",
+    )
+
+    assert result == "OPENAI_IMAGE_API_KEY is not set"
+
+
+def test_openai_image_posts_and_downloads_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_IMAGE_BASE_URL", "https://www.packyapi.com/v1")
+
+    post_response = Mock()
+    post_response.ok = True
+    post_response.json.return_value = {
+        "data": [
+            {
+                "url": "https://cdn.example/result.png",
+            }
+        ]
+    }
+    get_response = Mock()
+    get_response.ok = True
+    get_response.content = b"fake-png-bytes"
+    output_file = tmp_path / "out.png"
+
+    with patch.object(openai_image_module.requests, "post", return_value=post_response) as post, patch.object(
+        openai_image_module.requests, "get", return_value=get_response
+    ) as get:
+        result = openai_image_module.generate(
+            prompt_text="prompt",
+            reference_images=[],
+            output_file=str(output_file),
+            aspect_ratio="16:9",
+            model="gpt-image-2",
+        )
+
+    post.assert_called_once()
+    assert post.call_args.args[0] == "https://www.packyapi.com/v1/images/generations"
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert post.call_args.kwargs["json"]["model"] == "gpt-image-2"
+    assert post.call_args.kwargs["json"]["size"] == "3840x2160"
+    assert post.call_args.kwargs["json"]["quality"] == "high"
+    assert post.call_args.kwargs["json"]["response_format"] == "url"
+    get.assert_called_once_with("https://cdn.example/result.png", timeout=(10, 60))
+    assert output_file.read_bytes() == b"fake-png-bytes"
+    assert "provider=openai_image" in result
+
+
+def test_openai_image_uses_openai_api_key_fallback(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_IMAGE_BASE_URL", "https://api.example/v1")
+
+    post_response = Mock()
+    post_response.ok = True
+    post_response.json.return_value = {
+        "data": [
+            {
+                "b64_json": base64.b64encode(b"fake-png-bytes").decode("ascii"),
+            }
+        ]
+    }
+
+    with patch.object(openai_image_module.requests, "post", return_value=post_response) as post:
+        openai_image_module.generate(
+            prompt_text="prompt",
+            reference_images=[],
+            output_file=str(tmp_path / "out.png"),
+            aspect_ratio="1:1",
+        )
+
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer openai-key"
+
+
+def test_openai_image_writes_b64_json(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_IMAGE_BASE_URL", raising=False)
+
+    post_response = Mock()
+    post_response.ok = True
+    post_response.json.return_value = {
+        "data": [
+            {
+                "b64_json": base64.b64encode(b"fake-png-bytes").decode("ascii"),
+            }
+        ]
+    }
+    output_file = tmp_path / "out.png"
+
+    with patch.object(openai_image_module.requests, "post", return_value=post_response) as post:
+        openai_image_module.generate(
+            prompt_text="prompt",
+            reference_images=[],
+            output_file=str(output_file),
+            aspect_ratio="1:1",
+            model="gpt-image-2",
+        )
+
+    assert post.call_args.args[0] == "https://api.openai.com/v1/images/generations"
+    assert output_file.read_bytes() == b"fake-png-bytes"
 
 
 def test_generate_reads_qwen_prompt_and_negative_prompt(tmp_path):

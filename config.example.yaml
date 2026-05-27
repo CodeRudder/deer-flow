@@ -573,14 +573,24 @@ image_generation:
       api_key: $QWEN_IMAGE_API_KEY
       models:
         - name: qwen-image-2.0-pro
-          display_name: Qwen Image 2.0 Pro
-          description: 擅长文本渲染，能精准生成贴合物理材质的中英文，适合生成图表、海报和PPT等。
+          display_name: qwen-image-2.0-pro
+          description: 擅长文本渲染，能精准生成贴合物理材质的中英文，适合生成图表、海报和PPT等
+        - name: wan2.7-image-pro
+          display_name: wan2.7-image-pro
+          description: 功能最全面，支持组图生成和高达4096x4096的分辨率，并增强了五官控制、色彩控制和超长文字渲染能力
     - name: gemini
       display_name: Gemini
       api_key: $GEMINI_API_KEY
       models:
         - name: gemini-3-pro-image-preview
           display_name: Gemini 3 Pro Image Preview
+    - name: openai_image
+      display_name: ChatGPT Image
+      api_key: $OPENAI_IMAGE_API_KEY
+      models:
+        - name: gpt-image-2
+          display_name: gpt-image-2
+          description: 具备行业顶尖的密集长文本指令对齐与多复杂主体构图能力，擅长深度挖掘提示词中的隐式物理常识与逻辑关联，实现精准且高创意的意图还原
 
 # ============================================================================
 # Title Generation Configuration
