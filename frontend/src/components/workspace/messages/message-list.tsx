@@ -248,7 +248,11 @@ export function MessageList({
                     className="mb-4"
                   />
                 )}
-                <ArtifactFileList files={files} threadId={threadId} />
+                <ArtifactFileList
+                  files={files}
+                  threadId={threadId}
+                  variant="message"
+                />
               </div>
             );
           } else if (group.type === "assistant:subagent") {
