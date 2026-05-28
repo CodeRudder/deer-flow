@@ -56,12 +56,17 @@ def _provider_configs(config: dict) -> list[dict]:
     return [provider for provider in providers if isinstance(provider, dict)]
 
 
-def _first_configured_provider(config: dict) -> str | None:
+def _configured_provider_names(config: dict) -> list[str]:
+    names: list[str] = []
     for provider_config in _provider_configs(config):
         provider = provider_config.get("name")
         if isinstance(provider, str) and provider:
-            return provider
-    return None
+            names.append(provider)
+    return names
+
+
+def _first_configured_provider(config: dict) -> str | None:
+    return next(iter(_configured_provider_names(config)), None)
 
 
 def _provider_config(config: dict, provider: str) -> dict:
@@ -173,6 +178,13 @@ def generate_image(
         # Keep this fallback in sync with harness/deerflow/image_generation/registry.py.
         or "qwen_image"
     )
+    configured_provider_names = _configured_provider_names(image_generation_config)
+    if configured_provider_names and selected_provider not in configured_provider_names:
+        supported = ", ".join(configured_provider_names)
+        raise ValueError(
+            f"Image generation provider '{selected_provider}' is not enabled in config.yaml. "
+            f"Enabled providers: {supported}"
+        )
     if selected_provider not in PROVIDERS:
         supported = ", ".join(sorted(PROVIDERS))
         raise ValueError(f"Unknown image generation provider: {selected_provider}. Supported: {supported}")

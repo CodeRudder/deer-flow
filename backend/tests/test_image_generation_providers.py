@@ -388,6 +388,7 @@ def test_openai_image_uses_openai_api_key_fallback(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("OPENAI_IMAGE_BASE_URL", "https://api.example/v1")
+    monkeypatch.delenv("OPENAI_IMAGE_MODE", raising=False)
 
     post_response = Mock()
     post_response.ok = True
@@ -556,7 +557,7 @@ def test_generate_uses_provider_registry(monkeypatch, tmp_path):
         return "ok"
 
     monkeypatch.setitem(generate_module.PROVIDERS, "fake-provider", fake_provider)
-    monkeypatch.delenv("DEER_FLOW_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(tmp_path / "missing-config.yaml"))
     monkeypatch.delenv("IMAGE_GENERATION_PROVIDER", raising=False)
 
     result = generate_module.generate_image(
@@ -615,7 +616,10 @@ def test_env_provider_overrides_config(monkeypatch, tmp_path):
     config_file.write_text(
         """
 image_generation:
-  provider: config-provider
+  providers:
+    - name: env-provider
+      models:
+        - env-model-v1
 """,
         encoding="utf-8",
     )
@@ -640,3 +644,33 @@ image_generation:
 
     assert result == "ok"
     assert calls["prompt_text"] == "prompt"
+
+
+def test_configured_providers_act_as_allowlist(monkeypatch, tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+image_generation:
+  providers:
+    - name: qwen_image
+      models:
+        - qwen-image-2.0-pro
+""",
+        encoding="utf-8",
+    )
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("prompt", encoding="utf-8")
+
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_file))
+
+    with pytest.raises(ValueError) as exc:
+        generate_module.generate_image(
+            prompt_file=str(prompt_file),
+            reference_images=[],
+            output_file=str(tmp_path / "out.png"),
+            provider="gemini",
+        )
+
+    message = str(exc.value)
+    assert "not enabled in config.yaml" in message
+    assert "Enabled providers: qwen_image" in message
