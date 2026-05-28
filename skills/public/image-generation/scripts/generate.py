@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -285,4 +286,5 @@ if __name__ == "__main__":
             )
         )
     except Exception as e:
-        print(f"Error while generating image: {e}")
+        print(f"Error while generating image: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
