@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import pytest
@@ -107,3 +108,79 @@ def test_delete_thread_data_returns_generic_500_error(tmp_path):
     assert exc_info.value.detail == "Failed to delete local thread data."
     assert "/secret/path" not in exc_info.value.detail
     log_exception.assert_called_once_with("Failed to delete thread data for %s", "thread-cleanup")
+
+
+def test_prepare_history_response_injects_message_timestamps(tmp_path):
+    paths = Paths(tmp_path)
+    thread_id = "dafbc7b6-2023-4725-a62d-a1c968e58c2d"
+    thread_dir = paths.thread_dir(thread_id)
+    thread_dir.mkdir(parents=True, exist_ok=True)
+    (thread_dir / "conversation.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-05-11T06:38:08+00:00",
+                        "role": "human",
+                        "id": "msg-old",
+                        "content": "old question",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-05-29T04:00:00+00:00",
+                        "role": "human",
+                        "id": "msg-new",
+                        "content": "new question",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    history = [
+        {
+            "metadata": {"created_at": "2026-05-29T04:00:00+00:00"},
+            "values": {
+                "messages": [
+                    {
+                        "type": "human",
+                        "id": "msg-old",
+                        "content": "old question",
+                        "response_metadata": {},
+                    },
+                    {
+                        "type": "human",
+                        "id": "msg-new",
+                        "content": "new question",
+                        "response_metadata": {},
+                    },
+                ]
+            },
+        }
+    ]
+
+    with patch("deerflow.config.paths.get_paths", return_value=paths):
+        result = threads._prepare_history_response(thread_id, history)
+
+    messages = result[0]["values"]["messages"]
+    assert messages[0]["response_metadata"]["created_at"] == "2026-05-11T06:38:08+00:00"
+    assert messages[1]["response_metadata"]["created_at"] == "2026-05-29T04:00:00+00:00"
+
+
+def test_dedupe_messages_by_id_keeps_first_occurrence():
+    messages = [
+        {"id": "msg-1", "ts": "2026-05-11T06:29:28+00:00", "content": "original"},
+        {"id": "msg-2", "ts": "2026-05-11T06:30:00+00:00", "content": "other"},
+        {"id": "msg-1", "ts": "2026-05-29T04:00:00+00:00", "content": "replayed"},
+        {"content": "no id"},
+    ]
+
+    result = threads._dedupe_messages_by_id(messages)
+
+    assert result == [
+        {"id": "msg-1", "ts": "2026-05-11T06:29:28+00:00", "content": "original"},
+        {"id": "msg-2", "ts": "2026-05-11T06:30:00+00:00", "content": "other"},
+        {"content": "no id"},
+    ]

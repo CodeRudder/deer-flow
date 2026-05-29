@@ -52,7 +52,7 @@ export default function ChatsPage() {
             <ScrollArea className="size-full py-4">
               <div className="mx-auto flex size-full max-w-(--container-width-md) flex-col">
                 {filteredThreads?.map((thread) => {
-                  const updatedAtAgo = safeTimeAgo(thread.updated_at);
+                  const createdAtAgo = safeTimeAgo(thread.created_at);
                   return (
                     <Link
                       key={thread.thread_id}
@@ -62,9 +62,9 @@ export default function ChatsPage() {
                         <div>
                           <div>{titleOfThread(thread)}</div>
                         </div>
-                        {updatedAtAgo && (
+                        {createdAtAgo && (
                           <div className="text-muted-foreground text-sm">
-                            {updatedAtAgo}
+                            {createdAtAgo}
                           </div>
                         )}
                       </div>

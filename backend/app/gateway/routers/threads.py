@@ -433,6 +433,44 @@ def _inject_message_timestamps(thread_id: str, serialized_values: dict) -> None:
         logger.debug("Failed to inject timestamps for thread %s", thread_id, exc_info=True)
 
 
+def _prepare_history_response(thread_id: str, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Trim checkpoint history values and attach per-message timestamps.
+
+    LangGraph checkpoint history records have checkpoint-level timestamps in
+    metadata, but individual messages do not necessarily carry their original
+    creation time. DeerFlow records those message-level timestamps in
+    conversation.jsonl, so history responses need the same injection as the
+    latest state response.
+    """
+    for entry in data:
+        values = entry.get("values")
+        if isinstance(values, dict):
+            trimmed = _trim_messages(values)
+            _inject_message_timestamps(thread_id, trimmed)
+            entry["values"] = trimmed
+    return data
+
+
+def _dedupe_messages_by_id(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove duplicate persisted messages while preserving chronological order.
+
+    Older conversation.jsonl files may contain repeated LangChain message IDs
+    from previous persistence behavior.  The first occurrence is the canonical
+    one because it carries the original timestamp; later duplicates are replayed
+    copies and should not be shown again.
+    """
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        message_id = message.get("id")
+        if isinstance(message_id, str) and message_id:
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+        result.append(message)
+    return result
+
+
 def _derive_thread_status(checkpoint_tuple) -> str:
     """Derive thread status from checkpoint metadata."""
     if checkpoint_tuple is None:
@@ -927,13 +965,7 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
         logger.exception("Failed to proxy history for thread %s", thread_id)
         raise HTTPException(status_code=502, detail="Failed to fetch history from LangGraph server")
 
-    # Trim messages in each entry
-    for entry in data:
-        values = entry.get("values")
-        if isinstance(values, dict):
-            entry["values"] = _trim_messages(values)
-
-    return data
+    return _prepare_history_response(thread_id, data)
 
 
 # ---------------------------------------------------------------------------
@@ -1194,6 +1226,8 @@ async def get_thread_messages(
     except OSError:
         logger.debug("Failed to read conversation.jsonl for thread %s", thread_id, exc_info=True)
         return ThreadMessagesResponse(messages=[], total=0, has_more=False)
+
+    # all_messages = _dedupe_messages_by_id(all_messages)
 
     total = len(all_messages)
     # offset=0 means latest, so slice from end
