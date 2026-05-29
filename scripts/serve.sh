@@ -383,6 +383,26 @@ if ! $GATEWAY_MODE; then
         "cd backend && NO_COLOR=1 uv run langgraph dev --no-browser $LANGGRAPH_ALLOW_BLOCKING_FLAG --n-jobs-per-worker $LANGGRAPH_JOBS_PER_WORKER --server-log-level $LANGGRAPH_LOG_LEVEL $LANGGRAPH_EXTRA_FLAGS" \
         2024 60 \
         "deerflow-langgraph ${LANGGRAPH_MEMORY_MAX:-6G} ${LANGGRAPH_CPU_QUOTA:-300%} ${LANGGRAPH_IO_MAX:-50M} ${LANGGRAPH_RESTART_SEC:-10} ${LANGGRAPH_START_LIMIT_BURST:-5} ${LANGGRAPH_START_LIMIT_SEC:-300}"
+
+    if [ "${LANGGRAPH_CATALOG_SYNC:-1}" = "1" ]; then
+        echo "Syncing LangGraph local thread catalog from PostgreSQL..."
+        SYNC_ARGS=()
+        if [ -n "${LANGGRAPH_CATALOG_SYNC_LIMIT:-}" ]; then
+            SYNC_ARGS+=(--limit "$LANGGRAPH_CATALOG_SYNC_LIMIT")
+        fi
+        if [ -n "${LANGGRAPH_CATALOG_SYNC_GRAPH_ID:-}" ]; then
+            SYNC_ARGS+=(--graph-id "$LANGGRAPH_CATALOG_SYNC_GRAPH_ID")
+        fi
+        if [ -n "${LANGGRAPH_CATALOG_SYNC_BATCH_SIZE:-}" ]; then
+            SYNC_ARGS+=(--batch-size "$LANGGRAPH_CATALOG_SYNC_BATCH_SIZE")
+        fi
+        if [ -n "${LANGGRAPH_CATALOG_SYNC_TIMEOUT:-}" ]; then
+            SYNC_ARGS+=(--timeout "$LANGGRAPH_CATALOG_SYNC_TIMEOUT")
+        fi
+        if ! (cd backend && PYTHONPATH=. uv run python scripts/sync_langgraph_catalog_from_pg.py --langgraph-url http://localhost:2024 "${SYNC_ARGS[@]}"); then
+            echo "⚠ LangGraph catalog sync failed; continuing startup. Old PG-backed threads may 404 until catalog is repaired."
+        fi
+    fi
 else
     echo "⏩ Skipping LangGraph (Gateway mode — runtime embedded in Gateway)"
 fi
