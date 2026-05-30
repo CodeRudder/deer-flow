@@ -7,11 +7,12 @@ description: Use this skill when the user requests to generate, create, imagine,
 
 ## Overview
 
-This skill generates high-quality images using structured prompts and a Python script. The workflow includes creating JSON-formatted prompts and executing image generation with optional reference images.
+This skill generates high-quality images from the user's prompt using a Python script. The workflow includes creating a JSON prompt file that preserves the user's original image prompt and executing image generation with optional reference images.
 
 ## Core Capabilities
 
-- Create structured JSON prompts for AIGC image generation
+- Create JSON prompt files for AIGC image generation
+- Preserve the user's original image prompt by default
 - Support multiple reference images for style/composition guidance
 - Generate images through automated Python script execution
 - Handle various image generation scenarios (character design, scenes, products, etc.)
@@ -22,15 +23,45 @@ This skill generates high-quality images using structured prompts and a Python s
 
 When a user requests image generation, identify:
 
-- Subject/content: What should be in the image
-- Style preferences: Art style, mood, color palette
-- Technical specs: Aspect ratio, composition, lighting
+- Original image prompt: The exact text the user wants the image model to follow
+- Explicit style preferences: Art style, mood, color palette
+- Explicit technical specs: Aspect ratio, composition, lighting
 - Reference images: Any images to guide generation
 - You don't need to check the folder under `/mnt/user-data`
 
-### Step 2: Create Structured Prompt
+### Step 2: Create Prompt JSON
 
-Generate a structured JSON file in `/mnt/user-data/workspace/` with naming pattern: `{descriptive-name}.json`
+Generate a JSON file in `/mnt/user-data/workspace/` with naming pattern: `{descriptive-name}.json`.
+
+The `prompt` field is the authoritative image prompt. By default, copy the user's original image prompt verbatim into `prompt`.
+
+Do not translate, rewrite, summarize, expand, or infer missing visual details unless the user explicitly asks for prompt optimization, translation, rewriting, or enrichment.
+
+Use this default shape:
+
+```json
+{
+  "prompt": "the user's original image prompt, copied verbatim"
+}
+```
+
+Optional fields such as `negative_prompt`, `style`, `composition`, `lighting`, `color_palette`, and `technical` may be included only when the user explicitly provided those requirements. These fields must not override, contradict, or replace `prompt`.
+
+When optional fields are useful, keep `prompt` verbatim and add only explicit metadata:
+
+```json
+{
+  "prompt": "the user's original image prompt, copied verbatim",
+  "negative_prompt": "only if explicitly provided by the user",
+  "style": "only if explicitly provided by the user",
+  "composition": "only if explicitly provided by the user",
+  "lighting": "only if explicitly provided by the user",
+  "color_palette": "only if explicitly provided by the user",
+  "technical": {
+    "aspect_ratio": "only if explicitly provided by the user or needed for the command"
+  }
+}
+```
 
 ### Step 3: Execute Generation
 
@@ -84,29 +115,15 @@ User request: "Create a Tokyo street style woman character in 1990s"
 Create prompt file: `/mnt/user-data/workspace/asian-woman.json`
 ```json
 {
-  "characters": [{
-    "gender": "female",
-    "age": "mid-20s",
-    "ethnicity": "Japanese",
-    "body_type": "slender, elegant",
-    "facial_features": "delicate features, expressive eyes, subtle makeup with emphasis on lips, long dark hair partially wet from rain",
-    "clothing": "stylish trench coat, designer handbag, high heels, contemporary Tokyo street fashion",
-    "accessories": "minimal jewelry, statement earrings, leather handbag",
-    "era": "1990s"
-  }],
-  "negative_prompt": "blurry face, deformed, low quality, overly sharp digital look, oversaturated colors, artificial lighting, studio setting, posed, selfie angle",
-  "style": "Leica M11 street photography aesthetic, film-like rendering, natural color palette with slight warmth, bokeh background blur, analog photography feel",
-  "composition": "medium shot, rule of thirds, subject slightly off-center, environmental context of Tokyo street visible, shallow depth of field isolating subject",
-  "lighting": "neon lights from signs and storefronts, wet pavement reflections, soft ambient city glow, natural street lighting, rim lighting from background neons",
-  "color_palette": "muted naturalistic tones, warm skin tones, cool blue and magenta neon accents, desaturated compared to digital photography, film grain texture"
+  "prompt": "Create a Tokyo street style woman character in 1990s"
 }
 ```
 
 Execute generation:
 ```bash
 python /mnt/skills/public/image-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/cyberpunk-hacker.json \
-  --output-file /mnt/user-data/outputs/cyberpunk-hacker-01.jpg \
+  --prompt-file /mnt/user-data/workspace/asian-woman.json \
+  --output-file /mnt/user-data/outputs/asian-woman-01.jpg \
   --aspect-ratio 2:3
 ```
 
@@ -115,10 +132,9 @@ Using Qwen-Image:
 python /mnt/skills/public/image-generation/scripts/generate.py \
   --provider qwen_image \
   --model qwen-image-2.0-pro \
-  --prompt-file /mnt/user-data/workspace/cyberpunk-hacker.json \
-  --output-file /mnt/user-data/outputs/cyberpunk-hacker-01.png \
+  --prompt-file /mnt/user-data/workspace/asian-woman.json \
+  --output-file /mnt/user-data/outputs/asian-woman-01.png \
   --aspect-ratio 1:1 \
-  --prompt-extend true \
   --watermark false
 ```
 
@@ -129,22 +145,7 @@ If Qwen-Image returns `DataInspectionFailed` or `Green net check failed for inpu
 With reference images:
 ```json
 {
-  "characters": [{
-    "gender": "based on [Image 1]",
-    "age": "based on [Image 1]",
-    "ethnicity": "human from [Image 1] adapted to Star Wars universe",
-    "body_type": "based on [Image 1]",
-    "facial_features": "matching [Image 1] with slight weathered look from space travel",
-    "clothing": "Star Wars style outfit - worn leather jacket with utility vest, cargo pants with tactical pouches, scuffed boots, belt with holster",
-    "accessories": "blaster pistol on hip, comlink device on wrist, goggles pushed up on forehead, satchel with supplies, personal vehicle based on [Image 2]",
-    "era": "Star Wars universe, post-Empire era"
-  }],
-  "prompt": "Character inspired by [Image 1] standing next to a vehicle inspired by [Image 2] on a bustling alien planet street in Star Wars universe aesthetic. Character wearing worn leather jacket with utility vest, cargo pants with tactical pouches, scuffed boots, belt with blaster holster. The vehicle adapted to Star Wars aesthetic with weathered metal panels, repulsor engines, desert dust covering, parked on the street. Exotic alien marketplace street with multi-level architecture, weathered metal structures, hanging market stalls with colorful awnings, alien species walking by as background characters. Twin suns casting warm golden light, atmospheric dust particles in air, moisture vaporators visible in distance. Gritty lived-in Star Wars aesthetic, practical effects look, film grain texture, cinematic composition.",
-  "negative_prompt": "clean futuristic look, sterile environment, overly CGI appearance, fantasy medieval elements, Earth architecture, modern city",
-  "style": "Star Wars original trilogy aesthetic, lived-in universe, practical effects inspired, cinematic film look, slightly desaturated with warm tones",
-  "composition": "medium wide shot, character in foreground with alien street extending into background, environmental storytelling, rule of thirds",
-  "lighting": "warm golden hour lighting from twin suns, rim lighting on character, atmospheric haze, practical light sources from market stalls",
-  "color_palette": "warm sandy tones, ochre and sienna, dusty blues, weathered metals, muted earth colors with pops of alien market colors",
+  "prompt": "Character inspired by [Image 1] standing next to a vehicle inspired by [Image 2] on a bustling alien planet street in Star Wars universe aesthetic.",
   "technical": {
     "aspect_ratio": "9:16",
     "quality": "high",
@@ -162,7 +163,7 @@ python /mnt/skills/public/image-generation/scripts/generate.py \
 
 ## Common Scenarios
 
-Use different JSON schemas for different scenarios.
+The `prompt` field remains the source of truth across all scenarios. Add optional metadata only when the user explicitly provided it.
 
 **Character Design**:
 - Physical attributes (gender, age, ethnicity, body type)
@@ -221,8 +222,8 @@ This approach significantly improves generation quality by providing the model w
 
 ## Notes
 
-- Always use English for prompts regardless of user's language
-- JSON format ensures structured, parsable prompts
+- Keep the user's original prompt language and wording by default
+- JSON format ensures structured, parsable prompts while preserving the original `prompt`
 - Reference images enhance generation quality significantly
 - Iterative refinement is normal for optimal results
-- For character generation, include the detailed character object plus a consolidated prompt field
+- For character generation, include optional character metadata only when the user explicitly provided those details; never replace the original `prompt`

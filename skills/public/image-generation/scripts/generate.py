@@ -125,19 +125,18 @@ def _read_prompt(prompt_file: str, provider: str) -> tuple[str, str | None]:
     prompt_text = Path(prompt_file).read_text(encoding="utf-8")
     negative_prompt = None
 
-    if provider == "qwen_image":
-        try:
-            prompt_json = json.loads(prompt_text)
-        except json.JSONDecodeError:
-            return prompt_text, None
+    try:
+        prompt_json = json.loads(prompt_text)
+    except json.JSONDecodeError:
+        return prompt_text, None
 
-        if isinstance(prompt_json, dict):
-            prompt = prompt_json.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                prompt_text = prompt
-            prompt_negative = prompt_json.get("negative_prompt")
-            if isinstance(prompt_negative, str) and prompt_negative.strip():
-                negative_prompt = prompt_negative
+    if isinstance(prompt_json, dict):
+        prompt = prompt_json.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            prompt_text = prompt
+        prompt_negative = prompt_json.get("negative_prompt")
+        if isinstance(prompt_negative, str) and prompt_negative.strip():
+            negative_prompt = prompt_negative
 
     return prompt_text, negative_prompt
 

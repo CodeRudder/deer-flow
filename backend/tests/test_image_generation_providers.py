@@ -501,9 +501,46 @@ def test_generate_reads_qwen_prompt_and_negative_prompt(tmp_path):
     assert negative_prompt == "blurry"
 
 
-def test_generate_leaves_gemini_prompt_file_raw(tmp_path):
+def test_generate_reads_json_prompt_for_all_providers(tmp_path):
     prompt_file = tmp_path / "prompt.json"
-    raw_prompt = json.dumps({"prompt": "A red kite", "negative_prompt": "blurry"})
+    prompt_file.write_text(
+        json.dumps({"prompt": "A red kite", "negative_prompt": "blurry"}),
+        encoding="utf-8",
+    )
+
+    prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "gemini")
+
+    assert prompt_text == "A red kite"
+    assert negative_prompt == "blurry"
+
+
+def test_generate_preserves_original_chinese_prompt_without_metadata(tmp_path):
+    prompt_file = tmp_path / "prompt.json"
+    original_prompt = "画一只坐在窗边看雨的橘猫，水彩风格，画面温暖一点。"
+    prompt_file.write_text(
+        json.dumps(
+            {
+                "prompt": original_prompt,
+                "style": "水彩风格",
+                "composition": "窗边",
+                "technical": {"aspect_ratio": "16:9"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "openai_image")
+
+    assert prompt_text == original_prompt
+    assert "composition" not in prompt_text
+    assert "technical" not in prompt_text
+    assert negative_prompt is None
+
+
+def test_generate_keeps_json_without_prompt_backward_compatible(tmp_path):
+    prompt_file = tmp_path / "prompt.json"
+    raw_prompt = json.dumps({"style": "watercolor", "composition": "window side"})
     prompt_file.write_text(raw_prompt, encoding="utf-8")
 
     prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "gemini")
