@@ -34,6 +34,64 @@ def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_pat
     sandbox.update_file.assert_not_called()
 
 
+def test_upload_files_renames_duplicate_filename_in_thread_storage(tmp_path):
+    thread_uploads_dir = tmp_path / "uploads"
+    thread_uploads_dir.mkdir(parents=True)
+    (thread_uploads_dir / "image.png").write_bytes(b"first-image")
+
+    provider = MagicMock()
+    provider.acquire.return_value = "local"
+    sandbox = MagicMock()
+    provider.get.return_value = sandbox
+
+    with (
+        patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "get_sandbox_provider", return_value=provider),
+    ):
+        file = UploadFile(filename="image.png", file=BytesIO(b"second-image"))
+        result = asyncio.run(uploads.upload_files("thread-local", files=[file]))
+
+    assert result.success is True
+    assert len(result.files) == 1
+    file_info = result.files[0]
+    assert file_info["filename"] == "image_1.png"
+    assert file_info["virtual_path"] == "/mnt/user-data/uploads/image_1.png"
+    assert file_info["artifact_url"].endswith("/artifacts/mnt/user-data/uploads/image_1.png")
+    assert (thread_uploads_dir / "image.png").read_bytes() == b"first-image"
+    assert (thread_uploads_dir / "image_1.png").read_bytes() == b"second-image"
+
+
+def test_upload_files_renames_duplicate_filenames_within_same_request(tmp_path):
+    thread_uploads_dir = tmp_path / "uploads"
+    thread_uploads_dir.mkdir(parents=True)
+
+    provider = MagicMock()
+    provider.acquire.return_value = "local"
+    sandbox = MagicMock()
+    provider.get.return_value = sandbox
+
+    with (
+        patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "get_sandbox_provider", return_value=provider),
+    ):
+        result = asyncio.run(
+            uploads.upload_files(
+                "thread-local",
+                files=[
+                    UploadFile(filename="image.png", file=BytesIO(b"first")),
+                    UploadFile(filename="image.png", file=BytesIO(b"second")),
+                ],
+            )
+        )
+
+    assert result.success is True
+    assert [file["filename"] for file in result.files] == ["image.png", "image_1.png"]
+    assert (thread_uploads_dir / "image.png").read_bytes() == b"first"
+    assert (thread_uploads_dir / "image_1.png").read_bytes() == b"second"
+
+
 def test_upload_files_syncs_non_local_sandbox_and_marks_markdown_file(tmp_path):
     thread_uploads_dir = tmp_path / "uploads"
     thread_uploads_dir.mkdir(parents=True)

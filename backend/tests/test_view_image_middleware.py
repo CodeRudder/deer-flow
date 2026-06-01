@@ -91,6 +91,8 @@ class TestInjectAndClear:
         assert result is not None
         msg = result["messages"][0]
         assert isinstance(msg, HumanMessage)
+        assert msg.name == "view_image_context"
+        assert msg.additional_kwargs["hide_from_ui"] is True
         # Should contain both images
         content_str = str(msg.content)
         assert "/path/a.png" in content_str

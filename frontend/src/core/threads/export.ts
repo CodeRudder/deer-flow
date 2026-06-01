@@ -5,6 +5,7 @@ import {
   extractReasoningContentFromMessage,
   hasContent,
   hasToolCalls,
+  isHiddenFromUIMessage,
   stripUploadedFilesTag,
 } from "../messages/utils";
 
@@ -42,6 +43,8 @@ export function formatThreadAsMarkdown(
   ];
 
   for (const message of messages) {
+    if (isHiddenFromUIMessage(message)) continue;
+
     if (message.type === "human") {
       const content = formatMessageContent(message);
       if (content) {
@@ -92,14 +95,16 @@ export function formatThreadAsJSON(
     thread_id: thread.thread_id,
     created_at: thread.created_at,
     exported_at: new Date().toISOString(),
-    messages: messages.map((msg) => ({
-      type: msg.type,
-      id: msg.id,
-      content: typeof msg.content === "string" ? msg.content : msg.content,
-      ...(msg.type === "ai" && msg.tool_calls?.length
-        ? { tool_calls: msg.tool_calls }
-        : {}),
-    })),
+    messages: messages
+      .filter((msg) => !isHiddenFromUIMessage(msg))
+      .map((msg) => ({
+        type: msg.type,
+        id: msg.id,
+        content: typeof msg.content === "string" ? msg.content : msg.content,
+        ...(msg.type === "ai" && msg.tool_calls?.length
+          ? { tool_calls: msg.tool_calls }
+          : {}),
+      })),
   };
   return JSON.stringify(exportData, null, 2);
 }

@@ -88,7 +88,9 @@ def normalize_input(raw_input: dict[str, Any] | None) -> dict[str, Any]:
                     converted.append(
                         HumanMessage(
                             content=content,
+                            additional_kwargs=msg.get("additional_kwargs") or {},
                             response_metadata={"created_at": now},
+                            id=msg.get("id"),
                         )
                     )
                 else:
@@ -96,7 +98,9 @@ def normalize_input(raw_input: dict[str, Any] | None) -> dict[str, Any]:
                     converted.append(
                         HumanMessage(
                             content=content,
+                            additional_kwargs=msg.get("additional_kwargs") or {},
                             response_metadata={"created_at": now},
+                            id=msg.get("id"),
                         )
                     )
             else:

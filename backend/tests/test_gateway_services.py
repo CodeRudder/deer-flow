@@ -74,6 +74,58 @@ def test_normalize_input_with_messages():
     assert result["messages"][0].content == "hi"
 
 
+def test_normalize_input_preserves_message_id_and_additional_kwargs():
+    from app.gateway.services import normalize_input
+
+    result = normalize_input(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "id": "msg-123",
+                    "content": [{"type": "text", "text": "inspect this"}],
+                    "additional_kwargs": {
+                        "files": [
+                            {
+                                "filename": "image.png",
+                                "size": "1350146",
+                                "path": "/mnt/user-data/uploads/image.png",
+                                "status": "uploaded",
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+
+    message = result["messages"][0]
+    assert message.id == "msg-123"
+    assert message.additional_kwargs["files"][0]["filename"] == "image.png"
+    assert message.additional_kwargs["files"][0]["path"] == "/mnt/user-data/uploads/image.png"
+
+
+def test_normalize_input_preserves_fields_for_non_user_fallback():
+    from app.gateway.services import normalize_input
+
+    result = normalize_input(
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "id": "fallback-1",
+                    "content": "fallback content",
+                    "additional_kwargs": {"files": [{"filename": "report.txt"}]},
+                }
+            ]
+        }
+    )
+
+    message = result["messages"][0]
+    assert message.id == "fallback-1"
+    assert message.additional_kwargs == {"files": [{"filename": "report.txt"}]}
+
+
 def test_normalize_input_passthrough():
     from app.gateway.services import normalize_input
 

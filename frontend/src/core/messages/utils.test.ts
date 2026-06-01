@@ -52,4 +52,26 @@ describe("groupMessages", () => {
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it("skips messages marked as hidden from the UI", () => {
+    const hiddenImageContext = {
+      type: "human",
+      id: "hidden-1",
+      content: "Here are the images you've viewed:",
+      additional_kwargs: { hide_from_ui: true },
+    } as Message;
+    const visibleUserMessage = {
+      type: "human",
+      id: "human-1",
+      content: "Please inspect the image.",
+    } as Message;
+
+    const groups = groupMessages(
+      [hiddenImageContext, visibleUserMessage],
+      (group) => group,
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.messages).toEqual([visibleUserMessage]);
+  });
 });

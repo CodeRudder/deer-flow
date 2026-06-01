@@ -179,8 +179,13 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         # Create the image details message with text and image content
         image_content = self._create_image_details_message(state)
 
-        # Create a new human message with mixed content (text + images)
-        human_msg = HumanMessage(content=image_content)
+        # Create a new human message with mixed content (text + images).
+        # This is model context, not a user-authored chat turn, so hide it from UI surfaces.
+        human_msg = HumanMessage(
+            content=image_content,
+            name="view_image_context",
+            additional_kwargs={"hide_from_ui": True},
+        )
 
         logger.debug("Injecting image details message with images before LLM call")
 
