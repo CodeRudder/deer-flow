@@ -19,15 +19,15 @@ import json
 import logging
 import threading
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, override
+from functools import cached_property
+from typing import Any, override
 
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.todo import Todo
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse, hook_config
-from langchain.tools import InjectedToolCallId
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
-from langgraph.prebuilt import InjectedState
+from langchain_core.tools import StructuredTool
+from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
@@ -66,8 +66,6 @@ class WriteTodosArgs(BaseModel):
     todos: list[Todo] | None = Field(default=None, description="Full task list. Replaces all existing tasks.")
     updates: list[dict] | None = Field(default=None, description="Update or remove existing todo items by index.")
     adds: list[dict] | None = Field(default=None, description="Add new todo items, optionally at an index.")
-    state: Annotated[dict, InjectedState] = Field(default=None, exclude=True)
-    tool_call_id: Annotated[str, InjectedToolCallId] = Field(default="", exclude=True)
 
     @field_validator("todos", "updates", "adds", mode="before")
     @classmethod
@@ -76,6 +74,14 @@ class WriteTodosArgs(BaseModel):
         if error:
             raise ValueError(error.removeprefix("Error: "))
         return coerced
+
+
+class RuntimeInjectedStructuredTool(StructuredTool):
+    """StructuredTool variant for functions that require ToolRuntime injection."""
+
+    @cached_property
+    def _injected_args_keys(self) -> frozenset[str]:
+        return frozenset({"runtime"})
 
 
 def _todos_in_messages(messages: list[Any]) -> bool:
@@ -224,15 +230,14 @@ class TodoMiddleware(TodoListMiddleware):
         super().__init__(*args, **kwargs)
         desc = getattr(self.tools[0], "description", "") if self.tools else ""
 
-        @tool(description=desc, args_schema=WriteTodosArgs)
         def write_todos(
+            runtime: ToolRuntime[dict[str, Any], ThreadState],
             todos: list[Todo] | None = None,
             updates: list[dict] | None = None,
             adds: list[dict] | None = None,
-            state: Annotated[dict, InjectedState] = None,
-            tool_call_id: Annotated[str, InjectedToolCallId] = "",
         ) -> Command:
             """Create and manage a structured task list for your current work session."""
+            tool_call_id = runtime.tool_call_id
             todos, todos_error = _coerce_json_list(todos, "todos")
             if todos_error:
                 logger.warning("write_todos rejected todos input: tool_call_id=%s error=%s", tool_call_id, todos_error)
@@ -321,7 +326,7 @@ class TodoMiddleware(TodoListMiddleware):
                     }
                 )
 
-            current_todos = (state or {}).get("todos") or []
+            current_todos = (runtime.state or {}).get("todos") or []
             new_todos = apply_todo_ops(current_todos, updates, adds)
 
             parts: list[str] = []
@@ -342,7 +347,15 @@ class TodoMiddleware(TodoListMiddleware):
                 }
             )
 
-        self.tools = [write_todos]
+        self.tools = [
+            RuntimeInjectedStructuredTool.from_function(
+                name="write_todos",
+                description=desc,
+                func=write_todos,
+                args_schema=WriteTodosArgs,
+                infer_schema=False,
+            )
+        ]
         self._lock = threading.Lock()
         self._pending_completion_reminders: dict[tuple[str, str], list[str]] = {}
         self._completion_reminder_counts: dict[tuple[str, str], int] = {}
