@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -31,9 +31,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+TASK_CAPABILITY_IMAGE_GENERATION = "image_generation"
+
 # Cache subagent token usage by tool_call_id so TokenUsageMiddleware can
 # write it back to the triggering AIMessage's usage_metadata.
 _subagent_usage_cache: dict[str, dict[str, int]] = {}
+
+
+@dataclass(frozen=True)
+class TaskCapabilityContext:
+    """Runtime preferences available to task capability injectors."""
+
+    image_generation: ImageGenerationPreference
 
 
 def _token_usage_cache_enabled(app_config: "AppConfig | None") -> bool:
@@ -247,6 +256,41 @@ def _append_image_generation_preference(prompt: str, image_generation: ImageGene
     return f"{prompt}\n\n{preference}"
 
 
+def _apply_image_generation_capability(prompt: str, context: TaskCapabilityContext) -> str:
+    return _append_image_generation_preference(prompt, context.image_generation)
+
+
+_TASK_CAPABILITY_INJECTORS = {
+    TASK_CAPABILITY_IMAGE_GENERATION: _apply_image_generation_capability,
+}
+
+
+def _normalize_task_capabilities(capabilities: list[str] | None) -> list[str]:
+    if not capabilities:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for capability in capabilities:
+        if not isinstance(capability, str):
+            continue
+        value = capability.strip().lower()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _apply_task_capabilities(prompt: str, *, capabilities: list[str], context: TaskCapabilityContext) -> str:
+    for capability in capabilities:
+        injector = _TASK_CAPABILITY_INJECTORS.get(capability)
+        if injector is None:
+            logger.debug("Ignoring unknown task capability: %s", capability)
+            continue
+        prompt = injector(prompt, context)
+    return prompt
+
+
 def _image_generation_preference_from_runtime(runtime: Any) -> ImageGenerationPreference:
     if runtime is None:
         return ImageGenerationPreference()
@@ -283,6 +327,7 @@ async def _create_persisted_session(
     subagent_name: str,
     description: str,
     user_id: str | None = None,
+    capabilities: list[str] | None = None,
 ) -> SubagentSession | None:
     """Create a sub-agent session and write the initial summary off the event loop."""
 
@@ -293,6 +338,7 @@ async def _create_persisted_session(
             subagent_name=subagent_name,
             description=description,
             user_id=user_id,
+            capabilities=capabilities,
         )
         session._write_summary("running", message_count=0)
         return session
@@ -343,6 +389,7 @@ async def task_tool(
     max_turns: int | None = None,
     task_id: str | None = None,
     action: str = "create",
+    capabilities: list[str] | None = None,
 ) -> str:
     """Delegate a task to a specialized subagent that runs in its own context.
 
@@ -380,6 +427,10 @@ async def task_tool(
     - **cancel**: Cancel a running subtask.
     - **query**: Query a subtask's status and result.
 
+    Capabilities:
+    - Use capabilities=["image_generation"] only for subtasks that create, edit, or generate images.
+    - Leave capabilities empty for normal calculation, analysis, code, search, summarization, and file-operation subtasks.
+
     Args:
         description: A short (3-5 word) description of the task for logging/display. ALWAYS PROVIDE THIS PARAMETER FIRST.
         prompt: The task description for the subagent. Be specific and clear about what needs to be done. ALWAYS PROVIDE THIS PARAMETER SECOND.
@@ -387,13 +438,14 @@ async def task_tool(
         max_turns: Optional maximum number of agent turns. Defaults to subagent's configured max.
         task_id: Target subtask ID for resume/cancel/query actions. Not needed for create.
         action: Action to perform: "create" (default), "resume", "cancel", or "query".
+        capabilities: Optional subtask capability keys. Use ["image_generation"] only when this subtask creates or edits images.
     """
     if action == "cancel":
         return await _action_cancel(runtime, task_id)
     if action == "query":
         return await _action_query(runtime, task_id)
     if action == "resume":
-        return await _action_resume(runtime, task_id, tool_call_id, description, prompt, subagent_type, max_turns)
+        return await _action_resume(runtime, task_id, tool_call_id, description, prompt, subagent_type, max_turns, capabilities)
 
     runtime_app_config = _get_runtime_app_config(runtime)
     cache_token_usage = _token_usage_cache_enabled(runtime_app_config)
@@ -444,7 +496,9 @@ async def task_tool(
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
         image_generation = _image_generation_preference_from_runtime(runtime)
 
-    prompt = _append_image_generation_preference(prompt, image_generation)
+    task_capabilities = _normalize_task_capabilities(capabilities)
+    capability_context = TaskCapabilityContext(image_generation=image_generation)
+    prompt = _apply_task_capabilities(prompt, capabilities=task_capabilities, context=capability_context)
 
     parent_available_skills = metadata.get("available_skills")
     if parent_available_skills is not None:
@@ -492,7 +546,7 @@ async def task_tool(
 
     session: SubagentSession | None = None
     if thread_id:
-        session = await _create_persisted_session(thread_id, tool_call_id, subagent_type, description, user_id=user_id)
+        session = await _create_persisted_session(thread_id, tool_call_id, subagent_type, description, user_id=user_id, capabilities=task_capabilities)
         if session is not None:
             executor.session = session
             logger.info("Created SubagentSession for thread=%s, task=%s, subagent=%s", thread_id, tool_call_id, subagent_type)
@@ -714,6 +768,7 @@ async def _action_resume(
     prompt: str,
     subagent_type: str,
     max_turns: int | None,
+    capabilities: list[str] | None = None,
 ) -> str:
     """Resume an interrupted/failed subtask from where it left off."""
     if not task_id:
@@ -753,6 +808,9 @@ async def _action_resume(
     trace_id = metadata.get("trace_id") if isinstance(metadata, dict) else None
     trace_id = trace_id or str(uuid.uuid4())[:8]
     image_generation = _image_generation_preference_from_runtime(runtime)
+    raw_resume_capabilities = info.get("capabilities")
+    task_capabilities = _normalize_task_capabilities(raw_resume_capabilities if isinstance(raw_resume_capabilities, list) and raw_resume_capabilities else capabilities)
+    capability_context = TaskCapabilityContext(image_generation=image_generation)
 
     parent_available_skills = metadata.get("available_skills") if isinstance(metadata, dict) else None
     if parent_available_skills is not None:
@@ -769,7 +827,7 @@ async def _action_resume(
         f"</recovery>\n\n"
         f"{info.get('original_prompt') or prompt}"
     )
-    recovery = _append_image_generation_preference(recovery, image_generation)
+    recovery = _apply_task_capabilities(recovery, capabilities=task_capabilities, context=capability_context)
 
     from deerflow.tools import get_available_tools
 
@@ -802,7 +860,7 @@ async def _action_resume(
         executor_kwargs["app_config"] = resolved_app_config
     executor = SubagentExecutor(**executor_kwargs)
 
-    session = await _create_persisted_session(thread_id, tool_call_id, effective_subagent_type, effective_description, user_id=user_id)
+    session = await _create_persisted_session(thread_id, tool_call_id, effective_subagent_type, effective_description, user_id=user_id, capabilities=task_capabilities)
     if session is not None:
         executor.session = session
 

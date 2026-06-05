@@ -43,6 +43,13 @@ def _make_runtime(*, app_config=None) -> SimpleNamespace:
     )
 
 
+def _make_image_generation_runtime() -> SimpleNamespace:
+    runtime = _make_runtime()
+    runtime.context["image_generation_provider"] = "qwen_image"
+    runtime.context["image_generation_model"] = "qwen-image-2.0-pro"
+    return runtime
+
+
 def _make_subagent_config(name: str = "general-purpose") -> SubagentConfig:
     return SubagentConfig(
         name=name,
@@ -241,6 +248,55 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
     event_types = [e["type"] for e in events]
     assert event_types == ["task_started", "task_running", "task_running", "task_completed"]
     assert events[-1]["result"] == "all done"
+
+
+def test_task_tool_only_injects_image_generation_preference_for_declared_capability(monkeypatch):
+    config = _make_subagent_config()
+    events = []
+    captured = {}
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            captured["prompt"] = prompt
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(
+        task_tool_module,
+        "get_background_task_result",
+        lambda _: _make_result(FakeSubagentStatus.COMPLETED, result="done"),
+    )
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", MagicMock(return_value=[]))
+
+    _run_task_tool(
+        runtime=_make_image_generation_runtime(),
+        description="计算求和",
+        prompt="请计算 1+2+...+100",
+        subagent_type="general-purpose",
+        tool_call_id="tc-no-image-capability",
+    )
+
+    assert "image_generation_runtime_preference" not in captured["prompt"]
+
+    _run_task_tool(
+        runtime=_make_image_generation_runtime(),
+        description="生成海报",
+        prompt="请生成一张产品海报",
+        subagent_type="general-purpose",
+        tool_call_id="tc-image-capability",
+        capabilities=["image_generation"],
+    )
+
+    assert "image_generation_runtime_preference" in captured["prompt"]
+    assert "--provider qwen_image" in captured["prompt"]
+    assert "--model qwen-image-2.0-pro" in captured["prompt"]
 
 
 def test_task_tool_propagates_tool_groups_to_subagent(monkeypatch):
@@ -1305,3 +1361,56 @@ def test_subagent_usage_cache_is_cleared_when_polling_raises(monkeypatch):
         )
 
     assert task_tool_module.pop_cached_subagent_usage("tc-error") is None
+
+
+def test_task_capabilities_do_not_append_image_generation_by_default():
+    preference = task_tool_module.ImageGenerationPreference(
+        provider="qwen_image",
+        model="qwen-image-2.0-pro",
+    )
+    prompt = "请计算 1+2+3+...+100 的总和是多少？请直接给出答案。"
+
+    result = task_tool_module._apply_task_capabilities(
+        prompt,
+        capabilities=[],
+        context=task_tool_module.TaskCapabilityContext(image_generation=preference),
+    )
+
+    assert result == prompt
+    assert "image_generation_runtime_preference" not in result
+
+
+def test_task_capabilities_append_image_generation_when_declared():
+    preference = task_tool_module.ImageGenerationPreference(
+        provider="qwen_image",
+        model="qwen-image-2.0-pro",
+    )
+    prompt = "请生成一张产品海报。"
+
+    result = task_tool_module._apply_task_capabilities(
+        prompt,
+        capabilities=["image_generation"],
+        context=task_tool_module.TaskCapabilityContext(image_generation=preference),
+    )
+
+    assert result != prompt
+    assert "image_generation_runtime_preference" in result
+    assert "--provider qwen_image" in result
+    assert "--model qwen-image-2.0-pro" in result
+
+
+def test_task_capabilities_ignore_unknown_capabilities():
+    preference = task_tool_module.ImageGenerationPreference(
+        provider="qwen_image",
+        model="qwen-image-2.0-pro",
+    )
+    prompt = "请生成一张赛博朋克风格的城市海报。"
+
+    result = task_tool_module._apply_task_capabilities(
+        prompt,
+        capabilities=["unknown"],
+        context=task_tool_module.TaskCapabilityContext(image_generation=preference),
+    )
+
+    assert result == prompt
+    assert "image_generation_runtime_preference" not in result

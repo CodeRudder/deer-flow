@@ -84,13 +84,13 @@ class TestActionCancel:
     """Test _action_cancel handler."""
 
     def test_cancel_requires_task_id(self):
-        result = asyncio.run(task_tool_module._action_cancel(None))
+        result = asyncio.run(task_tool_module._action_cancel(_make_runtime(), None))
         assert "Error" in result
         assert "task_id is required" in result
 
     def test_cancel_task_not_found(self, monkeypatch):
         monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: None)
-        result = asyncio.run(task_tool_module._action_cancel("tc-missing"))
+        result = asyncio.run(task_tool_module._action_cancel(_make_runtime(), "tc-missing"))
         assert "not found" in result
 
     def test_cancel_already_completed(self, monkeypatch):
@@ -100,7 +100,7 @@ class TestActionCancel:
             "get_background_task_result",
             lambda _: SimpleNamespace(status=status, result="done", error=None),
         )
-        result = asyncio.run(task_tool_module._action_cancel("tc-done"))
+        result = asyncio.run(task_tool_module._action_cancel(_make_runtime(), "tc-done"))
         assert "cannot cancel" in result
 
     def test_cancel_running_task(self, monkeypatch):
@@ -116,7 +116,7 @@ class TestActionCancel:
             "request_cancel_background_task",
             lambda tid: cancel_calls.append(tid),
         )
-        result = asyncio.run(task_tool_module._action_cancel("tc-running"))
+        result = asyncio.run(task_tool_module._action_cancel(_make_runtime(), "tc-running"))
         assert "cancelled successfully" in result
         assert cancel_calls == ["tc-running"]
 
@@ -133,21 +133,21 @@ class TestActionCancel:
             "request_cancel_background_task",
             lambda tid: cancel_calls.append(tid),
         )
-        result = asyncio.run(task_tool_module._action_cancel("tc-pending"))
+        result = asyncio.run(task_tool_module._action_cancel(_make_runtime(), "tc-pending"))
         assert "cancelled successfully" in result
         assert cancel_calls == ["tc-pending"]
 
     def test_cancel_task_uses_async_thread_lookup(self, monkeypatch):
         calls = []
 
-        async def find_thread(task_id):
+        async def find_thread(task_id, **kwargs):
             calls.append(task_id)
             return None
 
         monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: None)
         monkeypatch.setattr(task_tool_module, "_find_thread_id_for_task_async", find_thread)
 
-        result = asyncio.run(task_tool_module._action_cancel("tc-async"))
+        result = asyncio.run(task_tool_module._action_cancel(_make_runtime(), "tc-async"))
 
         assert "not found" in result
         assert calls == ["tc-async"]
@@ -162,7 +162,7 @@ class TestActionQuery:
     """Test _action_query handler."""
 
     def test_query_requires_task_id(self):
-        result = asyncio.run(task_tool_module._action_query(None))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), None))
         assert "Error" in result
         assert "task_id is required" in result
 
@@ -173,7 +173,7 @@ class TestActionQuery:
             "get_background_task_result",
             lambda _: SimpleNamespace(status=status, result=None, error=None, ai_messages=[]),
         )
-        result = asyncio.run(task_tool_module._action_query("tc-running"))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), "tc-running"))
         assert "status=running" in result
 
     def test_query_completed_task_in_memory(self, monkeypatch):
@@ -188,7 +188,7 @@ class TestActionQuery:
                 ai_messages=[],
             ),
         )
-        result = asyncio.run(task_tool_module._action_query("tc-done"))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), "tc-done"))
         assert "status=completed" in result
         assert "Build succeeded" in result
 
@@ -204,7 +204,7 @@ class TestActionQuery:
                 ai_messages=[],
             ),
         )
-        result = asyncio.run(task_tool_module._action_query("tc-failed"))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), "tc-failed"))
         assert "status=failed" in result
         assert "Connection refused" in result
 
@@ -212,7 +212,7 @@ class TestActionQuery:
         monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: None)
         # Also mock _find_thread_id_for_task to return None
         monkeypatch.setattr(task_tool_module, "_find_thread_id_for_task", lambda _: None)
-        result = asyncio.run(task_tool_module._action_query("tc-gone"))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), "tc-gone"))
         assert "not found" in result
 
     def test_query_falls_back_to_disk(self, monkeypatch, tmp_path):
@@ -221,7 +221,7 @@ class TestActionQuery:
         monkeypatch.setattr(
             task_tool_module,
             "_find_thread_id_for_task",
-            lambda _: "thread-1",
+            lambda _, **kwargs: "thread-1",
         )
 
         # Mock SubagentSession.get_resume_info
@@ -236,10 +236,10 @@ class TestActionQuery:
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
-            staticmethod(lambda task_id, thread_id: mock_info),
+            staticmethod(lambda task_id, thread_id, **kwargs: mock_info),
         )
 
-        result = asyncio.run(task_tool_module._action_query("tc-disk"))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), "tc-disk"))
         assert "status=interrupted" in result
         assert "subagent=developer" in result
         assert "steps=5" in result
@@ -247,11 +247,11 @@ class TestActionQuery:
     def test_query_uses_async_disk_lookup(self, monkeypatch):
         calls = []
 
-        async def find_thread(task_id):
+        async def find_thread(task_id, **kwargs):
             calls.append(("find", task_id))
             return "thread-1"
 
-        async def get_info(task_id, thread_id):
+        async def get_info(task_id, thread_id, **kwargs):
             calls.append(("resume", task_id, thread_id))
             return {"status": "interrupted", "subagent_type": "developer", "message_count": 2}
 
@@ -259,7 +259,7 @@ class TestActionQuery:
         monkeypatch.setattr(task_tool_module, "_find_thread_id_for_task_async", find_thread)
         monkeypatch.setattr(task_tool_module, "_get_resume_info_async", get_info)
 
-        result = asyncio.run(task_tool_module._action_query("tc-async"))
+        result = asyncio.run(task_tool_module._action_query(_make_runtime(), "tc-async"))
 
         assert "status=interrupted" in result
         assert ("find", "tc-async") in calls
@@ -314,7 +314,7 @@ class TestActionResume:
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
-            staticmethod(lambda task_id, thread_id: None),
+            staticmethod(lambda task_id, thread_id, **kwargs: None),
         )
         result = asyncio.run(
             task_tool_module._action_resume(
@@ -343,7 +343,7 @@ class TestActionResume:
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
-            staticmethod(lambda task_id, thread_id: mock_info),
+            staticmethod(lambda task_id, thread_id, **kwargs: mock_info),
         )
         monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda: ["general-purpose"])
         monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: None)
@@ -383,12 +383,11 @@ class TestActionResume:
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
-            staticmethod(lambda task_id, thread_id: mock_info),
+            staticmethod(lambda task_id, thread_id, **kwargs: mock_info),
         )
 
         monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda: ["developer"])
         monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
-        monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
 
         class DummyExecutor2:
             def __init__(self, **kwargs):
@@ -456,10 +455,9 @@ class TestActionResume:
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
-            staticmethod(lambda task_id, thread_id: mock_info),
+            staticmethod(lambda task_id, thread_id, **kwargs: mock_info),
         )
         monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda: ["architect"])
-        monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
 
         # Capture which subagent_type is looked up
         def track_config(name):
@@ -522,7 +520,6 @@ class TestActionDispatch:
         events = []
 
         monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
-        monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
         _patch_subagent_status(monkeypatch)
 
         monkeypatch.setattr(
@@ -615,12 +612,11 @@ class TestActionDispatch:
         monkeypatch.setattr(
             task_tool_module.SubagentSession,
             "get_resume_info",
-            staticmethod(lambda task_id, thread_id: mock_info),
+            staticmethod(lambda task_id, thread_id, **kwargs: mock_info),
         )
 
         monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda: ["general-purpose"])
         monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
-        monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
 
         class DummyExec:
             def __init__(self, **kw):
@@ -662,35 +658,38 @@ class TestFindThreadIdForTask:
     """Test _find_thread_id_for_task helper."""
 
     def test_finds_existing_task(self, tmp_path, monkeypatch):
-        threads_dir = tmp_path / "threads"
+        threads_dir = tmp_path / "users" / "default" / "threads"
         subagents = threads_dir / "thread-abc" / "subagents"
         subagents.mkdir(parents=True)
         (subagents / "tc-123.jsonl").write_text('{"ts":"t","role":"ai","content":"ok"}\n')
 
         mock_paths = MagicMock()
         mock_paths.base_dir = tmp_path
+        mock_paths.user_dir = lambda user_id: tmp_path / "users" / user_id
         monkeypatch.setattr("deerflow.config.paths.get_paths", lambda: mock_paths)
 
-        result = task_tool_module._find_thread_id_for_task("tc-123")
+        result = task_tool_module._find_thread_id_for_task("tc-123", user_id="default")
         assert result == "thread-abc"
 
     def test_returns_none_for_unknown_task(self, tmp_path, monkeypatch):
-        threads_dir = tmp_path / "threads"
-        threads_dir.mkdir()
+        threads_dir = tmp_path / "users" / "default" / "threads"
+        threads_dir.mkdir(parents=True)
 
         mock_paths = MagicMock()
         mock_paths.base_dir = tmp_path
+        mock_paths.user_dir = lambda user_id: tmp_path / "users" / user_id
         monkeypatch.setattr("deerflow.config.paths.get_paths", lambda: mock_paths)
 
-        result = task_tool_module._find_thread_id_for_task("tc-missing")
+        result = task_tool_module._find_thread_id_for_task("tc-missing", user_id="default")
         assert result is None
 
     def test_returns_none_when_no_threads_dir(self, tmp_path, monkeypatch):
         mock_paths = MagicMock()
         mock_paths.base_dir = tmp_path
+        mock_paths.user_dir = lambda user_id: tmp_path / "users" / user_id
         monkeypatch.setattr("deerflow.config.paths.get_paths", lambda: mock_paths)
 
-        result = task_tool_module._find_thread_id_for_task("tc-any")
+        result = task_tool_module._find_thread_id_for_task("tc-any", user_id="default")
         assert result is None
 
 

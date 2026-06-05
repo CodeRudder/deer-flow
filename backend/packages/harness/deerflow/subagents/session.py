@@ -104,12 +104,14 @@ class SubagentSession:
         subagent_name: str,
         description: str = "",
         user_id: str | None = None,
+        capabilities: list[str] | None = None,
     ) -> None:
         self.thread_id = thread_id
         self.task_id = task_id
         self.subagent_name = subagent_name
         self.description = description
         self.user_id = user_id or get_effective_user_id()
+        self.capabilities = capabilities or []
         self.started_at = _utc_now_iso()
 
         # Lazy-resolved paths
@@ -195,6 +197,7 @@ class SubagentSession:
             "subagent_name": self.subagent_name,
             "thread_id": self.thread_id,
             "description": self.description,
+            "capabilities": self.capabilities,
             "status": status,
             "started_at": self.started_at,
             "completed_at": _utc_now_iso(),
@@ -328,6 +331,7 @@ class SubagentSession:
             # Try to load subagent_name from first line or summary
             subagent_name = "unknown"
             description = ""
+            capabilities: list[str] = []
             summary_path = jsonl_file.parent / f"{task_id}.summary.json"
             if summary_path.exists():
                 try:
@@ -335,6 +339,9 @@ class SubagentSession:
                         s = json.load(f)
                     subagent_name = s.get("subagent_name", subagent_name)
                     description = s.get("description", "")
+                    raw_capabilities = s.get("capabilities", [])
+                    if isinstance(raw_capabilities, list):
+                        capabilities = [str(capability) for capability in raw_capabilities if isinstance(capability, str)]
                 except (json.JSONDecodeError, OSError):
                     pass
 
@@ -344,6 +351,7 @@ class SubagentSession:
                 subagent_name=subagent_name,
                 description=description,
                 user_id=effective_user_id,
+                capabilities=capabilities,
             )
             # Override started_at from summary if available
             if summary_path.exists():
@@ -393,10 +401,14 @@ class SubagentSession:
         subagent_type = "general-purpose"
         description = ""
         status = "unknown"
+        capabilities: list[str] = []
         if summary:
             subagent_type = summary.get("subagent_name", subagent_type)
             description = summary.get("description", "")
             status = summary.get("status", "unknown")
+            raw_capabilities = summary.get("capabilities", [])
+            if isinstance(raw_capabilities, list):
+                capabilities = [str(capability) for capability in raw_capabilities if isinstance(capability, str)]
 
         # Read messages to extract original prompt and last AI content
         messages = session.read_messages()
@@ -419,4 +431,5 @@ class SubagentSession:
             "message_count": len(messages),
             "last_ai_content": last_ai_content,
             "status": status,
+            "capabilities": capabilities,
         }
