@@ -7,7 +7,7 @@
 #   - Gateway debug process on 8001
 #
 # This script starts:
-#   - Frontend on 2025
+#   - Frontend on 3000
 #   - Nginx reverse proxy on 2026
 #
 # Usage:
@@ -24,14 +24,19 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND_PORT="${FRONTEND_PORT:-2025}"
+FRONTEND_PORT_OVERRIDDEN="${FRONTEND_PORT+x}"
+FRONTEND_HOST_OVERRIDDEN="${FRONTEND_HOST+x}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 
 FRONTEND_PID_FILE="$REPO_ROOT/logs/frontend.pid"
 NGINX_PID_FILE="$REPO_ROOT/logs/nginx.pid"
 FRONTEND_LOG="$REPO_ROOT/logs/frontend.log"
 NGINX_LOG="$REPO_ROOT/logs/nginx.log"
-NGINX_CONF="$REPO_ROOT/docker/nginx/nginx.local.conf"
+NGINX_TEMPLATE="$REPO_ROOT/docker/nginx/nginx.local.conf"
+NGINX_DEFAULT_CONF="$REPO_ROOT/docker/nginx/nginx.local.conf"
+NGINX_DEBUG_CONF="$REPO_ROOT/temp/nginx.debug-web.conf"
+NGINX_CONF_STATE="$REPO_ROOT/logs/nginx-debug-web.conf.path"
 
 usage() {
     cat <<EOF
@@ -39,7 +44,7 @@ Usage:
   ./scripts/debug-web-start.sh
 
 Starts only the web-facing services for split-process debugging:
-  - Frontend on 127.0.0.1:2025
+  - Frontend on 127.0.0.1:3000
   - Nginx reverse proxy on localhost:2026
 
 Start these separately in PyCharm Debug first:
@@ -47,7 +52,7 @@ Start these separately in PyCharm Debug first:
   - Gateway on localhost:8001
 
 Environment overrides:
-  FRONTEND_PORT=3025     Change frontend port (default: 2025)
+  FRONTEND_PORT=3025     Change frontend port (default: 3000)
   FRONTEND_HOST=0.0.0.0  Change frontend bind host (default: 127.0.0.1)
 
 Open:
@@ -117,12 +122,39 @@ wait_for_port() {
     printf "\r  %-60s\r" ""
 }
 
+frontend_upstream_host() {
+    case "$FRONTEND_HOST" in
+        0.0.0.0|::|"[::]")
+            echo "127.0.0.1"
+            ;;
+        *)
+            echo "$FRONTEND_HOST"
+            ;;
+    esac
+}
+
+write_nginx_conf() {
+    local upstream_host="$1"
+    local upstream_port="$2"
+
+    sed "s/server 127\\.0\\.0\\.1:3000;/server ${upstream_host}:${upstream_port};/" \
+        "$NGINX_TEMPLATE" > "$NGINX_DEBUG_CONF"
+}
+
 mkdir -p "$REPO_ROOT/logs"
 mkdir -p "$REPO_ROOT/temp/client_body_temp" \
          "$REPO_ROOT/temp/proxy_temp" \
          "$REPO_ROOT/temp/fastcgi_temp" \
          "$REPO_ROOT/temp/uwsgi_temp" \
          "$REPO_ROOT/temp/scgi_temp"
+
+FRONTEND_UPSTREAM_HOST="$(frontend_upstream_host)"
+NGINX_CONF="$NGINX_DEFAULT_CONF"
+if [ -n "$FRONTEND_PORT_OVERRIDDEN" ] || [ -n "$FRONTEND_HOST_OVERRIDDEN" ]; then
+    write_nginx_conf "$FRONTEND_UPSTREAM_HOST" "$FRONTEND_PORT"
+    NGINX_CONF="$NGINX_DEBUG_CONF"
+fi
+printf "%s\n" "$NGINX_CONF" > "$NGINX_CONF_STATE"
 
 echo "Starting split-debug web services..."
 
@@ -133,7 +165,11 @@ else
     echo "Starting Frontend on $FRONTEND_HOST:$FRONTEND_PORT..."
     (
         cd "$REPO_ROOT/frontend"
-        nohup pnpm exec next dev --turbo --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$FRONTEND_LOG" 2>&1 &
+        if [ -n "$FRONTEND_PORT_OVERRIDDEN" ] || [ -n "$FRONTEND_HOST_OVERRIDDEN" ]; then
+            nohup pnpm exec next dev --turbo --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$FRONTEND_LOG" 2>&1 &
+        else
+            nohup pnpm run dev > "$FRONTEND_LOG" 2>&1 &
+        fi
         echo $! > "$FRONTEND_PID_FILE"
     )
     wait_for_port "$FRONTEND_PORT" 120 "Frontend" "$FRONTEND_PID_FILE" "$FRONTEND_LOG"
@@ -144,7 +180,7 @@ if is_running "$NGINX_PID_FILE"; then
     echo "Nginx already running on port 2026 (pid $(cat "$NGINX_PID_FILE"))"
 else
     rm -f "$NGINX_PID_FILE"
-    echo "Starting Nginx on port 2026..."
+    echo "Starting Nginx on port 2026 (config $NGINX_CONF)..."
     nohup nginx -g "daemon off;" -c "$NGINX_CONF" -p "$REPO_ROOT" > "$NGINX_LOG" 2>&1 &
     echo $! > "$NGINX_PID_FILE"
     wait_for_port 2026 10 "Nginx" "$NGINX_PID_FILE" "$NGINX_LOG"

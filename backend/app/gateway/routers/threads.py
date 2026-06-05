@@ -12,28 +12,43 @@ matching the LangGraph Platform wire format expected by the
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-import math
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Query, Request
+from langgraph.checkpoint.base import empty_checkpoint
+from pydantic import BaseModel, Field, field_validator
 
-from app.gateway.deps import get_checkpointer, get_store
+from app.gateway.authz import require_permission
+from app.gateway.deps import get_checkpointer
+from app.gateway.utils import sanitize_log_param
 from deerflow.config.paths import Paths, get_paths
 from deerflow.runtime import serialize_channel_values
-
-# ---------------------------------------------------------------------------
-# Store namespace
-# ---------------------------------------------------------------------------
-
-THREADS_NS: tuple[str, ...] = ("threads",)
-"""Namespace used by the Store for thread metadata records."""
+from deerflow.runtime.user_context import get_effective_user_id
+from deerflow.utils.time import coerce_iso, now_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["threads"])
+
+
+# Metadata keys that the server controls; clients are not allowed to set
+# them. Pydantic ``@field_validator("metadata")`` strips them on every
+# inbound model below so a malicious client cannot reflect a forged
+# owner identity through the API surface. Defense-in-depth — the
+# row-level invariant is still ``threads_meta.user_id`` populated from
+# the auth contextvar; this list closes the metadata-blob echo gap.
+_SERVER_RESERVED_METADATA_KEYS: frozenset[str] = frozenset({"owner_id", "user_id"})
+
+
+def _strip_reserved_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Return ``metadata`` with server-controlled keys removed."""
+    if not metadata:
+        return metadata or {}
+    return {k: v for k, v in metadata.items() if k not in _SERVER_RESERVED_METADATA_KEYS}
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +79,10 @@ class ThreadCreateRequest(BaseModel):
     """Request body for creating a thread."""
 
     thread_id: str | None = Field(default=None, description="Optional thread ID (auto-generated if omitted)")
+    assistant_id: str | None = Field(default=None, description="Associate thread with an assistant")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Initial metadata")
+
+    _strip_reserved = field_validator("metadata")(classmethod(lambda cls, v: _strip_reserved_metadata(v)))
 
 
 class ThreadSearchRequest(BaseModel):
@@ -74,6 +92,28 @@ class ThreadSearchRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=1000, description="Maximum results")
     offset: int = Field(default=0, ge=0, description="Pagination offset")
     status: str | None = Field(default=None, description="Filter by thread status")
+
+    @field_validator("metadata")
+    @classmethod
+    def _validate_metadata_filters(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Reject filter entries the SQL backend cannot compile.
+
+        Enforces consistent behaviour across SQL and memory backends.
+        See ``deerflow.persistence.json_compat`` for the shared validators.
+        """
+        if not v:
+            return v
+        from deerflow.persistence.json_compat import validate_metadata_filter_key, validate_metadata_filter_value
+
+        bad_entries: list[str] = []
+        for key, value in v.items():
+            if not validate_metadata_filter_key(key):
+                bad_entries.append(f"{key!r} (unsafe key)")
+            elif not validate_metadata_filter_value(value):
+                bad_entries.append(f"{key!r} (unsupported value type {type(value).__name__})")
+        if bad_entries:
+            raise ValueError(f"Invalid metadata filter entries: {', '.join(bad_entries)}")
+        return v
 
 
 class ThreadStateResponse(BaseModel):
@@ -89,10 +129,52 @@ class ThreadStateResponse(BaseModel):
     tasks: list[dict[str, Any]] = Field(default_factory=list, description="Interrupted task details")
 
 
+class MainSessionStatus(BaseModel):
+    """Status summary for the lead-agent session."""
+
+    status: str = "idle"
+    run_id: str | None = None
+    started_at: str | None = None
+    last_updated: str | None = None
+    last_message: str | None = None
+
+
+class SubtaskStatus(BaseModel):
+    """Status summary for one sub-agent task."""
+
+    task_id: str
+    subagent_name: str = ""
+    description: str = ""
+    status: str = "unknown"
+    detail: str = ""
+    started_at: str | None = None
+    last_updated: str | None = None
+    last_message: str | None = None
+
+
+class SessionStatusResponse(BaseModel):
+    """Comprehensive session status for the frontend status dialog."""
+
+    thread_id: str
+    main_session: MainSessionStatus = Field(default_factory=MainSessionStatus)
+    active_subtasks: list[SubtaskStatus] = Field(default_factory=list)
+    recent_subtasks: list[SubtaskStatus] = Field(default_factory=list)
+
+
+class ThreadMessagesResponse(BaseModel):
+    """Paginated messages from the local main-session conversation JSONL file."""
+
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
 class ThreadPatchRequest(BaseModel):
     """Request body for patching thread metadata."""
 
     metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata to merge")
+
+    _strip_reserved = field_validator("metadata")(classmethod(lambda cls, v: _strip_reserved_metadata(v)))
 
 
 class ThreadStateUpdateRequest(BaseModel):
@@ -118,7 +200,7 @@ class HistoryEntry(BaseModel):
 class ThreadHistoryRequest(BaseModel):
     """Request body for checkpoint history."""
 
-    limit: int = Field(default=25, ge=1, le=500, description="Maximum entries")
+    limit: int = Field(default=10, ge=1, le=100, description="Maximum entries")
     before: str | None = Field(default=None, description="Cursor for pagination")
 
 
@@ -126,339 +208,34 @@ class ThreadHistoryRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def _looks_like_number(value: str) -> bool:
-    try:
-        parsed = float(value)
-    except ValueError:
-        return False
-    return math.isfinite(parsed)
-
-
-def _to_iso_timestamp(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-        return dt.isoformat()
-    if isinstance(value, (int, float)):
-        if not math.isfinite(float(value)):
-            return ""
-        try:
-            return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
-        except (OverflowError, OSError, ValueError):
-            return ""
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return ""
-        if text.isdigit() or _looks_like_number(text):
-            try:
-                return datetime.fromtimestamp(float(text), tz=UTC).isoformat()
-            except (OverflowError, OSError, ValueError):
-                return ""
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return text
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.isoformat()
-    return str(value)
-
-# Fields to keep in values when returning search results.
-_SEARCH_VALUES_KEEP = {"title"}
-
-
-def _extract_search_values(vals: dict[str, Any]) -> dict[str, Any]:
-    """Extract lightweight values for thread search results.
-
-    Returns a dict with ``title`` and a single-element ``messages`` list
-    containing the last human/ai message preview (max 120 chars).
-    """
-    result: dict[str, Any] = {}
-    if isinstance(vals, dict):
-        for k in _SEARCH_VALUES_KEEP:
-            if k in vals:
-                result[k] = vals[k]
-        # Extract last message preview
-        messages = vals.get("messages")
-        if isinstance(messages, list):
-            for msg in reversed(messages):
-                if not isinstance(msg, dict):
-                    continue
-                if msg.get("type") not in ("human", "ai"):
-                    continue
-                content = msg.get("content", "")
-                text = ""
-                if isinstance(content, str):
-                    text = content.strip()
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            text = (part.get("text") or "").strip()
-                            break
-                if text:
-                    preview = text.replace("\n", " ")
-                    if len(preview) > 120:
-                        preview = preview[:120] + "…"
-                    result["messages"] = [{"type": msg["type"], "content": preview}]
-                    break
-    return result
-
-
-# Message trimming thresholds
 _HEAD_MESSAGES = 10
 _TAIL_MESSAGES = 40
 _MAX_CONTENT_CHARS = 4000
 
 
 def _truncate_content(msg: dict[str, Any]) -> dict[str, Any]:
-    """Truncate oversized content in a single message.
-
-    Handles both string content and list-of-parts content (multi-modal).
-    Large blobs (e.g. base64 images, huge tool output) are replaced with
-    a size indicator.
-    """
     content = msg.get("content")
     if isinstance(content, str) and len(content) > _MAX_CONTENT_CHARS:
-        truncated = content[:_MAX_CONTENT_CHARS]
-        return {**msg, "content": truncated + f"\n… [截断，原始 {len(content)} 字符]"}
+        return {**msg, "content": content[:_MAX_CONTENT_CHARS] + f"\n... [truncated, original {len(content)} chars]"}
     if isinstance(content, list):
         new_parts: list[Any] = []
         for part in content:
             if not isinstance(part, dict):
                 new_parts.append(part)
                 continue
-            # Drop image_url parts entirely (base64 blobs)
             if part.get("type") == "image_url":
-                new_parts.append({"type": "text", "text": "[图片已省略]"})
+                new_parts.append({"type": "text", "text": "[image omitted]"})
                 continue
             text = part.get("text", "")
             if isinstance(text, str) and len(text) > _MAX_CONTENT_CHARS:
-                new_parts.append({**part, "text": text[:_MAX_CONTENT_CHARS] + f"\n… [截断，原始 {len(text)} 字符]"})
+                new_parts.append({**part, "text": text[:_MAX_CONTENT_CHARS] + f"\n... [truncated, original {len(text)} chars]"})
             else:
                 new_parts.append(part)
         return {**msg, "content": new_parts}
     return msg
 
 
-def _trim_messages(values: dict[str, Any]) -> dict[str, Any]:
-    """Trim messages in channel values to keep first 10 + last 40 entries.
-
-    Also truncates oversized content within each message to avoid
-    multi-megabyte JSON responses.  Middle messages are replaced with
-    a single placeholder.
-    """
-    messages = values.get("messages")
-    if not isinstance(messages, list):
-        return values
-
-    threshold = _HEAD_MESSAGES + _TAIL_MESSAGES
-    if len(messages) <= threshold:
-        trimmed = [_truncate_content(m) for m in messages]
-    else:
-        head = [_truncate_content(m) for m in messages[:_HEAD_MESSAGES]]
-        omitted = len(messages) - _HEAD_MESSAGES - _TAIL_MESSAGES
-        placeholder = {
-            "type": "system",
-            "content": f"… 省略 {omitted} 条消息 …",
-            "id": "__omitted__",
-            "name": "omitted",
-        }
-        tail = [_truncate_content(m) for m in messages[-_TAIL_MESSAGES:]]
-        trimmed = head + [placeholder] + tail
-
-    # Drop heavy state fields that bloat the response
-    cleaned = {**values, "messages": trimmed}
-    cleaned.pop("viewed_images", None)
-    return cleaned
-
-
-def _delete_thread_data(thread_id: str, paths: Paths | None = None) -> ThreadDeleteResponse:
-    """Delete local persisted filesystem data for a thread."""
-    path_manager = paths or get_paths()
-    try:
-        path_manager.delete_thread_dir(thread_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except FileNotFoundError:
-        # Not critical — thread data may not exist on disk
-        logger.debug("No local thread data to delete for %s", thread_id)
-        return ThreadDeleteResponse(success=True, message=f"No local data for {thread_id}")
-    except Exception as exc:
-        logger.exception("Failed to delete thread data for %s", thread_id)
-        raise HTTPException(status_code=500, detail="Failed to delete local thread data.") from exc
-
-    logger.info("Deleted local thread data for %s", thread_id)
-    return ThreadDeleteResponse(success=True, message=f"Deleted local thread data for {thread_id}")
-
-
-async def _store_get(store, thread_id: str) -> dict | None:
-    """Fetch a thread record from the Store; returns ``None`` if absent."""
-    item = await store.aget(THREADS_NS, thread_id)
-    return item.value if item is not None else None
-
-
-async def _store_put(store, record: dict) -> None:
-    """Write a thread record to the Store."""
-    await store.aput(THREADS_NS, record["thread_id"], record)
-
-
-async def _store_upsert(store, thread_id: str, *, metadata: dict | None = None, values: dict | None = None) -> None:
-    """Create or refresh a thread record in the Store.
-
-    On creation the record is written with ``status="idle"``.  On update only
-    ``updated_at`` (and optionally ``metadata`` / ``values``) are changed so
-    that existing fields are preserved.
-
-    ``values`` carries the agent-state snapshot exposed to the frontend
-    (currently just ``{"title": "..."}``).
-    """
-    now = _utc_now_iso()
-    existing = await _store_get(store, thread_id)
-    if existing is None:
-        await _store_put(
-            store,
-            {
-                "thread_id": thread_id,
-                "status": "idle",
-                "created_at": now,
-                "updated_at": now,
-                "metadata": metadata or {},
-                "values": values or {},
-            },
-        )
-    else:
-        val = dict(existing)
-        val["updated_at"] = now
-        if metadata:
-            val.setdefault("metadata", {}).update(metadata)
-        if values:
-            val.setdefault("values", {}).update(values)
-        await _store_put(store, val)
-
-
-def _inject_message_timestamps(thread_id: str, serialized_values: dict) -> None:
-    """Inject timestamps from conversation.jsonl into serialized messages.
-
-    Only reads the portion of the JSONL file needed to resolve timestamps
-    for messages that don't already have one.  Scans backwards from the
-    end of the file to find matching IDs quickly (recent messages are at
-    the bottom).  Stops as soon as all needed IDs are resolved.
-
-    Modifies ``serialized_values`` in place.  Silently skips on any error.
-    """
-    import json as _json
-
-    messages = serialized_values.get("messages")
-    if not messages or not isinstance(messages, list):
-        return
-
-    # Collect message IDs that need timestamps
-    needed: dict[str, dict] = {}  # msg_id → msg dict ref
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        mid = msg.get("id")
-        if not mid:
-            continue
-        rm = msg.get("response_metadata") or {}
-        if not rm.get("created_at"):
-            needed[mid] = msg
-
-    if not needed:
-        return
-
-    try:
-        from deerflow.config.paths import get_paths
-
-        jsonl_path = get_paths().thread_dir(thread_id) / "conversation.jsonl"
-        if not jsonl_path.exists():
-            return
-
-        # Read file backwards in chunks to find needed IDs quickly
-        remaining = set(needed.keys())
-        chunk_size = 8192
-        file_size = jsonl_path.stat().st_size
-        if file_size == 0:
-            return
-
-        with open(jsonl_path, "rb") as f:
-            # Read from end in chunks, parse lines
-            pos = file_size
-            leftover = b""
-            while pos > 0 and remaining:
-                read_size = min(chunk_size, pos)
-                pos -= read_size
-                f.seek(pos)
-                chunk = f.read(read_size) + leftover
-                lines = chunk.split(b"\n")
-                # First element may be partial line — save for next iteration
-                leftover = lines[0]
-                # Process complete lines (from end to start)
-                for raw_line in reversed(lines[1:]):
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        entry = _json.loads(raw_line)
-                    except Exception:
-                        continue
-                    mid = entry.get("id")
-                    if mid and mid in remaining:
-                        msg = needed[mid]
-                        rm = msg.setdefault("response_metadata", {})
-                        rm["created_at"] = entry.get("ts")
-                        remaining.discard(mid)
-
-            # Process any remaining leftover (first line of file)
-            if remaining and leftover:
-                raw_line = leftover.strip()
-                if raw_line:
-                    try:
-                        entry = _json.loads(raw_line)
-                        mid = entry.get("id")
-                        if mid and mid in remaining:
-                            msg = needed[mid]
-                            rm = msg.setdefault("response_metadata", {})
-                            rm["created_at"] = entry.get("ts")
-                    except Exception:
-                        pass
-    except Exception:
-        logger.debug("Failed to inject timestamps for thread %s", thread_id, exc_info=True)
-
-
-def _prepare_history_response(thread_id: str, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Trim checkpoint history values and attach per-message timestamps.
-
-    LangGraph checkpoint history records have checkpoint-level timestamps in
-    metadata, but individual messages do not necessarily carry their original
-    creation time. DeerFlow records those message-level timestamps in
-    conversation.jsonl, so history responses need the same injection as the
-    latest state response.
-    """
-    for entry in data:
-        values = entry.get("values")
-        if isinstance(values, dict):
-            trimmed = _trim_messages(values)
-            _inject_message_timestamps(thread_id, trimmed)
-            entry["values"] = trimmed
-    return data
-
-
 def _dedupe_messages_by_id(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove duplicate persisted messages while preserving chronological order.
-
-    Older conversation.jsonl files may contain repeated LangChain message IDs
-    from previous persistence behavior.  The first occurrence is the canonical
-    one because it carries the original timestamp; later duplicates are replayed
-    copies and should not be shown again.
-    """
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for message in messages:
@@ -469,6 +246,124 @@ def _dedupe_messages_by_id(messages: list[dict[str, Any]]) -> list[dict[str, Any
             seen.add(message_id)
         result.append(message)
     return result
+
+
+def _trim_messages(values: dict[str, Any]) -> dict[str, Any]:
+    messages = values.get("messages")
+    if not isinstance(messages, list):
+        cleaned = dict(values)
+        cleaned.pop("viewed_images", None)
+        return cleaned
+
+    deduped = _dedupe_messages_by_id([m for m in messages if isinstance(m, dict)])
+    threshold = _HEAD_MESSAGES + _TAIL_MESSAGES
+    if len(deduped) <= threshold:
+        trimmed = [_truncate_content(m) for m in deduped]
+    else:
+        head = [_truncate_content(m) for m in deduped[:_HEAD_MESSAGES]]
+        omitted = len(deduped) - _HEAD_MESSAGES - _TAIL_MESSAGES
+        placeholder = {
+            "type": "system",
+            "content": f"... omitted {omitted} messages ...",
+            "id": "__omitted__",
+            "name": "omitted",
+        }
+        tail = [_truncate_content(m) for m in deduped[-_TAIL_MESSAGES:]]
+        trimmed = head + [placeholder] + tail
+
+    cleaned = {**values, "messages": trimmed}
+    cleaned.pop("viewed_images", None)
+    return cleaned
+
+
+def _inject_message_timestamps(thread_id: str, serialized_values: dict[str, Any]) -> None:
+    messages = serialized_values.get("messages")
+    if not isinstance(messages, list):
+        return
+
+    needed: dict[str, dict[str, Any]] = {}
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        message_id = msg.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            continue
+        metadata = msg.get("response_metadata") or {}
+        if not metadata.get("created_at"):
+            needed[message_id] = msg
+    if not needed:
+        return
+
+    try:
+        jsonl_path = get_paths().thread_dir(thread_id, user_id=get_effective_user_id()) / "conversation.jsonl"
+        if not jsonl_path.exists():
+            return
+
+        remaining = set(needed.keys())
+        chunk_size = 8192
+        file_size = jsonl_path.stat().st_size
+        if file_size == 0:
+            return
+
+        with open(jsonl_path, "rb") as handle:
+            pos = file_size
+            leftover = b""
+            while pos > 0 and remaining:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                handle.seek(pos)
+                chunk = handle.read(read_size) + leftover
+                lines = chunk.split(b"\n")
+                leftover = lines[0]
+                for raw_line in reversed(lines[1:]):
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        entry = json.loads(raw_line)
+                    except Exception:
+                        continue
+                    message_id = entry.get("id")
+                    if message_id in remaining:
+                        msg = needed[message_id]
+                        msg.setdefault("response_metadata", {})["created_at"] = entry.get("ts")
+                        remaining.discard(message_id)
+
+            if remaining and leftover.strip():
+                try:
+                    entry = json.loads(leftover.strip())
+                    message_id = entry.get("id")
+                    if message_id in remaining:
+                        needed[message_id].setdefault("response_metadata", {})["created_at"] = entry.get("ts")
+                except Exception:
+                    pass
+    except Exception:
+        logger.debug("Failed to inject timestamps for thread %s", sanitize_log_param(thread_id), exc_info=True)
+
+
+def _prepare_values_response(thread_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    prepared = _trim_messages(values)
+    _inject_message_timestamps(thread_id, prepared)
+    return prepared
+
+
+def _delete_thread_data(thread_id: str, paths: Paths | None = None, *, user_id: str | None = None) -> ThreadDeleteResponse:
+    """Delete local persisted filesystem data for a thread."""
+    path_manager = paths or get_paths()
+    try:
+        path_manager.delete_thread_dir(thread_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError:
+        # Not critical — thread data may not exist on disk
+        logger.debug("No local thread data to delete for %s", sanitize_log_param(thread_id))
+        return ThreadDeleteResponse(success=True, message=f"No local data for {thread_id}")
+    except Exception as exc:
+        logger.exception("Failed to delete thread data for %s", sanitize_log_param(thread_id))
+        raise HTTPException(status_code=500, detail="Failed to delete local thread data.") from exc
+
+    logger.info("Deleted local thread data for %s", sanitize_log_param(thread_id))
+    return ThreadDeleteResponse(success=True, message=f"Deleted local thread data for {thread_id}")
 
 
 def _derive_thread_status(checkpoint_tuple) -> str:
@@ -490,28 +385,280 @@ def _derive_thread_status(checkpoint_tuple) -> str:
     return "idle"
 
 
+def _status_value(status: Any) -> str:
+    """Return a stable lowercase status string from enums or raw values."""
+    value = status.value if hasattr(status, "value") else str(status or "")
+    return value.lower()
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    """Best-effort parser for ISO-like timestamps used by run/subagent records."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _message_preview(content: Any, *, limit: int = 200) -> str | None:
+    """Extract a compact text preview from message content."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("text")]
+        text = " ".join(parts)
+    else:
+        return None
+    text = " ".join(text.split())
+    return text[:limit] if text else None
+
+
+def _derive_running_detail(last_msg: dict[str, Any]) -> str:
+    """Infer whether a running subagent is waiting on tools or the LLM."""
+    role = last_msg.get("role", "")
+    if role == "tool":
+        return "waiting_for_llm"
+    if role == "ai":
+        return "waiting_for_tool" if last_msg.get("tool_calls") else "waiting_for_llm"
+    return "running"
+
+
+async def _read_subagent_sessions(thread_id: str, *, user_id: str | None = None) -> list[Any]:
+    from deerflow.subagents.session import SubagentSession
+
+    return await asyncio.to_thread(SubagentSession.list_sessions, thread_id, user_id=user_id)
+
+
+async def _read_session_summary(session: Any) -> dict[str, Any] | None:
+    return await asyncio.to_thread(session.read_summary)
+
+
+async def _read_session_messages(session: Any) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(session.read_messages)
+
+
+async def _read_session_last_message_ts(session: Any) -> str:
+    return await asyncio.to_thread(session.read_last_message_ts)
+
+
+async def _get_main_session_status(thread_id: str, request: Request) -> MainSessionStatus:
+    """Build lead-agent status from the current RunManager."""
+    from app.gateway.deps import get_current_user, get_run_manager
+
+    main_status = MainSessionStatus(status="idle")
+    try:
+        run_manager = get_run_manager(request)
+        user_id = await get_current_user(request)
+        runs = await run_manager.list_by_thread(thread_id, user_id=user_id, limit=1)
+    except Exception:
+        logger.debug("Failed to get main session status for thread %s", sanitize_log_param(thread_id), exc_info=True)
+        return main_status
+
+    if not runs:
+        return main_status
+
+    run = runs[0]
+    run_status = _status_value(getattr(run, "status", ""))
+    main_status.run_id = getattr(run, "run_id", None)
+    main_status.started_at = coerce_iso(getattr(run, "created_at", "") or "")
+    main_status.last_updated = coerce_iso(getattr(run, "updated_at", "") or getattr(run, "created_at", "") or "")
+    main_status.last_message = _message_preview(getattr(run, "last_ai_message", None)) or _message_preview(getattr(run, "first_human_message", None))
+
+    if run_status in {"pending", "running"}:
+        main_status.status = "running"
+    elif run_status in {"error", "timeout", "interrupted"}:
+        main_status.status = "interrupted"
+    elif run_status:
+        main_status.status = run_status
+    return main_status
+
+
+async def _subtask_from_memory_result(result: Any) -> SubtaskStatus:
+    """Convert an in-memory subagent result into the status response shape."""
+    task_id = str(getattr(result, "task_id", ""))
+    thread_id = str(getattr(result, "thread_id", "") or "")
+    subagent_name = str(getattr(result, "subagent_name", "") or "")
+    status = _status_value(getattr(result, "status", "unknown"))
+    started_at = coerce_iso(str(getattr(result, "started_at", "") or ""))
+    completed_at = coerce_iso(str(getattr(result, "completed_at", "") or ""))
+    last_updated = completed_at or None
+
+    if not last_updated and thread_id and task_id:
+        try:
+            from deerflow.subagents.session import SubagentSession
+
+            session = SubagentSession(thread_id=thread_id, task_id=task_id, subagent_name=subagent_name, user_id=get_effective_user_id())
+            last_updated = await _read_session_last_message_ts(session) or None
+        except Exception:
+            logger.debug("Failed to read subagent last message timestamp for %s", sanitize_log_param(task_id), exc_info=True)
+    if not last_updated:
+        last_updated = started_at or None
+
+    return SubtaskStatus(
+        task_id=task_id,
+        subagent_name=subagent_name,
+        description=str(getattr(result, "description", "") or ""),
+        status=status,
+        started_at=started_at or None,
+        last_updated=last_updated,
+    )
+
+
+async def _subtask_from_disk_session(session: Any, now: datetime, timeout_seconds: int) -> SubtaskStatus | None:
+    """Convert a persisted SubagentSession into the status response shape."""
+    summary = await _read_session_summary(session)
+    if not summary:
+        return None
+
+    status = str(summary.get("status", "unknown") or "unknown").lower()
+    terminal = status in {"completed", "failed", "interrupted", "cancelled", "timed_out"}
+    if terminal:
+        last_updated = summary.get("completed_at") or ""
+    else:
+        last_updated = await _read_session_last_message_ts(session)
+    if not last_updated:
+        last_updated = summary.get("started_at", "")
+
+    item = SubtaskStatus(
+        task_id=session.task_id,
+        subagent_name=session.subagent_name,
+        description=session.description,
+        status=status,
+        started_at=summary.get("started_at") or None,
+        last_updated=last_updated or None,
+    )
+
+    updated = _parse_datetime(item.last_updated)
+    if item.status == "running" and updated is not None:
+        age = (now - updated).total_seconds()
+        if age > timeout_seconds:
+            item.status = "timed_out"
+            item.detail = f"no update for {int(age / 60)} minutes"
+
+    if item.status == "running":
+        try:
+            messages = await _read_session_messages(session)
+        except Exception:
+            logger.debug("Failed to read subagent session messages for %s", sanitize_log_param(session.task_id), exc_info=True)
+            messages = []
+        if messages:
+            last_msg = messages[-1]
+            item.detail = _derive_running_detail(last_msg)
+            item.last_message = _message_preview(last_msg.get("content"))
+        elif not item.detail:
+            item.detail = "running"
+
+    return item
+
+
+async def _get_subtask_statuses(thread_id: str) -> tuple[list[SubtaskStatus], list[SubtaskStatus]]:
+    """Return active and recent subtask status lists for a thread."""
+    now = datetime.now(UTC)
+    user_id = get_effective_user_id()
+    try:
+        from deerflow.config.subagents_config import get_subagents_app_config
+
+        timeout_seconds = get_subagents_app_config().timeout_seconds
+    except Exception:
+        timeout_seconds = 900
+
+    active: list[SubtaskStatus] = []
+    recent: list[SubtaskStatus] = []
+    seen_task_ids: set[str] = set()
+
+    try:
+        from deerflow.subagents.executor import list_background_tasks
+
+        for result in await asyncio.to_thread(list_background_tasks):
+            if getattr(result, "thread_id", None) != thread_id:
+                continue
+            if getattr(result, "user_id", None) != user_id:
+                continue
+            item = await _subtask_from_memory_result(result)
+            seen_task_ids.add(item.task_id)
+            if item.status in {"pending", "running"}:
+                active.append(item)
+            else:
+                recent.append(item)
+    except Exception:
+        logger.debug("Failed to read background subagent tasks", exc_info=True)
+
+    try:
+        sessions = await _read_subagent_sessions(thread_id, user_id=user_id)
+        for session in sessions:
+            if session.task_id in seen_task_ids:
+                continue
+            item = await _subtask_from_disk_session(session, now, timeout_seconds)
+            if item is None:
+                continue
+            if item.status in {"pending", "running"}:
+                active.append(item)
+            else:
+                recent.append(item)
+    except Exception:
+        logger.debug("Failed to read disk subagent sessions for thread %s", sanitize_log_param(thread_id), exc_info=True)
+
+    active.sort(key=lambda t: t.last_updated or t.started_at or "", reverse=True)
+    recent.sort(key=lambda t: t.last_updated or t.started_at or "", reverse=True)
+    return active, recent[:10]
+
+
+def _read_main_session_messages_from_disk(thread_id: str, *, limit: int, offset: int) -> ThreadMessagesResponse:
+    """Read paginated main-session messages from the user-scoped conversation JSONL."""
+    jsonl_path = get_paths().thread_dir(thread_id, user_id=get_effective_user_id()) / "conversation.jsonl"
+    if not jsonl_path.exists():
+        return ThreadMessagesResponse()
+
+    try:
+        all_messages: list[dict[str, Any]] = []
+        with open(jsonl_path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    all_messages.append(entry)
+    except OSError:
+        logger.debug("Failed to read main-session messages for thread %s", sanitize_log_param(thread_id), exc_info=True)
+        return ThreadMessagesResponse()
+
+    total = len(all_messages)
+    end_idx = total - offset
+    if end_idx <= 0:
+        return ThreadMessagesResponse(messages=[], total=total, has_more=False)
+
+    start_idx = max(0, end_idx - limit)
+    page = all_messages[start_idx:end_idx]
+    return ThreadMessagesResponse(messages=page, total=total, has_more=start_idx > 0)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
+@require_permission("threads", "delete", owner_check=True, require_existing=True)
 async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteResponse:
     """Delete local persisted filesystem data for a thread.
 
     Cleans DeerFlow-managed thread directories, removes checkpoint data,
-    and removes the thread record from the Store.
+    and removes the thread_meta row from the configured ThreadMetaStore
+    (sqlite or memory).
     """
-    # Clean local filesystem
-    response = _delete_thread_data(thread_id)
+    from app.gateway.deps import get_thread_store
 
-    # Remove from Store (best-effort)
-    store = get_store(request)
-    if store is not None:
-        try:
-            await store.adelete(THREADS_NS, thread_id)
-        except Exception:
-            logger.debug("Could not delete store record for thread %s (not critical)", thread_id)
+    # Clean local filesystem
+    response = _delete_thread_data(thread_id, user_id=get_effective_user_id())
 
     # Remove checkpoints (best-effort)
     checkpointer = getattr(request.app.state, "checkpointer", None)
@@ -520,7 +667,15 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
             if hasattr(checkpointer, "adelete_thread"):
                 await checkpointer.adelete_thread(thread_id)
         except Exception:
-            logger.debug("Could not delete checkpoints for thread %s (not critical)", thread_id)
+            logger.debug("Could not delete checkpoints for thread %s (not critical)", sanitize_log_param(thread_id))
+
+    # Remove thread_meta row (best-effort) — required for sqlite backend
+    # so the deleted thread no longer appears in /threads/search.
+    try:
+        thread_store = get_thread_store(request)
+        await thread_store.delete(thread_id)
+    except Exception:
+        logger.debug("Could not delete thread_meta for %s (not critical)", sanitize_log_param(thread_id))
 
     return response
 
@@ -529,49 +684,44 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
 async def create_thread(body: ThreadCreateRequest, request: Request) -> ThreadResponse:
     """Create a new thread.
 
-    The thread record is written to the Store (for fast listing) and an
-    empty checkpoint is written to the checkpointer (for state reads).
+    Writes a thread_meta record (so the thread appears in /threads/search)
+    and an empty checkpoint (so state endpoints work immediately).
     Idempotent: returns the existing record when ``thread_id`` already exists.
     """
-    store = get_store(request)
+    from app.gateway.deps import get_thread_store
+
     checkpointer = get_checkpointer(request)
+    thread_store = get_thread_store(request)
     thread_id = body.thread_id or str(uuid.uuid4())
-    now = _utc_now_iso()
+    now = now_iso()
+    # ``body.metadata`` is already stripped of server-reserved keys by
+    # ``ThreadCreateRequest._strip_reserved`` — see the model definition.
 
-    # Idempotency: return existing record from Store when already present
-    if store is not None:
-        existing_record = await _store_get(store, thread_id)
-        if existing_record is not None:
-            return ThreadResponse(
-                thread_id=thread_id,
-                status=existing_record.get("status", "idle"),
-                created_at=_to_iso_timestamp(existing_record.get("created_at", "")),
-                updated_at=_to_iso_timestamp(existing_record.get("updated_at", "")),
-                metadata=existing_record.get("metadata", {}),
-            )
+    # Idempotency: return existing record when already present
+    existing_record = await thread_store.get(thread_id)
+    if existing_record is not None:
+        return ThreadResponse(
+            thread_id=thread_id,
+            status=existing_record.get("status", "idle"),
+            created_at=coerce_iso(existing_record.get("created_at", "")),
+            updated_at=coerce_iso(existing_record.get("updated_at", "")),
+            metadata=existing_record.get("metadata", {}),
+        )
 
-    # Write thread record to Store
-    if store is not None:
-        try:
-            await _store_put(
-                store,
-                {
-                    "thread_id": thread_id,
-                    "status": "idle",
-                    "created_at": now,
-                    "updated_at": now,
-                    "metadata": body.metadata,
-                },
-            )
-        except Exception:
-            logger.exception("Failed to write thread %s to store", thread_id)
-            raise HTTPException(status_code=500, detail="Failed to create thread")
+    # Write thread_meta so the thread appears in /threads/search immediately
+    try:
+        await thread_store.create(
+            thread_id,
+            assistant_id=getattr(body, "assistant_id", None),
+            metadata=body.metadata,
+        )
+    except Exception:
+        logger.exception("Failed to write thread_meta for %s", sanitize_log_param(thread_id))
+        raise HTTPException(status_code=500, detail="Failed to create thread")
 
     # Write an empty checkpoint so state endpoints work immediately
     config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
     try:
-        from langgraph.checkpoint.base import empty_checkpoint
-
         ckpt_metadata = {
             "step": -1,
             "source": "input",
@@ -582,10 +732,10 @@ async def create_thread(body: ThreadCreateRequest, request: Request) -> ThreadRe
         }
         await checkpointer.aput(config, empty_checkpoint(), ckpt_metadata, {})
     except Exception:
-        logger.exception("Failed to create checkpoint for thread %s", thread_id)
+        logger.exception("Failed to create checkpoint for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to create thread")
 
-    logger.info("Thread created: %s", thread_id)
+    logger.info("Thread created: %s", sanitize_log_param(thread_id))
     return ThreadResponse(
         thread_id=thread_id,
         status="idle",
@@ -599,175 +749,136 @@ async def create_thread(body: ThreadCreateRequest, request: Request) -> ThreadRe
 async def search_threads(body: ThreadSearchRequest, request: Request) -> list[ThreadResponse]:
     """Search and list threads.
 
-    Two-phase approach:
-
-    **Phase 1 — Store (fast path)**: returns threads that were created or
-    run through this Gateway.  Store records are tiny metadata dicts so
-    fetching all of them at once is cheap.
-
-    **Phase 2 — LangGraph Server supplement (lazy migration)**: threads
-    not yet in the Store are discovered by querying the LangGraph server.
-    Newly found threads are written to the Store so subsequent searches
-    find them via Phase 1.
+    Delegates to the configured ThreadMetaStore implementation
+    (SQL-backed for sqlite/postgres, Store-backed for memory mode).
     """
-    store = get_store(request)
+    from app.gateway.deps import get_thread_store
+    from deerflow.persistence.thread_meta import InvalidMetadataFilterError
 
-    # -----------------------------------------------------------------------
-    # Phase 1: Store
-    # -----------------------------------------------------------------------
-    merged: dict[str, ThreadResponse] = {}
-
-    if store is not None:
-        try:
-            items = await store.asearch(THREADS_NS, limit=10_000)
-        except Exception:
-            logger.warning("Store search failed — falling back to checkpointer only", exc_info=True)
-            items = []
-
-        for item in items:
-            val = item.value
-            merged[val["thread_id"]] = ThreadResponse(
-                thread_id=val["thread_id"],
-                status=val.get("status", "idle"),
-                created_at=_to_iso_timestamp(val.get("created_at", "")),
-                updated_at=_to_iso_timestamp(val.get("updated_at", "")),
-                metadata=val.get("metadata", {}),
-                values=val.get("values", {}),
-            )
-
-    # -----------------------------------------------------------------------
-    # Phase 2: LangGraph Server supplement
-    # Discovers threads not yet in the Store (e.g. created by LangGraph
-    # Server) and lazily migrates them so future searches skip this phase.
-    # -----------------------------------------------------------------------
+    repo = get_thread_store(request)
     try:
-        import httpx
-
-        from deerflow.config import get_app_config
-
-        app_cfg = get_app_config()
-        _extra = app_cfg.model_extra or {}
-        _channels = _extra.get("channels", {}) or {}
-        _lg_url = _channels.get("langgraph_url", "http://localhost:2024")
-        _mon = _extra.get("session_monitor", {}) or {}
-        if isinstance(_mon, dict):
-            _lg_url = _mon.get("langgraph_url", _lg_url)
-
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{_lg_url}/threads/search",
-                json={"limit": 200, "sortBy": "updated_at", "sortOrder": "desc"},
-            )
-            resp.raise_for_status()
-            lg_threads = resp.json()
-
-        for t in lg_threads:
-            tid = t.get("thread_id", "")
-            if not tid or tid in merged:
-                continue
-            vals = t.get("values", {})
-            ckpt_values = _extract_search_values(vals)
-
-            t_meta = t.get("metadata", {})
-            merged[tid] = ThreadResponse(
-                thread_id=tid,
-                status=t.get("status", "idle"),
-                created_at=_to_iso_timestamp(t.get("created_at", "")),
-                updated_at=_to_iso_timestamp(t.get("updated_at", "")),
-                metadata=t_meta,
-                values=ckpt_values,
-            )
-
-            # Lazy migration
-            if store is not None and ckpt_values:
-                try:
-                    await _store_upsert(store, tid, metadata=t_meta, values=ckpt_values)
-                except Exception:
-                    logger.debug("Failed to migrate thread %s to store (non-fatal)", tid)
-    except Exception:
-        logger.debug("LangGraph thread search supplement failed (non-fatal)", exc_info=True)
-
-    # -----------------------------------------------------------------------
-    # Phase 3: Filter → sort → paginate
-    # -----------------------------------------------------------------------
-    results = list(merged.values())
-
-    if body.metadata:
-        results = [r for r in results if all(r.metadata.get(k) == v for k, v in body.metadata.items())]
-
-    if body.status:
-        results = [r for r in results if r.status == body.status]
-
-    results.sort(key=lambda r: r.updated_at, reverse=True)
-    return results[body.offset : body.offset + body.limit]
+        rows = await repo.search(
+            metadata=body.metadata or None,
+            status=body.status,
+            limit=body.limit,
+            offset=body.offset,
+        )
+    except InvalidMetadataFilterError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [
+        ThreadResponse(
+            thread_id=r["thread_id"],
+            status=r.get("status", "idle"),
+            # ``coerce_iso`` heals legacy unix-second values that
+            # ``MemoryThreadMetaStore`` historically wrote with ``time.time()``;
+            # SQL-backed rows already arrive as ISO strings and pass through.
+            created_at=coerce_iso(r.get("created_at", "")),
+            updated_at=coerce_iso(r.get("updated_at", "")),
+            metadata=r.get("metadata", {}),
+            values={"title": r["display_name"]} if r.get("display_name") else {},
+            interrupts={},
+        )
+        for r in rows
+    ]
 
 
 @router.patch("/{thread_id}", response_model=ThreadResponse)
+@require_permission("threads", "write", owner_check=True, require_existing=True)
 async def patch_thread(thread_id: str, body: ThreadPatchRequest, request: Request) -> ThreadResponse:
     """Merge metadata into a thread record."""
-    store = get_store(request)
-    if store is None:
-        raise HTTPException(status_code=503, detail="Store not available")
+    from app.gateway.deps import get_thread_store
 
-    record = await _store_get(store, thread_id)
+    thread_store = get_thread_store(request)
+    record = await thread_store.get(thread_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
-    now = _utc_now_iso()
-    updated = dict(record)
-    updated.setdefault("metadata", {}).update(body.metadata)
-    updated["updated_at"] = now
-
+    # ``body.metadata`` already stripped by ``ThreadPatchRequest._strip_reserved``.
     try:
-        await _store_put(store, updated)
+        await thread_store.update_metadata(thread_id, body.metadata)
     except Exception:
-        logger.exception("Failed to patch thread %s", thread_id)
+        logger.exception("Failed to patch thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to update thread")
 
+    # Re-read to get the merged metadata + refreshed updated_at
+    record = await thread_store.get(thread_id) or record
     return ThreadResponse(
         thread_id=thread_id,
-        status=updated.get("status", "idle"),
-        created_at=_to_iso_timestamp(updated.get("created_at", "")),
-        updated_at=now,
-        metadata=updated.get("metadata", {}),
+        status=record.get("status", "idle"),
+        created_at=coerce_iso(record.get("created_at", "")),
+        updated_at=coerce_iso(record.get("updated_at", "")),
+        metadata=record.get("metadata", {}),
+    )
+
+
+@router.get("/{thread_id}/status", response_model=SessionStatusResponse)
+@require_permission("threads", "read", owner_check=True)
+async def get_thread_status(thread_id: str, request: Request) -> SessionStatusResponse:
+    """Get main-session and sub-agent status for the frontend status dialog."""
+    main_status = await _get_main_session_status(thread_id, request)
+    active_subtasks, recent_subtasks = await _get_subtask_statuses(thread_id)
+    return SessionStatusResponse(
+        thread_id=thread_id,
+        main_session=main_status,
+        active_subtasks=active_subtasks,
+        recent_subtasks=recent_subtasks,
+    )
+
+
+@router.get("/{thread_id}/main-session/messages", response_model=ThreadMessagesResponse)
+@require_permission("threads", "read", owner_check=True)
+async def get_main_session_messages(
+    thread_id: str,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> ThreadMessagesResponse:
+    """Get paginated messages from the user-scoped main-session conversation JSONL."""
+    return await asyncio.to_thread(
+        _read_main_session_messages_from_disk,
+        thread_id,
+        limit=limit,
+        offset=offset,
     )
 
 
 @router.get("/{thread_id}", response_model=ThreadResponse)
+@require_permission("threads", "read", owner_check=True)
 async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
     """Get thread info.
 
-    Reads metadata from the Store and derives the accurate execution
-    status from the checkpointer.  Falls back to the checkpointer alone
-    for threads that pre-date Store adoption (backward compat).
+    Reads metadata from the ThreadMetaStore and derives the accurate
+    execution status from the checkpointer.  Falls back to the checkpointer
+    alone for threads that pre-date ThreadMetaStore adoption (backward compat).
     """
-    store = get_store(request)
+    from app.gateway.deps import get_thread_store
+
+    thread_store = get_thread_store(request)
     checkpointer = get_checkpointer(request)
 
-    record: dict | None = None
-    if store is not None:
-        record = await _store_get(store, thread_id)
+    record: dict | None = await thread_store.get(thread_id)
 
     # Derive accurate status from the checkpointer
     config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
     try:
         checkpoint_tuple = await checkpointer.aget_tuple(config)
     except Exception:
-        logger.exception("Failed to get checkpoint for thread %s", thread_id)
+        logger.exception("Failed to get checkpoint for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to get thread")
 
     if record is None and checkpoint_tuple is None:
         raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
-    # If the thread exists in the checkpointer but not the store (e.g. legacy
-    # data), synthesize a minimal store record from the checkpoint metadata.
+    # If the thread exists in the checkpointer but not in thread_meta (e.g.
+    # legacy data created before thread_meta adoption), synthesize a minimal
+    # record from the checkpoint metadata.
     if record is None and checkpoint_tuple is not None:
         ckpt_meta = getattr(checkpoint_tuple, "metadata", {}) or {}
         record = {
             "thread_id": thread_id,
             "status": "idle",
-            "created_at": ckpt_meta.get("created_at", ""),
-            "updated_at": ckpt_meta.get("updated_at", ckpt_meta.get("created_at", "")),
+            "created_at": coerce_iso(ckpt_meta.get("created_at", "")),
+            "updated_at": coerce_iso(ckpt_meta.get("updated_at", ckpt_meta.get("created_at", ""))),
             "metadata": {k: v for k, v in ckpt_meta.items() if k not in ("created_at", "updated_at", "step", "source", "writes", "parents")},
         }
 
@@ -777,18 +888,21 @@ async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
     status = _derive_thread_status(checkpoint_tuple) if checkpoint_tuple is not None else record.get("status", "idle")
     checkpoint = getattr(checkpoint_tuple, "checkpoint", {}) or {} if checkpoint_tuple is not None else {}
     channel_values = checkpoint.get("channel_values", {})
+    values = _prepare_values_response(thread_id, serialize_channel_values(channel_values))
 
     return ThreadResponse(
         thread_id=thread_id,
         status=status,
-        created_at=_to_iso_timestamp(record.get("created_at", "")),
-        updated_at=_to_iso_timestamp(record.get("updated_at", "")),
+        created_at=coerce_iso(record.get("created_at", "")),
+        updated_at=coerce_iso(record.get("updated_at", "")),
         metadata=record.get("metadata", {}),
-        values=serialize_channel_values(channel_values),
+        values=values,
     )
 
 
+# ---------------------------------------------------------------------------
 @router.get("/{thread_id}/state", response_model=ThreadStateResponse)
+@require_permission("threads", "read", owner_check=True)
 async def get_thread_state(thread_id: str, request: Request) -> ThreadStateResponse:
     """Get the latest state snapshot for a thread.
 
@@ -801,7 +915,7 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
     try:
         checkpoint_tuple = await checkpointer.aget_tuple(config)
     except Exception:
-        logger.exception("Failed to get state for thread %s", thread_id)
+        logger.exception("Failed to get state for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to get thread state")
 
     if checkpoint_tuple is None:
@@ -815,10 +929,6 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
         checkpoint_id = ckpt_config.get("configurable", {}).get("checkpoint_id")
 
     channel_values = checkpoint.get("channel_values", {})
-    serialized = serialize_channel_values(channel_values)
-
-    # Inject timestamps from conversation.jsonl into messages
-    _inject_message_timestamps(thread_id, serialized)
 
     parent_config = getattr(checkpoint_tuple, "parent_config", None)
     parent_checkpoint_id = None
@@ -829,28 +939,34 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
     next_tasks = [t.name for t in tasks_raw if hasattr(t, "name")]
     tasks = [{"id": getattr(t, "id", ""), "name": getattr(t, "name", "")} for t in tasks_raw]
 
+    values = _prepare_values_response(thread_id, serialize_channel_values(channel_values))
+
     return ThreadStateResponse(
-        values=serialized,
+        values=values,
         next=next_tasks,
         metadata=metadata,
-        checkpoint={"id": checkpoint_id, "ts": str(metadata.get("created_at", ""))},
+        checkpoint={"id": checkpoint_id, "ts": coerce_iso(metadata.get("created_at", ""))},
         checkpoint_id=checkpoint_id,
         parent_checkpoint_id=parent_checkpoint_id,
-        created_at=str(metadata.get("created_at", "")),
+        created_at=coerce_iso(metadata.get("created_at", "")),
         tasks=tasks,
     )
 
 
 @router.post("/{thread_id}/state", response_model=ThreadStateResponse)
+@require_permission("threads", "write", owner_check=True, require_existing=True)
 async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, request: Request) -> ThreadStateResponse:
     """Update thread state (e.g. for human-in-the-loop resume or title rename).
 
     Writes a new checkpoint that merges *body.values* into the latest
-    channel values, then syncs any updated ``title`` field back to the Store
-    so that ``/threads/search`` reflects the change immediately.
+    channel values, then syncs any updated ``title`` field through the
+    ThreadMetaStore abstraction so that ``/threads/search`` reflects the
+    change immediately in both sqlite and memory backends.
     """
+    from app.gateway.deps import get_thread_store
+
     checkpointer = get_checkpointer(request)
-    store = get_store(request)
+    thread_store = get_thread_store(request)
 
     # checkpoint_ns must be present in the config for aput — default to ""
     # (the root graph namespace).  checkpoint_id is optional; omitting it
@@ -867,7 +983,7 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     try:
         checkpoint_tuple = await checkpointer.aget_tuple(read_config)
     except Exception:
-        logger.exception("Failed to get state for thread %s", thread_id)
+        logger.exception("Failed to get state for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to get thread state")
 
     if checkpoint_tuple is None:
@@ -882,7 +998,7 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
         channel_values.update(body.values)
 
     checkpoint["channel_values"] = channel_values
-    metadata["updated_at"] = _utc_now_iso()
+    metadata["updated_at"] = now_iso()
 
     if body.as_node:
         metadata["source"] = "update"
@@ -901,342 +1017,102 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     try:
         new_config = await checkpointer.aput(write_config, checkpoint, metadata, {})
     except Exception:
-        logger.exception("Failed to update state for thread %s", thread_id)
+        logger.exception("Failed to update state for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to update thread state")
 
     new_checkpoint_id: str | None = None
     if isinstance(new_config, dict):
         new_checkpoint_id = new_config.get("configurable", {}).get("checkpoint_id")
 
-    # Sync title changes to the Store so /threads/search reflects them immediately.
-    if store is not None and body.values and "title" in body.values:
-        try:
-            await _store_upsert(store, thread_id, values={"title": body.values["title"]})
-        except Exception:
-            logger.debug("Failed to sync title to store for thread %s (non-fatal)", thread_id)
+    # Sync title changes through the ThreadMetaStore abstraction so /threads/search
+    # reflects them immediately in both sqlite and memory backends.
+    if body.values and "title" in body.values:
+        new_title = body.values["title"]
+        if new_title:  # Skip empty strings and None
+            try:
+                await thread_store.update_display_name(thread_id, new_title)
+            except Exception:
+                logger.debug("Failed to sync title to thread_meta for %s (non-fatal)", sanitize_log_param(thread_id))
 
     return ThreadStateResponse(
-        values=serialize_channel_values(channel_values),
+        values=_prepare_values_response(thread_id, serialize_channel_values(channel_values)),
         next=[],
         metadata=metadata,
         checkpoint_id=new_checkpoint_id,
-        created_at=_to_iso_timestamp(metadata.get("created_at", "")),
+        created_at=coerce_iso(metadata.get("created_at", "")),
     )
 
 
-@router.post("/{thread_id}/history")
-async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request: Request):
-    """Proxy history request to LangGraph server with message trimming.
+@router.post("/{thread_id}/history", response_model=list[HistoryEntry])
+@require_permission("threads", "read", owner_check=True)
+async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request: Request) -> list[HistoryEntry]:
+    """Get checkpoint history for a thread.
 
-    Forwards the request to the LangGraph server and trims the ``messages``
-    array in each checkpoint's ``values`` to the first 10 + last 90 entries,
-    replacing the middle portion with a placeholder.
+    Messages are read from the checkpointer's channel values (the
+    authoritative source) and serialized via
+    :func:`~deerflow.runtime.serialization.serialize_channel_values`.
+    Only the latest (first) checkpoint carries the ``messages`` key to
+    avoid duplicating them across every entry.
     """
+    checkpointer = get_checkpointer(request)
 
+    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+    if body.before:
+        config["configurable"]["checkpoint_id"] = body.before
+
+    entries: list[HistoryEntry] = []
+    is_latest_checkpoint = True
     try:
-        uuid.UUID(thread_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid thread ID: must be a UUID")
+        async for checkpoint_tuple in checkpointer.alist(config, limit=body.limit):
+            ckpt_config = getattr(checkpoint_tuple, "config", {})
+            parent_config = getattr(checkpoint_tuple, "parent_config", None)
+            metadata = getattr(checkpoint_tuple, "metadata", {}) or {}
+            checkpoint = getattr(checkpoint_tuple, "checkpoint", {}) or {}
 
-    import httpx
+            checkpoint_id = ckpt_config.get("configurable", {}).get("checkpoint_id", "")
+            parent_id = None
+            if parent_config:
+                parent_id = parent_config.get("configurable", {}).get("checkpoint_id")
 
-    from deerflow.config import get_app_config
+            channel_values = checkpoint.get("channel_values", {})
 
-    cfg = get_app_config()
-    extra = cfg.model_extra or {}
-    channels_cfg = extra.get("channels", {}) or {}
-    langgraph_url = channels_cfg.get("langgraph_url", "http://localhost:2024")
-    monitor_cfg = extra.get("session_monitor", {}) or {}
-    if isinstance(monitor_cfg, dict):
-        langgraph_url = monitor_cfg.get("langgraph_url", langgraph_url)
+            # Build values from checkpoint channel_values
+            values: dict[str, Any] = {}
+            if title := channel_values.get("title"):
+                values["title"] = title
+            if thread_data := channel_values.get("thread_data"):
+                values["thread_data"] = thread_data
 
-    try:
-        proxy_body: dict[str, Any] = {"limit": body.limit}
-        if body.before:
-            proxy_body["before"] = body.before
-        async with httpx.AsyncClient(timeout=30) as http:
-            resp = await http.post(
-                f"{langgraph_url}/threads/{thread_id}/history",
-                json=proxy_body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        logger.exception("Failed to proxy history for thread %s", thread_id)
-        raise HTTPException(status_code=502, detail="Failed to fetch history from LangGraph server")
+            # Attach messages only to the latest checkpoint entry.
+            if is_latest_checkpoint:
+                messages = channel_values.get("messages")
+                if messages:
+                    serialized = serialize_channel_values({"messages": messages})
+                    values["messages"] = _prepare_values_response(thread_id, serialized).get("messages", [])
+            is_latest_checkpoint = False
 
-    return _prepare_history_response(thread_id, data)
+            # Derive next tasks
+            tasks_raw = getattr(checkpoint_tuple, "tasks", []) or []
+            next_tasks = [t.name for t in tasks_raw if hasattr(t, "name")]
 
+            # Strip LangGraph internal keys from metadata
+            user_meta = {k: v for k, v in metadata.items() if k not in ("created_at", "updated_at", "step", "source", "writes", "parents")}
+            # Keep step for ordering context
+            if "step" in metadata:
+                user_meta["step"] = metadata["step"]
 
-# ---------------------------------------------------------------------------
-# Session status overview
-# ---------------------------------------------------------------------------
-
-
-class MainSessionStatus(BaseModel):
-    status: str = "unknown"  # "running" | "idle" | "interrupted" | "error"
-    run_id: str | None = None
-    started_at: str | None = None
-    last_updated: str | None = None
-    last_message: str | None = None
-
-
-class SubtaskStatus(BaseModel):
-    task_id: str
-    subagent_name: str = ""
-    description: str = ""
-    status: str = "unknown"  # "running" | "completed" | "failed" | "interrupted" | "timed_out"
-    detail: str = ""  # "waiting_for_tool" | "waiting_for_llm" | "" (only for running)
-    started_at: str | None = None
-    last_updated: str | None = None
-    last_message: str | None = None
-
-
-class SessionStatusResponse(BaseModel):
-    thread_id: str
-    main_session: MainSessionStatus = MainSessionStatus()
-    active_subtasks: list[SubtaskStatus] = []
-    recent_subtasks: list[SubtaskStatus] = []
-
-
-@router.get("/{thread_id}/status", response_model=SessionStatusResponse)
-async def get_thread_status(thread_id: str, request: Request) -> SessionStatusResponse:
-    """Get comprehensive session status overview.
-
-    Returns main session status, active subtasks, and last 10 subtasks
-    with accurate status including waiting_for_tool / waiting_for_llm / timed_out.
-    """
-    from datetime import UTC, datetime
-
-    TIMEOUT_SECONDS = 900  # 15 minutes
-    now = datetime.now(UTC)
-
-    # --- Main session status ---
-    main_status = MainSessionStatus(status="idle")
-    try:
-        from langgraph_sdk import get_client
-
-        client = get_client(url="http://localhost:2024")
-        runs = await client.runs.list(thread_id, limit=3)
-        if runs:
-            last_run = runs[0]
-            run_status = last_run.get("status", "")
-            main_status.run_id = last_run.get("run_id") or last_run.get("id")
-            created_at = last_run.get("created_at")
-            if created_at:
-                if isinstance(created_at, str):
-                    main_status.started_at = created_at
-                    main_status.last_updated = created_at
-                else:
-                    main_status.started_at = str(created_at)
-                    main_status.last_updated = str(created_at)
-
-            if run_status in ("running", "pending"):
-                main_status.status = "running"
-            elif run_status in ("error", "cancelled"):
-                main_status.status = "interrupted"
-                metadata = last_run.get("metadata", {})
-                if metadata.get("cancelled_by") == "user":
-                    main_status.status = "interrupted"
-    except Exception:
-        logger.debug("Failed to get main session status for thread %s", thread_id, exc_info=True)
-
-    # --- Subtask statuses ---
-    active: list[SubtaskStatus] = []
-    recent: list[SubtaskStatus] = []
-
-    # 1. From in-memory background tasks
-    in_memory_ids: set[str] = set()
-    try:
-        from deerflow.subagents.executor import _background_tasks, _background_tasks_lock
-
-        with _background_tasks_lock:
-            for task_id, result in _background_tasks.items():
-                if result.thread_id != thread_id:
-                    continue
-                in_memory_ids.add(task_id)
-
-                # Derive last_updated from session JSONL last message ts
-                last_updated: str | None = str(result.completed_at) if result.completed_at else None
-                if not last_updated:
-                    try:
-                        from deerflow.subagents.session import SubagentSession
-
-                        _sess = SubagentSession(thread_id=thread_id, task_id=task_id, subagent_name="")
-                        last_updated = _sess.read_last_message_ts() or None
-                    except Exception:
-                        pass
-                if not last_updated:
-                    last_updated = str(result.started_at) if result.started_at else None
-
-                st = SubtaskStatus(
-                    task_id=task_id,
-                    subagent_name=result.subagent_name or "",
-                    description=result.description or "",
-                    status=result.status.value if hasattr(result.status, "value") else str(result.status),
-                    started_at=str(result.started_at) if result.started_at else None,
-                    last_updated=last_updated,
+            entries.append(
+                HistoryEntry(
+                    checkpoint_id=checkpoint_id,
+                    parent_checkpoint_id=parent_id,
+                    metadata=user_meta,
+                    values=values,
+                    created_at=coerce_iso(metadata.get("created_at", "")),
+                    next=next_tasks,
                 )
-                if st.status == "running":
-                    active.append(st)
-                else:
-                    recent.append(st)
-    except Exception:
-        logger.debug("Failed to read background tasks", exc_info=True)
-
-    # 2. From disk (JSONL sessions)
-    try:
-        from deerflow.subagents.session import SubagentSession
-
-        sessions = SubagentSession.list_sessions(thread_id)
-
-        for session in sessions:
-            if session.task_id in in_memory_ids:
-                continue
-            summary = session.read_summary()
-            if not summary:
-                continue
-
-            # Derive last_updated: completed_at for finished, last message ts for running
-            session_status = summary.get("status", "unknown")
-            if session_status in ("completed", "failed", "interrupted", "cancelled", "timed_out"):
-                last_updated = summary.get("completed_at", "")
-            else:
-                last_updated = session.read_last_message_ts()
-            if not last_updated:
-                last_updated = summary.get("started_at", "")
-
-            st = SubtaskStatus(
-                task_id=session.task_id,
-                subagent_name=session.subagent_name,
-                description=session.description,
-                status=summary.get("status", "unknown"),
-                started_at=summary.get("started_at", ""),
-                last_updated=last_updated,
             )
-
-            # Determine effective status
-            effective_status = st.status
-
-            # Check for stale running session (no update for a long time)
-            is_stale = False
-            if effective_status == "running" and st.last_updated:
-                try:
-                    if isinstance(st.last_updated, str) and st.last_updated:
-                        updated = datetime.fromisoformat(st.last_updated)
-                        if updated.tzinfo is None:
-                            updated = updated.replace(tzinfo=UTC)
-                        age = (now - updated).total_seconds()
-                        if age > TIMEOUT_SECONDS:
-                            is_stale = True
-                            st.detail = f"no update for {int(age / 60)} minutes"
-                except (ValueError, TypeError):
-                    pass
-
-            st.status = effective_status
-
-            # Determine detail for genuinely running tasks
-            if st.status == "running" and not st.detail:
-                try:
-                    messages = session.read_messages()
-                    if messages:
-                        last_msg = messages[-1]
-                        role = last_msg.get("role", "")
-                        if role == "tool":
-                            st.detail = "waiting_for_llm"
-                        elif role == "ai":
-                            tool_calls = last_msg.get("tool_calls", [])
-                            st.detail = "waiting_for_tool" if tool_calls else "waiting_for_llm"
-                        else:
-                            st.detail = "running"
-                        # Last message preview
-                        content = last_msg.get("content", "")
-                        if isinstance(content, str):
-                            st.last_message = content[:200]
-                        elif isinstance(content, list):
-                            texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("text")]
-                            st.last_message = " ".join(texts)[:200]
-                except Exception:
-                    st.detail = "running"
-
-            # Running and not stale → active list; everything else → recent
-            if st.status == "running" and not is_stale:
-                active.append(st)
-            else:
-                recent.append(st)
     except Exception:
-        logger.debug("Failed to read disk sessions for thread %s", thread_id, exc_info=True)
+        logger.exception("Failed to get history for thread %s", sanitize_log_param(thread_id))
+        raise HTTPException(status_code=500, detail="Failed to get thread history")
 
-    # Sort: recent by started_at descending, keep last 10
-    recent.sort(key=lambda t: t.started_at or "", reverse=True)
-
-    return SessionStatusResponse(
-        thread_id=thread_id,
-        main_session=main_status,
-        active_subtasks=active,
-        recent_subtasks=recent[:10],
-    )
-
-
-# ---------------------------------------------------------------------------
-# Main session messages (from conversation.jsonl)
-# ---------------------------------------------------------------------------
-
-
-class ThreadMessagesResponse(BaseModel):
-    """Paginated messages from the local conversation JSONL file."""
-
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    total: int = 0
-    has_more: bool = False
-
-
-@router.get("/{thread_id}/messages", response_model=ThreadMessagesResponse)
-async def get_thread_messages(
-    thread_id: str,
-    limit: int = 100,
-    offset: int = 0,
-) -> ThreadMessagesResponse:
-    """Get paginated messages from the thread's conversation.jsonl file.
-
-    Returns the last ``limit`` messages starting from ``offset`` from the end.
-    Messages are returned in chronological order (oldest first).
-
-    - ``offset=0, limit=100`` → last 100 messages
-    - ``offset=100, limit=100`` → messages 101-200 from the end
-    """
-    import json as _json
-
-    jsonl_path = get_paths().thread_dir(thread_id) / "conversation.jsonl"
-    if not jsonl_path.exists():
-        return ThreadMessagesResponse(messages=[], total=0, has_more=False)
-
-    # Read all lines (each is a JSON message)
-    try:
-        all_messages: list[dict[str, Any]] = []
-        with open(jsonl_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    all_messages.append(_json.loads(line))
-                except _json.JSONDecodeError:
-                    continue
-    except OSError:
-        logger.debug("Failed to read conversation.jsonl for thread %s", thread_id, exc_info=True)
-        return ThreadMessagesResponse(messages=[], total=0, has_more=False)
-
-    # all_messages = _dedupe_messages_by_id(all_messages)
-
-    total = len(all_messages)
-    # offset=0 means latest, so slice from end
-    end_idx = total - offset
-    start_idx = max(0, end_idx - limit)
-    if end_idx <= 0:
-        return ThreadMessagesResponse(messages=[], total=total, has_more=False)
-
-    page = all_messages[start_idx:end_idx]
-    has_more = start_idx > 0
-
-    return ThreadMessagesResponse(messages=page, total=total, has_more=has_more)
+    return entries

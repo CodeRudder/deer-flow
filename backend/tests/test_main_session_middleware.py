@@ -294,6 +294,32 @@ class TestMainSessionMiddleware:
         assert len(new2) == 1
         assert new2[0].id == "h2"
 
+    @pytest.mark.anyio
+    async def test_aafter_model_writes_to_user_scoped_thread_dir(self, tmp_path):
+        from deerflow.agents.middlewares.main_session_middleware import MainSessionMiddleware
+        from deerflow.config.paths import Paths
+
+        paths = Paths(tmp_path)
+        mw = MainSessionMiddleware()
+        runtime = FakeRuntime(
+            thread_id="thread-1",
+            context={"thread_id": "thread-1", "user_id": "user-1"},
+        )
+
+        with patch(
+            "deerflow.agents.middlewares.main_session_middleware.get_paths",
+            return_value=paths,
+        ):
+            await mw.aafter_model(
+                {"messages": [HumanMessage(content="Hi", id="h1")]},
+                runtime,
+            )
+
+        jsonl_path = tmp_path / "users" / "user-1" / "threads" / "thread-1" / "conversation.jsonl"
+        assert jsonl_path.exists()
+        assert not (tmp_path / "threads" / "thread-1" / "conversation.jsonl").exists()
+        assert json.loads(jsonl_path.read_text().strip())["id"] == "h1"
+
 
 # ── Extract Thread ID Tests ──────────────────────────────────────────────
 

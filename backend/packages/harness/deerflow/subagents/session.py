@@ -1,7 +1,8 @@
 """Sub-agent session persistence and recovery.
 
 Each sub-agent run stores its full conversation (Human/AI/Tool messages) as a
-JSONL file under ``{base_dir}/threads/{thread_id}/subagents/{task_id}.jsonl``.
+JSONL file under
+``{base_dir}/users/{user_id}/threads/{thread_id}/subagents/{task_id}.jsonl``.
 When the run completes (or is interrupted), a summary JSON file is written
 alongside it.  The JSONL format enables real-time, line-oriented appending
 without needing to rewrite the whole file on every chunk.
@@ -23,6 +24,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from deerflow.config.paths import get_paths
+from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +103,13 @@ class SubagentSession:
         task_id: str,
         subagent_name: str,
         description: str = "",
+        user_id: str | None = None,
     ) -> None:
         self.thread_id = thread_id
         self.task_id = task_id
         self.subagent_name = subagent_name
         self.description = description
+        self.user_id = user_id or get_effective_user_id()
         self.started_at = _utc_now_iso()
 
         # Lazy-resolved paths
@@ -117,21 +121,21 @@ class SubagentSession:
     @property
     def jsonl_path(self) -> Path:
         if self._jsonl_path is None:
-            d = get_paths().subagent_dir(self.thread_id)
+            d = get_paths().subagent_dir(self.thread_id, user_id=self.user_id)
             self._jsonl_path = d / f"{self.task_id}.jsonl"
         return self._jsonl_path
 
     @property
     def summary_path(self) -> Path:
         if self._summary_path is None:
-            d = get_paths().subagent_dir(self.thread_id)
+            d = get_paths().subagent_dir(self.thread_id, user_id=self.user_id)
             self._summary_path = d / f"{self.task_id}.summary.json"
         return self._summary_path
 
     @property
     def cancel_marker_path(self) -> Path:
         """Path to the cross-process cancel marker file."""
-        d = get_paths().subagent_dir(self.thread_id)
+        d = get_paths().subagent_dir(self.thread_id, user_id=self.user_id)
         return d / f"{self.task_id}.cancel"
 
     def request_cancel(self) -> None:
@@ -310,11 +314,12 @@ class SubagentSession:
     # ── Class-level queries ─────────────────────────────────────────────
 
     @staticmethod
-    def list_sessions(thread_id: str) -> list["SubagentSession"]:
+    def list_sessions(thread_id: str, *, user_id: str | None = None) -> list["SubagentSession"]:
         """List all sessions for a thread, with basic metadata loaded."""
         sessions: list[SubagentSession] = []
+        effective_user_id = user_id or get_effective_user_id()
         try:
-            d = get_paths().subagent_dir(thread_id)
+            d = get_paths().subagent_dir(thread_id, user_id=effective_user_id)
         except Exception:
             return sessions
 
@@ -338,6 +343,7 @@ class SubagentSession:
                 task_id=task_id,
                 subagent_name=subagent_name,
                 description=description,
+                user_id=effective_user_id,
             )
             # Override started_at from summary if available
             if summary_path.exists():
@@ -352,20 +358,20 @@ class SubagentSession:
         return sessions
 
     @staticmethod
-    def find_interrupted(thread_id: str) -> list["SubagentSession"]:
+    def find_interrupted(thread_id: str, *, user_id: str | None = None) -> list["SubagentSession"]:
         """Find sessions that were interrupted (have JSONL but no terminal marker).
 
         This is used for recovery: the caller can read partial messages and
         build a recovery prompt for a new sub-agent.
         """
         interrupted: list[SubagentSession] = []
-        for session in SubagentSession.list_sessions(thread_id):
+        for session in SubagentSession.list_sessions(thread_id, user_id=user_id):
             if not session.is_terminal:
                 interrupted.append(session)
         return interrupted
 
     @staticmethod
-    def get_resume_info(task_id: str, thread_id: str) -> dict[str, Any] | None:
+    def get_resume_info(task_id: str, thread_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
         """Get information needed to resume an interrupted/failed subtask.
 
         Returns a dict with keys:
@@ -377,6 +383,7 @@ class SubagentSession:
             thread_id=thread_id,
             task_id=task_id,
             subagent_name="unknown",
+            user_id=user_id,
         )
         if not session.jsonl_path.exists():
             return None

@@ -40,6 +40,7 @@ coverage/
 skills/custom/*
 logs/
 log/
+debug.log
 
 # Local git hooks (keep only on this machine, do not push)
 .githooks/
@@ -58,6 +59,8 @@ issue/
 backend/Dockerfile.langgraph
 config.yaml.bak
 .playwright-mcp
+/frontend/test-results/
+/frontend/playwright-report/
 .gstack/
 .worktrees
 

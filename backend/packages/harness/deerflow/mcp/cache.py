@@ -87,8 +87,7 @@ def get_cached_mcp_tools() -> list[BaseTool]:
 
     Also checks if the config file has been modified since last initialization,
     and re-initializes if needed. This ensures that changes made through the
-    Gateway API (which runs in a separate process) are reflected in the
-    LangGraph Server.
+    Gateway API are reflected in the Gateway-embedded LangGraph runtime.
 
     Returns:
         List of cached MCP tools.
@@ -118,9 +117,13 @@ def get_cached_mcp_tools() -> list[BaseTool]:
                 loop.run_until_complete(initialize_mcp_tools())
         except RuntimeError:
             # No event loop exists, create one
-            asyncio.run(initialize_mcp_tools())
-        except Exception as e:
-            logger.error(f"Failed to lazy-initialize MCP tools: {e}")
+            try:
+                asyncio.run(initialize_mcp_tools())
+            except Exception:
+                logger.exception("Failed to lazy-initialize MCP tools")
+                return []
+        except Exception:
+            logger.exception("Failed to lazy-initialize MCP tools")
             return []
 
     return _mcp_tools_cache or []
@@ -130,9 +133,25 @@ def reset_mcp_tools_cache() -> None:
     """Reset the MCP tools cache.
 
     This is useful for testing or when you want to reload MCP tools.
+    Also closes all persistent MCP sessions so they are recreated on
+    the next tool load.
     """
     global _mcp_tools_cache, _cache_initialized, _config_mtime
     _mcp_tools_cache = None
     _cache_initialized = False
     _config_mtime = None
+
+    # Close persistent sessions – they will be recreated by the next
+    # get_mcp_tools() call with the (possibly updated) connection config.
+    try:
+        from deerflow.mcp.session_pool import get_session_pool
+
+        pool = get_session_pool()
+        pool.close_all_sync()
+    except Exception:
+        logger.debug("Could not close MCP session pool on cache reset", exc_info=True)
+
+    from deerflow.mcp.session_pool import reset_session_pool
+
+    reset_session_pool()
     logger.info("MCP tools cache reset")

@@ -43,6 +43,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { getAPIClient } from "@/core/api";
+import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   exportThreadAsJSON,
@@ -55,9 +56,9 @@ import {
 } from "@/core/threads/hooks";
 import type { AgentThread, AgentThreadState } from "@/core/threads/types";
 import {
+  lastMessagePreview,
   pathOfThread,
   titleOfThread,
-  lastMessagePreview,
 } from "@/core/threads/utils";
 import { env } from "@/env";
 import { isIMEComposing } from "@/lib/ime";
@@ -66,7 +67,11 @@ export function RecentChatList() {
   const { t } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
-  const { thread_id: threadIdFromPath } = useParams<{ thread_id: string }>();
+  const { thread_id: threadIdFromPath, agent_name: agentNameFromPath } =
+    useParams<{
+      thread_id: string;
+      agent_name?: string;
+    }>();
   const { data: threads = [] } = useThreads();
   const { mutate: deleteThread } = useDeleteThread();
   const { mutate: renameThread } = useRenameThread();
@@ -81,18 +86,20 @@ export function RecentChatList() {
       deleteThread({ threadId });
       if (threadId === threadIdFromPath) {
         const threadIndex = threads.findIndex((t) => t.thread_id === threadId);
-        let nextThreadId = "new";
+        let nextThreadPath = pathOfThread("new", {
+          agent_name: agentNameFromPath,
+        });
         if (threadIndex > -1) {
           if (threads[threadIndex + 1]) {
-            nextThreadId = threads[threadIndex + 1]!.thread_id;
+            nextThreadPath = pathOfThread(threads[threadIndex + 1]!);
           } else if (threads[threadIndex - 1]) {
-            nextThreadId = threads[threadIndex - 1]!.thread_id;
+            nextThreadPath = pathOfThread(threads[threadIndex - 1]!);
           }
         }
-        void router.push(`/workspace/chats/${nextThreadId}`);
+        void router.push(nextThreadPath);
       }
     },
-    [deleteThread, router, threadIdFromPath, threads],
+    [agentNameFromPath, deleteThread, router, threadIdFromPath, threads],
   );
 
   const handleRenameClick = useCallback(
@@ -114,7 +121,7 @@ export function RecentChatList() {
   }, [renameThread, renameThreadId, renameValue]);
 
   const handleShare = useCallback(
-    async (threadId: string) => {
+    async (thread: AgentThread) => {
       // Always use Vercel URL for sharing so others can access
       const VERCEL_URL = "https://deer-flow-v2.vercel.app";
       const isLocalhost =
@@ -122,9 +129,14 @@ export function RecentChatList() {
         window.location.hostname === "127.0.0.1";
       // On localhost: use Vercel URL; On production: use current origin
       const baseUrl = isLocalhost ? VERCEL_URL : window.location.origin;
-      const shareUrl = `${baseUrl}/workspace/chats/${threadId}`;
+      const shareUrl = `${baseUrl}${pathOfThread(thread)}`;
       try {
-        await navigator.clipboard.writeText(shareUrl);
+        const didCopy = await writeTextToClipboard(shareUrl);
+        if (!didCopy) {
+          toast.error(t.clipboard.failedToCopyToClipboard);
+          return;
+        }
+
         toast.success(t.clipboard.linkCopied);
       } catch {
         toast.error(t.clipboard.failedToCopyToClipboard);
@@ -173,7 +185,7 @@ export function RecentChatList() {
           <SidebarMenu>
             <div className="flex w-full flex-col gap-1">
               {threads.map((thread) => {
-                const isActive = pathOfThread(thread.thread_id) === pathname;
+                const isActive = pathOfThread(thread) === pathname;
                 return (
                   <SidebarMenuItem
                     key={thread.thread_id}
@@ -183,7 +195,7 @@ export function RecentChatList() {
                       <div>
                         <Link
                           className="text-muted-foreground block w-full group-hover/side-menu-item:overflow-hidden"
-                          href={pathOfThread(thread.thread_id)}
+                          href={pathOfThread(thread)}
                         >
                           <span className="block truncate whitespace-nowrap">
                             {titleOfThread(thread)}
@@ -222,7 +234,7 @@ export function RecentChatList() {
                                 <span>{t.common.rename}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
-                                onSelect={() => handleShare(thread.thread_id)}
+                                onSelect={() => handleShare(thread)}
                               >
                                 <Share2 className="text-muted-foreground" />
                                 <span>{t.common.share}</span>

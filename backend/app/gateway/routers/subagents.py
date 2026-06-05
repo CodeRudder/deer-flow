@@ -13,6 +13,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from deerflow.runtime.user_context import get_effective_user_id
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads/{thread_id}/subagents", tags=["subagents"])
 
@@ -42,20 +44,20 @@ async def _read_session_messages(session) -> list[dict[str, Any]]:
     return await asyncio.to_thread(session.read_messages)
 
 
-async def _list_sessions(thread_id: str):
+async def _list_sessions(thread_id: str, *, user_id: str | None = None):
     from deerflow.subagents.session import SubagentSession
 
-    return await asyncio.to_thread(SubagentSession.list_sessions, thread_id)
+    return await asyncio.to_thread(SubagentSession.list_sessions, thread_id, user_id=user_id)
 
 
 async def _is_terminal(session) -> bool:
     return await asyncio.to_thread(lambda: session.is_terminal)
 
 
-async def _get_resume_info(task_id: str, thread_id: str) -> dict[str, Any] | None:
+async def _get_resume_info(task_id: str, thread_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
     from deerflow.subagents.session import SubagentSession
 
-    return await asyncio.to_thread(SubagentSession.get_resume_info, task_id, thread_id)
+    return await asyncio.to_thread(SubagentSession.get_resume_info, task_id, thread_id, user_id=user_id)
 
 
 @router.get("", response_model=list[SubagentSessionSummary])
@@ -66,10 +68,8 @@ async def list_subagent_sessions(
     offset: int = 0,
 ) -> list[SubagentSessionSummary]:
     """List sub-agent sessions for a thread (newest first, paginated)."""
-    from deerflow.subagents.session import SubagentSession
-
     try:
-        sessions = await _list_sessions(thread_id)
+        sessions = await _list_sessions(thread_id, user_id=get_effective_user_id())
     except Exception:
         logger.exception("Failed to list subagent sessions for thread %s", thread_id)
         return []
@@ -118,6 +118,7 @@ async def get_subagent_session(thread_id: str, task_id: str, request: Request) -
         thread_id=thread_id,
         task_id=task_id,
         subagent_name="unknown",
+        user_id=get_effective_user_id(),
     )
 
     messages = await _read_session_messages(session)
@@ -161,7 +162,7 @@ async def resume_subagent_session(
     from where the subtask left off.
     """
     # Check session exists and is resumable
-    info = await _get_resume_info(task_id, thread_id)
+    info = await _get_resume_info(task_id, thread_id, user_id=get_effective_user_id())
     if info is None:
         raise HTTPException(status_code=404, detail=f"Subtask {task_id} not found in thread {thread_id}")
 

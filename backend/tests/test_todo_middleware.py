@@ -1,19 +1,23 @@
-"""Tests for TodoMiddleware context-loss detection and incremental operations."""
+"""Tests for TodoMiddleware context-loss detection."""
 
 import asyncio
-import json
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
+from langchain.agents import create_agent
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import PrivateAttr
 
 from deerflow.agents.middlewares.todo_middleware import (
     TodoMiddleware,
-    _coerce_json_list,
+    _completion_reminder_count,
     _format_todos,
+    _has_tool_call_intent_or_error,
     _reminder_in_messages,
     _todos_in_messages,
 )
-from deerflow.agents.thread_state import apply_todo_ops
+from deerflow.agents.thread_state import ThreadState
 
 
 def _ai_with_write_todos():
@@ -24,9 +28,35 @@ def _reminder_msg():
     return HumanMessage(name="todo_reminder", content="reminder")
 
 
+class _CapturingFakeMessagesListChatModel(FakeMessagesListChatModel):
+    _seen_messages: list[list[Any]] = PrivateAttr(default_factory=list)
+
+    @property
+    def seen_messages(self) -> list[list[Any]]:
+        return self._seen_messages
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._seen_messages.append(list(messages))
+        return super()._generate(
+            messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
+
+
 def _make_runtime():
     runtime = MagicMock()
-    runtime.context = {"thread_id": "test-thread"}
+    runtime.context = {"thread_id": "test-thread", "run_id": "test-run"}
+    return runtime
+
+
+def _make_runtime_for(thread_id: str, run_id: str):
+    runtime = _make_runtime()
+    runtime.context = {"thread_id": thread_id, "run_id": run_id}
     return runtime
 
 
@@ -76,12 +106,12 @@ class TestReminderInMessages:
 
 
 class TestFormatTodos:
-    def test_formats_with_index(self):
+    def test_formats_multiple_items(self):
         todos = _sample_todos()
         result = _format_todos(todos)
-        assert "- [0] [completed] Set up project" in result
-        assert "- [1] [in_progress] Write tests" in result
-        assert "- [2] [pending] Deploy" in result
+        assert "- [completed] Set up project" in result
+        assert "- [in_progress] Write tests" in result
+        assert "- [pending] Deploy" in result
 
     def test_empty_list(self):
         assert _format_todos([]) == ""
@@ -89,107 +119,8 @@ class TestFormatTodos:
     def test_missing_fields_use_defaults(self):
         todos = [{"content": "No status"}, {"status": "done"}]
         result = _format_todos(todos)
-        assert "- [0] [pending] No status" in result
-        assert "- [1] [done] " in result
-
-
-class TestCoerceJsonList:
-    def test_accepts_native_list(self):
-        value, error = _coerce_json_list([{"content": "A"}], "todos")
-        assert value == [{"content": "A"}]
-        assert error is None
-
-    def test_parses_json_string_list(self):
-        value, error = _coerce_json_list('[{"content": "A", "status": "pending"}]', "todos")
-        assert value == [{"content": "A", "status": "pending"}]
-        assert error is None
-
-    def test_rejects_json_string_object(self):
-        value, error = _coerce_json_list('{"content": "A"}', "todos")
-        assert value is None
-        assert "JSON must decode to a list" in error
-
-    def test_rejects_invalid_json_string(self):
-        value, error = _coerce_json_list("[bad json", "todos")
-        assert value is None
-        assert "Failed to parse string input" in error
-
-    def test_rejects_json_string_with_non_dict_items(self):
-        value, error = _coerce_json_list('["a", "b", "c"]', "todos")
-        assert value is None
-        assert "items must be objects" in error
-
-    def test_rejects_native_list_with_non_dict_items(self):
-        value, error = _coerce_json_list(["a", "b", "c"], "todos")
-        assert value is None
-        assert "items must be objects" in error
-
-
-class TestWriteTodosTool:
-    def test_write_todos_schema_does_not_advertise_string_inputs(self):
-        mw = TodoMiddleware()
-        schema = mw.tools[0].args_schema.model_json_schema()
-        schema_json = json.dumps(
-            {key: schema["properties"][key] for key in ("todos", "updates", "adds")},
-            ensure_ascii=False,
-        )
-
-        assert '"type": "string"' not in schema_json
-        assert '"type": "array"' in schema_json
-
-    def test_write_todos_tool_injects_tool_call_id_with_custom_schema(self):
-        mw = TodoMiddleware()
-        tool = mw.tools[0]
-
-        result = tool.invoke(
-            {
-                "args": {"todos": '[{"content": "Task A", "status": "pending"}]'},
-                "name": "write_todos",
-                "type": "tool_call",
-                "id": "call-write-todos",
-            }
-        )
-
-        msg = result.update["messages"][0]
-        assert msg.tool_call_id == "call-write-todos"
-
-    def test_write_todos_accepts_stringified_todos(self):
-        mw = TodoMiddleware()
-        tool = mw.tools[0]
-
-        result = tool.func(
-            todos='[{"content": "Task A", "status": "in_progress"}, {"content": "Task B", "status": "pending"}]',
-            tool_call_id="tc-string",
-        )
-
-        assert result.update["todos"] == [
-            {"content": "Task A", "status": "in_progress"},
-            {"content": "Task B", "status": "pending"},
-        ]
-        assert result.update["messages"][0].tool_call_id == "tc-string"
-
-    def test_write_todos_returns_error_for_invalid_stringified_todos(self):
-        mw = TodoMiddleware()
-        tool = mw.tools[0]
-
-        result = tool.func(todos="[bad json", tool_call_id="tc-bad")
-
-        msg = result.update["messages"][0]
-        assert msg.status == "error"
-        assert msg.tool_call_id == "tc-bad"
-        assert "'todos' must be a list or a JSON array string" in msg.content
-
-    def test_write_todos_accepts_stringified_updates(self):
-        mw = TodoMiddleware()
-        tool = mw.tools[0]
-
-        result = tool.func(
-            updates='[{"index": 0, "status": "completed"}]',
-            state={"todos": [{"content": "Task A", "status": "in_progress"}]},
-            tool_call_id="tc-updates",
-        )
-
-        assert result.update["todos"] == [{"content": "Task A", "status": "completed"}]
+        assert "- [pending] No status" in result
+        assert "- [done] " in result
 
 
 class TestBeforeModel:
@@ -258,183 +189,495 @@ class TestAbeforeModel:
         assert result["messages"][0].name == "todo_reminder"
 
 
-# ---------------------------------------------------------------------------
-# apply_todo_ops — incremental operations
-# ---------------------------------------------------------------------------
+def _completion_reminder_msg():
+    return HumanMessage(name="todo_completion_reminder", content="finish your todos")
 
 
-class TestApplyTodoOpsBasic:
-    def test_no_ops_returns_existing(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, None, None)
-        assert result == existing
-
-    def test_none_existing_returns_empty(self):
-        result = apply_todo_ops(None, None, None)
-        assert result == []
-
-    def test_does_not_mutate_existing(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, [{"index": 0, "status": "completed"}], None)
-        assert existing[0]["status"] == "pending"  # Original unchanged
-        assert result[0]["status"] == "completed"
+def _todo_completion_reminders(messages):
+    reminders = []
+    for message in messages:
+        if isinstance(message, HumanMessage) and message.name == "todo_completion_reminder":
+            reminders.append(message)
+    return reminders
 
 
-class TestApplyTodoOpsUpdate:
-    def test_update_status_by_index(self):
-        existing = [
-            {"content": "Task A", "status": "pending"},
-            {"content": "Task B", "status": "pending"},
-        ]
-        result = apply_todo_ops(
-            existing,
-            [
-                {"index": 0, "status": "completed"},
-                {"index": 1, "status": "in_progress"},
+def _ai_no_tool_calls():
+    return AIMessage(content="I'm done!")
+
+
+def _ai_with_invalid_tool_calls():
+    return AIMessage(
+        content="",
+        tool_calls=[],
+        invalid_tool_calls=[
+            {
+                "type": "invalid_tool_call",
+                "id": "write_file:36",
+                "name": "write_file",
+                "args": "{invalid",
+                "error": "Failed to parse tool arguments",
+            }
+        ],
+    )
+
+
+def _ai_with_raw_provider_tool_calls():
+    return AIMessage(
+        content="",
+        tool_calls=[],
+        invalid_tool_calls=[],
+        additional_kwargs={
+            "tool_calls": [
+                {
+                    "id": "raw-tool-call",
+                    "type": "function",
+                    "function": {"name": "write_file", "arguments": '{"path":"report.md"}'},
+                }
+            ]
+        },
+    )
+
+
+def _ai_with_legacy_function_call():
+    return AIMessage(
+        content="",
+        additional_kwargs={"function_call": {"name": "write_file", "arguments": '{"path":"report.md"}'}},
+    )
+
+
+def _ai_with_tool_finish_reason():
+    return AIMessage(content="", response_metadata={"finish_reason": "tool_calls"})
+
+
+def _incomplete_todos():
+    return [
+        {"status": "completed", "content": "Step 1"},
+        {"status": "in_progress", "content": "Step 2"},
+        {"status": "pending", "content": "Step 3"},
+    ]
+
+
+def _all_completed_todos():
+    return [
+        {"status": "completed", "content": "Step 1"},
+        {"status": "completed", "content": "Step 2"},
+    ]
+
+
+class TestCompletionReminderCount:
+    def test_zero_when_no_reminders(self):
+        msgs = [HumanMessage(content="hi"), _ai_no_tool_calls()]
+        assert _completion_reminder_count(msgs) == 0
+
+    def test_counts_completion_reminders(self):
+        msgs = [_completion_reminder_msg(), _completion_reminder_msg()]
+        assert _completion_reminder_count(msgs) == 2
+
+    def test_does_not_count_todo_reminders(self):
+        msgs = [_reminder_msg(), _completion_reminder_msg()]
+        assert _completion_reminder_count(msgs) == 1
+
+
+class TestToolCallIntentOrError:
+    def test_false_for_plain_final_answer(self):
+        assert _has_tool_call_intent_or_error(_ai_no_tool_calls()) is False
+
+    def test_true_for_structured_tool_calls(self):
+        assert _has_tool_call_intent_or_error(_ai_with_write_todos()) is True
+
+    def test_true_for_invalid_tool_calls(self):
+        assert _has_tool_call_intent_or_error(_ai_with_invalid_tool_calls()) is True
+
+    def test_true_for_raw_provider_tool_calls(self):
+        assert _has_tool_call_intent_or_error(_ai_with_raw_provider_tool_calls()) is True
+
+    def test_true_for_legacy_function_call(self):
+        assert _has_tool_call_intent_or_error(_ai_with_legacy_function_call()) is True
+
+    def test_true_for_tool_finish_reason(self):
+        assert _has_tool_call_intent_or_error(_ai_with_tool_finish_reason()) is True
+
+    def test_langchain_ai_message_tool_fields_are_explicitly_handled(self):
+        # Sentinel for LangChain compatibility: if future AIMessage versions add
+        # new top-level tool/function-call fields, this test should fail. When
+        # it does, update `_has_tool_call_intent_or_error()` so the completion
+        # reminder guard explicitly decides whether each new field means "not a
+        # clean final answer"; the helper has a matching comment pointing back
+        # to this sentinel.
+        tool_related_fields = {name for name in AIMessage.model_fields if "tool" in name.lower() or ("function" in name.lower() and "call" in name.lower())}
+        assert tool_related_fields <= {"tool_calls", "invalid_tool_calls"}
+
+
+class TestAfterModel:
+    def test_returns_none_when_agent_still_using_tools(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_with_write_todos()],
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_returns_none_when_no_todos(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": [],
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_returns_none_when_todos_is_none(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": None,
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_returns_none_when_all_completed(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": _all_completed_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_returns_none_when_no_messages(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [],
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_queues_reminder_and_jumps_to_model_when_incomplete(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [HumanMessage(content="hi"), _ai_no_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        result = mw.after_model(state, runtime)
+        assert result is not None
+        assert result["jump_to"] == "model"
+        assert "messages" not in result
+
+        request = MagicMock()
+        request.runtime = runtime
+        request.messages = state["messages"]
+        request.override.return_value = "patched-request"
+        handler = MagicMock(return_value="response")
+
+        assert mw.wrap_model_call(request, handler) == "response"
+        request.override.assert_called_once()
+        reminder = request.override.call_args.kwargs["messages"][-1]
+        assert isinstance(reminder, HumanMessage)
+        assert reminder.name == "todo_completion_reminder"
+        assert reminder.additional_kwargs["hide_from_ui"] is True
+        assert "Step 2" in reminder.content
+        assert "Step 3" in reminder.content
+        handler.assert_called_once_with("patched-request")
+
+    def test_reminder_lists_only_incomplete_items(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        result = mw.after_model(state, runtime)
+        assert result is not None
+
+        request = MagicMock()
+        request.runtime = runtime
+        request.messages = state["messages"]
+        request.override.return_value = "patched-request"
+        mw.wrap_model_call(request, MagicMock(return_value="response"))
+        content = request.override.call_args.kwargs["messages"][-1].content
+        assert "Step 1" not in content  # completed — should not appear
+        assert "Step 2" in content
+        assert "Step 3" in content
+
+    def test_allows_exit_after_max_reminders(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [
+                _ai_no_tool_calls(),
             ],
-            None,
-        )
-        assert result[0]["status"] == "completed"
-        assert result[0]["content"] == "Task A"
-        assert result[1]["status"] == "in_progress"
-        assert result[1]["content"] == "Task B"
-        assert len(result) == 2
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, runtime) is not None
+        assert mw.after_model(state, runtime) is not None
+        assert mw.after_model(state, runtime) is None
 
-    def test_update_content_by_index(self):
-        existing = [{"content": "Old", "status": "pending"}]
-        result = apply_todo_ops(existing, [{"index": 0, "content": "New"}], None)
-        assert result[0]["content"] == "New"
-        assert result[0]["status"] == "pending"
-
-    def test_update_skips_invalid_index(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, [{"index": 5, "status": "completed"}], None)
-        assert result == [{"content": "A", "status": "pending"}]
-
-    def test_update_with_none_existing(self):
-        result = apply_todo_ops(None, [{"index": 0, "status": "completed"}], None)
-        assert result == []
-
-
-class TestApplyTodoOpsRemove:
-    def test_remove_by_index(self):
-        existing = [
-            {"content": "A", "status": "completed"},
-            {"content": "B", "status": "in_progress"},
-            {"content": "C", "status": "pending"},
-        ]
-        result = apply_todo_ops(existing, [{"index": 1, "remove": True}], None)
-        assert len(result) == 2
-        assert result[0]["content"] == "A"
-        assert result[1]["content"] == "C"
-
-    def test_remove_multiple_descending_order(self):
-        existing = [
-            {"content": "A", "status": "pending"},
-            {"content": "B", "status": "pending"},
-            {"content": "C", "status": "pending"},
-        ]
-        result = apply_todo_ops(
-            existing,
-            [
-                {"index": 0, "remove": True},
-                {"index": 2, "remove": True},
+    def test_still_sends_reminder_before_cap(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [
+                _ai_no_tool_calls(),
             ],
-            None,
-        )
-        assert len(result) == 1
-        assert result[0]["content"] == "B"
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, runtime) is not None
+        result = mw.after_model(state, runtime)
+        assert result is not None
+        assert result["jump_to"] == "model"
 
-    def test_update_and_remove_combined(self):
-        existing = [
-            {"content": "A", "status": "pending"},
-            {"content": "B", "status": "pending"},
-        ]
-        result = apply_todo_ops(
-            existing,
-            [
-                {"index": 0, "status": "completed"},
-                {"index": 1, "remove": True},
+    def test_does_not_trigger_for_invalid_tool_calls(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_with_invalid_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_does_not_trigger_for_raw_provider_tool_calls(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_with_raw_provider_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_does_not_trigger_for_legacy_function_call(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_with_legacy_function_call()],
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_does_not_trigger_for_tool_finish_reason(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [_ai_with_tool_finish_reason()],
+            "todos": _incomplete_todos(),
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+
+class TestAafterModel:
+    def test_delegates_to_sync(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        result = asyncio.run(mw.aafter_model(state, runtime))
+        assert result is not None
+        assert result["jump_to"] == "model"
+        assert "messages" not in result
+
+
+class TestWrapModelCall:
+    def test_no_pending_reminder_passthrough(self):
+        mw = TodoMiddleware()
+        request = MagicMock()
+        request.runtime = _make_runtime()
+        request.messages = [HumanMessage(content="hi")]
+        handler = MagicMock(return_value="response")
+
+        assert mw.wrap_model_call(request, handler) == "response"
+        request.override.assert_not_called()
+        handler.assert_called_once_with(request)
+
+    def test_pending_reminder_is_injected_once(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        mw.after_model(state, runtime)
+
+        request = MagicMock()
+        request.runtime = runtime
+        request.messages = state["messages"]
+        request.override.return_value = "patched-request"
+        handler = MagicMock(return_value="response")
+
+        assert mw.wrap_model_call(request, handler) == "response"
+        injected_messages = request.override.call_args.kwargs["messages"]
+        assert injected_messages[-1].name == "todo_completion_reminder"
+
+        request.override.reset_mock()
+        handler.reset_mock()
+        handler.return_value = "second-response"
+        assert mw.wrap_model_call(request, handler) == "second-response"
+        request.override.assert_not_called()
+        handler.assert_called_once_with(request)
+
+
+class TestTodoMiddlewareAgentGraphIntegration:
+    def test_reuses_thread_state_todos_schema_in_real_agent_graph(self):
+        mw = TodoMiddleware()
+        model = _CapturingFakeMessagesListChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "id": "todos-1",
+                            "args": {
+                                "todos": [
+                                    {"content": "Step 1", "status": "pending"},
+                                ]
+                            },
+                        }
+                    ],
+                ),
+                AIMessage(content="final"),
             ],
-            None,
         )
-        assert len(result) == 1
-        assert result[0]["content"] == "A"
-        assert result[0]["status"] == "completed"
 
-
-class TestApplyTodoOpsAdd:
-    def test_add_append_to_end(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, None, [{"content": "B", "status": "pending"}])
-        assert len(result) == 2
-        assert result[1]["content"] == "B"
-
-    def test_add_insert_at_position(self):
-        existing = [
-            {"content": "A", "status": "pending"},
-            {"content": "C", "status": "pending"},
-        ]
-        result = apply_todo_ops(existing, None, [{"content": "B", "status": "in_progress", "index": 1}])
-        assert len(result) == 3
-        assert result[0]["content"] == "A"
-        assert result[1]["content"] == "B"
-        assert result[1]["status"] == "in_progress"
-        assert result[2]["content"] == "C"
-
-    def test_add_insert_at_beginning(self):
-        existing = [{"content": "B", "status": "pending"}]
-        result = apply_todo_ops(existing, None, [{"content": "A", "status": "pending", "index": 0}])
-        assert result[0]["content"] == "A"
-        assert result[1]["content"] == "B"
-
-    def test_add_out_of_range_appends(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, None, [{"content": "B", "status": "pending", "index": 99}])
-        assert len(result) == 2
-        assert result[1]["content"] == "B"
-
-    def test_add_negative_index_appends(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, None, [{"content": "B", "status": "pending", "index": -1}])
-        assert len(result) == 2
-        assert result[1]["content"] == "B"
-
-    def test_add_defaults_to_pending(self):
-        result = apply_todo_ops([], None, [{"content": "Task"}])
-        assert result[0]["status"] == "pending"
-
-    def test_add_skips_empty_content(self):
-        existing = [{"content": "A", "status": "pending"}]
-        result = apply_todo_ops(existing, None, [{"content": ""}])
-        assert len(result) == 1
-
-
-class TestApplyTodoOpsCombined:
-    def test_update_then_add(self):
-        existing = [
-            {"content": "A", "status": "pending"},
-            {"content": "B", "status": "pending"},
-        ]
-        result = apply_todo_ops(
-            existing,
-            [{"index": 0, "status": "completed"}],
-            [{"content": "C", "status": "pending"}],
+        graph = create_agent(
+            model=model,
+            tools=[],
+            middleware=[mw],
+            state_schema=ThreadState,
         )
-        assert len(result) == 3
-        assert result[0]["status"] == "completed"
-        assert result[2]["content"] == "C"
 
-    def test_remove_then_add_at_same_position(self):
-        existing = [
-            {"content": "Old", "status": "pending"},
-            {"content": "Keep", "status": "pending"},
-        ]
-        result = apply_todo_ops(
-            existing,
-            [{"index": 0, "remove": True}],
-            [{"content": "New", "status": "in_progress", "index": 0}],
+        result = graph.invoke(
+            {"messages": [("user", "create a todo")]},
+            context={"thread_id": "schema-thread", "run_id": "schema-run"},
         )
-        assert len(result) == 2
-        assert result[0]["content"] == "New"
-        assert result[1]["content"] == "Keep"
+
+        assert result["todos"] == [{"content": "Step 1", "status": "pending"}]
+
+    def test_completion_reminder_is_transient_in_real_agent_graph(self):
+        mw = TodoMiddleware()
+        model = _CapturingFakeMessagesListChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "id": "todos-1",
+                            "args": {
+                                "todos": [
+                                    {"content": "Step 1", "status": "completed"},
+                                    {"content": "Step 2", "status": "pending"},
+                                ]
+                            },
+                        }
+                    ],
+                ),
+                AIMessage(content="premature final 1"),
+                AIMessage(content="premature final 2"),
+                AIMessage(content="premature final 3"),
+            ],
+        )
+        graph = create_agent(model=model, tools=[], middleware=[mw])
+
+        result = graph.invoke(
+            {"messages": [("user", "finish all todos")]},
+            context={"thread_id": "integration-thread", "run_id": "integration-run"},
+        )
+
+        assert len(model.seen_messages) == 4
+        reminders_by_call = [_todo_completion_reminders(messages) for messages in model.seen_messages]
+        assert reminders_by_call[0] == []
+        assert reminders_by_call[1] == []
+        assert len(reminders_by_call[2]) == 1
+        assert len(reminders_by_call[3]) == 1
+        assert "Step 1" not in reminders_by_call[2][0].content
+        assert "Step 2" in reminders_by_call[2][0].content
+
+        persisted_reminders = _todo_completion_reminders(result["messages"])
+        assert persisted_reminders == []
+        assert result["messages"][-1].content == "premature final 3"
+        assert result["todos"] == [
+            {"content": "Step 1", "status": "completed"},
+            {"content": "Step 2", "status": "pending"},
+        ]
+        assert mw._pending_completion_reminders == {}
+        assert mw._completion_reminder_counts == {}
+
+
+class TestRunScopedReminderCleanup:
+    def test_before_agent_clears_stale_count_without_pending_reminder(self):
+        mw = TodoMiddleware()
+        stale_runtime = _make_runtime()
+        stale_runtime.context = {"thread_id": "test-thread", "run_id": "stale-run"}
+        current_runtime = _make_runtime()
+        current_runtime.context = {"thread_id": "test-thread", "run_id": "current-run"}
+        other_thread_runtime = _make_runtime()
+        other_thread_runtime.context = {"thread_id": "other-thread", "run_id": "stale-run"}
+
+        state = {"messages": [_ai_no_tool_calls()], "todos": _incomplete_todos()}
+        assert mw.after_model(state, stale_runtime) is not None
+        assert mw.after_model(state, other_thread_runtime) is not None
+
+        # Simulate a model call that drained the pending message, followed by an
+        # abnormal run end where after_agent did not clear the reminder count.
+        assert mw._drain_completion_reminders(stale_runtime)
+        assert mw._completion_reminder_count_for_runtime(stale_runtime) == 1
+
+        mw.before_agent({}, current_runtime)
+
+        assert mw._completion_reminder_count_for_runtime(stale_runtime) == 0
+        assert mw._completion_reminder_count_for_runtime(other_thread_runtime) == 1
+
+    def test_size_guard_prunes_oldest_count_only_reminder_state(self):
+        mw = TodoMiddleware()
+        mw._MAX_COMPLETION_REMINDER_KEYS = 2
+        first_runtime = _make_runtime_for("thread-a", "run-a")
+        second_runtime = _make_runtime_for("thread-b", "run-b")
+        third_runtime = _make_runtime_for("thread-c", "run-c")
+
+        state = {"messages": [_ai_no_tool_calls()], "todos": _incomplete_todos()}
+        assert mw.after_model(state, first_runtime) is not None
+
+        # Simulate the normal model request path: pending reminder is consumed,
+        # but the run count remains until after_agent() or stale cleanup.
+        assert mw._drain_completion_reminders(first_runtime)
+        assert mw._completion_reminder_count_for_runtime(first_runtime) == 1
+
+        assert mw.after_model(state, second_runtime) is not None
+        assert mw.after_model(state, third_runtime) is not None
+
+        assert mw._completion_reminder_count_for_runtime(first_runtime) == 0
+        assert mw._completion_reminder_count_for_runtime(second_runtime) == 1
+        assert mw._completion_reminder_count_for_runtime(third_runtime) == 1
+        assert ("thread-a", "run-a") not in mw._completion_reminder_touch_order
+
+    def test_size_guard_prunes_pending_and_count_state_together(self):
+        mw = TodoMiddleware()
+        mw._MAX_COMPLETION_REMINDER_KEYS = 1
+        stale_runtime = _make_runtime_for("thread-a", "run-a")
+        current_runtime = _make_runtime_for("thread-b", "run-b")
+
+        state = {"messages": [_ai_no_tool_calls()], "todos": _incomplete_todos()}
+        assert mw.after_model(state, stale_runtime) is not None
+        assert mw.after_model(state, current_runtime) is not None
+
+        assert mw._drain_completion_reminders(stale_runtime) == []
+        assert mw._completion_reminder_count_for_runtime(stale_runtime) == 0
+        assert mw._completion_reminder_count_for_runtime(current_runtime) == 1
+
+
+class TestAwrapModelCall:
+    def test_async_pending_reminder_is_injected(self):
+        mw = TodoMiddleware()
+        runtime = _make_runtime()
+        state = {
+            "messages": [_ai_no_tool_calls()],
+            "todos": _incomplete_todos(),
+        }
+        mw.after_model(state, runtime)
+
+        request = MagicMock()
+        request.runtime = runtime
+        request.messages = state["messages"]
+        request.override.return_value = "patched-request"
+        handler = AsyncMock(return_value="response")
+
+        result = asyncio.run(mw.awrap_model_call(request, handler))
+        assert result == "response"
+        injected_messages = request.override.call_args.kwargs["messages"]
+        assert injected_messages[-1].name == "todo_completion_reminder"
+        handler.assert_awaited_once_with("patched-request")

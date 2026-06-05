@@ -10,7 +10,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND_PID_FILE="$REPO_ROOT/logs/frontend.pid"
-NGINX_CONF="$REPO_ROOT/docker/nginx/nginx.local.conf"
+NGINX_CONF_STATE="$REPO_ROOT/logs/nginx-debug-web.conf.path"
+NGINX_DEFAULT_CONF="$REPO_ROOT/docker/nginx/nginx.local.conf"
 
 usage() {
     cat <<EOF
@@ -80,6 +81,12 @@ echo "Stopping split-debug web services..."
 stop_pid_file "Frontend" "$FRONTEND_PID_FILE"
 
 echo "Stopping Nginx..."
+NGINX_CONF="$NGINX_DEFAULT_CONF"
+if [ -f "$NGINX_CONF_STATE" ]; then
+    NGINX_CONF="$(cat "$NGINX_CONF_STATE" 2>/dev/null || true)"
+fi
+[ -n "$NGINX_CONF" ] || NGINX_CONF="$NGINX_DEFAULT_CONF"
 nginx -c "$NGINX_CONF" -p "$REPO_ROOT" -s quit 2>/dev/null || true
+rm -f "$NGINX_CONF_STATE"
 
 echo "Done."

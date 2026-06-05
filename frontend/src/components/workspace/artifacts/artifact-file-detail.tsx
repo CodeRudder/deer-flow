@@ -8,7 +8,7 @@ import {
   SquareArrowOutUpRightIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 
@@ -30,8 +30,17 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { CodeEditor } from "@/components/workspace/code-editor";
 import { useArtifactContent } from "@/core/artifacts/hooks";
+import {
+  appendHtmlPreviewBaseHref,
+  appendHtmlPreviewScrollRestoration,
+  createHtmlPreviewScrollKey,
+  getArtifactViewState,
+  HTML_PREVIEW_SCROLL_MESSAGE_SOURCE,
+} from "@/core/artifacts/preview";
 import { urlOfArtifact } from "@/core/artifacts/utils";
+import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
+import { findToolCallResult } from "@/core/messages/utils";
 import { installSkill } from "@/core/skills/api";
 import { streamdownPlugins } from "@/core/streamdown";
 import { checkCodeFile, getFileName, isImageFile } from "@/core/utils/files";
@@ -45,6 +54,8 @@ import { Tooltip } from "../tooltip";
 import { useArtifacts } from "./context";
 import { ImageLightbox } from "./image-lightbox";
 
+const WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS = 3000;
+
 export function ArtifactFileDetail({
   className,
   filepath: filepathFromProps,
@@ -56,6 +67,7 @@ export function ArtifactFileDetail({
 }) {
   const { t } = useI18n();
   const { artifacts, setOpen, select } = useArtifacts();
+  const { thread, isMock } = useThread();
   const isWriteFile = useMemo(() => {
     return filepathFromProps.startsWith("write-file:");
   }, [filepathFromProps]);
@@ -87,6 +99,22 @@ export function ArtifactFileDetail({
   const isSupportPreview = useMemo(() => {
     return language === "html" || language === "markdown";
   }, [language]);
+  const toolResult = (() => {
+    if (!isWriteFile) {
+      return undefined;
+    }
+    const url = new URL(filepathFromProps);
+    const toolCallId = url.searchParams.get("tool_call_id");
+    if (!toolCallId) {
+      return undefined;
+    }
+    return findToolCallResult(toolCallId, thread.messages);
+  })();
+  const artifactViewState = getArtifactViewState({
+    filepath: filepathFromProps,
+    isSupportPreview,
+    toolResult,
+  });
   const { content, url } = useArtifactContent({
     threadId,
     filepath: filepathFromProps,
@@ -94,18 +122,21 @@ export function ArtifactFileDetail({
   });
 
   const displayContent = content ?? "";
+  const isWritingFile = isWriteFile && toolResult === undefined;
+  const visibleContent = useThrottledValue(
+    displayContent,
+    isWritingFile ? WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS : 0,
+    filepathFromProps,
+  );
 
-  const [viewMode, setViewMode] = useState<"code" | "preview">("code");
+  const [viewMode, setViewMode] = useState<"code" | "preview">(
+    artifactViewState.initialViewMode,
+  );
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
-  const { isMock } = useThread();
   useEffect(() => {
-    if (isSupportPreview) {
-      setViewMode("preview");
-    } else {
-      setViewMode("code");
-    }
-  }, [isSupportPreview]);
+    setViewMode(artifactViewState.initialViewMode);
+  }, [artifactViewState.initialViewMode]);
 
   const handleInstallSkill = useCallback(async () => {
     if (isInstalling) return;
@@ -128,16 +159,12 @@ export function ArtifactFileDetail({
       setIsInstalling(false);
     }
   }, [threadId, filepath, isInstalling]);
-  const closeLightbox = useCallback(() => {
-    setLightboxOpen(false);
-  }, []);
-
   const artifactUrl = useMemo(() => {
     return urlOfArtifact({ filepath, threadId, isMock });
   }, [filepath, isMock, threadId]);
   const artifactDownloadUrl = useMemo(() => {
-    return urlOfArtifact({ filepath, threadId, download: true });
-  }, [filepath, threadId]);
+    return urlOfArtifact({ filepath, threadId, download: true, isMock });
+  }, [filepath, isMock, threadId]);
 
   return (
     <Artifact className={cn(className)}>
@@ -165,7 +192,7 @@ export function ArtifactFileDetail({
           </ArtifactTitle>
         </div>
         <div className="flex min-w-0 grow items-center justify-center">
-          {isSupportPreview && (
+          {artifactViewState.canPreview && (
             <ToggleGroup
               className="mx-auto"
               type="single"
@@ -210,7 +237,7 @@ export function ArtifactFileDetail({
                 tooltip={t.common.openInNewWindow}
                 onClick={() => {
                   const w = window.open(
-                    urlOfArtifact({ filepath, threadId }),
+                    urlOfArtifact({ filepath, threadId, isMock }),
                     "_blank",
                     "noopener,noreferrer",
                   );
@@ -223,14 +250,20 @@ export function ArtifactFileDetail({
                 icon={CopyIcon}
                 label={t.clipboard.copyToClipboard}
                 disabled={!content}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(displayContent ?? "");
+                onClick={() => {
+                  void (async () => {
+                    const didCopy = await writeTextToClipboard(
+                      visibleContent ?? "",
+                    );
+                    if (!didCopy) {
+                      toast.error(t.clipboard.failedToCopyToClipboard);
+                      return;
+                    }
+
                     toast.success(t.clipboard.copiedToClipboard);
-                  } catch (error) {
-                    toast.error("Failed to copy to clipboard");
-                    console.error(error);
-                  }
+                  })().catch(() => {
+                    toast.error(t.clipboard.failedToCopyToClipboard);
+                  });
                 }}
                 tooltip={t.clipboard.copyToClipboard}
               />
@@ -242,7 +275,12 @@ export function ArtifactFileDetail({
                 tooltip={t.common.download}
                 onClick={() => {
                   const w = window.open(
-                    urlOfArtifact({ filepath, threadId, download: true }),
+                    urlOfArtifact({
+                      filepath,
+                      threadId,
+                      download: true,
+                      isMock,
+                    }),
                     "_blank",
                     "noopener,noreferrer",
                   );
@@ -260,20 +298,20 @@ export function ArtifactFileDetail({
         </div>
       </ArtifactHeader>
       <ArtifactContent className="p-0">
-        {isSupportPreview &&
+        {artifactViewState.canPreview &&
           viewMode === "preview" &&
           (language === "markdown" || language === "html") && (
             <ArtifactFilePreview
-              content={displayContent}
-              isWriteFile={isWriteFile}
+              content={visibleContent}
               language={language ?? "text"}
+              scrollKey={filepathFromProps}
               url={url}
             />
           )}
         {isCodeFile && viewMode === "code" && (
           <CodeEditor
             className="size-full resize-none rounded-none border-none"
-            value={displayContent ?? ""}
+            value={visibleContent ?? ""}
             readonly
           />
         )}
@@ -288,7 +326,7 @@ export function ArtifactFileDetail({
             <ImageLightbox
               alt={getFileName(filepath)}
               downloadUrl={artifactDownloadUrl}
-              onClose={closeLightbox}
+              onClose={() => setLightboxOpen(false)}
               open={lightboxOpen}
               openUrl={artifactUrl}
               src={artifactUrl}
@@ -308,15 +346,87 @@ export function ArtifactFileDetail({
 
 export function ArtifactFilePreview({
   content,
-  isWriteFile,
   language,
+  scrollKey,
   url,
 }: {
   content: string;
-  isWriteFile: boolean;
   language: string;
+  scrollKey: string;
   url?: string;
 }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const scrollPositionRef = useRef({ x: 0, y: 0 });
+  const scrollMessageKey = useMemo(
+    () => createHtmlPreviewScrollKey(scrollKey),
+    [scrollKey],
+  );
+  const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string>();
+
+  useEffect(() => {
+    scrollPositionRef.current = { x: 0, y: 0 };
+  }, [scrollMessageKey]);
+
+  useEffect(() => {
+    if (language !== "html") {
+      return;
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) {
+        return;
+      }
+      if (!isArtifactScrollMessage(event.data, scrollMessageKey)) {
+        return;
+      }
+
+      if (event.data.type === "save") {
+        const x = scrollCoordinate(event.data.x);
+        const y = scrollCoordinate(event.data.y);
+        if (x !== undefined && y !== undefined) {
+          scrollPositionRef.current = { x, y };
+        }
+        return;
+      }
+
+      iframeRef.current?.contentWindow?.postMessage(
+        {
+          source: HTML_PREVIEW_SCROLL_MESSAGE_SOURCE,
+          key: scrollMessageKey,
+          type: "restore",
+          ...scrollPositionRef.current,
+        },
+        "*",
+      );
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [language, scrollMessageKey]);
+
+  useEffect(() => {
+    if (language !== "html") {
+      setHtmlPreviewUrl(undefined);
+      return;
+    }
+
+    const previewContent = appendHtmlPreviewScrollRestoration(
+      appendHtmlPreviewBaseHref(content ?? "", url),
+      scrollKey,
+    );
+    const blob = new Blob([previewContent], {
+      type: "text/html;charset=utf-8",
+    });
+    const objectUrl = URL.createObjectURL(blob);
+    setHtmlPreviewUrl(objectUrl);
+
+    return () => {
+      URL.revokeObjectURL(objectUrl);
+    };
+  }, [content, language, scrollKey, url]);
+
   if (language === "markdown") {
     return (
       <div className="size-full px-4">
@@ -333,12 +443,110 @@ export function ArtifactFilePreview({
   if (language === "html") {
     return (
       <iframe
+        ref={iframeRef}
         className="size-full"
         title="Artifact preview"
         sandbox="allow-scripts allow-forms"
-        {...(isWriteFile ? { srcDoc: content } : url ? { src: url } : {})}
+        src={htmlPreviewUrl}
       />
     );
   }
   return null;
+}
+
+function isArtifactScrollMessage(
+  data: unknown,
+  key: string,
+): data is {
+  type: "save" | "restore-request";
+  x?: unknown;
+  y?: unknown;
+} {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "source" in data &&
+    data.source === HTML_PREVIEW_SCROLL_MESSAGE_SOURCE &&
+    "key" in data &&
+    data.key === key &&
+    "type" in data &&
+    (data.type === "save" || data.type === "restore-request")
+  );
+}
+
+function scrollCoordinate(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function useThrottledValue(
+  value: string,
+  intervalMs: number,
+  resetKey: string,
+) {
+  const [throttledValue, setThrottledValue] = useState(value);
+  const latestValueRef = useRef(value);
+  const lastFlushAtRef = useRef(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetKeyRef = useRef(resetKey);
+
+  useEffect(() => {
+    latestValueRef.current = value;
+
+    if (resetKeyRef.current !== resetKey) {
+      resetKeyRef.current = resetKey;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      lastFlushAtRef.current = Date.now();
+      setThrottledValue(value);
+      return;
+    }
+
+    if (intervalMs <= 0) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      lastFlushAtRef.current = Date.now();
+      setThrottledValue(value);
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastFlushAtRef.current;
+    if (lastFlushAtRef.current === 0 || elapsed >= intervalMs) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      lastFlushAtRef.current = now;
+      setThrottledValue(value);
+      return;
+    }
+
+    if (timeoutRef.current) {
+      return;
+    }
+
+    timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      lastFlushAtRef.current = Date.now();
+      setThrottledValue(latestValueRef.current);
+    }, intervalMs - elapsed);
+  }, [intervalMs, resetKey, value]);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  return intervalMs <= 0 || resetKeyRef.current !== resetKey
+    ? value
+    : throttledValue;
 }

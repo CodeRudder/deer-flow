@@ -30,6 +30,24 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted", "cancelled", "timed_out"})
 
 
+def _iter_user_thread_dirs():
+    """Yield ``(user_id, thread_dir)`` for user-scoped thread directories."""
+    from deerflow.config.paths import get_paths
+
+    users_dir = get_paths().base_dir / "users"
+    if not users_dir.exists():
+        return
+    for user_dir in users_dir.iterdir():
+        if not user_dir.is_dir():
+            continue
+        threads_dir = user_dir / "threads"
+        if not threads_dir.is_dir():
+            continue
+        for thread_dir in threads_dir.iterdir():
+            if thread_dir.is_dir():
+                yield user_dir.name, thread_dir
+
+
 @dataclass
 class _IterationState:
     """In-memory state for a single auto-iteration session."""
@@ -115,19 +133,12 @@ class SessionMonitor:
         """
         import json
 
-        from deerflow.config.paths import get_paths
         from deerflow.config.subagents_config import get_subagents_app_config
 
         subagents_cfg = get_subagents_app_config()
-        base_dir = get_paths().base_dir / "threads"
-        if not base_dir.exists():
-            return
-
         total_tasks = 0
 
-        for thread_dir in base_dir.iterdir():
-            if not thread_dir.is_dir():
-                continue
+        for _user_id, thread_dir in _iter_user_thread_dirs() or []:
             subagents_dir = thread_dir / "subagents"
             if not subagents_dir.is_dir():
                 continue
@@ -338,11 +349,18 @@ class SessionMonitor:
         try:
             import json
 
-            from deerflow.config.paths import get_paths
             from deerflow.config.subagents_config import get_subagents_app_config
 
             subagents_cfg = get_subagents_app_config()
-            subagents_dir = get_paths().base_dir / "threads" / thread_id / "subagents"
+            subagents_dir = None
+            for _user_id, thread_dir in _iter_user_thread_dirs() or []:
+                if thread_dir.name == thread_id:
+                    candidate = thread_dir / "subagents"
+                    if candidate.exists():
+                        subagents_dir = candidate
+                        break
+            if subagents_dir is None:
+                return False
             if not subagents_dir.exists():
                 return False
 
@@ -532,16 +550,10 @@ class SessionMonitor:
 
         # 2. From disk scan (threads with subagent JSONL files)
         try:
-            from deerflow.config.paths import get_paths
-
-            threads_dir = get_paths().base_dir / "threads"
-            if threads_dir.exists():
-                for thread_dir in threads_dir.iterdir():
-                    if not thread_dir.is_dir():
-                        continue
-                    subagents_dir = thread_dir / "subagents"
-                    if subagents_dir.is_dir() and any(subagents_dir.glob("*.jsonl")):
-                        thread_ids.add(thread_dir.name)
+            for _user_id, thread_dir in _iter_user_thread_dirs() or []:
+                subagents_dir = thread_dir / "subagents"
+                if subagents_dir.is_dir() and any(subagents_dir.glob("*.jsonl")):
+                    thread_ids.add(thread_dir.name)
         except Exception:
             logger.exception("Failed to scan threads directory")
 

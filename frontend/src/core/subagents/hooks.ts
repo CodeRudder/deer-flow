@@ -199,7 +199,7 @@ export function useMainSessionMessages(
     queryKey: ["thread-messages", threadId, limit, offset],
     queryFn: async () => {
       const res = await fetch(
-        `${getBackendBaseURL()}/api/threads/${threadId}/messages?limit=${limit}&offset=${offset}`,
+        `${getBackendBaseURL()}/api/threads/${threadId}/main-session/messages?limit=${limit}&offset=${offset}`,
       );
       if (!res.ok) throw new Error("Failed to fetch thread messages");
       return res.json();

@@ -1,27 +1,33 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import threading
-from datetime import datetime
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from deerflow.config.agents_config import load_agent_soul
 from deerflow.image_generation.types import ImageGenerationPreference
-from deerflow.skills import load_skills
-from deerflow.skills.types import Skill
-from deerflow.subagents import get_available_subagent_names, list_subagents
+from deerflow.skills.storage import get_or_new_skill_storage
+from deerflow.skills.types import Skill, SkillCategory
+from deerflow.subagents import get_available_subagent_names
+
+if TYPE_CHECKING:
+    from deerflow.config.app_config import AppConfig
 
 logger = logging.getLogger(__name__)
 
 _ENABLED_SKILLS_REFRESH_WAIT_TIMEOUT_SECONDS = 5.0
 _enabled_skills_lock = threading.Lock()
 _enabled_skills_cache: list[Skill] | None = None
+_enabled_skills_by_config_cache: dict[int, tuple[object, list[Skill]]] = {}
 _enabled_skills_refresh_active = False
 _enabled_skills_refresh_version = 0
 _enabled_skills_refresh_event = threading.Event()
 
 
 def _load_enabled_skills_sync() -> list[Skill]:
-    return list(load_skills(enabled_only=True))
+    return list(get_or_new_skill_storage().load_skills(enabled_only=True))
 
 
 def _start_enabled_skills_refresh_thread() -> None:
@@ -79,6 +85,7 @@ def _invalidate_enabled_skills_cache() -> threading.Event:
     _get_cached_skills_prompt_section.cache_clear()
     with _enabled_skills_lock:
         _enabled_skills_cache = None
+        _enabled_skills_by_config_cache.clear()
         _enabled_skills_refresh_version += 1
         _enabled_skills_refresh_event.clear()
         if _enabled_skills_refresh_active:
@@ -102,6 +109,15 @@ def warm_enabled_skills_cache(timeout_seconds: float = _ENABLED_SKILLS_REFRESH_W
 
 
 def _get_enabled_skills():
+    return get_cached_enabled_skills()
+
+
+def get_cached_enabled_skills() -> list[Skill]:
+    """Return the cached enabled-skills list, kicking off a background refresh on miss.
+
+    Safe to call from request paths: never blocks on disk I/O. Returns an empty
+    list on cache miss; the next call will see the warmed result.
+    """
     with _enabled_skills_lock:
         cached = _enabled_skills_cache
 
@@ -112,8 +128,33 @@ def _get_enabled_skills():
     return []
 
 
-def _skill_mutability_label(category: str) -> str:
-    return "[custom, editable]" if category == "custom" else "[built-in]"
+def get_enabled_skills_for_config(app_config: AppConfig | None = None) -> list[Skill]:
+    """Return enabled skills using the caller's config source.
+
+    When a concrete ``app_config`` is supplied, cache the loaded skills by that
+    config object's identity so request-scoped config injection still resolves
+    skill paths from the matching config without rescanning storage on every
+    agent factory call.
+    """
+    if app_config is None:
+        return _get_enabled_skills()
+
+    cache_key = id(app_config)
+    with _enabled_skills_lock:
+        cached = _enabled_skills_by_config_cache.get(cache_key)
+        if cached is not None:
+            cached_config, cached_skills = cached
+            if cached_config is app_config:
+                return list(cached_skills)
+
+    skills = list(get_or_new_skill_storage(app_config=app_config).load_skills(enabled_only=True))
+    with _enabled_skills_lock:
+        _enabled_skills_by_config_cache[cache_key] = (app_config, skills)
+    return list(skills)
+
+
+def _skill_mutability_label(category: SkillCategory | str) -> str:
+    return "[custom, editable]" if category == SkillCategory.CUSTOM else "[built-in]"
 
 
 def clear_skills_system_prompt_cache() -> None:
@@ -122,31 +163,6 @@ def clear_skills_system_prompt_cache() -> None:
 
 async def refresh_skills_system_prompt_cache_async() -> None:
     await asyncio.to_thread(_invalidate_enabled_skills_cache().wait)
-
-
-def _reset_skills_system_prompt_cache_state() -> None:
-    global _enabled_skills_cache, _enabled_skills_refresh_active, _enabled_skills_refresh_version
-
-    _get_cached_skills_prompt_section.cache_clear()
-    with _enabled_skills_lock:
-        _enabled_skills_cache = None
-        _enabled_skills_refresh_active = False
-        _enabled_skills_refresh_version = 0
-        _enabled_skills_refresh_event.clear()
-
-
-def _refresh_enabled_skills_cache() -> None:
-    """Backward-compatible test helper for direct synchronous reload."""
-    try:
-        skills = _load_enabled_skills_sync()
-    except Exception:
-        logger.exception("Failed to load enabled skills for prompt injection")
-        skills = []
-
-    with _enabled_skills_lock:
-        _enabled_skills_cache = skills
-        _enabled_skills_refresh_active = False
-        _enabled_skills_refresh_event.set()
 
 
 def _build_skill_evolution_section(skill_evolution_enabled: bool) -> str:
@@ -199,7 +215,37 @@ This selection is only a preference for image generation tasks. It does not mean
 """
 
 
-def _build_subagent_section(max_concurrent: int) -> str:
+def _build_available_subagents_description(available_names: list[str], bash_available: bool, *, app_config: AppConfig | None = None) -> str:
+    """Dynamically build subagent type descriptions from registry.
+
+    Mirrors Codex's pattern where agent_type_description is dynamically generated
+    from all registered roles, so the LLM knows about every available type.
+    """
+    # Built-in descriptions (kept for backward compatibility with existing prompt quality)
+    builtin_descriptions = {
+        "general-purpose": "For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.",
+        "bash": (
+            "For command execution (git, build, test, deploy operations)" if bash_available else "Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access."
+        ),
+    }
+
+    # Lazy import moved outside loop to avoid repeated import overhead
+    from deerflow.subagents.registry import get_subagent_config
+
+    lines = []
+    for name in available_names:
+        if name in builtin_descriptions:
+            lines.append(f"- **{name}**: {builtin_descriptions[name]}")
+        else:
+            config = get_subagent_config(name, app_config=app_config)
+            if config is not None:
+                desc = config.description.split("\n")[0].strip()  # First line only for brevity
+                lines.append(f"- **{name}**: {desc}")
+
+    return "\n".join(lines)
+
+
+def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig | None = None) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
     Args:
@@ -209,25 +255,12 @@ def _build_subagent_section(max_concurrent: int) -> str:
         Formatted subagent section string.
     """
     n = max_concurrent
-    available_names = get_available_subagent_names()
+    available_names = get_available_subagent_names(app_config=app_config) if app_config is not None else get_available_subagent_names()
     bash_available = "bash" in available_names
 
-    # Build dynamic subagent list from registry (built-in + custom agents)
-    subagent_lines = []
-    all_configs = list_subagents()
-    for cfg in all_configs:
-        if cfg.name not in available_names:
-            continue
-        if cfg.name == "general-purpose":
-            subagent_lines.append("- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.")
-        elif cfg.name == "bash":
-            subagent_lines.append("- **bash**: For command execution (git, build, test, deploy operations)")
-        else:
-            # Custom agents from SOUL.md
-            subagent_lines.append(f"- **{cfg.name}**: {cfg.description}")
-    if not bash_available:
-        subagent_lines.append("- **bash**: Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access.")
-    available_subagents = "\n".join(subagent_lines)
+    # Dynamically build subagent type descriptions from registry (aligned with Codex's
+    # agent_type_description pattern where all registered roles are listed in the tool spec).
+    available_subagents = _build_available_subagents_description(available_names, bash_available, app_config=app_config)
     direct_tool_examples = "bash, ls, read_file, web_search, etc." if bash_available else "ls, read_file, web_search, etc."
     direct_execution_example = (
         '# User asks: "Run the tests"\n# Thinking: Cannot decompose into parallel sub-tasks\n# → Execute directly\n\nbash("npm test")  # Direct execution, not task()'
@@ -287,7 +320,7 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 ✅ **USE Parallel Subagents (max {n} per turn) when:**
 - **Complex research questions**: Requires multiple information sources or perspectives
 - **Multi-aspect analysis**: Task has several independent dimensions to explore
-- **Code review / audit tasks**: MUST decompose by module/layer/package, never review all code at once
+- **Large codebases**: Need to analyze different parts simultaneously
 - **Comprehensive investigations**: Questions requiring thorough coverage from multiple angles
 
 ❌ **DO NOT use subagents (execute directly) when:**
@@ -297,16 +330,7 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 - **Meta conversation**: Questions about conversation history
 - **Sequential dependencies**: Each step depends on previous results (do steps yourself sequentially)
 
-❌ **FORBIDDEN patterns — MUST decompose into sub-tasks:**
-- **"Check all module imports"** → Split by package: task("check agents/ imports", ...) + task("check sandbox/ imports", ...) + task("check tools/ imports", ...)
-- **"Review all source code"** → Split by module: one subagent per major module
-- **"Static analysis of entire project"** → Split by scope: task("analyze config layer", ...) + task("analyze agent layer", ...) + task("analyze API layer", ...)
-- **"Find all X in codebase"** → Use grep/glob first to count, then split into batches of ≤5 files per subagent
-
 **CRITICAL WORKFLOW** (STRICTLY follow this before EVERY action):
-0. **VALIDATE TASK SCOPE**: If a task requires reading all or most source files (e.g., "analyze the codebase", "review all code", "find all issues"), you MUST REJECT it as-is.
-Decompose it into 3-5 targeted sub-tasks (one module/layer/feature each).
-Never attempt wholesale code reading yourself or in a single subagent call.
 1. **COUNT**: In your thinking, list all sub-tasks and count them explicitly: "I have N sub-tasks"
 2. **PLAN BATCHES**: If N > {n}, explicitly plan which sub-tasks go in which batch:
    - "Batch 1 (this turn): first {n} sub-tasks"
@@ -368,20 +392,6 @@ task(description="Oracle Cloud analysis", prompt="...", subagent_type="general-p
 - Only use `task` when you can launch 2+ subagents in parallel
 - Single task = No value from subagents = Execute directly
 - For >{n} sub-tasks, use sequential batches of {n} across multiple turns
-
-**Interrupt Recovery Strategy:**
-If a sub-task fails or is interrupted, do NOT restart the entire task from scratch. Instead:
-1. Check completed sub-task results (visible in conversation context)
-2. Re-launch only the failed or incomplete sub-tasks
-3. Include prior progress information in the prompt so the new sub-agent can continue from the breakpoint
-4. The system automatically injects a `<recovery_context>` with interrupted session details when resuming
-
-**⚠️ MANDATORY — Subtask Failure Recovery:**
-When a subtask fails, you MUST create a new subtask (or resume via task tool action="resume") to retry. NEVER take over and do the work yourself:
-- ❌ FORBIDDEN: Reading files, writing code, running commands directly after a subtask failure
-- ✅ REQUIRED: Create a new `task()` call with the failed task's description + error details
-- ✅ REQUIRED: Include prior progress and the error in the new subtask prompt so it can learn from the failure
-- The main session is a **task orchestrator**, NOT a code executor. All code/file/command work goes through subtasks.
 </subagent_system>"""
 
 
@@ -391,8 +401,7 @@ You are {agent_name}, an open-source super agent.
 </role>
 
 {soul}
-{memory_context}
-
+{self_update_section}
 <thinking_style>
 - Think concisely and strategically about the user's request BEFORE taking action
 - Break down the task: What is clear? What is ambiguous? What is missing?
@@ -487,22 +496,12 @@ You: "Deploying to staging..." [proceed]
 - Use `read_file` tool to read uploaded files using their paths from the list
 - For PDF, PPT, Excel, and Word files, converted Markdown versions (*.md) are available alongside originals
 - All temporary work happens in `/mnt/user-data/workspace`
-- Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_file` tool
+- Treat `/mnt/user-data/workspace` as your default current working directory for coding and file-editing tasks
+- When writing scripts or commands that create/read files from the workspace, prefer relative paths such as `hello.txt`, `../uploads/data.csv`, and `../outputs/report.md`
+- Avoid hardcoding `/mnt/user-data/...` inside generated scripts when a relative path from the workspace is enough
+- Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_files` tool
 {acp_section}
 </working_directory>
-
-<file_reading_rules>
-**File Reading Constraints — MUST follow to avoid context overflow:**
-
-1. **Total file content per turn MUST NOT exceed 50KB.** This includes ALL read_file calls combined. If you need more, delegate to a subagent.
-2. **Avoid reading 5+ files per turn.** Reading too many files in a single response will fill the context window and trigger repeated summarization, losing critical information. If you need to read many files, delegate to a subagent.
-3. **Read file FRAGMENTS, not whole files.** Use `start_line` and `end_line` parameters to read only the section you need. Estimate the relevant range before reading.
-4. **Use `ls` and `glob` first** to understand file structure, then read only the specific sections relevant to the current task.
-5. **For code analysis tasks** that require reading many files, ALWAYS delegate to a subagent — the subagent has its own isolated context window.
-6. **NEVER attempt to read all source code for analysis.** Tasks like "analyze the entire codebase", "read all files in the project", or "review all source code" are FORBIDDEN.
-Instead, decompose into specific, targeted sub-tasks: analyze one module at a time, review specific functions, or examine particular file patterns.
-If the user requests a broad analysis, break it into 3-5 focused sub-tasks and delegate each to a subagent.
-</file_reading_rules>
 
 <response_style>
 - Clear and Concise: Avoid over-formatting unless requested
@@ -587,24 +586,32 @@ combined with a FastAPI gateway for REST API access [citation:FastAPI](https://f
 """
 
 
-def _get_memory_context(agent_name: str | None = None) -> str:
+def _get_memory_context(agent_name: str | None = None, *, app_config: AppConfig | None = None) -> str:
     """Get memory context for injection into system prompt.
 
     Args:
         agent_name: If provided, loads per-agent memory. If None, loads global memory.
+        app_config: Explicit application config. When provided, memory options
+            are read from this value instead of the global config singleton.
 
     Returns:
         Formatted memory context string wrapped in XML tags, or empty string if disabled.
     """
     try:
         from deerflow.agents.memory import format_memory_for_injection, get_memory_data
-        from deerflow.config.memory_config import get_memory_config
+        from deerflow.runtime.user_context import get_effective_user_id
 
-        config = get_memory_config()
+        if app_config is None:
+            from deerflow.config.memory_config import get_memory_config
+
+            config = get_memory_config()
+        else:
+            config = app_config.memory
+
         if not config.enabled or not config.injection_enabled:
             return ""
 
-        memory_data = get_memory_data(agent_name)
+        memory_data = get_memory_data(agent_name, user_id=get_effective_user_id())
         memory_content = format_memory_for_injection(memory_data, max_tokens=config.max_injection_tokens)
 
         if not memory_content.strip():
@@ -614,8 +621,8 @@ def _get_memory_context(agent_name: str | None = None) -> str:
 {memory_content}
 </memory>
 """
-    except Exception as e:
-        logger.error("Failed to load memory context: %s", e)
+    except Exception:
+        logger.exception("Failed to load memory context")
         return ""
 
 
@@ -651,19 +658,24 @@ You have access to skills that provide optimized workflows for specific tasks. E
 </skill_system>"""
 
 
-def get_skills_prompt_section(available_skills: set[str] | None = None) -> str:
+def get_skills_prompt_section(available_skills: set[str] | None = None, *, app_config: AppConfig | None = None) -> str:
     """Generate the skills prompt section with available skills list."""
-    skills = _get_enabled_skills()
+    skills = get_enabled_skills_for_config(app_config)
 
-    try:
-        from deerflow.config import get_app_config
+    if app_config is None:
+        try:
+            from deerflow.config import get_app_config
 
-        config = get_app_config()
+            config = get_app_config()
+            container_base_path = config.skills.container_path
+            skill_evolution_enabled = config.skill_evolution.enabled
+        except Exception:
+            container_base_path = "/mnt/skills"
+            skill_evolution_enabled = False
+    else:
+        config = app_config
         container_base_path = config.skills.container_path
         skill_evolution_enabled = config.skill_evolution.enabled
-    except Exception:
-        container_base_path = "/mnt/skills"
-        skill_evolution_enabled = False
 
     if not skills and not skill_evolution_enabled:
         return ""
@@ -687,7 +699,27 @@ def get_agent_soul(agent_name: str | None) -> str:
     return ""
 
 
-def get_deferred_tools_prompt_section() -> str:
+def _build_self_update_section(agent_name: str | None) -> str:
+    """Prompt block that teaches the custom agent to persist self-updates via update_agent."""
+    if not agent_name:
+        return ""
+    return f"""<self_update>
+You are running as the custom agent **{agent_name}** with a persisted SOUL.md and config.yaml.
+
+When the user asks you to update your own description, personality, behaviour, skill set, tool groups, or default model,
+you MUST persist the change with the `update_agent` tool. Do NOT use `bash`, `write_file`, or any sandbox tool to edit
+SOUL.md or config.yaml — those write into a temporary sandbox/tool workspace and the changes will be lost on the next turn.
+
+Rules:
+- Always pass the FULL replacement text for `soul` (no patch semantics). Start from your current SOUL above and apply the user's edits.
+- Only pass the fields that should change. Omit the others to preserve them.
+- Pass `skills=[]` to disable all skills, or omit `skills` to keep the existing whitelist.
+- After `update_agent` returns successfully, tell the user the change is persisted and will take effect on the next turn.
+</self_update>
+"""
+
+
+def get_deferred_tools_prompt_section(*, app_config: AppConfig | None = None) -> str:
     """Generate <available-deferred-tools> block for the system prompt.
 
     Lists only deferred tool names so the agent knows what exists
@@ -696,12 +728,17 @@ def get_deferred_tools_prompt_section() -> str:
     """
     from deerflow.tools.builtins.tool_search import get_deferred_registry
 
-    try:
-        from deerflow.config import get_app_config
+    if app_config is None:
+        try:
+            from deerflow.config import get_app_config
 
-        if not get_app_config().tool_search.enabled:
+            config = get_app_config()
+        except Exception:
             return ""
-    except Exception:
+    else:
+        config = app_config
+
+    if not config.tool_search.enabled:
         return ""
 
     registry = get_deferred_registry()
@@ -712,15 +749,19 @@ def get_deferred_tools_prompt_section() -> str:
     return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>"
 
 
-def _build_acp_section() -> str:
+def _build_acp_section(*, app_config: AppConfig | None = None) -> str:
     """Build the ACP agent prompt section, only if ACP agents are configured."""
-    try:
-        from deerflow.config.acp_config import get_acp_agents
+    if app_config is None:
+        try:
+            from deerflow.config.acp_config import get_acp_agents
 
-        agents = get_acp_agents()
-        if not agents:
+            agents = get_acp_agents()
+        except Exception:
             return ""
-    except Exception:
+    else:
+        agents = getattr(app_config, "acp_agents", {}) or {}
+
+    if not agents:
         return ""
 
     return (
@@ -728,19 +769,24 @@ def _build_acp_section() -> str:
         "- ACP agents (e.g. codex, claude_code) run in their own independent workspace — NOT in `/mnt/user-data/`\n"
         "- When writing prompts for ACP agents, describe the task only — do NOT reference `/mnt/user-data` paths\n"
         "- ACP agent results are accessible at `/mnt/acp-workspace/` (read-only) — use `ls`, `read_file`, or `bash cp` to retrieve output files\n"
-        "- To deliver ACP output to the user: copy from `/mnt/acp-workspace/<file>` to `/mnt/user-data/outputs/<file>`, then use `present_file`"
+        "- To deliver ACP output to the user: copy from `/mnt/acp-workspace/<file>` to `/mnt/user-data/outputs/<file>`, then use `present_files`"
     )
 
 
-def _build_custom_mounts_section() -> str:
+def _build_custom_mounts_section(*, app_config: AppConfig | None = None) -> str:
     """Build a prompt section for explicitly configured sandbox mounts."""
-    try:
-        from deerflow.config import get_app_config
+    if app_config is None:
+        try:
+            from deerflow.config import get_app_config
 
-        mounts = get_app_config().sandbox.mounts or []
-    except Exception:
-        logger.exception("Failed to load configured sandbox mounts for the lead-agent prompt")
-        return ""
+            config = get_app_config()
+        except Exception:
+            logger.exception("Failed to load configured sandbox mounts for the lead-agent prompt")
+            return ""
+    else:
+        config = app_config
+
+    mounts = config.sandbox.mounts or []
 
     if not mounts:
         return ""
@@ -761,13 +807,11 @@ def apply_prompt_template(
     agent_name: str | None = None,
     available_skills: set[str] | None = None,
     image_generation: ImageGenerationPreference | None = None,
+    app_config: AppConfig | None = None,
 ) -> str:
-    # Get memory context
-    memory_context = _get_memory_context(agent_name)
-
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
-    subagent_section = _build_subagent_section(n) if subagent_enabled else ""
+    subagent_section = _build_subagent_section(n, app_config=app_config) if subagent_enabled else ""
 
     # Add subagent reminder to critical_reminders if enabled
     subagent_reminder = (
@@ -788,28 +832,29 @@ def apply_prompt_template(
     )
 
     # Get skills section
-    skills_section = get_skills_prompt_section(available_skills)
+    skills_section = get_skills_prompt_section(available_skills, app_config=app_config)
     image_generation_runtime_section = _build_image_generation_runtime_section(image_generation)
 
     # Get deferred tools section (tool_search)
-    deferred_tools_section = get_deferred_tools_prompt_section()
+    deferred_tools_section = get_deferred_tools_prompt_section(app_config=app_config)
 
     # Build ACP agent section only if ACP agents are configured
-    acp_section = _build_acp_section()
-    custom_mounts_section = _build_custom_mounts_section()
+    acp_section = _build_acp_section(app_config=app_config)
+    custom_mounts_section = _build_custom_mounts_section(app_config=app_config)
     acp_and_mounts_section = "\n".join(section for section in (acp_section, custom_mounts_section) if section)
 
-    # Format the prompt with dynamic skills and memory
-    prompt = SYSTEM_PROMPT_TEMPLATE.format(
+    # Build and return the fully static system prompt.
+    # Memory and current date are injected per-turn via DynamicContextMiddleware
+    # as a <system-reminder> in the first HumanMessage, keeping this prompt
+    # identical across users and sessions for maximum prefix-cache reuse.
+    return SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
         soul=get_agent_soul(agent_name),
+        self_update_section=_build_self_update_section(agent_name),
         skills_section="\n".join(section for section in (skills_section, image_generation_runtime_section) if section),
         deferred_tools_section=deferred_tools_section,
-        memory_context=memory_context,
         subagent_section=subagent_section,
         subagent_reminder=subagent_reminder,
         subagent_thinking=subagent_thinking,
         acp_section=acp_and_mounts_section,
     )
-
-    return prompt + f"\n<current_date>{datetime.now().strftime('%Y-%m-%d, %A')}</current_date>"

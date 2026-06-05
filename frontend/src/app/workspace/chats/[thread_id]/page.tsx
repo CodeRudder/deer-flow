@@ -1,19 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import {
   ChatBox,
@@ -25,7 +14,6 @@ import { InputBox } from "@/components/workspace/input-box";
 import {
   MessageList,
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
-  MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
@@ -33,35 +21,69 @@ import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
-import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
+import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
-import { useThreadSettings } from "@/core/settings";
-import { useSubtasks, useUpdateSubtask } from "@/core/tasks/context";
-import { useThreadStream } from "@/core/threads/hooks";
+import { useLocalSettings, useThreadSettings } from "@/core/settings";
+import { useThreadStream, useThreadTokenUsage } from "@/core/threads/hooks";
+import { threadTokenUsageToTokenUsage } from "@/core/threads/token-usage";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 export default function ChatPage() {
   const { t } = useI18n();
-  const [showFollowups, setShowFollowups] = useState(false);
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
+  // `isNewThread` tracks whether the backend has the thread yet — gates the
+  // SDK's history fetch (see issue #2746).  `isWelcomeMode` is the visual
+  // welcome layout (centered input, hero, quick actions); we flip it to false
+  // the moment the user submits so the UI animates immediately, even though
+  // `isNewThread` stays true until the backend actually creates the thread.
+  const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
-  const [mounted, setMounted] = useState(false);
+  const [localSettings, setLocalSettings] = useLocalSettings();
+  const { tokenUsageEnabled } = useModels();
+  const threadTokenUsage = useThreadTokenUsage(
+    isNewThread || isMock ? undefined : threadId,
+    { enabled: tokenUsageEnabled && !isMock },
+  );
+  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
+  const mountedRef = useRef(false);
   useSpecificChatMode();
 
   useEffect(() => {
-    setMounted(true);
+    mountedRef.current = true;
   }, []);
+
+  // Keep welcome layout in sync when navigating between threads (sidebar
+  // clicks, "new chat" button).  Submitting in /chats/new flips the layout
+  // via onSend below — `isNewThread` stays true until onStart, so this effect
+  // is harmless during the submit transition.
+  useEffect(() => {
+    setIsWelcomeMode(isNewThread);
+  }, [isNewThread]);
 
   const { showNotification } = useNotification();
 
-  const [thread, sendMessage, isUploading] = useThreadStream({
-    threadId: isNewThread || threadId === "new" ? undefined : threadId,
+  const {
+    thread,
+    pendingUsageMessages,
+    sendMessage,
+    isUploading,
+    isHistoryLoading,
+    hasMoreHistory,
+    loadMoreHistory,
+  } = useThreadStream({
+    threadId: isNewThread ? undefined : threadId,
     context: settings.context,
     isMock,
+    // onSend only animates the UI; do NOT flip `isNewThread` here — the
+    // LangGraph SDK eagerly fetches /history the moment it receives a
+    // thread id and assumes the thread exists on the backend (issue #2746).
+    onSend: () => {
+      setIsWelcomeMode(false);
+    },
     onStart: (createdThreadId) => {
       setThreadId(createdThreadId);
       setIsNewThread(false);
@@ -88,107 +110,22 @@ export default function ChatPage() {
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
-      void sendMessage(threadId, message);
+      const sendPromise = sendMessage(threadId, message);
+      if (message.files.length > 0) {
+        return sendPromise;
+      }
+      void sendPromise;
     },
     [sendMessage, threadId],
   );
-  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
-  const [stopTargets, setStopTargets] = useState<{
-    mainSession: boolean;
-    subtaskIds: Record<string, boolean>;
-  }>({ mainSession: true, subtaskIds: {} });
-  const subtasks = useSubtasks();
-  const runningSubtasks = subtasks.filter((s) => s.status === "in_progress");
-  const updateSubtask = useUpdateSubtask();
-
-  const handleStopRequest = useCallback(() => {
-    // Default: stop main session, but not subtasks
-    setStopTargets({
-      mainSession: true,
-      subtaskIds: {},
-    });
-    setStopConfirmOpen(true);
-  }, []);
-
   const handleStop = useCallback(async () => {
-    const promises: Promise<{ target: string; success: boolean }>[] = [];
+    await thread.stop();
+  }, [thread]);
 
-    if (stopTargets.mainSession) {
-      promises.push(
-        thread.stop().then(async () => {
-          // Cancel only the current thread's run on the server side
-          // Do NOT use cancel-all — that would also cancel running subtasks
-          try {
-            const res = await fetch(
-              `${getBackendBaseURL()}/api/langgraph/threads/${encodeURIComponent(threadId ?? "")}/runs?limit=5`,
-            );
-            if (res.ok) {
-              const runs = await res.json();
-              for (const run of runs) {
-                if (run.status === "running" || run.status === "pending") {
-                  await fetch(
-                    `${getBackendBaseURL()}/api/langgraph/threads/${encodeURIComponent(threadId ?? "")}/runs/${encodeURIComponent(run.run_id)}/cancel`,
-                    { method: "POST" },
-                  );
-                }
-              }
-            }
-          } catch {
-            // Best-effort: client-side stop already succeeded
-          }
-          return { target: "主会话", success: true };
-        }),
-      );
-    }
-
-    // Cancel selected subtasks
-    for (const [taskId, checked] of Object.entries(stopTargets.subtaskIds)) {
-      if (checked) {
-        promises.push(
-          (async () => {
-            try {
-              const res = await fetch(
-                `${getBackendBaseURL()}/api/runs/subtasks/${taskId}/cancel`,
-                { method: "POST" },
-              );
-              if (res.ok) {
-                const data = await res.json();
-                if (data.cancelled) {
-                  updateSubtask({
-                    id: taskId,
-                    status: "failed",
-                    error: "Cancelled by user",
-                  });
-                }
-                return { target: "子任务", success: data.cancelled };
-              }
-            } catch {
-              // silently ignore
-            }
-            return { target: "子任务", success: false };
-          })(),
-        );
-      }
-    }
-
-    const results = await Promise.all(promises);
-    const succeeded = results.filter((r) => r.success);
-    const failed = results.filter((r) => !r.success);
-
-    if (succeeded.length > 0) {
-      toast.success(`已停止: ${succeeded.map((r) => r.target).join(", ")}`);
-    }
-    if (failed.length > 0) {
-      toast.error(`停止失败: ${failed.map((r) => r.target).join(", ")}`);
-    }
-
-    setStopConfirmOpen(false);
-  }, [thread, threadId, stopTargets, updateSubtask]);
-
-  const messageListPaddingBottom = showFollowups
-    ? MESSAGE_LIST_DEFAULT_PADDING_BOTTOM +
-      MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM
-    : undefined;
+  const tokenUsageInlineMode = tokenUsageEnabled
+    ? localSettings.tokenUsage.inlineMode
+    : "off";
+  const hasTodos = (thread.values.todos?.length ?? 0) > 0;
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -197,7 +134,7 @@ export default function ChatPage() {
           <header
             className={cn(
               "absolute top-0 right-0 left-0 z-30 flex h-12 shrink-0 items-center px-4",
-              isNewThread
+              isWelcomeMode
                 ? "bg-background/0 backdrop-blur-none"
                 : "bg-background/80 shadow-xs backdrop-blur",
             )}
@@ -206,55 +143,86 @@ export default function ChatPage() {
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
             <div className="flex items-center gap-2">
-              {!isNewThread && (
+              {!isNewThread && !isMock && (
                 <SessionStatusButton
                   threadId={threadId}
                   enabled
                   forcePolling={thread.isLoading}
                 />
               )}
-              <TokenUsageIndicator messages={thread.messages} />
+              <TokenUsageIndicator
+                threadId={isNewThread ? undefined : threadId}
+                backendUsage={backendTokenUsage}
+                enabled={tokenUsageEnabled}
+                messages={thread.messages}
+                pendingMessages={pendingUsageMessages}
+                preferences={localSettings.tokenUsage}
+                onPreferencesChange={(preferences) =>
+                  setLocalSettings("tokenUsage", preferences)
+                }
+              />
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />
             </div>
           </header>
           <main className="flex min-h-0 max-w-full grow flex-col">
-            <div className="flex size-full justify-center">
+            <div className="flex min-h-0 flex-1 justify-center">
               <MessageList
-                className={cn("size-full", !isNewThread && "pt-10")}
+                className={cn("size-full", !isWelcomeMode && "pt-10")}
                 threadId={threadId}
                 thread={thread}
-                statusPollingEnabled={!isNewThread}
-                paddingBottom={messageListPaddingBottom}
+                paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
+                hasMoreHistory={hasMoreHistory}
+                loadMoreHistory={loadMoreHistory}
+                isHistoryLoading={isHistoryLoading}
+                tokenUsageInlineMode={tokenUsageInlineMode}
               />
             </div>
-            <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
+            <div
+              className={cn(
+                "right-0 bottom-0 left-0 z-30 flex justify-center px-4",
+                isWelcomeMode ? "absolute" : "relative shrink-0 pb-4",
+              )}
+            >
               <div
                 className={cn(
                   "relative w-full",
-                  isNewThread && "-translate-y-[calc(50vh-96px)]",
-                  isNewThread
+                  isWelcomeMode && "-translate-y-[calc(50vh-96px)]",
+                  isWelcomeMode
                     ? "max-w-(--container-width-sm)"
                     : "max-w-(--container-width-md)",
                 )}
               >
-                <div className="absolute -top-4 right-0 left-0 z-0">
-                  <div className="absolute right-0 bottom-0 left-0">
-                    <TodoList
-                      className="bg-background/5"
-                      todos={thread.values.todos ?? []}
-                      hidden={
-                        !thread.values.todos || thread.values.todos.length === 0
-                      }
-                    />
+                {hasTodos && (
+                  <div
+                    className={cn(
+                      "right-0 left-0 z-0",
+                      isWelcomeMode ? "absolute -top-4" : "relative",
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        "right-0 bottom-0 left-0",
+                        isWelcomeMode ? "absolute" : "relative",
+                      )}
+                    >
+                      <TodoList
+                        className="bg-background/5"
+                        todos={thread.values.todos ?? []}
+                        hidden={false}
+                      />
+                    </div>
                   </div>
-                </div>
-                {mounted ? (
+                )}
+                {mountedRef.current ? (
                   <InputBox
-                    className={cn("bg-background/5 w-full -translate-y-4")}
-                    isNewThread={isNewThread}
+                    className={cn(
+                      "bg-background/5 w-full",
+                      isWelcomeMode && "-translate-y-4",
+                    )}
+                    isWelcomeMode={isWelcomeMode}
                     threadId={threadId}
-                    autoFocus={isNewThread}
+                    autoFocus={isWelcomeMode}
                     status={
                       thread.error
                         ? "error"
@@ -264,24 +232,25 @@ export default function ChatPage() {
                     }
                     context={settings.context}
                     extraHeader={
-                      isNewThread && <Welcome mode={settings.context.mode} />
+                      isWelcomeMode && <Welcome mode={settings.context.mode} />
                     }
                     disabled={
+                      isMock ||
                       env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
                       isUploading
                     }
                     onContextChange={(context) =>
                       setSettings("context", context)
                     }
-                    onFollowupsVisibilityChange={setShowFollowups}
                     onSubmit={handleSubmit}
-                    onStop={handleStopRequest}
+                    onStop={handleStop}
                   />
                 ) : (
                   <div
                     aria-hidden="true"
                     className={cn(
-                      "bg-background/5 h-32 w-full -translate-y-4 rounded-2xl border",
+                      "bg-background/5 h-32 w-full rounded-2xl",
+                      isWelcomeMode && "-translate-y-4",
                     )}
                   />
                 )}
@@ -295,93 +264,6 @@ export default function ChatPage() {
           </main>
         </div>
       </ChatBox>
-      <AlertDialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>停止会话</AlertDialogTitle>
-            <AlertDialogDescription>选择要停止的目标：</AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="flex max-h-60 flex-col gap-3 overflow-y-auto py-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={stopTargets.mainSession}
-                onChange={(e) =>
-                  setStopTargets((prev) => ({
-                    ...prev,
-                    mainSession: e.target.checked,
-                  }))
-                }
-                className="size-4 rounded border-gray-300"
-              />
-              <span className="font-medium">主会话</span>
-            </label>
-            {runningSubtasks.length > 0 && (
-              <>
-                <div className="text-muted-foreground text-xs">
-                  运行中的子任务
-                  <button
-                    type="button"
-                    className="text-primary ml-2 underline"
-                    onClick={() => {
-                      const allChecked = runningSubtasks.every(
-                        (s) => stopTargets.subtaskIds[s.id],
-                      );
-                      const newIds: Record<string, boolean> = {};
-                      for (const s of runningSubtasks) {
-                        newIds[s.id] = !allChecked;
-                      }
-                      setStopTargets((prev) => ({
-                        ...prev,
-                        subtaskIds: { ...prev.subtaskIds, ...newIds },
-                      }));
-                    }}
-                  >
-                    {runningSubtasks.every((s) => stopTargets.subtaskIds[s.id])
-                      ? "取消全选"
-                      : "全选"}
-                  </button>
-                </div>
-                {runningSubtasks.map((s) => (
-                  <label
-                    key={s.id}
-                    className="flex items-center gap-2 pl-4 text-sm"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!stopTargets.subtaskIds[s.id]}
-                      onChange={(e) =>
-                        setStopTargets((prev) => ({
-                          ...prev,
-                          subtaskIds: {
-                            ...prev.subtaskIds,
-                            [s.id]: e.target.checked,
-                          },
-                        }))
-                      }
-                      className="size-4 rounded border-gray-300"
-                    />
-                    <span>{s.description || s.id}</span>
-                  </label>
-                ))}
-              </>
-            )}
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive hover:bg-destructive/90 text-white"
-              onClick={() => void handleStop()}
-              disabled={
-                !stopTargets.mainSession &&
-                !Object.values(stopTargets.subtaskIds).some(Boolean)
-              }
-            >
-              确认停止
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </ThreadContext.Provider>
   );
 }

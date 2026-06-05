@@ -10,10 +10,12 @@ writing to the JSONL file.  Only tasks whose executor has already terminated
 unexpectedly are recovered.
 """
 
+import atexit
 import json
 import logging
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deerflow.subagents.executor import (
@@ -30,6 +32,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_health_monitor: "SubagentHealthMonitor | None" = None
+_health_monitor_lock = threading.Lock()
+
 
 def _find_session_jsonl(thread_id: str | None, task_id: str) -> str | None:
     """Locate the JSONL file for a task, or return None."""
@@ -38,10 +43,27 @@ def _find_session_jsonl(thread_id: str | None, task_id: str) -> str | None:
     try:
         from deerflow.config.paths import get_paths
 
-        d = get_paths().subagent_dir(thread_id)
-        p = d / f"{task_id}.jsonl"
-        return str(p) if p.exists() else None
+        users_dir = get_paths().base_dir / "users"
+        if not users_dir.exists():
+            return None
+        for user_dir in users_dir.iterdir():
+            if not user_dir.is_dir():
+                continue
+            p = user_dir / "threads" / thread_id / "subagents" / f"{task_id}.jsonl"
+            if p.exists():
+                return str(p)
+        return None
     except Exception:
+        return None
+
+
+def _user_id_from_session_path(path: str) -> str | None:
+    """Extract ``users/{user_id}/threads/...`` user id from a session path."""
+    parts = list(Path(path).parts)
+    try:
+        users_idx = parts.index("users")
+        return parts[users_idx + 1]
+    except (ValueError, IndexError):
         return None
 
 
@@ -214,6 +236,7 @@ class SubagentHealthMonitor:
                     task_id=task_id,
                     subagent_name=result.subagent_name or "unknown",
                     description=result.description or "",
+                    user_id=_user_id_from_session_path(jsonl_path),
                 )
                 msg_count = _count_messages(jsonl_path)
                 session.mark_interrupted(message_count=msg_count)
@@ -232,6 +255,7 @@ class SubagentHealthMonitor:
                     recovery_summary = str(content)[:500]
 
         msg_count = _count_messages(jsonl_path) if jsonl_path else 0
+        user_id = _user_id_from_session_path(jsonl_path) if jsonl_path else result.user_id
         original = result.original_prompt or ""
         recovery_prompt = f"<recovery>\n任务因 {reason} 被中断。已执行 {msg_count} 步。\n最后完成的工作：{recovery_summary}\n原始任务：{original[:500]}\n请继续完成剩余工作，不要重复已完成的步骤。\n</recovery>\n\n{original}"
 
@@ -251,6 +275,7 @@ class SubagentHealthMonitor:
                 config=config,
                 tools=tools,
                 thread_id=result.thread_id,
+                user_id=user_id,
             )
             new_task_id = executor.execute_async(recovery_prompt, description=f"[recovery] {result.description or ''}")
             logger.info(
@@ -261,3 +286,33 @@ class SubagentHealthMonitor:
             )
         except Exception:
             logger.exception("Health monitor failed to reactivate task %s", task_id)
+
+
+def start_health_monitor(check_interval: int = 60) -> SubagentHealthMonitor:
+    """Start the process-wide sub-agent health monitor.
+
+    The function is intentionally idempotent so callers can invoke it from
+    gateway startup or test setup without creating duplicate timers.
+    """
+    global _health_monitor
+
+    with _health_monitor_lock:
+        if _health_monitor is None:
+            _health_monitor = SubagentHealthMonitor(check_interval=check_interval)
+            _health_monitor.start()
+        return _health_monitor
+
+
+def stop_health_monitor() -> None:
+    """Stop the process-wide sub-agent health monitor if it is running."""
+    global _health_monitor
+
+    with _health_monitor_lock:
+        monitor = _health_monitor
+        _health_monitor = None
+
+    if monitor is not None:
+        monitor.stop()
+
+
+atexit.register(stop_health_monitor)

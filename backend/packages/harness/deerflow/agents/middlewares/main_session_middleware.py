@@ -29,6 +29,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.runtime import Runtime
 
 from deerflow.config.paths import get_paths
+from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.subagents.session import serialize_message
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,11 @@ def _extract_thread_id(runtime: Runtime) -> str | None:
     return configurable.get("thread_id")
 
 
+def _extract_user_id(runtime: Runtime) -> str:
+    """Resolve the effective user_id for filesystem isolation."""
+    return resolve_runtime_user_id(runtime)
+
+
 class MainSessionMiddleware(AgentMiddleware[AgentState]):
     """Persists main conversation messages to local JSONL for debugging.
 
@@ -76,17 +82,17 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
         self._dedup_window = dedup_window
         self._max_content_len = max_content_len
         self._thread_cache_size = thread_cache_size
-        # thread_id -> all written message IDs for active cached threads
-        self._written_ids: dict[str, set[str]] = {}
+        # (user_id, thread_id) -> all written message IDs for active cached threads
+        self._written_ids: dict[tuple[str, str], set[str]] = {}
         self._lock = threading.Lock()
 
-    def _get_jsonl_path(self, thread_id: str) -> "Any":
+    def _get_jsonl_path(self, thread_id: str, *, user_id: str | None = None) -> "Any":
         """Return the JSONL file path for a thread."""
-        return get_paths().thread_dir(thread_id) / "conversation.jsonl"
+        return get_paths().thread_dir(thread_id, user_id=user_id) / "conversation.jsonl"
 
-    def _load_written_ids_from_disk(self, thread_id: str, ids: set[str]) -> None:
+    def _load_written_ids_from_disk(self, thread_id: str, ids: set[str], *, user_id: str | None = None) -> None:
         """Populate written message IDs from an existing JSONL file."""
-        jsonl_path = self._get_jsonl_path(thread_id)
+        jsonl_path = self._get_jsonl_path(thread_id, user_id=user_id)
         if not jsonl_path.exists():
             return
 
@@ -109,17 +115,18 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
     def _evict_old_threads_locked(self) -> None:
         """Keep per-thread dedup tracking bounded."""
         while len(self._written_ids) > self._thread_cache_size:
-            oldest_thread_id = next(iter(self._written_ids))
-            del self._written_ids[oldest_thread_id]
+            oldest_key = next(iter(self._written_ids))
+            del self._written_ids[oldest_key]
 
-    def _get_new_messages(self, thread_id: str, messages: list[BaseMessage]) -> list[BaseMessage]:
+    def _get_new_messages(self, thread_id: str, messages: list[BaseMessage], *, user_id: str | None = None) -> list[BaseMessage]:
         """Return messages not yet written for this thread."""
+        cache_key = (user_id or "", thread_id)
         with self._lock:
-            ids = self._written_ids.get(thread_id)
+            ids = self._written_ids.get(cache_key)
             if ids is None:
                 ids = set()
-                self._load_written_ids_from_disk(thread_id, ids)
-                self._written_ids[thread_id] = ids
+                self._load_written_ids_from_disk(thread_id, ids, user_id=user_id)
+                self._written_ids[cache_key] = ids
                 self._evict_old_threads_locked()
 
             new_msgs: list[BaseMessage] = []
@@ -140,6 +147,7 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
             entry = serialize_message(msg, max_content_len=self._max_content_len)
             lines.append(json.dumps(entry, ensure_ascii=False))
 
+        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         with open(jsonl_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
@@ -154,18 +162,19 @@ class MainSessionMiddleware(AgentMiddleware[AgentState]):
         thread_id = _extract_thread_id(runtime)
         if not thread_id:
             return None
+        user_id = _extract_user_id(runtime)
 
         messages = state.get("messages", [])
         if not messages:
             return None
 
-        new_messages = self._get_new_messages(thread_id, messages)
+        new_messages = self._get_new_messages(thread_id, messages, user_id=user_id)
         if not new_messages:
             return None
 
         import asyncio
 
-        jsonl_path = self._get_jsonl_path(thread_id)
+        jsonl_path = self._get_jsonl_path(thread_id, user_id=user_id)
         await asyncio.to_thread(self._write_messages, jsonl_path, new_messages)
         logger.debug("Appended %d messages to %s", len(new_messages), jsonl_path)
         return None

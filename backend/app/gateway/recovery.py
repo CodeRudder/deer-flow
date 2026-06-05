@@ -8,9 +8,9 @@ start. Automatic recovery is intentionally disabled; users can manually resume
 tasks from the UI.
 """
 
+import asyncio
 import logging
 from collections import defaultdict
-import asyncio
 
 from deerflow.config.paths import get_paths
 from deerflow.subagents.session import SubagentSession
@@ -27,27 +27,33 @@ def _scan_interrupted_sessions() -> dict[str, list[SubagentSession]]:
     result: dict[str, list[SubagentSession]] = defaultdict(list)
 
     try:
-        threads_dir = get_paths().base_dir / "threads"
+        users_dir = get_paths().base_dir / "users"
     except Exception:
-        logger.exception("Failed to resolve threads directory")
+        logger.exception("Failed to resolve users directory")
         return result
 
-    if not threads_dir.exists():
+    if not users_dir.exists():
         return result
 
-    for thread_dir in threads_dir.iterdir():
-        if not thread_dir.is_dir():
+    for user_dir in users_dir.iterdir():
+        if not user_dir.is_dir():
             continue
-        thread_id = thread_dir.name
-        subagents_dir = thread_dir / "subagents"
-        if not subagents_dir.is_dir():
+        threads_dir = user_dir / "threads"
+        if not threads_dir.is_dir():
             continue
-        try:
-            interrupted = SubagentSession.find_interrupted(thread_id)
-            if interrupted:
-                result[thread_id].extend(interrupted)
-        except Exception:
-            logger.exception("Failed to scan thread %s for interrupted sessions", thread_id)
+        for thread_dir in threads_dir.iterdir():
+            if not thread_dir.is_dir():
+                continue
+            thread_id = thread_dir.name
+            subagents_dir = thread_dir / "subagents"
+            if not subagents_dir.is_dir():
+                continue
+            try:
+                interrupted = SubagentSession.find_interrupted(thread_id, user_id=user_dir.name)
+                if interrupted:
+                    result[thread_id].extend(interrupted)
+            except Exception:
+                logger.exception("Failed to scan thread %s for interrupted sessions", thread_id)
 
     return dict(result)
 

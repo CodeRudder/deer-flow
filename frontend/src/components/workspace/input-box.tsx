@@ -9,7 +9,6 @@ import {
   PlusIcon,
   SparklesIcon,
   RocketIcon,
-  SquareIcon,
   XIcon,
   ZapIcon,
 } from "lucide-react";
@@ -56,6 +55,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import { useModels } from "@/core/models/hooks";
@@ -86,15 +86,6 @@ import { ModeHoverGuide } from "./mode-hover-guide";
 import { Tooltip } from "./tooltip";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
-type InputBoxContext = Omit<
-  AgentThreadContext,
-  "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
-> & {
-  mode: InputMode | undefined;
-  reasoning_effort?: "minimal" | "low" | "medium" | "high";
-  image_generation_provider?: string;
-  image_generation_model?: string;
-};
 
 function getResolvedMode(
   mode: InputMode | undefined,
@@ -116,7 +107,7 @@ export function InputBox({
   status = "ready",
   context,
   extraHeader,
-  isNewThread,
+  isWelcomeMode,
   threadId,
   initialValue,
   onContextChange,
@@ -128,14 +119,37 @@ export function InputBox({
   assistantId?: string | null;
   status?: ChatStatus;
   disabled?: boolean;
-  context: InputBoxContext;
+  context: Omit<
+    AgentThreadContext,
+    "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
+  > & {
+    mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
+    reasoning_effort?: "minimal" | "low" | "medium" | "high";
+    image_generation_provider?: string;
+    image_generation_model?: string;
+  };
   extraHeader?: React.ReactNode;
-  isNewThread?: boolean;
+  /**
+   * Whether to render the input in welcome layout (vertically centered,
+   * with hero + quick action suggestions).  This is purely a visual flag,
+   * decoupled from "the backend has created the thread" — see issue #2746.
+   */
+  isWelcomeMode?: boolean;
   threadId: string;
   initialValue?: string;
-  onContextChange?: (context: InputBoxContext) => void;
+  onContextChange?: (
+    context: Omit<
+      AgentThreadContext,
+      "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
+    > & {
+      mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
+      reasoning_effort?: "minimal" | "low" | "medium" | "high";
+      image_generation_provider?: string;
+      image_generation_model?: string;
+    },
+  ) => void;
   onFollowupsVisibilityChange?: (visible: boolean) => void;
-  onSubmit?: (message: PromptInputMessage) => void;
+  onSubmit?: (message: PromptInputMessage) => void | Promise<void>;
   onStop?: () => void;
 }) {
   const { t } = useI18n();
@@ -151,6 +165,7 @@ export function InputBox({
   const [followupsLoading, setFollowupsLoading] = useState(false);
   const lastGeneratedForAiIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(false);
+  const messagesRef = useRef(thread.messages);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingSuggestion, setPendingSuggestion] = useState<string | null>(
@@ -256,8 +271,12 @@ export function InputBox({
   );
 
   const handleSubmit = useCallback(
-    async (message: PromptInputMessage) => {
-      if (!message.text) {
+    (message: PromptInputMessage) => {
+      if (status === "streaming") {
+        onStop?.();
+        return;
+      }
+      if (!message.text.trim() && message.files.length === 0) {
         return;
       }
       setFollowups([]);
@@ -275,18 +294,23 @@ export function InputBox({
             selectedModel?.supports_thinking ?? false,
           ),
         });
-        setTimeout(() => onSubmit?.(message), 0);
-        return;
+        return new Promise<void>((resolve, reject) => {
+          setTimeout(() => {
+            Promise.resolve(onSubmit?.(message)).then(resolve).catch(reject);
+          }, 0);
+        });
       }
 
-      onSubmit?.(message);
+      return onSubmit?.(message);
     },
     [
       context,
       onContextChange,
       onSubmit,
+      onStop,
       resolvedModelName,
       selectedModel?.supports_thinking,
+      status,
     ],
   );
 
@@ -343,23 +367,21 @@ export function InputBox({
 
   const showFollowups =
     !disabled &&
-    !isNewThread &&
+    !isWelcomeMode &&
     !followupsHidden &&
     (followupsLoading || followups.length > 0);
 
-  const followupsVisibilityChangeRef = useRef(onFollowupsVisibilityChange);
+  useEffect(() => {
+    onFollowupsVisibilityChange?.(showFollowups);
+  }, [onFollowupsVisibilityChange, showFollowups]);
 
   useEffect(() => {
-    followupsVisibilityChangeRef.current = onFollowupsVisibilityChange;
+    return () => onFollowupsVisibilityChange?.(false);
   }, [onFollowupsVisibilityChange]);
 
   useEffect(() => {
-    followupsVisibilityChangeRef.current?.(showFollowups);
-  }, [showFollowups]);
-
-  useEffect(() => {
-    return () => followupsVisibilityChangeRef.current?.(false);
-  }, []);
+    messagesRef.current = thread.messages;
+  }, [thread.messages]);
 
   useEffect(() => {
     const streaming = status === "streaming";
@@ -373,14 +395,16 @@ export function InputBox({
       return;
     }
 
-    const lastAi = [...thread.messages].reverse().find((m) => m.type === "ai");
+    const lastAi = [...messagesRef.current]
+      .reverse()
+      .find((m) => m.type === "ai");
     const lastAiId = lastAi?.id ?? null;
     if (!lastAiId || lastAiId === lastGeneratedForAiIdRef.current) {
       return;
     }
     lastGeneratedForAiIdRef.current = lastAiId;
 
-    const recent = thread.messages
+    const recent = messagesRef.current
       .filter((m) => m.type === "human" || m.type === "ai")
       .map((m) => {
         const role = m.type === "human" ? "user" : "assistant";
@@ -430,29 +454,36 @@ export function InputBox({
       });
 
     return () => controller.abort();
-  }, [context.model_name, disabled, isMock, status, thread.messages, threadId]);
+  }, [context.model_name, disabled, isMock, status, threadId]);
 
   return (
-    <div ref={promptRootRef} className="relative flex flex-col gap-4">
+    <div
+      ref={promptRootRef}
+      className={cn(
+        "relative flex flex-col",
+        isWelcomeMode ? "gap-4" : "gap-2",
+      )}
+    >
       {showFollowups && (
-        <div className="flex items-center justify-center pb-2">
+        <div className="flex items-center justify-center pb-1">
           <div className="flex items-center gap-2">
             {followupsLoading ? (
-              <div className="text-muted-foreground bg-background/80 rounded-full border px-4 py-2 text-xs backdrop-blur-sm">
+              <div className="text-muted-foreground bg-background/80 rounded-full border px-4 py-1.5 text-xs backdrop-blur-sm">
                 {t.inputBox.followupLoading}
               </div>
             ) : (
-              <Suggestions className="min-h-16 w-fit items-start">
+              <Suggestions className="w-fit items-center">
                 {followups.map((s) => (
                   <Suggestion
                     key={s}
+                    className="py-1.5"
                     suggestion={s}
                     onClick={() => handleFollowupClick(s)}
                   />
                 ))}
                 <Button
                   aria-label={t.common.close}
-                  className="text-muted-foreground cursor-pointer rounded-full px-3 text-xs font-normal"
+                  className="text-muted-foreground h-auto cursor-pointer rounded-full px-2.5 py-1.5 text-xs font-normal"
                   variant="outline"
                   size="sm"
                   type="button"
@@ -841,33 +872,20 @@ export function InputBox({
                 </ModelSelectorList>
               </ModelSelectorContent>
             </ModelSelector>
-            <Tooltip content="停止">
-              <PromptInputButton
-                className="rounded-full"
-                disabled={!onStop || disabled}
-                onClick={(e: React.MouseEvent) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onStop?.();
-                }}
-              >
-                <SquareIcon className="size-4" />
-              </PromptInputButton>
-            </Tooltip>
             <PromptInputSubmit
               className="rounded-full"
-              disabled={disabled === true || status === "streaming"}
+              disabled={disabled}
               variant="outline"
-              status={status === "streaming" ? "ready" : status}
+              status={status}
             />
           </PromptInputTools>
         </PromptInputFooter>
-        {!isNewThread && (
+        {!isWelcomeMode && (
           <div className="bg-background absolute right-0 -bottom-[17px] left-0 z-0 h-4"></div>
         )}
       </PromptInput>
 
-      {isNewThread && searchParams.get("mode") !== "skill" && (
+      {isWelcomeMode && searchParams.get("mode") !== "skill" && (
         <div className="flex items-center justify-center pt-2">
           <SuggestionList />
         </div>

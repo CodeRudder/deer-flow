@@ -19,18 +19,22 @@ export function useThreadChat() {
   );
 
   useEffect(() => {
-    const pathThreadId = pathname.split("/").filter(Boolean).at(-1);
-    if (pathThreadId === "new") {
+    if (pathname.endsWith("/new")) {
       setIsNewThread(true);
       setThreadId(uuid());
       return;
     }
-    if (!pathThreadId) {
+    // Guard: after history.replaceState updates the URL from /chats/new to
+    // /chats/{UUID}, Next.js useParams may still return the stale "new" value
+    // because replaceState does not trigger router updates.  Avoid propagating
+    // this invalid thread ID to downstream hooks (e.g. useStream), which would
+    // cause a 422 from LangGraph Server.
+    if (threadIdFromPath === "new") {
       return;
     }
     setIsNewThread(false);
-    setThreadId(pathThreadId);
-  }, [pathname]);
+    setThreadId(threadIdFromPath);
+  }, [pathname, threadIdFromPath]);
   const isMock = searchParams.get("mock") === "true";
   return { threadId, setThreadId, isNewThread, setIsNewThread, isMock };
 }

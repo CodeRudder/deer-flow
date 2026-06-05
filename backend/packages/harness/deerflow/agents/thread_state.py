@@ -51,55 +51,57 @@ def apply_todo_ops(
     updates: list[dict] | None,
     adds: list[dict] | None,
 ) -> list[dict]:
-    """Apply incremental todo operations to an existing list.
-
-    Operations are applied in order: updates first (including removes), then adds.
-    Remove operations use descending-index order to avoid index shifting.
-    """
+    """Apply incremental todo operations to an existing list."""
     result = copy.deepcopy(existing or [])
 
     if updates:
-        # Separate removes from regular updates
         removes = []
         regular_updates = []
-        for upd in updates:
-            idx = upd.get("index")
-            if not isinstance(idx, int) or idx < 0 or idx >= len(result):
-                continue  # Skip invalid indices
-            if upd.get("remove"):
-                removes.append(idx)
+        for update in updates:
+            index = update.get("index")
+            if not isinstance(index, int) or index < 0 or index >= len(result):
+                continue
+            if update.get("remove"):
+                removes.append(index)
             else:
-                regular_updates.append(upd)
+                regular_updates.append(update)
 
-        # Apply regular updates first
-        for upd in regular_updates:
-            idx = upd["index"]
-            if "status" in upd:
-                result[idx]["status"] = upd["status"]
-            if "content" in upd:
-                result[idx]["content"] = upd["content"]
+        for update in regular_updates:
+            index = update["index"]
+            if "status" in update:
+                result[index]["status"] = update["status"]
+            if "content" in update:
+                result[index]["content"] = update["content"]
 
-        # Apply removes in descending index order to avoid shifting
-        for idx in sorted(removes, reverse=True):
-            result.pop(idx)
+        for index in sorted(removes, reverse=True):
+            result.pop(index)
 
     if adds:
-        for add in adds:
-            content = add.get("content")
+        for item in adds:
+            content = item.get("content")
             if not content or not isinstance(content, str):
-                continue  # Skip invalid items
-            item = {"content": content, "status": add.get("status", "pending")}
-            idx = add.get("index")
-            if idx is None:
-                result.append(item)
-            elif isinstance(idx, int):
-                if idx < 0 or idx >= len(result):
-                    # Negative or out-of-range index → append to end
-                    result.append(item)
-                else:
-                    result.insert(idx, item)
+                continue
+            todo = {"content": content, "status": item.get("status", "pending")}
+            index = item.get("index")
+            if isinstance(index, int) and 0 <= index < len(result):
+                result.insert(index, todo)
+            else:
+                result.append(todo)
 
     return result
+
+
+def merge_todos(existing: list | None, new: list | None) -> list | None:
+    """Reducer for todos list - keeps the last non-None value.
+
+    Semantics:
+    - If `new` is None (node didn't touch todos), preserve `existing`.
+    - If `new` is provided (even empty list), it represents an explicit
+      update and wins over `existing`.
+    """
+    if new is None:
+        return existing
+    return new
 
 
 class ThreadState(AgentState):
@@ -107,6 +109,6 @@ class ThreadState(AgentState):
     thread_data: NotRequired[ThreadDataState | None]
     title: NotRequired[str | None]
     artifacts: Annotated[list[str], merge_artifacts]
-    todos: NotRequired[list[dict] | None]
+    todos: Annotated[list | None, merge_todos]
     uploaded_files: NotRequired[list[dict] | None]
     viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]  # image_path -> {base64, mime_type}
