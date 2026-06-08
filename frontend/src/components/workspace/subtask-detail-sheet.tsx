@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -380,6 +381,11 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
               </>
             )}
           </SheetTitle>
+          <SheetDescription className="sr-only">
+            {isMainSession
+              ? "Review messages from the main session."
+              : "Review messages and progress for the selected subtask."}
+          </SheetDescription>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-2">

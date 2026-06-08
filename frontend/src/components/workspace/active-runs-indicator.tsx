@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -161,6 +162,9 @@ export function ActiveRunsIndicator() {
             <LoaderIcon className="h-4 w-4 animate-spin" />
             Active Runs ({runs.length})
           </SheetTitle>
+          <SheetDescription className="sr-only">
+            Review active LangGraph runs and stop running tasks.
+          </SheetDescription>
         </SheetHeader>
         <div className="mt-4 flex flex-col gap-2">
           <Button

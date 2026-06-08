@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -273,6 +274,9 @@ export function SessionStatusButton({
       <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>会话状态</DialogTitle>
+          <DialogDescription className="sr-only">
+            查看当前会话、活跃子任务和最近子任务的运行状态。
+          </DialogDescription>
         </DialogHeader>
 
         {isLoading ? (

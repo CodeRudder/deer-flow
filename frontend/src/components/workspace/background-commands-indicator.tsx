@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -92,6 +93,10 @@ export function BackgroundCommandsIndicator({
             <TerminalIcon className="size-4" />
             Background Commands ({commands.length})
           </SheetTitle>
+          <SheetDescription className="sr-only">
+            Review background commands for this thread and stop running
+            commands.
+          </SheetDescription>
         </SheetHeader>
         <div className="mt-4 flex flex-col gap-2">
           {runningCount > 0 && (

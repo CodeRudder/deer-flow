@@ -778,6 +778,10 @@ export function MemorySettingsPage() {
             <DialogTitle>
               {factToEdit ? editFactTitle : addFactTitle}
             </DialogTitle>
+            <DialogDescription className="sr-only">
+              Add or edit a memory fact, including content, category, and
+              confidence.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
