@@ -243,6 +243,25 @@ class TestMainSessionMiddleware:
         entry = json.loads(line)
         assert "TRUNCATED" in entry["content"]
 
+    def test_write_sanitizes_image_base64(self, mock_paths, tmp_thread_dir):
+        mw = _make_middleware()
+        messages = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here are the images you've viewed:"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
+                ],
+                id="h-img",
+            )
+        ]
+        new = mw._get_new_messages("test-thread", messages)
+        mw._write_messages(_jsonl_path(tmp_thread_dir), new)
+
+        raw = _jsonl_path(tmp_thread_dir).read_text()
+        entry = json.loads(raw)
+        assert "SECRETBASE64" not in raw
+        assert entry["content"][1] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
     def test_messages_without_id(self, mock_paths, tmp_thread_dir):
         mw = _make_middleware()
         messages = [HumanMessage(content="No ID")]

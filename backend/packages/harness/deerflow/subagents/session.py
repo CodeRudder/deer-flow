@@ -17,6 +17,7 @@ Recovery flow:
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,10 +29,66 @@ from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
 
+_DATA_IMAGE_RE = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=\r\n]+")
+
 
 def _utc_now_iso() -> str:
     """Return current UTC time as an ISO-8601 string."""
     return datetime.now(tz=UTC).isoformat(timespec="seconds")
+
+
+def _sanitize_data_image_string(value: str) -> str:
+    """Replace inline image data URLs with a compact placeholder."""
+    if "data:image/" not in value or ";base64," not in value:
+        return value
+    return _DATA_IMAGE_RE.sub(lambda match: f"[图片 base64 已省略：{match.group(1)}]", value)
+
+
+def _sanitize_session_storage_value(value: Any) -> Any:
+    """Remove image base64 payloads from values before JSONL persistence.
+
+    This only affects local debug/session JSONL files. Runtime state and model
+    context keep the original image payloads so vision calls and recovery keep
+    their existing behavior.
+    """
+    if isinstance(value, str):
+        return _sanitize_data_image_string(value)
+
+    if isinstance(value, list):
+        return [_sanitize_session_storage_value(item) for item in value]
+
+    if isinstance(value, tuple):
+        return [_sanitize_session_storage_value(item) for item in value]
+
+    if isinstance(value, dict):
+        block_type = value.get("type")
+
+        if block_type == "image_url":
+            image_url = value.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url")
+            else:
+                url = image_url
+            if isinstance(url, str) and url.startswith("data:image/") and ";base64," in url:
+                mime = url.removeprefix("data:").split(";", 1)[0]
+                return {"type": "text", "text": f"[图片 base64 已省略：{mime}]"}
+
+        if block_type == "image":
+            source = value.get("source")
+            if isinstance(source, dict) and source.get("type") == "base64":
+                media_type = source.get("media_type")
+                data = source.get("data")
+                if isinstance(media_type, str) and media_type.startswith("image/") and isinstance(data, str) and data:
+                    return {"type": "text", "text": f"[图片 base64 已省略：{media_type}]"}
+
+            mime_type = value.get("mime_type") or value.get("media_type")
+            data = value.get("base64") or value.get("data")
+            if isinstance(mime_type, str) and mime_type.startswith("image/") and isinstance(data, str) and data:
+                return {"type": "text", "text": f"[图片 base64 已省略：{mime_type}]"}
+
+        return {key: _sanitize_session_storage_value(val) for key, val in value.items()}
+
+    return value
 
 
 def serialize_message(msg: BaseMessage, *, max_content_len: int | None = None) -> dict[str, Any]:
@@ -54,8 +111,8 @@ def serialize_message(msg: BaseMessage, *, max_content_len: int | None = None) -
     if msg_id:
         entry["id"] = msg_id
 
-    # Truncate large string content
-    content = msg.content
+    # Strip image base64 payloads from JSONL storage, then truncate large text.
+    content = _sanitize_session_storage_value(msg.content)
     if max_content_len and isinstance(content, str) and len(content) > max_content_len:
         content = content[:max_content_len] + f"\n...[TRUNCATED: original {len(msg.content)} chars]"
 
@@ -66,10 +123,10 @@ def serialize_message(msg: BaseMessage, *, max_content_len: int | None = None) -
         entry["role"] = "ai"
         entry["content"] = content
         if msg.tool_calls:
-            entry["tool_calls"] = [{"id": tc.get("id"), "name": tc.get("name"), "args": tc.get("args")} for tc in msg.tool_calls]
+            entry["tool_calls"] = [{"id": tc.get("id"), "name": tc.get("name"), "args": _sanitize_session_storage_value(tc.get("args"))} for tc in msg.tool_calls]
         # Preserve reasoning/thinking content for debugging
         if hasattr(msg, "reasoning_content") and msg.reasoning_content:
-            reasoning = msg.reasoning_content
+            reasoning = _sanitize_session_storage_value(msg.reasoning_content)
             if max_content_len and isinstance(reasoning, str) and len(reasoning) > max_content_len:
                 reasoning = reasoning[:max_content_len] + f"\n...[TRUNCATED: original {len(msg.reasoning_content)} chars]"
             entry["reasoning"] = reasoning

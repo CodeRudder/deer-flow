@@ -138,6 +138,84 @@ class TestSerializeMessage:
         assert result["content"] == "file contents here"
         assert result["name"] == "read_file"
 
+    def test_sanitizes_image_url_data_url_content(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(
+            content=[
+                {"type": "text", "text": "Here are the images you've viewed:"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
+            ]
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["content"][1] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_sanitizes_anthropic_image_source_data(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(
+            content=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "SECRETBASE64",
+                    },
+                }
+            ]
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["content"][0] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_sanitizes_langchain_image_base64_block(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = ToolMessage(
+            content=[
+                {
+                    "type": "image",
+                    "base64": "SECRETBASE64",
+                    "mime_type": "image/png",
+                }
+            ],
+            tool_call_id="tc-1",
+            name="mcp_tool",
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["content"][0] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_preserves_non_inline_image_urls(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(content=[{"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}])
+        result = _serialize_message(msg)
+        assert result["content"] == [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}]
+
+    def test_sanitizes_tool_call_args(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = AIMessage(
+            content="Inspecting image",
+            tool_calls=[
+                {
+                    "id": "tc-1",
+                    "name": "custom_tool",
+                    "args": {"payload": "prefix data:image/png;base64,SECRETBASE64 suffix"},
+                }
+            ],
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["tool_calls"][0]["args"]["payload"] == "prefix [图片 base64 已省略：image/png] suffix"
+
 
 # ── Append & Read Tests ──────────────────────────────────────────────────
 
@@ -173,6 +251,26 @@ class TestAppendAndRead:
         assert len(lines) == 4
         roles = [json.loads(line)["role"] for line in lines]
         assert roles == ["human", "ai", "tool", "ai"]
+
+    def test_append_messages_sanitizes_image_base64(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        session.append_messages(
+            [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": "- /tmp/cat.png (image/png)"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
+                    ]
+                )
+            ]
+        )
+
+        raw = jsonl.read_text()
+        entry = json.loads(raw)
+        assert "SECRETBASE64" not in raw
+        assert entry["content"][1] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
 
     def test_read_messages_excludes_status_markers(self, mock_paths, tmp_path):
         session = _make_session()
