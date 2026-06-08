@@ -169,6 +169,13 @@ def generate_image(
     prompt_extend: bool | None = None,
     watermark: bool | None = None,
 ) -> str:
+    output_path = Path(output_file)
+    if output_path.exists():
+        raise FileExistsError(
+            f"Output file already exists and will not be overwritten: {output_file}. "
+            "Choose a unique output filename."
+        )
+
     image_generation_config = _load_image_generation_config()
     selected_provider = (
         provider

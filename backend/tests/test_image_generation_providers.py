@@ -1,13 +1,11 @@
 import base64
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "skills" / "public" / "image-generation" / "scripts"
@@ -100,22 +98,9 @@ def test_openai_image_build_chat_completions_payload(monkeypatch):
 
 
 def test_openai_image_extracts_markdown_image_url_from_chat_completion():
-    response = {
-        "choices": [
-            {
-                "message": {
-                    "content": (
-                        "![image](https://image-videofile.oss-accelerate.aliyuncs.com/codex/result.png)"
-                        "\n\n已为你生成图片。"
-                    )
-                }
-            }
-        ]
-    }
+    response = {"choices": [{"message": {"content": ("![image](https://image-videofile.oss-accelerate.aliyuncs.com/codex/result.png)\n\n已为你生成图片。")}}]}
 
-    assert openai_image_module._extract_chat_completions_image_url(response) == (
-        "https://image-videofile.oss-accelerate.aliyuncs.com/codex/result.png"
-    )
+    assert openai_image_module._extract_chat_completions_image_url(response) == ("https://image-videofile.oss-accelerate.aliyuncs.com/codex/result.png")
 
 
 def test_openai_image_session_disables_system_proxy_by_default(monkeypatch):
@@ -147,17 +132,7 @@ def test_qwen_build_payload_uses_expected_shape():
 
 
 def test_qwen_extract_image_url():
-    response = {
-        "output": {
-            "choices": [
-                {
-                    "message": {
-                        "content": [{"image": "https://example.com/result.png?Expires=1"}]
-                    }
-                }
-            ]
-        }
-    }
+    response = {"output": {"choices": [{"message": {"content": [{"image": "https://example.com/result.png?Expires=1"}]}}]}}
 
     assert qwen_module._extract_image_url(response) == "https://example.com/result.png?Expires=1"
 
@@ -195,24 +170,14 @@ def test_qwen_generate_posts_and_downloads_image(monkeypatch, tmp_path):
     post_response.ok = True
     post_response.json.return_value = {
         "request_id": "req-123",
-        "output": {
-            "choices": [
-                {
-                    "message": {
-                        "content": [{"image": "https://cdn.example/result.png?Expires=1"}]
-                    }
-                }
-            ]
-        },
+        "output": {"choices": [{"message": {"content": [{"image": "https://cdn.example/result.png?Expires=1"}]}}]},
     }
     get_response = Mock()
     get_response.ok = True
     get_response.content = b"fake-png-bytes"
     output_file = tmp_path / "out.png"
 
-    with patch.object(qwen_module.requests, "post", return_value=post_response) as post, patch.object(
-        qwen_module.requests, "get", return_value=get_response
-    ) as get:
+    with patch.object(qwen_module.requests, "post", return_value=post_response) as post, patch.object(qwen_module.requests, "get", return_value=get_response) as get:
         result = qwen_module.generate(
             prompt_text="prompt",
             reference_images=[],
@@ -265,10 +230,7 @@ def test_qwen_data_inspection_error_includes_rewrite_hint(monkeypatch, tmp_path)
     post_response.ok = False
     post_response.status_code = 400
     post_response.headers = {"X-Request-Id": "req-inspection"}
-    post_response.text = (
-        '{"request_id":"req-inspection","code":"DataInspectionFailed",'
-        '"message":"Green net check failed for input text"}'
-    )
+    post_response.text = '{"request_id":"req-inspection","code":"DataInspectionFailed","message":"Green net check failed for input text"}'
     post_response.json.return_value = {
         "request_id": "req-inspection",
         "code": "DataInspectionFailed",
@@ -297,23 +259,13 @@ def test_qwen_uses_token_plan_base_url_by_default(monkeypatch, tmp_path):
     post_response = Mock()
     post_response.ok = True
     post_response.json.return_value = {
-        "output": {
-            "choices": [
-                {
-                    "message": {
-                        "content": [{"image": "https://cdn.example/result.png?Expires=1"}]
-                    }
-                }
-            ]
-        },
+        "output": {"choices": [{"message": {"content": [{"image": "https://cdn.example/result.png?Expires=1"}]}}]},
     }
     get_response = Mock()
     get_response.ok = True
     get_response.content = b"fake-png-bytes"
 
-    with patch.object(qwen_module.requests, "post", return_value=post_response) as post, patch.object(
-        qwen_module.requests, "get", return_value=get_response
-    ):
+    with patch.object(qwen_module.requests, "post", return_value=post_response) as post, patch.object(qwen_module.requests, "get", return_value=get_response):
         qwen_module.generate(
             prompt_text="prompt",
             reference_images=[],
@@ -321,10 +273,7 @@ def test_qwen_uses_token_plan_base_url_by_default(monkeypatch, tmp_path):
             aspect_ratio="1:1",
         )
 
-    assert post.call_args.args[0] == (
-        "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1"
-        "/services/aigc/multimodal-generation/generation"
-    )
+    assert post.call_args.args[0] == ("https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
 
 
 def test_openai_image_missing_api_key(monkeypatch, tmp_path):
@@ -451,15 +400,7 @@ def test_openai_image_chat_completions_mode_downloads_markdown_image(monkeypatch
 
     post_response = Mock()
     post_response.ok = True
-    post_response.json.return_value = {
-        "choices": [
-            {
-                "message": {
-                    "content": "![image](https://cdn.example/duck.png)\n\n已为你生成图片。"
-                }
-            }
-        ]
-    }
+    post_response.json.return_value = {"choices": [{"message": {"content": "![image](https://cdn.example/duck.png)\n\n已为你生成图片。"}}]}
     get_response = Mock()
     get_response.ok = True
     get_response.content = b"duck-png-bytes"
@@ -607,6 +548,29 @@ def test_generate_uses_provider_registry(monkeypatch, tmp_path):
     assert result == "ok"
     assert calls["prompt_text"] == "prompt"
     assert calls["reference_images"] == []
+
+
+def test_generate_image_refuses_to_overwrite_existing_output(monkeypatch, tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("prompt", encoding="utf-8")
+    output_file = tmp_path / "out.png"
+    output_file.write_bytes(b"existing-image")
+    provider = Mock(return_value="should-not-run")
+
+    monkeypatch.setitem(generate_module.PROVIDERS, "fake-provider", provider)
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(tmp_path / "missing-config.yaml"))
+
+    with pytest.raises(FileExistsError) as exc:
+        generate_module.generate_image(
+            prompt_file=str(prompt_file),
+            reference_images=[],
+            output_file=str(output_file),
+            provider="fake-provider",
+        )
+
+    assert "will not be overwritten" in str(exc.value)
+    assert output_file.read_bytes() == b"existing-image"
+    provider.assert_not_called()
 
 
 def test_generate_reads_provider_defaults_from_config(monkeypatch, tmp_path):

@@ -37,6 +37,8 @@ The `prompt` field is the authoritative image prompt. By default, copy the user'
 
 Do not translate, rewrite, summarize, expand, or infer missing visual details unless the user explicitly asks for prompt optimization, translation, rewriting, or enrichment.
 
+For follow-up image modification requests that clearly refer to a previously generated image, such as "make it red", "change the background", or "adjust the previous image", create a new complete prompt instead of using only the short modification phrase. The new prompt should preserve the previous image prompt's core subject, style, composition, and constraints, then apply the user's latest requested changes. Do not use reference images for this follow-up workflow unless a future instruction explicitly enables provider-specific image editing.
+
 Use this default shape:
 
 ```json
@@ -64,6 +66,8 @@ When optional fields are useful, keep `prompt` verbatim and add only explicit me
 ```
 
 ### Step 3: Execute Generation
+
+Choose a unique output filename before executing generation. Never reuse an existing file in `/mnt/user-data/outputs/`, because previous conversation messages may still reference that path. Use a stable descriptive prefix plus a unique suffix such as `{descriptive-name}-{YYYYMMDD-HHMMSS}-{short-id}.png` or `.jpg`. If the intended output path already exists, choose a different filename instead of overwriting it.
 
 Call the Python script:
 ```bash
