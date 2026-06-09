@@ -13,7 +13,6 @@ DEFAULT_MODE = "images_generations"
 DEFAULT_TIMEOUT_SECONDS = 300
 DEFAULT_QUALITY = "high"
 DEFAULT_OUTPUT_FORMAT = "png"
-DEFAULT_RESPONSE_FORMAT = "url"
 DEFAULT_CHAT_IMAGE_SIZE = "1K"
 DEFAULT_TRUST_ENV = False
 
@@ -72,15 +71,18 @@ def _build_payload(
     model: str,
     aspect_ratio: str,
 ) -> dict:
-    return {
+    payload = {
         "model": model,
         "prompt": prompt_text,
         "size": _aspect_ratio_to_size(aspect_ratio),
         "quality": os.getenv("OPENAI_IMAGE_QUALITY") or DEFAULT_QUALITY,
         "output_format": os.getenv("OPENAI_IMAGE_OUTPUT_FORMAT") or DEFAULT_OUTPUT_FORMAT,
-        "response_format": os.getenv("OPENAI_IMAGE_RESPONSE_FORMAT") or DEFAULT_RESPONSE_FORMAT,
         "n": 1,
     }
+    response_format = os.getenv("OPENAI_IMAGE_RESPONSE_FORMAT")
+    if response_format:
+        payload["response_format"] = response_format
+    return payload
 
 
 def _build_chat_completions_payload(

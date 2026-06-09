@@ -66,9 +66,22 @@ def test_openai_image_build_payload_uses_openai_compatible_shape(monkeypatch):
         "size": "3840x2160",
         "quality": "high",
         "output_format": "png",
-        "response_format": "url",
         "n": 1,
     }
+
+
+def test_openai_image_build_payload_includes_response_format_only_when_configured(monkeypatch):
+    monkeypatch.delenv("OPENAI_IMAGE_QUALITY", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_OUTPUT_FORMAT", raising=False)
+    monkeypatch.setenv("OPENAI_IMAGE_RESPONSE_FORMAT", "b64_json")
+
+    payload = openai_image_module._build_payload(
+        prompt_text="A quiet bookstore",
+        model="gpt-image-2",
+        aspect_ratio="16:9",
+    )
+
+    assert payload["response_format"] == "b64_json"
 
 
 def test_openai_image_build_chat_completions_payload(monkeypatch):
@@ -327,7 +340,7 @@ def test_openai_image_posts_and_downloads_url(monkeypatch, tmp_path):
     assert session.post.call_args.kwargs["json"]["model"] == "gpt-image-2"
     assert session.post.call_args.kwargs["json"]["size"] == "3840x2160"
     assert session.post.call_args.kwargs["json"]["quality"] == "high"
-    assert session.post.call_args.kwargs["json"]["response_format"] == "url"
+    assert "response_format" not in session.post.call_args.kwargs["json"]
     session.get.assert_called_once_with("https://cdn.example/result.png", timeout=(10, 60))
     assert output_file.read_bytes() == b"fake-png-bytes"
     assert "provider=openai_image" in result
