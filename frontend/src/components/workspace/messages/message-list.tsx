@@ -218,7 +218,9 @@ export function MessageList({
                   ? toolCall.args.description
                   : "",
               prompt:
-                typeof toolCall.args.prompt === "string" ? toolCall.args.prompt : "",
+                typeof toolCall.args.prompt === "string"
+                  ? toolCall.args.prompt
+                  : "",
               status: "in_progress",
             });
           }
@@ -434,7 +436,11 @@ export function MessageList({
                     className="mb-4"
                   />
                 )}
-                <ArtifactFileList files={files} threadId={threadId} />
+                <ArtifactFileList
+                  files={files}
+                  threadId={threadId}
+                  variant="message"
+                />
                 {renderTokenUsage({
                   messages: group.messages,
                   turnUsageMessages,
