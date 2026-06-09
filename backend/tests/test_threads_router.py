@@ -425,13 +425,63 @@ def test_get_thread_history_returns_iso_for_legacy_checkpoint_metadata() -> None
     asyncio.run(_seed())
 
     with TestClient(app) as client:
-        response = client.post(f"/api/threads/{thread_id}/history", json={"limit": 10})
+        response = client.post(
+            f"/api/threads/{thread_id}/history",
+            json={"limit": 10},
+        )
 
     assert response.status_code == 200, response.text
     entries = response.json()
     assert entries, "expected at least one history entry"
     for entry in entries:
         assert _ISO_TIMESTAMP_RE.match(entry["created_at"]), entry
+
+
+def test_get_thread_history_includes_latest_checkpoint_artifacts() -> None:
+    """The frontend hydrates thread.values from /history on historical chats.
+
+    Keep artifacts in the latest history entry so the artifact sidebar has the
+    same file list as the checkpoint state.
+    """
+    app, _store, checkpointer = _build_thread_app()
+    thread_id = "history-artifacts"
+
+    async def _seed() -> None:
+        from langgraph.checkpoint.base import empty_checkpoint
+
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = {
+            "title": "Artifacts",
+            "artifacts": [
+                "/mnt/user-data/outputs/a.md",
+                "/mnt/user-data/outputs/chart.png",
+            ],
+        }
+        checkpoint["channel_versions"] = {"title": 1, "artifacts": 1}
+        await checkpointer.aput(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+            checkpoint,
+            {"step": -1, "source": "input", "writes": None, "parents": {}},
+            {"title": 1, "artifacts": 1},
+        )
+
+    import asyncio
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/threads/{thread_id}/history",
+            json={"limit": 10},
+        )
+
+    assert response.status_code == 200, response.text
+    entries = response.json()
+    assert entries, "expected at least one history entry"
+    assert entries[0]["values"]["artifacts"] == [
+        "/mnt/user-data/outputs/a.md",
+        "/mnt/user-data/outputs/chart.png",
+    ]
 
 
 # ── Metadata filter validation at API boundary ────────────────────────────────

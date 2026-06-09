@@ -1082,6 +1082,9 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
                 values["title"] = title
             if thread_data := channel_values.get("thread_data"):
                 values["thread_data"] = thread_data
+            if "artifacts" in channel_values:
+                serialized = serialize_channel_values({"artifacts": channel_values.get("artifacts")})
+                values["artifacts"] = serialized.get("artifacts", [])
 
             # Attach messages only to the latest checkpoint entry.
             if is_latest_checkpoint:
