@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -208,143 +209,58 @@ class ThreadHistoryRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-_HEAD_MESSAGES = 10
-_TAIL_MESSAGES = 40
-_MAX_CONTENT_CHARS = 4000
+_DATA_IMAGE_RE = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=\r\n]+")
 
 
-def _truncate_content(msg: dict[str, Any]) -> dict[str, Any]:
-    content = msg.get("content")
-    if isinstance(content, str) and len(content) > _MAX_CONTENT_CHARS:
-        return {**msg, "content": content[:_MAX_CONTENT_CHARS] + f"\n... [truncated, original {len(content)} chars]"}
-    if isinstance(content, list):
-        new_parts: list[Any] = []
-        for part in content:
-            if not isinstance(part, dict):
-                new_parts.append(part)
-                continue
-            if part.get("type") == "image_url":
-                new_parts.append({"type": "text", "text": "[image omitted]"})
-                continue
-            text = part.get("text", "")
-            if isinstance(text, str) and len(text) > _MAX_CONTENT_CHARS:
-                new_parts.append({**part, "text": text[:_MAX_CONTENT_CHARS] + f"\n... [truncated, original {len(text)} chars]"})
-            else:
-                new_parts.append(part)
-        return {**msg, "content": new_parts}
-    return msg
+def _sanitize_data_image_string(value: str) -> str:
+    if "data:image/" not in value or ";base64," not in value:
+        return value
+    return _DATA_IMAGE_RE.sub(lambda match: f"[图片 base64 已省略：{match.group(1)}]", value)
 
 
-def _dedupe_messages_by_id(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-    for message in messages:
-        message_id = message.get("id")
-        if isinstance(message_id, str) and message_id:
-            if message_id in seen:
-                continue
-            seen.add(message_id)
-        result.append(message)
-    return result
+def _sanitize_response_value(value: Any) -> Any:
+    """Remove image base64 payloads from API response values without trimming text."""
+    if isinstance(value, str):
+        return _sanitize_data_image_string(value)
+
+    if isinstance(value, list):
+        return [_sanitize_response_value(item) for item in value]
+
+    if isinstance(value, tuple):
+        return [_sanitize_response_value(item) for item in value]
+
+    if isinstance(value, dict):
+        block_type = value.get("type")
+
+        if block_type == "image_url":
+            image_url = value.get("image_url")
+            url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            if isinstance(url, str) and url.startswith("data:image/") and ";base64," in url:
+                mime = url.removeprefix("data:").split(";", 1)[0]
+                return {"type": "text", "text": f"[图片 base64 已省略：{mime}]"}
+
+        if block_type == "image":
+            source = value.get("source")
+            if isinstance(source, dict) and source.get("type") == "base64":
+                media_type = source.get("media_type")
+                data = source.get("data")
+                if isinstance(media_type, str) and media_type.startswith("image/") and isinstance(data, str) and data:
+                    return {"type": "text", "text": f"[图片 base64 已省略：{media_type}]"}
+
+            mime_type = value.get("mime_type") or value.get("media_type")
+            data = value.get("base64") or value.get("data")
+            if isinstance(mime_type, str) and mime_type.startswith("image/") and isinstance(data, str) and data:
+                return {"type": "text", "text": f"[图片 base64 已省略：{mime_type}]"}
+
+        return {key: _sanitize_response_value(val) for key, val in value.items()}
+
+    return value
 
 
-def _trim_messages(values: dict[str, Any]) -> dict[str, Any]:
-    messages = values.get("messages")
-    if not isinstance(messages, list):
-        cleaned = dict(values)
-        cleaned.pop("viewed_images", None)
-        return cleaned
-
-    deduped = _dedupe_messages_by_id([m for m in messages if isinstance(m, dict)])
-    threshold = _HEAD_MESSAGES + _TAIL_MESSAGES
-    if len(deduped) <= threshold:
-        trimmed = [_truncate_content(m) for m in deduped]
-    else:
-        head = [_truncate_content(m) for m in deduped[:_HEAD_MESSAGES]]
-        omitted = len(deduped) - _HEAD_MESSAGES - _TAIL_MESSAGES
-        placeholder = {
-            "type": "system",
-            "content": f"... omitted {omitted} messages ...",
-            "id": "__omitted__",
-            "name": "omitted",
-        }
-        tail = [_truncate_content(m) for m in deduped[-_TAIL_MESSAGES:]]
-        trimmed = head + [placeholder] + tail
-
-    cleaned = {**values, "messages": trimmed}
+def _prepare_values_response(values: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(values)
     cleaned.pop("viewed_images", None)
-    return cleaned
-
-
-def _inject_message_timestamps(thread_id: str, serialized_values: dict[str, Any]) -> None:
-    messages = serialized_values.get("messages")
-    if not isinstance(messages, list):
-        return
-
-    needed: dict[str, dict[str, Any]] = {}
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        message_id = msg.get("id")
-        if not isinstance(message_id, str) or not message_id:
-            continue
-        metadata = msg.get("response_metadata") or {}
-        if not metadata.get("created_at"):
-            needed[message_id] = msg
-    if not needed:
-        return
-
-    try:
-        jsonl_path = get_paths().thread_dir(thread_id, user_id=get_effective_user_id()) / "conversation.jsonl"
-        if not jsonl_path.exists():
-            return
-
-        remaining = set(needed.keys())
-        chunk_size = 8192
-        file_size = jsonl_path.stat().st_size
-        if file_size == 0:
-            return
-
-        with open(jsonl_path, "rb") as handle:
-            pos = file_size
-            leftover = b""
-            while pos > 0 and remaining:
-                read_size = min(chunk_size, pos)
-                pos -= read_size
-                handle.seek(pos)
-                chunk = handle.read(read_size) + leftover
-                lines = chunk.split(b"\n")
-                leftover = lines[0]
-                for raw_line in reversed(lines[1:]):
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        entry = json.loads(raw_line)
-                    except Exception:
-                        continue
-                    message_id = entry.get("id")
-                    if message_id in remaining:
-                        msg = needed[message_id]
-                        msg.setdefault("response_metadata", {})["created_at"] = entry.get("ts")
-                        remaining.discard(message_id)
-
-            if remaining and leftover.strip():
-                try:
-                    entry = json.loads(leftover.strip())
-                    message_id = entry.get("id")
-                    if message_id in remaining:
-                        needed[message_id].setdefault("response_metadata", {})["created_at"] = entry.get("ts")
-                except Exception:
-                    pass
-    except Exception:
-        logger.debug("Failed to inject timestamps for thread %s", sanitize_log_param(thread_id), exc_info=True)
-
-
-def _prepare_values_response(thread_id: str, values: dict[str, Any]) -> dict[str, Any]:
-    prepared = _trim_messages(values)
-    _inject_message_timestamps(thread_id, prepared)
-    return prepared
+    return _sanitize_response_value(cleaned)
 
 
 def _delete_thread_data(thread_id: str, paths: Paths | None = None, *, user_id: str | None = None) -> ThreadDeleteResponse:
@@ -888,7 +804,7 @@ async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
     status = _derive_thread_status(checkpoint_tuple) if checkpoint_tuple is not None else record.get("status", "idle")
     checkpoint = getattr(checkpoint_tuple, "checkpoint", {}) or {} if checkpoint_tuple is not None else {}
     channel_values = checkpoint.get("channel_values", {})
-    values = _prepare_values_response(thread_id, serialize_channel_values(channel_values))
+    values = _prepare_values_response(serialize_channel_values(channel_values))
 
     return ThreadResponse(
         thread_id=thread_id,
@@ -939,7 +855,7 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
     next_tasks = [t.name for t in tasks_raw if hasattr(t, "name")]
     tasks = [{"id": getattr(t, "id", ""), "name": getattr(t, "name", "")} for t in tasks_raw]
 
-    values = _prepare_values_response(thread_id, serialize_channel_values(channel_values))
+    values = _prepare_values_response(serialize_channel_values(channel_values))
 
     return ThreadStateResponse(
         values=values,
@@ -1035,7 +951,7 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
                 logger.debug("Failed to sync title to thread_meta for %s (non-fatal)", sanitize_log_param(thread_id))
 
     return ThreadStateResponse(
-        values=_prepare_values_response(thread_id, serialize_channel_values(channel_values)),
+        values=_prepare_values_response(serialize_channel_values(channel_values)),
         next=[],
         metadata=metadata,
         checkpoint_id=new_checkpoint_id,
@@ -1091,7 +1007,7 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
                 messages = channel_values.get("messages")
                 if messages:
                     serialized = serialize_channel_values({"messages": messages})
-                    values["messages"] = _prepare_values_response(thread_id, serialized).get("messages", [])
+                    values["messages"] = _prepare_values_response(serialized).get("messages", [])
             is_latest_checkpoint = False
 
             # Derive next tasks
