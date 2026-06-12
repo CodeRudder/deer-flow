@@ -146,6 +146,8 @@ python /mnt/skills/public/image-generation/scripts/generate.py \
 
 After all slide images are generated, call the composition script:
 
+Choose a unique PPTX output filename before composing the presentation. Never reuse an existing file in `/mnt/user-data/outputs/`, because previous conversation messages may still reference that path and users may need older versions. Use a stable descriptive prefix plus a version or unique suffix, such as `{presentation-name}-v02.pptx`, `{presentation-name}-{YYYYMMDD-HHMMSS}-{short-id}.pptx`, or `{presentation-name}-v03-title-updated.pptx`. If the intended output path already exists, choose a different filename instead of overwriting it.
+
 ```bash
 python /mnt/skills/public/ppt-generation/scripts/generate.py \
   --plan-file /mnt/user-data/workspace/presentation-plan.json \
@@ -158,6 +160,7 @@ Parameters:
 - `--plan-file`: Absolute path to the presentation plan JSON file (required)
 - `--slide-images`: Absolute paths to slide images in order (required, space-separated)
 - `--output-file`: Absolute path to output PPTX file (required)
+- `--overwrite`: Overwrite an existing PPTX output file (optional, only use when the user explicitly asks to replace the previous file)
 
 [!NOTE]
 Do NOT read the python file, just call it with the parameters.
@@ -414,6 +417,7 @@ python /mnt/skills/public/ppt-generation/scripts/generate.py \
 After generation:
 
 - The PPTX file is saved in `/mnt/user-data/outputs/`
+- Each generated PPTX should use a unique versioned filename. For edits to an existing presentation, create a new version instead of overwriting the previous PPTX unless the user explicitly asks to replace it.
 - Share the generated presentation with user using `present_files` tool
 - Also share the individual slide images if requested
 - Provide brief description of the presentation
