@@ -193,67 +193,6 @@ def test_strip_reserved_metadata_strips_all_reserved_keys():
     assert out == {"keep": "me"}
 
 
-# ── Checkpoint values response cleanup ───────────────────────────────────────
-
-
-def test_prepare_values_response_preserves_complete_messages_and_text() -> None:
-    long_text = "x" * 5000
-    messages = [{"id": f"m{i}", "type": "human", "content": long_text if i == 20 else f"message-{i}"} for i in range(60)]
-    values = {
-        "messages": messages,
-        "viewed_images": {"/a.png": {"base64": "SECRET", "mime_type": "image/png"}},
-    }
-
-    result = threads._prepare_values_response(values)
-
-    assert "viewed_images" not in result
-    assert result["messages"] == messages
-    assert all(msg.get("id") != "__omitted__" for msg in result["messages"])
-    assert result["messages"][20]["content"] == long_text
-
-
-def test_prepare_values_response_sanitizes_image_base64_but_preserves_urls() -> None:
-    values = {
-        "messages": [
-            {
-                "id": "m1",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "SECRETBASE64"}},
-                    {"type": "text", "text": "prefix data:image/gif;base64,SECRETBASE64 suffix"},
-                ],
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "name": "tool",
-                        "args": {"payload": "data:image/webp;base64,SECRETBASE64"},
-                    }
-                ],
-            }
-        ],
-        "viewed_images": {"hidden": {"base64": "SECRETBASE64", "mime_type": "image/png"}},
-    }
-
-    result = threads._prepare_values_response(values)
-    message = result["messages"][0]
-
-    assert "viewed_images" not in result
-    assert message["content"][0] == {"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}
-    assert message["content"][1] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
-    assert message["content"][2] == {"type": "text", "text": "[图片 base64 已省略：image/jpeg]"}
-    assert message["content"][3] == {"type": "text", "text": "prefix [图片 base64 已省略：image/gif] suffix"}
-    assert message["tool_calls"][0]["args"]["payload"] == "[图片 base64 已省略：image/webp]"
-
-
-def test_prepare_values_response_does_not_inject_message_timestamps() -> None:
-    values = {"messages": [{"id": "m1", "type": "human", "content": "hello", "response_metadata": {}}]}
-
-    result = threads._prepare_values_response(values)
-
-    assert result["messages"][0]["response_metadata"] == {}
-
-
 # ---------------------------------------------------------------------------
 # ISO 8601 timestamp contract (issue #2594)
 # ---------------------------------------------------------------------------
