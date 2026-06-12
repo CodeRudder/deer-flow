@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -208,143 +209,66 @@ class ThreadHistoryRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-_HEAD_MESSAGES = 10
-_TAIL_MESSAGES = 40
-_MAX_CONTENT_CHARS = 4000
+_IMAGE_PLACEHOLDER_TEXT = "[image omitted]"
+_IMAGE_PLACEHOLDER = {"type": "text", "text": _IMAGE_PLACEHOLDER_TEXT}
+_DATA_IMAGE_RE = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=_-]+")
 
 
-def _truncate_content(msg: dict[str, Any]) -> dict[str, Any]:
-    content = msg.get("content")
-    if isinstance(content, str) and len(content) > _MAX_CONTENT_CHARS:
-        return {**msg, "content": content[:_MAX_CONTENT_CHARS] + f"\n... [truncated, original {len(content)} chars]"}
-    if isinstance(content, list):
-        new_parts: list[Any] = []
-        for part in content:
-            if not isinstance(part, dict):
-                new_parts.append(part)
-                continue
-            if part.get("type") == "image_url":
-                new_parts.append({"type": "text", "text": "[image omitted]"})
-                continue
-            text = part.get("text", "")
-            if isinstance(text, str) and len(text) > _MAX_CONTENT_CHARS:
-                new_parts.append({**part, "text": text[:_MAX_CONTENT_CHARS] + f"\n... [truncated, original {len(text)} chars]"})
-            else:
-                new_parts.append(part)
-        return {**msg, "content": new_parts}
-    return msg
+def _is_image_content_part(part: dict[str, Any]) -> bool:
+    part_type = part.get("type")
+    if part_type == "image_url":
+        return True
+    if part_type == "image":
+        return True
+    if isinstance(part.get("image_url"), (str, dict)):
+        return True
+    if isinstance(part.get("base64"), str):
+        return True
+    source = part.get("source")
+    return isinstance(source, dict) and source.get("type") == "base64"
 
 
-def _dedupe_messages_by_id(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-    for message in messages:
-        message_id = message.get("id")
-        if isinstance(message_id, str) and message_id:
-            if message_id in seen:
-                continue
-            seen.add(message_id)
-        result.append(message)
-    return result
+def _strip_message_image_payloads(message: Any) -> Any:
+    """Replace image payloads in a serialized message response without dropping the message."""
+    if not isinstance(message, dict):
+        return message
+    content = message.get("content")
+    if isinstance(content, str) and "data:image/" in content and ";base64," in content:
+        return {**message, "content": _DATA_IMAGE_RE.sub(_IMAGE_PLACEHOLDER_TEXT, content)}
+    if not isinstance(content, list):
+        return message
+
+    changed = False
+    sanitized_parts: list[Any] = []
+    for part in content:
+        if isinstance(part, dict) and _is_image_content_part(part):
+            sanitized_parts.append(dict(_IMAGE_PLACEHOLDER))
+            changed = True
+        else:
+            sanitized_parts.append(part)
+    if not changed:
+        return message
+    return {**message, "content": sanitized_parts}
 
 
-def _trim_messages(values: dict[str, Any]) -> dict[str, Any]:
-    messages = values.get("messages")
-    if not isinstance(messages, list):
-        cleaned = dict(values)
-        cleaned.pop("viewed_images", None)
-        return cleaned
+def _strip_response_image_payloads(values: dict[str, Any]) -> dict[str, Any]:
+    """Slim REST response values while preserving complete message history.
 
-    deduped = _dedupe_messages_by_id([m for m in messages if isinstance(m, dict)])
-    threshold = _HEAD_MESSAGES + _TAIL_MESSAGES
-    if len(deduped) <= threshold:
-        trimmed = [_truncate_content(m) for m in deduped]
-    else:
-        head = [_truncate_content(m) for m in deduped[:_HEAD_MESSAGES]]
-        omitted = len(deduped) - _HEAD_MESSAGES - _TAIL_MESSAGES
-        placeholder = {
-            "type": "system",
-            "content": f"... omitted {omitted} messages ...",
-            "id": "__omitted__",
-            "name": "omitted",
-        }
-        tail = [_truncate_content(m) for m in deduped[-_TAIL_MESSAGES:]]
-        trimmed = head + [placeholder] + tail
-
-    cleaned = {**values, "messages": trimmed}
+    This only affects the HTTP response. It does not write back to the
+    checkpoint, does not trim text/tool output, and does not remove, reorder, or
+    deduplicate messages.
+    """
+    cleaned = dict(values)
     cleaned.pop("viewed_images", None)
+
+    messages = cleaned.get("messages")
+    if isinstance(messages, list):
+        cleaned["messages"] = [_strip_message_image_payloads(message) for message in messages]
     return cleaned
 
 
-def _inject_message_timestamps(thread_id: str, serialized_values: dict[str, Any]) -> None:
-    messages = serialized_values.get("messages")
-    if not isinstance(messages, list):
-        return
-
-    needed: dict[str, dict[str, Any]] = {}
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        message_id = msg.get("id")
-        if not isinstance(message_id, str) or not message_id:
-            continue
-        metadata = msg.get("response_metadata") or {}
-        if not metadata.get("created_at"):
-            needed[message_id] = msg
-    if not needed:
-        return
-
-    try:
-        jsonl_path = get_paths().thread_dir(thread_id, user_id=get_effective_user_id()) / "conversation.jsonl"
-        if not jsonl_path.exists():
-            return
-
-        remaining = set(needed.keys())
-        chunk_size = 8192
-        file_size = jsonl_path.stat().st_size
-        if file_size == 0:
-            return
-
-        with open(jsonl_path, "rb") as handle:
-            pos = file_size
-            leftover = b""
-            while pos > 0 and remaining:
-                read_size = min(chunk_size, pos)
-                pos -= read_size
-                handle.seek(pos)
-                chunk = handle.read(read_size) + leftover
-                lines = chunk.split(b"\n")
-                leftover = lines[0]
-                for raw_line in reversed(lines[1:]):
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        entry = json.loads(raw_line)
-                    except Exception:
-                        continue
-                    message_id = entry.get("id")
-                    if message_id in remaining:
-                        msg = needed[message_id]
-                        msg.setdefault("response_metadata", {})["created_at"] = entry.get("ts")
-                        remaining.discard(message_id)
-
-            if remaining and leftover.strip():
-                try:
-                    entry = json.loads(leftover.strip())
-                    message_id = entry.get("id")
-                    if message_id in remaining:
-                        needed[message_id].setdefault("response_metadata", {})["created_at"] = entry.get("ts")
-                except Exception:
-                    pass
-    except Exception:
-        logger.debug("Failed to inject timestamps for thread %s", sanitize_log_param(thread_id), exc_info=True)
-
-
 def _prepare_values_response(thread_id: str, values: dict[str, Any]) -> dict[str, Any]:
-    prepared = _trim_messages(values)
-    _inject_message_timestamps(thread_id, prepared)
-    return prepared
+    return _strip_response_image_payloads(values)
 
 
 def _delete_thread_data(thread_id: str, paths: Paths | None = None, *, user_id: str | None = None) -> ThreadDeleteResponse:

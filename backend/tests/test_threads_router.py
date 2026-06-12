@@ -402,6 +402,47 @@ def test_get_thread_state_returns_iso_for_legacy_checkpoint_metadata() -> None:
     assert _ISO_TIMESTAMP_RE.match(body["checkpoint"]["ts"]), body["checkpoint"]
 
 
+def test_prepare_values_response_preserves_messages_and_strips_image_payloads() -> None:
+    long_text = "x" * 5000
+    duplicate_id = "dup-message"
+    values = {
+        "viewed_images": {"/tmp/cat.png": {"base64": "SECRET", "mime_type": "image/png"}},
+        "messages": [
+            {"type": "human", "id": duplicate_id, "content": "first"},
+            {"type": "human", "id": duplicate_id, "content": "duplicate kept"},
+            {
+                "type": "human",
+                "id": "image-part",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
+                ],
+            },
+            {
+                "type": "tool",
+                "id": "string-image",
+                "content": "prefix data:image/png;base64,SECRETBASE64 suffix",
+            },
+            {"type": "tool", "id": "long-text", "content": long_text},
+        ],
+    }
+
+    result = threads._prepare_values_response("thread-1", values)
+
+    assert "viewed_images" not in result
+    assert len(result["messages"]) == len(values["messages"])
+    assert [m["id"] for m in result["messages"]] == [
+        duplicate_id,
+        duplicate_id,
+        "image-part",
+        "string-image",
+        "long-text",
+    ]
+    assert result["messages"][2]["content"][1] == {"type": "text", "text": "[image omitted]"}
+    assert result["messages"][3]["content"] == "prefix [image omitted] suffix"
+    assert result["messages"][4]["content"] == long_text
+
+
 def test_get_thread_history_returns_iso_for_legacy_checkpoint_metadata() -> None:
     """``/history`` walks ``checkpointer.alist`` and emits one entry per
     checkpoint. Each entry's ``created_at`` must come out as ISO even if
@@ -435,6 +476,48 @@ def test_get_thread_history_returns_iso_for_legacy_checkpoint_metadata() -> None
     assert entries, "expected at least one history entry"
     for entry in entries:
         assert _ISO_TIMESTAMP_RE.match(entry["created_at"]), entry
+
+
+def test_get_thread_history_does_not_trim_checkpoint_messages() -> None:
+    app, _store, checkpointer = _build_thread_app()
+    thread_id = "history-not-trimmed"
+    messages = [{"type": "human", "id": f"m-{i}", "content": f"message {i}"} for i in range(75)]
+
+    async def _seed() -> None:
+        from langgraph.checkpoint.base import empty_checkpoint
+
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = {
+            "title": "Full history",
+            "messages": messages,
+            "viewed_images": {"/tmp/cat.png": {"base64": "SECRET", "mime_type": "image/png"}},
+        }
+        checkpoint["channel_versions"] = {"title": 1, "messages": 1, "viewed_images": 1}
+        await checkpointer.aput(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+            checkpoint,
+            {"step": -1, "source": "input", "writes": None, "parents": {}},
+            {"title": 1, "messages": 1, "viewed_images": 1},
+        )
+
+    import asyncio
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/threads/{thread_id}/history",
+            json={"limit": 10},
+        )
+
+    assert response.status_code == 200, response.text
+    entries = response.json()
+    returned_values = entries[0]["values"]
+    returned_messages = returned_values["messages"]
+    assert "viewed_images" not in returned_values
+    assert len(returned_messages) == len(messages)
+    assert [message["id"] for message in returned_messages] == [message["id"] for message in messages]
+    assert not any(message.get("id") == "__omitted__" for message in returned_messages)
 
 
 def test_get_thread_history_includes_latest_checkpoint_artifacts() -> None:
