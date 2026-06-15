@@ -354,10 +354,12 @@ async def list_thread_messages(
     user_id = await get_current_user(request)
     feedback_map = await feedback_repo.list_by_thread_grouped(thread_id, user_id=user_id)
 
-    # Find the last ai_message per run_id
+    # Find the last AI message per run_id.
     last_ai_per_run: dict[str, int] = {}  # run_id -> index in messages list
     for i, msg in enumerate(messages):
-        if msg.get("event_type") == "ai_message":
+        content = msg.get("content")
+        content_type = content.get("type") if isinstance(content, dict) else None
+        if msg.get("event_type") in {"ai_message", "llm.ai.response"} or content_type == "ai":
             last_ai_per_run[msg["run_id"]] = i
 
     # Attach feedback field

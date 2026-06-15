@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import { env } from "@/env";
 
 import { getAPIClient } from "../api";
 import { fetch } from "../api/fetcher";
@@ -68,6 +69,10 @@ const TASK_STATUS_EVENT_TYPES = new Set([
   "task_timed_out",
 ]);
 
+const THREAD_MESSAGES_PAGE_SIZE = 50;
+const THREAD_HISTORY_V2_ENABLED =
+  env.NEXT_PUBLIC_THREAD_HISTORY_V2_ENABLED === "true";
+
 function messageIdentity(message: Message): string | undefined {
   if (
     "tool_call_id" in message &&
@@ -80,6 +85,10 @@ function messageIdentity(message: Message): string | undefined {
     return `message:${message.id}`;
   }
   return undefined;
+}
+
+function isVisibleTranscriptMessage(message: Message): boolean {
+  return !isHiddenFromUIMessage(message) && message.name !== "summary";
 }
 
 function dedupeMessagesByIdentity(messages: Message[]): Message[] {
@@ -176,6 +185,96 @@ export function buildRunMessagesUrl(
   return normalizedBaseUrl ? url.toString() : `${url.pathname}${url.search}`;
 }
 
+export function buildThreadMessagesUrl(
+  baseUrl: string,
+  threadId: string,
+  beforeSeq?: number,
+  limit = THREAD_MESSAGES_PAGE_SIZE,
+) {
+  const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
+  const path = `/api/threads/${encodeURIComponent(threadId)}/messages`;
+  const url = new URL(
+    `${normalizedBaseUrl}${path}`,
+    typeof window !== "undefined" ? window.location.origin : "http://localhost",
+  );
+  url.searchParams.set("limit", String(limit));
+  if (beforeSeq !== undefined) {
+    url.searchParams.set("before_seq", String(beforeSeq));
+  }
+  return normalizedBaseUrl ? url.toString() : `${url.pathname}${url.search}`;
+}
+
+export function mergeRunMessageRows(
+  currentRows: RunMessage[],
+  incomingRows: RunMessage[],
+): RunMessage[] {
+  const merged: RunMessage[] = [];
+  const indexBySeq = new Map<number, number>();
+  const indexByMessageIdentity = new Map<string, number>();
+
+  const removeIndexes = (row: RunMessage) => {
+    if (typeof row.seq === "number") {
+      indexBySeq.delete(row.seq);
+    }
+    const identity = messageIdentity(row.content);
+    if (identity) {
+      indexByMessageIdentity.delete(identity);
+    }
+  };
+
+  const addIndexes = (row: RunMessage, index: number) => {
+    if (typeof row.seq === "number") {
+      indexBySeq.set(row.seq, index);
+    }
+    const identity = messageIdentity(row.content);
+    if (identity) {
+      indexByMessageIdentity.set(identity, index);
+    }
+  };
+
+  for (const row of [...currentRows, ...incomingRows]) {
+    const identity = messageIdentity(row.content);
+    const existingIndex =
+      (identity ? indexByMessageIdentity.get(identity) : undefined) ??
+      (typeof row.seq === "number" ? indexBySeq.get(row.seq) : undefined);
+
+    const existingRow =
+      existingIndex === undefined ? undefined : merged[existingIndex];
+    if (existingIndex === undefined || !existingRow) {
+      const index = merged.length;
+      merged.push(row);
+      addIndexes(row, index);
+      continue;
+    }
+
+    removeIndexes(existingRow);
+    merged[existingIndex] = row;
+    addIndexes(row, existingIndex);
+  }
+
+  return merged.sort((a, b) => {
+    const aSeq = a.seq;
+    const bSeq = b.seq;
+    if (typeof aSeq === "number" && typeof bSeq === "number") {
+      return aSeq - bSeq;
+    }
+    if (typeof aSeq === "number") {
+      return -1;
+    }
+    if (typeof bSeq === "number") {
+      return 1;
+    }
+    return a.created_at.localeCompare(b.created_at);
+  });
+}
+
+export function runEventRowsToMessages(rows: RunMessage[]): Message[] {
+  return rows
+    .filter((row) => !row.metadata.caller?.startsWith("middleware:"))
+    .map((row) => row.content)
+    .filter(isVisibleTranscriptMessage);
+}
+
 export function mergeMessages(
   historyMessages: Message[],
   threadMessages: Message[],
@@ -211,7 +310,42 @@ export function mergeMessages(
 
   return dedupeMessagesByIdentity([
     ...historyMessages.slice(0, cutoff),
-    ...threadMessages,
+    ...threadMessages.filter(isVisibleTranscriptMessage),
+    ...optimisticMessages,
+  ]);
+}
+
+export function mergeHistoryLiveMessages(
+  historyMessages: Message[],
+  threadMessages: Message[],
+  optimisticMessages: Message[],
+): Message[] {
+  const historyIds = new Set(
+    historyMessages.map(messageIdentity).filter(isNonEmptyString),
+  );
+  const visibleThreadMessages = threadMessages.filter(
+    isVisibleTranscriptMessage,
+  );
+
+  let liveMessages = visibleThreadMessages;
+  if (historyIds.size > 0) {
+    let latestOverlapIndex = -1;
+    for (let index = visibleThreadMessages.length - 1; index >= 0; index--) {
+      const id = messageIdentity(visibleThreadMessages[index]!);
+      if (id && historyIds.has(id)) {
+        latestOverlapIndex = index;
+        break;
+      }
+    }
+    liveMessages =
+      latestOverlapIndex >= 0
+        ? visibleThreadMessages.slice(latestOverlapIndex + 1)
+        : [];
+  }
+
+  return dedupeMessagesByIdentity([
+    ...historyMessages,
+    ...liveMessages,
     ...optimisticMessages,
   ]);
 }
@@ -850,11 +984,13 @@ export function useThreadStream({
     humanMessageCount,
   );
 
-  const mergedMessages = mergeMessages(
-    history,
-    thread.messages,
-    visibleOptimisticMessages,
-  );
+  const mergedMessages = THREAD_HISTORY_V2_ENABLED
+    ? mergeHistoryLiveMessages(
+        history,
+        thread.messages,
+        visibleOptimisticMessages,
+      )
+    : mergeMessages(history, thread.messages, visibleOptimisticMessages);
   const pendingUsageMessages = thread.isLoading
     ? getMessagesAfterBaseline(
         thread.messages,
@@ -880,7 +1016,7 @@ export function useThreadStream({
   } as const;
 }
 
-export function useThreadHistory(threadId: string) {
+function useThreadHistoryLegacy(threadId: string) {
   const runs = useThreadRuns(threadId);
   const threadIdRef = useRef(threadId);
   const runsRef = useRef(runs.data ?? []);
@@ -1022,6 +1158,131 @@ export function useThreadHistory(threadId: string) {
     hasMore,
     loadMore: loadMessages,
   };
+}
+
+function useThreadHistoryV2(threadId: string) {
+  const threadIdRef = useRef(threadId);
+  const oldestSeqRef = useRef<number | null>(null);
+  const loadingRef = useRef(false);
+  const hasMoreRef = useRef(true);
+  const initializedRef = useRef(false);
+  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<RunMessage[]>([]);
+  const [hasMore, setHasMore] = useState(true);
+
+  const loadMessages = useCallback(async () => {
+    if (loadingRef.current || !threadIdRef.current || !hasMoreRef.current) {
+      return;
+    }
+
+    const requestThreadId = threadIdRef.current;
+    const beforeSeq = initializedRef.current
+      ? (oldestSeqRef.current ?? undefined)
+      : undefined;
+    if (initializedRef.current && beforeSeq === undefined) {
+      hasMoreRef.current = false;
+      setHasMore(false);
+      return;
+    }
+
+    loadingRef.current = true;
+    setLoading(true);
+
+    try {
+      const url = buildThreadMessagesUrl(
+        getBackendBaseURL(),
+        requestThreadId,
+        beforeSeq,
+        THREAD_MESSAGES_PAGE_SIZE,
+      );
+      const result: RunMessage[] = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+      }).then((res) => {
+        return res.json();
+      });
+
+      if (threadIdRef.current !== requestThreadId) {
+        return;
+      }
+
+      initializedRef.current = true;
+      if (result.length === 0) {
+        hasMoreRef.current = false;
+        setHasMore(false);
+        return;
+      }
+
+      setRows((prev) => {
+        const merged = mergeRunMessageRows(prev, result);
+        oldestSeqRef.current = getOldestRunMessageSeq(merged);
+        return merged;
+      });
+
+      const nextHasMore = result.length >= THREAD_MESSAGES_PAGE_SIZE;
+      hasMoreRef.current = nextHasMore;
+      setHasMore(nextHasMore);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      if (threadIdRef.current === requestThreadId) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const threadChanged = threadIdRef.current !== threadId;
+    threadIdRef.current = threadId;
+
+    if (threadChanged) {
+      oldestSeqRef.current = null;
+      loadingRef.current = false;
+      hasMoreRef.current = true;
+      initializedRef.current = false;
+      setLoading(false);
+      setHasMore(true);
+      setRows([]);
+    }
+
+    loadMessages().catch(() => {
+      toast.error("Failed to load thread history.");
+    });
+  }, [threadId, loadMessages]);
+
+  const appendMessages = useCallback((_messages: Message[]) => {
+    setRows((prev) => {
+      const now = new Date().toISOString();
+      const syntheticRows = _messages.map((message, index) => ({
+        run_id: "__live__",
+        content: message,
+        metadata: { caller: "live" },
+        created_at: `${now}-${index}`,
+      }));
+      return mergeRunMessageRows(prev, syntheticRows);
+    });
+  }, []);
+
+  return {
+    runs: undefined,
+    messages: runEventRowsToMessages(rows),
+    loading,
+    appendMessages,
+    hasMore,
+    loadMore: loadMessages,
+  };
+}
+
+const useThreadHistoryImpl = THREAD_HISTORY_V2_ENABLED
+  ? useThreadHistoryV2
+  : useThreadHistoryLegacy;
+
+export function useThreadHistory(threadId: string) {
+  return useThreadHistoryImpl(threadId);
 }
 
 export function useThreads(

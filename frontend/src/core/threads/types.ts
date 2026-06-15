@@ -33,6 +33,11 @@ export interface RunMessage {
     caller: string;
   };
   created_at: string;
+  feedback?: {
+    feedback_id: string;
+    rating: number;
+    comment?: string | null;
+  } | null;
 }
 
 export interface ThreadTokenUsageResponse {

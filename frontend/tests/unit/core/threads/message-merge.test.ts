@@ -3,11 +3,15 @@ import { expect, test } from "vitest";
 
 import {
   buildRunMessagesUrl,
+  buildThreadMessagesUrl,
   getNextRunMessagesBeforeSeq,
   getOldestRunMessageSeq,
   getSummarizationMiddlewareMessages,
   getVisibleOptimisticMessages,
+  mergeHistoryLiveMessages,
   mergeMessages,
+  mergeRunMessageRows,
+  runEventRowsToMessages,
   runMessagesPageHasMore,
 } from "@/core/threads/hooks";
 import type { RunMessage } from "@/core/threads/types";
@@ -212,6 +216,91 @@ test("mergeMessages shows server human instead of optimistic duplicate after fir
   ]);
 });
 
+test("mergeHistoryLiveMessages filters summary and hidden live messages", () => {
+  const historyHuman = {
+    id: "human-1",
+    type: "human",
+    content: "hello",
+  } as Message;
+  const summary = {
+    id: "summary-1",
+    type: "human",
+    name: "summary",
+    content: "summary",
+  } as Message;
+  const hidden = {
+    id: "hidden-1",
+    type: "human",
+    content: "hidden",
+    additional_kwargs: { hide_from_ui: true },
+  } as Message;
+  const liveAi = {
+    id: "ai-1",
+    type: "ai",
+    content: "answer",
+  } as Message;
+
+  expect(
+    mergeHistoryLiveMessages([historyHuman], [summary, hidden, liveAi], []),
+  ).toEqual([historyHuman]);
+});
+
+test("mergeHistoryLiveMessages treats history as the stable transcript", () => {
+  const historyHuman = {
+    id: "human-1",
+    type: "human",
+    content: "history",
+  } as Message;
+  const liveHuman = {
+    id: "human-1",
+    type: "human",
+    content: "live",
+  } as Message;
+  const liveAi = {
+    id: "ai-1",
+    type: "ai",
+    content: "answer",
+  } as Message;
+
+  expect(
+    mergeHistoryLiveMessages([historyHuman], [liveHuman, liveAi], []),
+  ).toEqual([historyHuman, liveAi]);
+});
+
+test("mergeHistoryLiveMessages only appends live suffix after the latest history overlap", () => {
+  const oldHuman = {
+    id: "human-old",
+    type: "human",
+    content: "1",
+  } as Message;
+  const missingOldTool = {
+    id: "clarification:call-1",
+    type: "tool",
+    tool_call_id: "call-1",
+    content: "old clarification result missing from run_events",
+  } as Message;
+  const latestHuman = {
+    id: "human-latest",
+    type: "human",
+    content: "今天深圳天气怎么样？",
+  } as Message;
+  const latestErrorFallback = {
+    id: "error-fallback",
+    type: "ai",
+    content:
+      "The configured LLM provider is temporarily unavailable after multiple retries.",
+    additional_kwargs: { deerflow_error_fallback: true },
+  } as Message;
+
+  expect(
+    mergeHistoryLiveMessages(
+      [oldHuman, latestHuman],
+      [oldHuman, missingOldTool, latestHuman, latestErrorFallback],
+      [],
+    ),
+  ).toEqual([oldHuman, latestHuman, latestErrorFallback]);
+});
+
 test("getVisibleOptimisticMessages keeps optimistic user input until server human arrives", () => {
   const optimisticHuman = {
     id: "opt-human-1",
@@ -324,4 +413,66 @@ test("buildRunMessagesUrl returns a relative URL when using the nginx proxy", ()
   expect(buildRunMessagesUrl("", "thread-1", "run-1", 42)).toBe(
     "/api/threads/thread-1/runs/run-1/messages?before_seq=42",
   );
+});
+
+test("buildThreadMessagesUrl encodes thread id and includes limit", () => {
+  expect(
+    buildThreadMessagesUrl("https://api.example.test/", "thread/with space"),
+  ).toBe(
+    "https://api.example.test/api/threads/thread%2Fwith%20space/messages?limit=50",
+  );
+});
+
+test("buildThreadMessagesUrl includes before_seq when loading older history", () => {
+  expect(buildThreadMessagesUrl("", "thread-1", 42, 100)).toBe(
+    "/api/threads/thread-1/messages?limit=100&before_seq=42",
+  );
+});
+
+test("mergeRunMessageRows sorts and deduplicates by thread seq", () => {
+  const oldRow = runMessage(2);
+  const replacedRow = {
+    ...runMessage(2),
+    content: { id: "ai-2", type: "ai", content: "new" } as Message,
+  };
+  const newerRow = runMessage(3);
+  const olderRow = runMessage(1);
+
+  expect(
+    mergeRunMessageRows([oldRow, newerRow], [olderRow, replacedRow]),
+  ).toEqual([olderRow, replacedRow, newerRow]);
+});
+
+test("runEventRowsToMessages filters middleware, hidden, and summary rows", () => {
+  const visible = {
+    ...runMessage(1),
+    content: { id: "human-1", type: "human", content: "visible" } as Message,
+  };
+  const middleware = {
+    ...runMessage(2),
+    metadata: { caller: "middleware:summary" },
+    content: { id: "ai-1", type: "ai", content: "internal" } as Message,
+  };
+  const hidden = {
+    ...runMessage(3),
+    content: {
+      id: "hidden-1",
+      type: "human",
+      content: "hidden",
+      additional_kwargs: { hide_from_ui: true },
+    } as Message,
+  };
+  const summary = {
+    ...runMessage(4),
+    content: {
+      id: "summary-1",
+      type: "human",
+      name: "summary",
+      content: "summary",
+    } as Message,
+  };
+
+  expect(
+    runEventRowsToMessages([visible, middleware, hidden, summary]),
+  ).toEqual([visible.content]);
 });

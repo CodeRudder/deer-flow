@@ -18,7 +18,7 @@ from deerflow.runtime.runs.store.memory import MemoryRunStore
 # ---------------------------------------------------------------------------
 
 
-def _make_app(event_store=None, run_manager=None):
+def _make_app(event_store=None, run_manager=None, feedback_repo=None):
     """Build a test FastAPI app with stub auth and mocked state."""
     app = make_authed_test_app()
     app.include_router(thread_runs.router)
@@ -27,6 +27,8 @@ def _make_app(event_store=None, run_manager=None):
         app.state.run_event_store = event_store
     if run_manager is not None:
         app.state.run_manager = run_manager
+    if feedback_repo is not None:
+        app.state.feedback_repo = feedback_repo
 
     return app
 
@@ -38,8 +40,34 @@ def _make_event_store(rows: list[dict]):
     return store
 
 
+def _make_thread_event_store(rows: list[dict]):
+    """Return an AsyncMock event store whose list_messages() returns rows."""
+    store = MagicMock()
+    store.list_messages = AsyncMock(return_value=rows)
+    return store
+
+
+def _make_feedback_repo(grouped: dict[str, dict]):
+    """Return an AsyncMock feedback repo whose list_by_thread_grouped() returns rows."""
+    repo = MagicMock()
+    repo.list_by_thread_grouped = AsyncMock(return_value=grouped)
+    return repo
+
+
 def _make_message(seq: int) -> dict:
     return {"seq": seq, "event_type": "ai_message", "category": "message", "content": f"msg-{seq}"}
+
+
+def _make_thread_message(run_id: str, seq: int, event_type: str, msg_type: str) -> dict:
+    return {
+        "run_id": run_id,
+        "seq": seq,
+        "event_type": event_type,
+        "category": "message",
+        "content": {"id": f"msg-{seq}", "type": msg_type, "content": f"msg-{seq}"},
+        "metadata": {},
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
 
 
 def _make_store_only_run_manager() -> RunManager:
@@ -188,6 +216,33 @@ def test_empty_data_when_no_messages():
     body = response.json()
     assert body["data"] == []
     assert body["has_more"] is False
+
+
+def test_thread_messages_attach_feedback_to_llm_ai_response():
+    """Thread-level messages attach feedback to the last llm.ai.response per run."""
+    rows = [
+        _make_thread_message("run-1", 1, "llm.human.input", "human"),
+        _make_thread_message("run-1", 2, "llm.ai.response", "ai"),
+    ]
+    feedback = {
+        "run-1": {
+            "feedback_id": "fb-1",
+            "rating": 1,
+            "comment": "good",
+        }
+    }
+    app = _make_app(
+        event_store=_make_thread_event_store(rows),
+        feedback_repo=_make_feedback_repo(feedback),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/threads/thread-1/messages")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["feedback"] is None
+    assert body[1]["feedback"] == feedback["run-1"]
 
 
 def test_get_run_hydrates_store_only_run():
