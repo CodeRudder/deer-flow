@@ -81,6 +81,7 @@ class RunJournal(BaseCallbackHandler):
         self._counted_llm_run_ids: set[str] = set()
         self._counted_external_source_ids: set[str] = set()
         self._counted_message_llm_run_ids: set[str] = set()
+        self._recorded_error_fallback_message_ids: set[int] = set()
 
         # Convenience fields
         self._last_ai_msg: str | None = None
@@ -141,6 +142,50 @@ class RunJournal(BaseCallbackHandler):
             text = self._message_text(message).strip()
             if text:
                 self._last_ai_msg = text[:2000]
+
+    def _record_llm_error_fallback_summary(self, message: BaseMessage) -> None:
+        additional_kwargs = getattr(message, "additional_kwargs", None) or {}
+        if not isinstance(additional_kwargs, dict) or not additional_kwargs.get("deerflow_error_fallback"):
+            return
+
+        self._had_llm_error_fallback = True
+        detail = additional_kwargs.get("error_detail")
+        reason = additional_kwargs.get("error_reason")
+        fallback_text = self._message_text(message).strip()
+        if isinstance(detail, str) and detail.strip():
+            self._llm_error_fallback_message = detail.strip()
+        elif isinstance(reason, str) and reason.strip():
+            self._llm_error_fallback_message = reason.strip()
+        elif fallback_text:
+            self._llm_error_fallback_message = fallback_text[:2000]
+
+    def _record_ai_message(
+        self,
+        message: BaseMessage,
+        *,
+        caller: str,
+        usage: dict[str, Any] | None = None,
+        latency_ms: int | None = None,
+        llm_call_index: int | None = None,
+        count_message_summary: bool = True,
+    ) -> None:
+        self._record_llm_error_fallback_summary(message)
+        metadata: dict[str, Any] = {"caller": caller}
+        if usage is not None:
+            metadata["usage"] = usage
+        if latency_ms is not None:
+            metadata["latency_ms"] = latency_ms
+        if llm_call_index is not None:
+            metadata["llm_call_index"] = llm_call_index
+
+        self._put(
+            event_type="llm.ai.response",
+            category="message",
+            content=message.model_dump(),
+            metadata=metadata,
+        )
+        if count_message_summary:
+            self._record_message_summary(message, caller=caller)
 
     def on_chain_start(
         self,
@@ -258,18 +303,6 @@ class RunJournal(BaseCallbackHandler):
             # Token usage from message
             usage = getattr(message, "usage_metadata", None)
             usage_dict = dict(usage) if usage else {}
-            additional_kwargs = getattr(message, "additional_kwargs", None) or {}
-            if isinstance(additional_kwargs, dict) and additional_kwargs.get("deerflow_error_fallback"):
-                self._had_llm_error_fallback = True
-                detail = additional_kwargs.get("error_detail")
-                reason = additional_kwargs.get("error_reason")
-                fallback_text = self._message_text(message).strip()
-                if isinstance(detail, str) and detail.strip():
-                    self._llm_error_fallback_message = detail.strip()
-                elif isinstance(reason, str) and reason.strip():
-                    self._llm_error_fallback_message = reason.strip()
-                elif fallback_text:
-                    self._llm_error_fallback_message = fallback_text[:2000]
 
             # Resolve call index
             call_index = self._llm_call_index
@@ -279,20 +312,14 @@ class RunJournal(BaseCallbackHandler):
                 call_index = self._llm_call_index
                 self._seen_llm_starts.add(rid)
 
-            # Trace event: llm_response (OpenAI completion format)
-            self._put(
-                event_type="llm.ai.response",
-                category="message",
-                content=message.model_dump(),
-                metadata={
-                    "caller": caller,
-                    "usage": usage_dict,
-                    "latency_ms": latency_ms,
-                    "llm_call_index": call_index,
-                },
+            self._record_ai_message(
+                message,
+                caller=caller,
+                usage=usage_dict,
+                latency_ms=latency_ms,
+                llm_call_index=call_index,
+                count_message_summary=rid not in self._counted_message_llm_run_ids,
             )
-            if rid not in self._counted_message_llm_run_ids:
-                self._record_message_summary(message, caller=caller)
 
             # Token accumulation (dedup by langchain run_id to avoid double-counting
             # when the callback fires more than once for the same response)
@@ -495,6 +522,18 @@ class RunJournal(BaseCallbackHandler):
             category="middleware",
             content={"name": name, "hook": hook, "action": action, "changes": changes},
         )
+
+    def record_llm_error_fallback_message(self, message: AIMessage, *, caller: str = "lead_agent") -> None:
+        """Persist a middleware-created LLM fallback as a displayable AI message.
+
+        Fallback messages returned directly from middleware bypass the provider
+        callback path, so LangChain never calls ``on_llm_end`` for them.
+        """
+        message_obj_id = id(message)
+        if message_obj_id in self._recorded_error_fallback_message_ids:
+            return
+        self._recorded_error_fallback_message_ids.add(message_obj_id)
+        self._record_ai_message(message, caller=caller)
 
     async def flush(self) -> None:
         """Force flush remaining buffer. Called in worker's finally block."""

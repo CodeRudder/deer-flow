@@ -216,6 +216,19 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             },
         )
 
+    def _finalize_error_fallback_message(self, message: AIMessage, request: ModelRequest) -> AIMessage:
+        runtime = getattr(request, "runtime", None)
+        context = getattr(runtime, "context", None)
+        journal = context.get("__run_journal") if isinstance(context, dict) else None
+        if journal is None:
+            return message
+
+        try:
+            journal.record_llm_error_fallback_message(message, caller="lead_agent")
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record LLM error fallback message", exc_info=True)
+        return message
+
     def _build_user_message(self, exc: BaseException, reason: str) -> str:
         detail = _extract_error_detail(exc)
         if reason == "quota":
@@ -299,11 +312,14 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
         if self._check_circuit():
-            return self._build_error_fallback_message(
-                self._build_circuit_breaker_message(),
-                error_type="CircuitBreakerOpen",
-                reason="circuit_open",
-                detail="LLM circuit breaker is open",
+            return self._finalize_error_fallback_message(
+                self._build_error_fallback_message(
+                    self._build_circuit_breaker_message(),
+                    error_type="CircuitBreakerOpen",
+                    reason="circuit_open",
+                    detail="LLM circuit breaker is open",
+                ),
+                request,
             )
 
         attempt = 1
@@ -325,7 +341,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         continue
                     logger.warning("LLM returned empty response after %d attempt(s)", attempt)
                     self._record_failure()
-                    return self._build_empty_response_fallback_message()
+                    return self._finalize_error_fallback_message(self._build_empty_response_fallback_message(), request)
                 self._record_success()
                 return response
             except GraphBubbleUp:
@@ -357,7 +373,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 )
                 if retriable:
                     self._record_failure()
-                return self._build_user_fallback_message(exc, reason)
+                return self._finalize_error_fallback_message(self._build_user_fallback_message(exc, reason), request)
 
     @override
     async def awrap_model_call(
@@ -366,11 +382,14 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
         if self._check_circuit():
-            return self._build_error_fallback_message(
-                self._build_circuit_breaker_message(),
-                error_type="CircuitBreakerOpen",
-                reason="circuit_open",
-                detail="LLM circuit breaker is open",
+            return self._finalize_error_fallback_message(
+                self._build_error_fallback_message(
+                    self._build_circuit_breaker_message(),
+                    error_type="CircuitBreakerOpen",
+                    reason="circuit_open",
+                    detail="LLM circuit breaker is open",
+                ),
+                request,
             )
 
         attempt = 1
@@ -392,7 +411,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         continue
                     logger.warning("LLM returned empty response after %d attempt(s)", attempt)
                     self._record_failure()
-                    return self._build_empty_response_fallback_message()
+                    return self._finalize_error_fallback_message(self._build_empty_response_fallback_message(), request)
                 self._record_success()
                 return response
             except GraphBubbleUp:
@@ -424,7 +443,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 )
                 if retriable:
                     self._record_failure()
-                return self._build_user_fallback_message(exc, reason)
+                return self._finalize_error_fallback_message(self._build_user_fallback_message(exc, reason), request)
 
 
 def _matches_any(detail: str, patterns: tuple[str, ...]) -> bool:

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from deerflow.runtime.events.store.memory import MemoryRunEventStore
 from deerflow.runtime.journal import RunJournal
@@ -82,6 +83,34 @@ class TestLlmCallbacks:
         # Content is checkpoint-aligned model_dump format
         assert messages[0]["content"]["type"] == "ai"
         assert messages[0]["content"]["content"] == "Answer"
+
+    @pytest.mark.anyio
+    async def test_record_llm_error_fallback_message_produces_ai_message_once(self, journal_setup):
+        j, store = journal_setup
+        message = AIMessage(
+            content="The configured LLM provider is temporarily unavailable after multiple retries.",
+            additional_kwargs={
+                "deerflow_error_fallback": True,
+                "error_type": "FakeError",
+                "error_reason": "transient",
+                "error_detail": "Connection error.",
+            },
+        )
+
+        j.record_llm_error_fallback_message(message)
+        j.record_llm_error_fallback_message(message)
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        assert len(messages) == 1
+        assert messages[0]["event_type"] == "llm.ai.response"
+        assert messages[0]["category"] == "message"
+        assert messages[0]["content"]["type"] == "ai"
+        assert messages[0]["content"]["additional_kwargs"]["deerflow_error_fallback"] is True
+        assert messages[0]["metadata"]["caller"] == "lead_agent"
+        assert j.had_llm_error_fallback is True
+        assert j.llm_error_fallback_message == "Connection error."
+        assert j.get_completion_data()["message_count"] == 1
 
     @pytest.mark.anyio
     async def test_on_llm_end_with_tool_calls_produces_ai_tool_call(self, journal_setup):
