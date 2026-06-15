@@ -235,6 +235,29 @@ class TestToolCallbacks:
         assert messages[0]["content"]["type"] == "tool"
 
     @pytest.mark.anyio
+    async def test_record_tool_result_message_uses_tool_result_event(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        tool_msg = ToolMessage(
+            id="clarification:call_1",
+            content="Which environment?",
+            tool_call_id="call_1",
+            name="ask_clarification",
+        )
+
+        j.record_tool_result_message(tool_msg)
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        assert len(messages) == 1
+        assert messages[0]["event_type"] == "llm.tool.result"
+        assert messages[0]["category"] == "message"
+        assert messages[0]["content"]["type"] == "tool"
+        assert messages[0]["content"]["name"] == "ask_clarification"
+        assert messages[0]["content"]["id"] == "clarification:call_1"
+
+    @pytest.mark.anyio
     async def test_tool_end_with_command_unwraps_tool_message(self, journal_setup):
         """on_tool_end with Command(update={'messages':[ToolMessage]}) unwraps inner message."""
         from langchain_core.messages import ToolMessage

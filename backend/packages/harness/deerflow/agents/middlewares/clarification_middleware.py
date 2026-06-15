@@ -114,6 +114,18 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
 
         return "\n".join(message_parts)
 
+    def _record_clarification_message(self, request: ToolCallRequest, message: ToolMessage) -> None:
+        runtime = getattr(request, "runtime", None)
+        context = getattr(runtime, "context", None)
+        journal = context.get("__run_journal") if isinstance(context, dict) else None
+        if journal is None:
+            return
+
+        try:
+            journal.record_tool_result_message(message)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record clarification tool message", exc_info=True)
+
     def _handle_clarification(self, request: ToolCallRequest) -> Command:
         """Handle clarification request and return command to interrupt execution.
 
@@ -144,6 +156,7 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             tool_call_id=tool_call_id,
             name="ask_clarification",
         )
+        self._record_clarification_message(request, tool_message)
 
         # Return a Command that:
         # 1. Adds the formatted tool message

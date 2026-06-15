@@ -187,6 +187,10 @@ class RunJournal(BaseCallbackHandler):
         if count_message_summary:
             self._record_message_summary(message, caller=caller)
 
+    def _record_tool_message(self, message: BaseMessage) -> None:
+        self._put(event_type="llm.tool.result", category="message", content=message.model_dump())
+        self._record_message_summary(message)
+
     def on_chain_start(
         self,
         serialized: dict[str, Any],
@@ -362,15 +366,13 @@ class RunJournal(BaseCallbackHandler):
         try:
             if isinstance(output, ToolMessage):
                 msg = cast(ToolMessage, output)
-                self._put(event_type="llm.tool.result", category="message", content=msg.model_dump())
-                self._record_message_summary(msg)
+                self._record_tool_message(msg)
             elif isinstance(output, Command):
                 cmd = cast(Command, output)
                 messages = cmd.update.get("messages", [])
                 for message in messages:
                     if isinstance(message, BaseMessage):
-                        self._put(event_type="llm.tool.result", category="message", content=message.model_dump())
-                        self._record_message_summary(message)
+                        self._record_tool_message(message)
                     else:
                         logger.warning(f"on_tool_end {run_id}: command update message is not BaseMessage: {type(message)}")
             else:
@@ -534,6 +536,14 @@ class RunJournal(BaseCallbackHandler):
             return
         self._recorded_error_fallback_message_ids.add(message_obj_id)
         self._record_ai_message(message, caller=caller)
+
+    def record_tool_result_message(self, message: ToolMessage) -> None:
+        """Persist a middleware-created tool result message.
+
+        Some tool-call middleware returns ``Command(update={"messages": [...]})``
+        directly, which can update graph state without firing ``on_tool_end``.
+        """
+        self._record_tool_message(message)
 
     async def flush(self) -> None:
         """Force flush remaining buffer. Called in worker's finally block."""

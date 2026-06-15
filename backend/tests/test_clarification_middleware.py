@@ -1,5 +1,6 @@
 """Tests for ClarificationMiddleware, focusing on options type coercion."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -7,6 +8,8 @@ import pytest
 from langgraph.graph.message import add_messages
 
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
+from deerflow.runtime.events.store.memory import MemoryRunEventStore
+from deerflow.runtime.journal import RunJournal
 
 
 @pytest.fixture
@@ -177,3 +180,58 @@ class TestClarificationCommandIdempotency:
         merged = add_messages(add_messages([], [first_message]), [second_message])
 
         assert len(merged) == 1
+
+
+class TestClarificationJournalRecording:
+    def test_records_clarification_tool_message_to_run_journal(self, middleware):
+        store = MemoryRunEventStore()
+        journal = RunJournal("run-1", "thread-1", store, flush_threshold=100)
+        request = SimpleNamespace(
+            tool_call={
+                "name": "ask_clarification",
+                "id": "call-clarify-1",
+                "args": {
+                    "question": "Which environment should I use?",
+                    "clarification_type": "approach_choice",
+                    "context": "Need target env for config",
+                    "options": ["dev", "prod"],
+                },
+            },
+            runtime=SimpleNamespace(context={"__run_journal": journal}),
+        )
+
+        command = middleware.wrap_tool_call(request, lambda _req: pytest.fail("handler should not be called"))
+
+        assert command.goto == "__end__"
+        tool_message = command.update["messages"][0]
+        assert tool_message.name == "ask_clarification"
+
+        asyncio.run(journal.flush())
+        messages = asyncio.run(store.list_messages("thread-1"))
+
+        assert len(messages) == 1
+        assert messages[0]["event_type"] == "llm.tool.result"
+        assert messages[0]["category"] == "message"
+        assert messages[0]["content"]["type"] == "tool"
+        assert messages[0]["content"]["name"] == "ask_clarification"
+        assert messages[0]["content"]["tool_call_id"] == "call-clarify-1"
+        assert messages[0]["content"]["id"] == "clarification:call-clarify-1"
+        assert "Which environment should I use?" in messages[0]["content"]["content"]
+
+    def test_missing_run_journal_still_returns_clarification_command(self, middleware):
+        request = SimpleNamespace(
+            tool_call={
+                "name": "ask_clarification",
+                "id": "call-clarify-1",
+                "args": {
+                    "question": "Which environment should I use?",
+                    "clarification_type": "missing_info",
+                },
+            },
+            runtime=SimpleNamespace(context={}),
+        )
+
+        command = middleware.wrap_tool_call(request, lambda _req: pytest.fail("handler should not be called"))
+
+        assert command.goto == "__end__"
+        assert command.update["messages"][0].name == "ask_clarification"
