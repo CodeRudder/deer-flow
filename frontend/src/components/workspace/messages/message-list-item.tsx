@@ -311,7 +311,12 @@ function MessageContent_({
       </AIElementMessageResponse>
     ) : null;
     return (
-      <div className={cn("ml-auto flex flex-col gap-2", className)}>
+      <div
+        className={cn(
+          "ml-auto flex max-w-full min-w-0 flex-col gap-2",
+          className,
+        )}
+      >
         {filesList}
         {messageResponse && (
           <AIElementMessageContent className="w-fit">

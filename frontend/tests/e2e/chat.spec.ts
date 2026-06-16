@@ -49,6 +49,89 @@ test.describe("Chat workspace", () => {
     });
   });
 
+  test("long markdown message does not create page horizontal scrolling", async ({
+    page,
+  }) => {
+    const longMarkdown = [
+      "Please inspect this markdown.",
+      "",
+      "| Column | Value |",
+      "| --- | --- |",
+      `| URL | https://example.com/${"very-long-path-segment".repeat(80)} |`,
+      "",
+      "```text",
+      'const value = "' + "wide-code-segment".repeat(80) + '";',
+      "```",
+    ].join("\n");
+
+    await page.route("**/runs/stream", (route) => {
+      const events = [
+        {
+          event: "metadata",
+          data: {
+            run_id: "00000000-0000-0000-0000-000000000099",
+            thread_id: "00000000-0000-0000-0000-000000000001",
+          },
+        },
+        {
+          event: "values",
+          data: {
+            messages: [
+              {
+                type: "human",
+                id: "msg-human-long-markdown",
+                content: [{ type: "text", text: longMarkdown }],
+              },
+              {
+                type: "ai",
+                id: "msg-ai-long-markdown",
+                content: "Received.",
+              },
+            ],
+          },
+        },
+        { event: "end", data: {} },
+      ];
+
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: events
+          .map((e) => `event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`)
+          .join(""),
+      });
+    });
+
+    await page.goto("/workspace/chats/new");
+
+    const textarea = page.getByPlaceholder(/how can i assist you/i);
+    await expect(textarea).toBeVisible({ timeout: 15_000 });
+
+    await textarea.fill(longMarkdown);
+    await textarea.press("Enter");
+    await expect(page.getByText("Received.")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const metrics = await page.evaluate(() => {
+      const documentElement = document.documentElement;
+      const inputForm = document
+        .querySelector("textarea[name='message']")
+        ?.closest("form");
+      const formRect = inputForm?.getBoundingClientRect();
+      return {
+        clientWidth: documentElement.clientWidth,
+        scrollWidth: documentElement.scrollWidth,
+        inputCenterDelta: formRect
+          ? Math.abs(formRect.left + formRect.width / 2 - window.innerWidth / 2)
+          : Number.POSITIVE_INFINITY,
+      };
+    });
+
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+    expect(metrics.inputCenterDelta).toBeLessThanOrEqual(1);
+  });
+
   test("keeps attachments visible while upload submit is pending", async ({
     page,
   }) => {
