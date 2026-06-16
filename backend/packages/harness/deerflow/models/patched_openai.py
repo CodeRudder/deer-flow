@@ -21,11 +21,17 @@ message that originally carried them.
 
 from __future__ import annotations
 
-from typing import Any
+import copy
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import WellKnownTools, _convert_to_openai_response_format
 
 from deerflow.models.assistant_payload_replay import restore_assistant_payloads
 
@@ -56,6 +62,67 @@ class PatchedChatOpenAI(ChatOpenAI):
                 type: enabled
     """
 
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: dict | str | bool | None = None,
+        strict: bool | None = None,
+        parallel_tool_calls: bool | None = None,
+        response_format: dict | type | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Bind tools after normalising nullable schemas for Gemini gateways.
+
+        Gemini's OpenAI-compatible tool-calling layer rejects nullable Pydantic
+        schemas such as ``anyOf: [{type: string}, {type: null}]`` because the
+        property itself has no direct ``type``.  LangChain/OpenAI accept those
+        schemas, but Gemini requires the non-null branch to be promoted.  This
+        keeps runtime arguments optional while sending a stricter tool schema.
+        """
+        if parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = parallel_tool_calls
+
+        formatted_tools = [_normalize_gemini_tool_schema(convert_to_openai_tool(tool, strict=strict)) for tool in tools]
+        for original, formatted in zip(tools, formatted_tools, strict=False):
+            if isinstance(original, BaseTool) and hasattr(original, "extras") and isinstance(original.extras, dict) and "defer_loading" in original.extras:
+                formatted["defer_loading"] = original.extras["defer_loading"]
+
+        tool_names: list[str] = []
+        for tool in formatted_tools:
+            if "function" in tool:
+                tool_names.append(tool["function"]["name"])
+            elif "name" in tool:
+                tool_names.append(tool["name"])
+
+        if tool_choice:
+            if isinstance(tool_choice, str):
+                if tool_choice in tool_names:
+                    tool_choice = {
+                        "type": "function",
+                        "function": {"name": tool_choice},
+                    }
+                elif tool_choice in WellKnownTools:
+                    tool_choice = {"type": tool_choice}
+                elif tool_choice == "any":
+                    tool_choice = "required"
+            elif isinstance(tool_choice, bool):
+                tool_choice = "required"
+            elif isinstance(tool_choice, dict):
+                pass
+            else:
+                msg = f"Unrecognized tool_choice type. Expected str, bool or dict. Received: {tool_choice}"
+                raise ValueError(msg)
+            kwargs["tool_choice"] = tool_choice
+
+        if response_format:
+            if isinstance(response_format, dict) and response_format.get("type") == "json_schema" and "schema" in response_format.get("json_schema", {}):
+                strict = response_format["json_schema"].get("strict", None)
+                response_format = cast(dict, response_format["json_schema"]["schema"])
+            kwargs["response_format"] = _convert_to_openai_response_format(response_format, strict=strict)
+
+        return super(ChatOpenAI, self).bind(tools=formatted_tools, **kwargs)
+
     def _get_request_payload(
         self,
         input_: LanguageModelInput,
@@ -80,6 +147,33 @@ class PatchedChatOpenAI(ChatOpenAI):
         restore_assistant_payloads(payload.get("messages", []), original_messages, _restore_tool_call_signatures)
 
         return payload
+
+
+def _normalize_gemini_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of an OpenAI tool schema with nullable anyOf branches folded."""
+    normalized = copy.deepcopy(tool)
+    parameters = normalized.get("function", {}).get("parameters")
+    if isinstance(parameters, dict):
+        _promote_nullable_anyof(parameters)
+    return normalized
+
+
+def _promote_nullable_anyof(schema: Any) -> None:
+    if isinstance(schema, dict):
+        any_of = schema.get("anyOf")
+        if isinstance(any_of, list) and len(any_of) == 2:
+            non_null = [item for item in any_of if not (isinstance(item, dict) and item.get("type") == "null")]
+            if len(non_null) == 1 and isinstance(non_null[0], dict):
+                preserved = {key: value for key, value in schema.items() if key not in {"anyOf", "type"}}
+                schema.clear()
+                schema.update(copy.deepcopy(non_null[0]))
+                schema.update(preserved)
+
+        for value in schema.values():
+            _promote_nullable_anyof(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _promote_nullable_anyof(item)
 
 
 def _restore_tool_call_signatures(payload_msg: dict, orig_msg: AIMessage) -> None:
