@@ -21,13 +21,15 @@ memory:
   debounce_seconds: 30
 ```
 
+To keep long-term memory learning enabled but stop injecting saved memory into future conversations, keep `enabled: true` and set `injection_enabled: false`.
+
 ## How memory works
 
 Memory works automatically through `MemoryMiddleware`:
 
 1. **First conversation**: tell the agent about your preferences, project, or background.
 2. **Automatic learning**: the agent extracts and saves important facts in the background.
-3. **Future conversations**: memory facts are automatically injected into the system prompt — the agent does not need you to repeat context.
+3. **Future conversations**: memory facts are automatically injected into a hidden system-reminder context, unless `injection_enabled` is disabled. The agent does not need you to repeat context.
 
 ## Example
 
@@ -49,10 +51,10 @@ The agent will automatically produce FastAPI-style code with type annotations.
 
 ## Inspect memory
 
-Memory is stored in `backend/.deer-flow/memory.json`:
+By default, memory is stored per user:
 
 ```bash
-cat backend/.deer-flow/memory.json
+cat backend/.deer-flow/users/{user_id}/memory.json
 ```
 
 ## Per-agent memory
@@ -60,7 +62,7 @@ cat backend/.deer-flow/memory.json
 When a custom agent is active, it maintains its own memory file at:
 
 ```
-backend/.deer-flow/agents/{agent_name}/memory.json
+backend/.deer-flow/users/{user_id}/agents/{agent_name}/memory.json
 ```
 
 This keeps each agent's learned knowledge separate.

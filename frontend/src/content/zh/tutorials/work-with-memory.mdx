@@ -19,13 +19,15 @@ memory:
   debounce_seconds: 30
 ```
 
+如果你想继续让长期记忆在后台学习和保存，但暂时不注入到后续对话中，保持 `enabled: true`，并设置 `injection_enabled: false`。
+
 ## 记忆的工作方式
 
 记忆通过 `MemoryMiddleware` 自动工作：
 
 1. **第一次对话**：告诉 Agent 关于你的偏好、项目或背景。
 2. **自动学习**：Agent 在后台提取并保存重要事实。
-3. **后续对话**：记忆事实自动注入到系统提示中，Agent 无需你重新解释背景。
+3. **后续对话**：记忆事实会自动注入到隐藏的 system-reminder 上下文中，除非关闭 `injection_enabled`。Agent 无需你重新解释背景。
 
 ## 示例
 
@@ -47,10 +49,16 @@ Agent 会自动生成符合 FastAPI 风格、带类型注解的代码。
 
 ## 查看记忆
 
-记忆存储在 `backend/.deer-flow/memory.json`，你可以直接查看和编辑：
+默认情况下，记忆按用户存储：
 
 ```bash
-cat backend/.deer-flow/memory.json
+cat backend/.deer-flow/users/{user_id}/memory.json
+```
+
+当自定义 Agent 激活时，该 Agent 会维护独立的记忆文件：
+
+```bash
+cat backend/.deer-flow/users/{user_id}/agents/{agent_name}/memory.json
 ```
 
 ## 下一步

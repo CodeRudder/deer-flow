@@ -31,9 +31,9 @@ Each category is updated over time as the agent learns from ongoing conversation
 
 Memory is managed by `MemoryMiddleware`, which runs on every Lead Agent turn:
 
-1. **Injection**: at the start of each conversation, the agent's current memory is injected into the system prompt at a controlled token budget (`max_injection_tokens`).
+1. **Injection**: at the start of each conversation, the agent's current memory is injected as a hidden `<system-reminder>` message at a controlled token budget (`max_injection_tokens`). The static system prompt stays unchanged for better prefix-cache reuse.
 2. **Learning**: after a conversation, a background job extracts new facts and updates the relevant memory categories. Updates are debounced by `debounce_seconds` to batch rapid changes.
-3. **Per-agent memory**: when a custom agent is active, its memory is stored separately from the global memory. This keeps different agents' knowledge isolated.
+3. **Per-agent memory**: when a custom agent is active, its memory is stored separately from the user's global memory. This keeps different agents' knowledge isolated.
 
 ## Configuration
 
@@ -41,11 +41,14 @@ Memory is managed by `MemoryMiddleware`, which runs on every Lead Agent turn:
 memory:
   enabled: true
 
-  # Storage path for the global memory file.
-  # Default: {base_dir}/memory.json  (resolves to backend/.deer-flow/memory.json)
-  # Absolute paths are used as-is.
-  # Relative paths are resolved against base_dir (not the backend working directory).
-  storage_path: memory.json
+  # Optional storage override.
+  # Default empty value stores memory per user:
+  #   {base_dir}/users/{user_id}/memory.json
+  # Per-agent memory is stored at:
+  #   {base_dir}/users/{user_id}/agents/{agent_name}/memory.json
+  # Absolute paths are used as-is and opt out of per-user isolation.
+  # Relative paths are only used by legacy no-user-id paths.
+  storage_path: ""
 
   # Storage class (default: file-based JSON storage)
   storage_class: deerflow.agents.memory.storage.FileMemoryStorage
@@ -62,21 +65,21 @@ memory:
   # Minimum confidence score required to store a fact (0.0–1.0)
   fact_confidence_threshold: 0.7
 
-  # Whether to inject memory into the system prompt
+  # Whether to inject memory into the hidden system-reminder context
   injection_enabled: true
 
-  # Maximum tokens to use for memory injection into system prompt
+  # Maximum tokens to use for memory injection
   max_injection_tokens: 2000
 ```
 
-## Global vs per-agent memory
+## User and per-agent memory
 
 DeerFlow supports two levels of memory:
 
-- **Global memory**: stored at `{base_dir}/memory.json`. Used when no specific agent is active or when the agent has no per-agent memory file.
-- **Per-agent memory**: stored at `{base_dir}/agents/{agent_name}/memory.json`. Used when a custom agent is active, keeping that agent's learned knowledge separate.
+- **User memory**: stored at `{base_dir}/users/{user_id}/memory.json`. Used when no specific agent is active.
+- **Per-agent memory**: stored at `{base_dir}/users/{user_id}/agents/{agent_name}/memory.json`. Used when a custom agent is active, keeping that agent's learned knowledge separate.
 
-The `MemoryMiddleware` automatically selects the correct memory file based on the active `agent_name` in the request configuration.
+The `MemoryMiddleware` automatically selects the correct memory file based on the current user and the active `agent_name` in the request configuration.
 
 Agent names used for memory storage are validated against `AGENT_NAME_PATTERN` to ensure filesystem safety.
 
@@ -85,10 +88,15 @@ Agent names used for memory storage are validated against `AGENT_NAME_PATTERN` t
 By default, memory files are stored under the backend base directory:
 
 - Base directory: `backend/.deer-flow/`
-- Global memory: `backend/.deer-flow/memory.json`
-- Per-agent memory: `backend/.deer-flow/agents/{agent_name}/memory.json`
+- User memory: `backend/.deer-flow/users/{user_id}/memory.json`
+- Per-agent memory: `backend/.deer-flow/users/{user_id}/agents/{agent_name}/memory.json`
 
-You can change the storage path with the `storage_path` field. Relative paths are resolved against the base directory. Use an absolute path to store memory in a custom location.
+Legacy no-user-id paths still exist for older data:
+
+- Legacy global memory: `backend/.deer-flow/memory.json`
+- Legacy per-agent memory: `backend/.deer-flow/agents/{agent_name}/memory.json`
+
+Use an absolute `storage_path` only when you intentionally want one shared memory file outside the per-user layout. Relative `storage_path` values are preserved for legacy no-user-id code paths and should not be used to configure normal per-user memory.
 
 ## Custom storage backend
 
@@ -110,7 +118,7 @@ memory:
   enabled: false
 ```
 
-To keep memory storage but prevent injection into the system prompt:
+To keep learning and storing memory but prevent injection into conversations:
 
 ```yaml
 memory:
