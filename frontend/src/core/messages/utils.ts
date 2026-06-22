@@ -133,9 +133,17 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
         registerToolCalls(message, group);
       }
 
-      // Not an else-if: a message with reasoning + content (but no tool calls) goes
-      // into the processing group above AND gets its own assistant bubble here.
-      if (hasContent(message) && !hasToolCalls(message)) {
+      const hasClarificationToolCall = hasToolCallNamed(
+        message,
+        "ask_clarification",
+      );
+
+      // Not an else-if: a message can contribute processing/tool steps above and
+      // still get an assistant bubble when it carries user-visible text.
+      if (
+        (hasContent(message) && !hasToolCalls(message)) ||
+        (hasClarificationToolCall && hasDisplayableContent(message))
+      ) {
         groups.push({ id: message.id, type: "assistant", messages: [message] });
       }
     }
@@ -435,6 +443,17 @@ export function hasToolCalls(message: Message) {
   return (
     message.type === "ai" && message.tool_calls && message.tool_calls.length > 0
   );
+}
+
+function hasToolCallNamed(message: Message, toolName: string) {
+  return (
+    message.type === "ai" &&
+    message.tool_calls?.some((toolCall) => toolCall.name === toolName) === true
+  );
+}
+
+function hasDisplayableContent(message: Message) {
+  return extractContentFromMessage(message).length > 0;
 }
 
 export function hasPresentFiles(message: Message) {

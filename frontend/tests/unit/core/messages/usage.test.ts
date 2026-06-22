@@ -80,6 +80,69 @@ test("keeps header and per-turn aggregation consistent for duplicated UI groups"
   });
 });
 
+test("deduplicates usage for clarification text mirrored across UI groups", () => {
+  const messages = [
+    {
+      id: "human-1",
+      type: "human",
+      content: "Discuss before acting",
+    },
+    {
+      id: "ai-clarification",
+      type: "ai",
+      content: [
+        {
+          type: "text",
+          text: "Here is my analysis before asking for confirmation.",
+        },
+        {
+          type: "tool_use",
+          id: "call-clarification",
+          name: "ask_clarification",
+          input: {},
+        },
+      ],
+      tool_calls: [
+        {
+          id: "call-clarification",
+          name: "ask_clarification",
+          args: {
+            question: "Can I proceed?",
+          },
+        },
+      ],
+      usage_metadata: { input_tokens: 30, output_tokens: 12, total_tokens: 42 },
+    },
+    {
+      id: "tool-clarification",
+      type: "tool",
+      content: "Can I proceed?",
+      name: "ask_clarification",
+      tool_call_id: "call-clarification",
+    },
+  ] as unknown as Message[];
+
+  const groups = getMessageGroups(messages);
+  const usageMessagesByGroupIndex = getAssistantTurnUsageMessages(groups);
+  const turnUsageMessages = usageMessagesByGroupIndex.at(-1);
+
+  expect(groups.map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+    "assistant",
+    "assistant:clarification",
+  ]);
+  expect(turnUsageMessages?.map((message) => message.id)).toEqual([
+    "ai-clarification",
+    "ai-clarification",
+  ]);
+  expect(accumulateUsage(turnUsageMessages!)).toEqual({
+    inputTokens: 30,
+    outputTokens: 12,
+    totalTokens: 42,
+  });
+});
+
 test("prefers backend thread usage for header totals", () => {
   const messages = [
     {

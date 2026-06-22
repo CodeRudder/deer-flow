@@ -74,4 +74,97 @@ describe("groupMessages", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.messages).toEqual([visibleUserMessage]);
   });
+
+  it("shows assistant text before an ask_clarification result", () => {
+    const aiWithClarification = {
+      type: "ai",
+      id: "ai-clarification",
+      content: [
+        {
+          type: "text",
+          text: "Here is the analysis before I ask for confirmation.",
+        },
+        {
+          type: "tool_use",
+          id: "call-clarification",
+          name: "ask_clarification",
+          input: {},
+        },
+      ],
+      tool_calls: [
+        {
+          id: "call-clarification",
+          name: "ask_clarification",
+          args: {
+            question: "Can I proceed?",
+          },
+        },
+      ],
+    } as unknown as Message;
+    const clarificationResult = {
+      type: "tool",
+      id: "tool-clarification",
+      content: "Can I proceed?",
+      name: "ask_clarification",
+      tool_call_id: "call-clarification",
+    } as Message;
+
+    const groups = groupMessages(
+      [aiWithClarification, clarificationResult],
+      (group) => group,
+    );
+
+    expect(groups.map((group) => group.type)).toEqual([
+      "assistant:processing",
+      "assistant",
+      "assistant:clarification",
+    ]);
+    expect(groups[0]?.messages).toEqual([
+      aiWithClarification,
+      clarificationResult,
+    ]);
+    expect(groups[1]?.messages).toEqual([aiWithClarification]);
+    expect(groups[2]?.messages).toEqual([clarificationResult]);
+  });
+
+  it("does not show an assistant bubble for empty ask_clarification content", () => {
+    const aiWithClarification = {
+      type: "ai",
+      id: "ai-clarification",
+      content: [
+        {
+          type: "tool_use",
+          id: "call-clarification",
+          name: "ask_clarification",
+          input: {},
+        },
+      ],
+      tool_calls: [
+        {
+          id: "call-clarification",
+          name: "ask_clarification",
+          args: {
+            question: "Can I proceed?",
+          },
+        },
+      ],
+    } as unknown as Message;
+    const clarificationResult = {
+      type: "tool",
+      id: "tool-clarification",
+      content: "Can I proceed?",
+      name: "ask_clarification",
+      tool_call_id: "call-clarification",
+    } as Message;
+
+    const groups = groupMessages(
+      [aiWithClarification, clarificationResult],
+      (group) => group,
+    );
+
+    expect(groups.map((group) => group.type)).toEqual([
+      "assistant:processing",
+      "assistant:clarification",
+    ]);
+  });
 });
