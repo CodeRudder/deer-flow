@@ -3,6 +3,7 @@ from .extensions_config import ExtensionsConfig, get_extensions_config
 from .loop_detection_config import LoopDetectionConfig
 from .memory_config import MemoryConfig, get_memory_config
 from .paths import Paths, get_paths
+from .platform_auth_config import PlatformAuthConfig
 from .skill_evolution_config import SkillEvolutionConfig
 from .skills_config import SkillsConfig
 from .tracing_config import (
@@ -23,6 +24,7 @@ __all__ = [
     "get_extensions_config",
     "LoopDetectionConfig",
     "MemoryConfig",
+    "PlatformAuthConfig",
     "get_memory_config",
     "get_tracing_config",
     "get_explicitly_enabled_tracing_providers",

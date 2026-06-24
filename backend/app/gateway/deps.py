@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.gateway.auth.local_provider import LocalAuthProvider
+    from app.gateway.auth.platform_provider import PlatformAuthProvider
     from app.gateway.auth.repositories.sqlite import SQLiteUserRepository
     from deerflow.persistence.thread_meta.base import ThreadMetaStore
     from deerflow.runtime import RunRecord
@@ -248,26 +249,46 @@ _cached_local_provider: LocalAuthProvider | None = None
 _cached_repo: SQLiteUserRepository | None = None
 
 
-def get_local_provider() -> LocalAuthProvider:
-    """Get or create the cached LocalAuthProvider singleton.
+def get_user_repository() -> SQLiteUserRepository:
+    """Get or create the cached user repository singleton.
 
     Must be called after ``init_engine_from_config()`` — the shared
     session factory is required to construct the user repository.
     """
-    global _cached_local_provider, _cached_repo
+    global _cached_repo
     if _cached_repo is None:
         from app.gateway.auth.repositories.sqlite import SQLiteUserRepository
         from deerflow.persistence.engine import get_session_factory
 
         sf = get_session_factory()
         if sf is None:
-            raise RuntimeError("get_local_provider() called before init_engine_from_config(); cannot access users table")
+            raise RuntimeError("get_user_repository() called before init_engine_from_config(); cannot access users table")
         _cached_repo = SQLiteUserRepository(sf)
+    return _cached_repo
+
+
+def get_local_provider() -> LocalAuthProvider:
+    """Get or create the cached LocalAuthProvider singleton.
+
+    Must be called after ``init_engine_from_config()`` — the shared
+    session factory is required to construct the user repository.
+    """
+    global _cached_local_provider
     if _cached_local_provider is None:
         from app.gateway.auth.local_provider import LocalAuthProvider
 
-        _cached_local_provider = LocalAuthProvider(repository=_cached_repo)
+        _cached_local_provider = LocalAuthProvider(repository=get_user_repository())
     return _cached_local_provider
+
+
+def get_platform_provider() -> PlatformAuthProvider:
+    """Return a PlatformAuthProvider bound to the freshest AppConfig."""
+    from app.gateway.auth.platform_provider import PlatformAuthProvider
+
+    return PlatformAuthProvider(
+        repository=get_user_repository(),
+        config=get_config().platform_auth,
+    )
 
 
 async def get_current_user_from_request(request: Request):

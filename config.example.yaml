@@ -15,13 +15,33 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 11
+config_version: 12
 
 # ============================================================================
 # Logging
 # ============================================================================
 # Log level for deerflow modules (debug/info/warning/error)
 log_level: info
+
+# ============================================================================
+# Company Gateway JWT Authentication
+# ============================================================================
+# When enabled, DeerFlow accepts JWTs injected by the company gateway via the
+# configured header. The JWT `sub` is mapped to a local shadow user through
+# users.oauth_provider/users.oauth_id while DeerFlow keeps UUID primary keys.
+platform_auth:
+  enabled: false
+  header: JLC-WEB-API-AccessToken
+  algorithm: RS256
+  issuer: ai-code-base-platform
+  audience: ai-code-base-platform
+  provider: company_gateway
+  auto_provision: true
+  # When enabling platform auth, these can reference environment variables:
+  #   default_password: $PLATFORM_AUTH_DEFAULT_PASSWORD
+  #   public_key: $PLATFORM_AUTH_PUBLIC_KEY
+  default_password: jlc@123456
+  public_key: ""
 
 # ============================================================================
 # Token Usage

@@ -17,8 +17,11 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
+from app.gateway.auth.platform_jwt import PlatformTokenError, parse_platform_user_claims
 from app.gateway.authz import _ALL_PERMISSIONS, AuthContext
+from app.gateway.deps import get_config, get_current_user_from_request, get_platform_provider
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
+from deerflow.config.platform_auth_config import PlatformAuthConfig
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
 # Paths that never require authentication.
@@ -80,8 +83,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
             internal_user = get_internal_user()
 
-        # Non-public path: require session cookie
-        if internal_user is None and not request.cookies.get("access_token"):
+        access_token = request.cookies.get("access_token")
+        platform_config: PlatformAuthConfig | None = None
+        platform_token: str | None = None
+        if internal_user is None and not access_token:
+            try:
+                platform_config = get_config().platform_auth
+            except Exception:
+                platform_config = PlatformAuthConfig()
+            platform_token = request.headers.get(platform_config.header) if platform_config.enabled else None
+
+        # Non-public path: require an accepted auth credential.
+        if internal_user is None and not access_token and not platform_token:
             return JSONResponse(
                 status_code=401,
                 content={
@@ -103,15 +116,38 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # propagate from AuthErrorCode, not get flattened into one
         # generic code. BaseHTTPMiddleware doesn't let HTTPException
         # bubble up, so we catch and render it as JSONResponse here.
-        from app.gateway.deps import get_current_user_from_request
-
         if internal_user is not None:
             user = internal_user
-        else:
+        elif access_token:
             try:
                 user = await get_current_user_from_request(request)
             except HTTPException as exc:
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        else:
+            assert platform_config is not None
+            try:
+                claims = parse_platform_user_claims(platform_token or "", platform_config)
+                user = await get_platform_provider().get_or_create_user_from_claims(claims)
+            except PlatformTokenError as exc:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": AuthErrorResponse(
+                            code=AuthErrorCode.TOKEN_INVALID,
+                            message=str(exc),
+                        ).model_dump()
+                    },
+                )
+            except ValueError as exc:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": AuthErrorResponse(
+                            code=AuthErrorCode.USER_NOT_FOUND,
+                            message=str(exc),
+                        ).model_dump()
+                    },
+                )
 
         # Stamp both request.state.user (for the contextvar pattern)
         # and request.state.auth (so @require_permission's "auth is
