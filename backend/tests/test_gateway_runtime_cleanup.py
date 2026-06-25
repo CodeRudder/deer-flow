@@ -53,6 +53,17 @@ def test_nginx_routes_official_langgraph_prefix_to_gateway_api():
         assert "proxy_pass http://gateway" in content or "proxy_pass http://$gateway_upstream" in content
 
 
+def test_nginx_routes_company_orchestration_prefix_to_gateway_api():
+    for path in ("docker/nginx/nginx.local.conf", "docker/nginx/nginx.conf"):
+        content = _read(path)
+
+        assert "location /api/orchestration/" in content
+        assert "rewrite ^/api/orchestration/(.*) /api/$1 break;" in content
+        assert "client_max_body_size 100M;" in content
+        assert "proxy_request_buffering off;" in content
+        assert "proxy_pass http://gateway" in content or "proxy_pass http://$gateway_upstream" in content
+
+
 def test_nginx_defers_cors_to_gateway_allowlist():
     for path in ("docker/nginx/nginx.local.conf", "docker/nginx/nginx.conf"):
         content = _read(path)
