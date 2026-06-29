@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Streamdown } from "streamdown";
 
 import {
   Artifact,
@@ -20,6 +19,7 @@ import {
   ArtifactHeader,
   ArtifactTitle,
 } from "@/components/ai-elements/artifact";
+import { Button } from "@/components/ui/button";
 import { Select, SelectItem } from "@/components/ui/select";
 import {
   SelectContent,
@@ -42,8 +42,15 @@ import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { findToolCallResult } from "@/core/messages/utils";
 import { installSkill } from "@/core/skills/api";
-import { streamdownPlugins } from "@/core/streamdown";
-import { checkCodeFile, getFileName, isImageFile } from "@/core/utils/files";
+import { SafeStreamdown } from "@/core/streamdown/components";
+import {
+  canBrowserPreviewFile,
+  checkCodeFile,
+  getFileExtensionDisplayName,
+  getFileIcon,
+  getFileName,
+  isImageFile,
+} from "@/core/utils/files";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
@@ -53,6 +60,7 @@ import { Tooltip } from "../tooltip";
 
 import { useArtifacts } from "./context";
 import { ImageLightbox } from "./image-lightbox";
+import { artifactMarkdownPlugins } from "./markdown-preview-plugins";
 
 const WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS = 3000;
 
@@ -78,6 +86,41 @@ export function ArtifactFileDetail({
     }
     return filepathFromProps;
   }, [filepathFromProps, isWriteFile]);
+  // Keep these local because ChatBox replaces context artifacts with thread state.
+  const [openedPresentedFilepaths, setOpenedPresentedFilepaths] = useState<
+    string[]
+  >(() => {
+    if (isWriteFile || artifacts.includes(filepath)) {
+      return [];
+    }
+    return [filepath];
+  });
+  useEffect(() => {
+    if (isWriteFile || artifacts.includes(filepath)) {
+      return;
+    }
+    setOpenedPresentedFilepaths((current) => {
+      if (current.includes(filepath)) {
+        return current;
+      }
+      return [...current, filepath];
+    });
+  }, [artifacts, filepath, isWriteFile]);
+  const artifactOptions = useMemo(() => {
+    if (isWriteFile) {
+      return artifacts;
+    }
+    const currentIsPresented = !artifacts.includes(filepath);
+    const presentedFilepaths =
+      currentIsPresented && !openedPresentedFilepaths.includes(filepath)
+        ? [...openedPresentedFilepaths, filepath]
+        : openedPresentedFilepaths;
+    const presentedSet = new Set(presentedFilepaths);
+    return [
+      ...presentedFilepaths,
+      ...artifacts.filter((artifact) => !presentedSet.has(artifact)),
+    ];
+  }, [artifacts, filepath, isWriteFile, openedPresentedFilepaths]);
   const isSkillFile = useMemo(() => {
     return filepath.endsWith(".skill");
   }, [filepath]);
@@ -96,6 +139,9 @@ export function ArtifactFileDetail({
     }
     return checkCodeFile(filepath);
   }, [filepath, isWriteFile, isSkillFile]);
+  const canPreviewInBrowser = useMemo(() => {
+    return canBrowserPreviewFile(filepath);
+  }, [filepath]);
   const isSupportPreview = useMemo(() => {
     return language === "html" || language === "markdown";
   }, [language]);
@@ -180,9 +226,9 @@ export function ArtifactFileDetail({
                 </SelectTrigger>
                 <SelectContent className="select-none">
                   <SelectGroup>
-                    {(artifacts ?? []).map((filepath) => (
-                      <SelectItem key={filepath} value={filepath}>
-                        {getFileName(filepath)}
+                    {artifactOptions.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {getFileName(option)}
                       </SelectItem>
                     ))}
                   </SelectGroup>
@@ -333,14 +379,66 @@ export function ArtifactFileDetail({
             />
           </div>
         )}
-        {!isCodeFile && !isImageArtifact && (
+        {!isCodeFile && !isImageArtifact && canPreviewInBrowser && (
           <iframe
             className="size-full"
             src={urlOfArtifact({ filepath, threadId, isMock })}
           />
         )}
+        {!isCodeFile && !isImageArtifact && !canPreviewInBrowser && (
+          <ArtifactDownloadFallback
+            filepath={filepath}
+            threadId={threadId}
+            isMock={isMock}
+          />
+        )}
       </ArtifactContent>
     </Artifact>
+  );
+}
+
+function ArtifactDownloadFallback({
+  filepath,
+  threadId,
+  isMock,
+}: {
+  filepath: string;
+  threadId: string;
+  isMock?: boolean;
+}) {
+  const filename = getFileName(filepath);
+  const fileType = getFileExtensionDisplayName(filepath);
+
+  return (
+    <div className="flex size-full items-center justify-center p-6">
+      <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+        <div className="text-muted-foreground">
+          {getFileIcon(filepath, "size-12")}
+        </div>
+        <div className="space-y-1">
+          <div className="font-medium break-all">{filename}</div>
+          <div className="text-muted-foreground text-sm">{fileType} file</div>
+        </div>
+        <p className="text-muted-foreground text-sm">
+          This file type cannot be previewed in the browser.
+        </p>
+        <Button asChild>
+          <a
+            href={urlOfArtifact({
+              filepath,
+              threadId,
+              download: true,
+              isMock,
+            })}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <DownloadIcon className="size-4" />
+            Download
+          </a>
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -430,13 +528,13 @@ export function ArtifactFilePreview({
   if (language === "markdown") {
     return (
       <div className="size-full px-4">
-        <Streamdown
+        <SafeStreamdown
           className="size-full"
-          {...streamdownPlugins}
+          {...artifactMarkdownPlugins}
           components={{ a: ArtifactLink }}
         >
           {content ?? ""}
-        </Streamdown>
+        </SafeStreamdown>
       </div>
     );
   }

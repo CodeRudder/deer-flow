@@ -1,12 +1,16 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { ChevronUpIcon, Loader2Icon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { ChevronUpIcon, Loader2Icon, RefreshCcwIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Conversation,
   ConversationContent,
 } from "@/components/ai-elements/conversation";
+import {
+  Reasoning,
+  ReasoningTrigger,
+} from "@/components/ai-elements/reasoning";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/core/i18n/hooks";
 import {
@@ -30,7 +34,10 @@ import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { useSubtaskStatuses } from "@/core/subagents/hooks";
 import type { Subtask } from "@/core/tasks";
 import { useUpdateSubtask } from "@/core/tasks/context";
-import { parseSubtaskResult } from "@/core/tasks/subtask-result";
+import {
+  derivePendingSubtaskStatus,
+  parseSubtaskResult,
+} from "@/core/tasks/subtask-result";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +45,7 @@ import { ArtifactFileList } from "../artifacts/artifact-file-list";
 import { CopyButton } from "../copy-button";
 import { StreamingIndicator } from "../streaming-indicator";
 import { SubtaskDetailSheet } from "../subtask-detail-sheet";
+import { Tooltip } from "../tooltip";
 
 import { MarkdownContent } from "./markdown-content";
 import { MessageGroup } from "./message-group";
@@ -178,6 +186,8 @@ export function MessageList({
   hasMoreHistory,
   loadMoreHistory,
   isHistoryLoading,
+  onRegenerateMessage,
+  canRegenerate = false,
 }: {
   className?: string;
   threadId: string;
@@ -188,16 +198,29 @@ export function MessageList({
   hasMoreHistory?: boolean;
   loadMoreHistory?: () => void;
   isHistoryLoading?: boolean;
+  onRegenerateMessage?: (
+    messageId: string,
+    supersededMessageIds: string[],
+  ) => void | Promise<void>;
+  canRegenerate?: boolean;
 }) {
   const { t } = useI18n();
-  const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
-  const updateSubtask = useUpdateSubtask();
+  const [turnStartTime, setTurnStartTime] = useState<number | null>(null);
+  const prevIsLoading = useRef(thread.isLoading);
+
+  useEffect(() => {
+    if (thread.isLoading && !prevIsLoading.current) {
+      setTurnStartTime(Date.now());
+    }
+    prevIsLoading.current = thread.isLoading;
+  }, [thread.isLoading]);
   const messages = thread.messages;
   const { data: subtaskStatuses } = useSubtaskStatuses(
     threadId,
     statusPollingEnabled,
     thread.isLoading,
   );
+  const updateSubtask = useUpdateSubtask();
   const prevStatusFingerprintRef = useRef("");
   const updateSubtaskRef = useRef(updateSubtask);
   updateSubtaskRef.current = updateSubtask;
@@ -270,6 +293,24 @@ export function MessageList({
   }, [messageSubtaskUpdates]);
 
   const groupedMessages = getMessageGroups(messages);
+  const [regeneratingMessageId, setRegeneratingMessageId] = useState<
+    string | null
+  >(null);
+  const hasActiveAssistantText = useMemo(() => {
+    let lastHumanIndex = -1;
+    for (let i = groupedMessages.length - 1; i >= 0; i--) {
+      if (groupedMessages[i]?.type === "human") {
+        lastHumanIndex = i;
+        break;
+      }
+    }
+    if (lastHumanIndex === -1) return false;
+    return groupedMessages
+      .slice(lastHumanIndex)
+      .some((g) => g.type === "assistant");
+  }, [groupedMessages]);
+  const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
+  const lastGroupIndex = groupedMessages.length - 1;
   const turnUsageMessagesByGroupIndex =
     getAssistantTurnUsageMessages(groupedMessages);
   const tokenDebugSteps = useMemo(
@@ -286,21 +327,86 @@ export function MessageList({
     [messages, thread.getMessagesMetadata, thread.isLoading],
   );
 
-  const renderAssistantCopyButton = useCallback(
-    (messages: Message[], isStreaming: boolean) => {
-      const clipboardData = getAssistantTurnCopyData(messages, { isStreaming });
+  const latestAssistantGroupId = useMemo(() => {
+    if (thread.isLoading) {
+      return null;
+    }
+    for (let i = groupedMessages.length - 1; i >= 0; i -= 1) {
+      const group = groupedMessages[i];
+      if (group?.type === "assistant") {
+        return group.id;
+      }
+    }
+    return null;
+  }, [groupedMessages, thread.isLoading]);
 
-      if (!clipboardData) {
+  const renderAssistantActions = useCallback(
+    (
+      messages: Message[],
+      isStreaming: boolean,
+      enableRegenerateForTurn: boolean,
+    ) => {
+      const clipboardData = getAssistantTurnCopyData(messages, { isStreaming });
+      const regenerateTarget = [...messages]
+        .reverse()
+        .find((message) => message.type === "ai" && message.id);
+      const supersededMessageIds = messages
+        .filter((message) => message.type === "ai" && message.id)
+        .map((message) => message.id)
+        .filter((id): id is string => typeof id === "string");
+
+      if (!clipboardData && !regenerateTarget) {
         return null;
       }
 
       return (
-        <div className="mt-2 flex justify-start opacity-0 transition-opacity delay-200 duration-300 group-hover/assistant-turn:opacity-100">
-          <CopyButton clipboardData={clipboardData} />
+        <div className="mt-2 flex justify-start gap-1 opacity-0 transition-opacity delay-200 duration-300 group-hover/assistant-turn:opacity-100">
+          {clipboardData && <CopyButton clipboardData={clipboardData} />}
+          {enableRegenerateForTurn &&
+            regenerateTarget?.id &&
+            onRegenerateMessage && (
+              <Tooltip content={t.common.regenerate}>
+                <Button
+                  aria-label={t.common.regenerate}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                  disabled={
+                    !canRegenerate ||
+                    regeneratingMessageId === regenerateTarget.id
+                  }
+                  onClick={() => {
+                    const targetId = regenerateTarget.id;
+                    if (!targetId) {
+                      return;
+                    }
+                    setRegeneratingMessageId(targetId);
+                    void Promise.resolve(
+                      onRegenerateMessage?.(targetId, supersededMessageIds),
+                    ).finally(() => {
+                      setRegeneratingMessageId(null);
+                    });
+                  }}
+                >
+                  <RefreshCcwIcon
+                    className={cn(
+                      "size-3",
+                      regeneratingMessageId === regenerateTarget.id &&
+                        "animate-spin",
+                    )}
+                  />
+                </Button>
+              </Tooltip>
+            )}
         </div>
       );
     },
-    [],
+    [
+      canRegenerate,
+      onRegenerateMessage,
+      regeneratingMessageId,
+      t.common.regenerate,
+    ],
   );
 
   const renderTokenUsage = useCallback(
@@ -368,24 +474,35 @@ export function MessageList({
         />
         {groupedMessages.map((group, groupIndex) => {
           const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
+          const groupIsLoading =
+            thread.isLoading && groupIndex === lastGroupIndex;
+          const groupKey = group.id ?? `group-${group.type}-${groupIndex}`;
 
           if (group.type === "human" || group.type === "assistant") {
             return (
               <div
-                key={group.id}
+                key={groupKey}
                 className={cn(
                   "w-full",
                   group.type === "assistant" && "group/assistant-turn",
                 )}
               >
-                {group.messages.map((msg) => {
+                {group.messages.map((msg, msgIndex) => {
                   return (
                     <MessageListItem
-                      key={`${group.id}/${msg.id}`}
+                      key={`${groupKey}/${msg.id ?? msgIndex}`}
                       message={msg}
-                      isLoading={thread.isLoading}
+                      isLoading={
+                        thread.isLoading &&
+                        groupIndex === groupedMessages.length - 1
+                      }
                       threadId={threadId}
                       showCopyButton={group.type !== "assistant"}
+                      turnStartTime={
+                        groupIndex === groupedMessages.length - 1
+                          ? turnStartTime
+                          : null
+                      }
                     />
                   );
                 })}
@@ -394,12 +511,13 @@ export function MessageList({
                   turnUsageMessages,
                 })}
                 {group.type === "assistant" &&
-                  renderAssistantCopyButton(
+                  renderAssistantActions(
                     group.messages,
                     isAssistantMessageGroupStreaming(
                       group.messages,
                       streamingMessages,
                     ),
+                    group.id === latestAssistantGroupId,
                   )}
               </div>
             );
@@ -407,7 +525,7 @@ export function MessageList({
             const message = group.messages[0];
             if (message && hasContent(message)) {
               return (
-                <div key={group.id} className="w-full">
+                <div key={groupKey} className="w-full">
                   <MarkdownContent
                     content={extractContentFromMessage(message)}
                     isLoading={thread.isLoading}
@@ -430,7 +548,7 @@ export function MessageList({
               }
             }
             return (
-              <div className="w-full" key={group.id}>
+              <div className="w-full" key={groupKey}>
                 {group.messages[0] && hasContent(group.messages[0]) && (
                   <MarkdownContent
                     content={extractContentFromMessage(group.messages[0])}
@@ -455,9 +573,18 @@ export function MessageList({
             for (const message of group.messages) {
               if (message.type === "ai") {
                 for (const toolCall of message.tool_calls ?? []) {
-                  if (toolCall.name === "task" && toolCall.id) {
+                  if (toolCall.name === "task") {
+                    const taskId = toolCall.id;
+                    if (!taskId) {
+                      continue;
+                    }
+                    const status = derivePendingSubtaskStatus(
+                      taskId,
+                      group.messages,
+                      groupIsLoading,
+                    );
                     const task: Subtask = {
-                      id: toolCall.id,
+                      id: taskId,
                       subagent_type:
                         typeof toolCall.args.subagent_type === "string"
                           ? toolCall.args.subagent_type
@@ -470,7 +597,10 @@ export function MessageList({
                         typeof toolCall.args.prompt === "string"
                           ? toolCall.args.prompt
                           : "",
-                      status: "in_progress",
+                      status,
+                      ...(status === "failed"
+                        ? { error: t.subtasks.failed }
+                        : {}),
                     };
                     tasks.add(task);
                   }
@@ -490,15 +620,15 @@ export function MessageList({
                 </div>,
               );
             }
-            for (const message of group.messages.filter(
-              (message) => message.type === "ai",
-            )) {
+            for (const [messageIndex, message] of group.messages
+              .filter((message) => message.type === "ai")
+              .entries()) {
               if (hasReasoning(message)) {
                 results.push(
                   <MessageGroup
-                    key={"thinking-group-" + message.id}
+                    key={`thinking-group-${message.id ?? `${groupKey}-${messageIndex}`}`}
                     messages={[message]}
-                    isLoading={thread.isLoading}
+                    isLoading={groupIsLoading}
                     tokenDebugSteps={tokenDebugSteps.filter(
                       (step) => step.messageId === message.id,
                     )}
@@ -510,23 +640,23 @@ export function MessageList({
               } else if (message.id) {
                 subagentDebugMessageIds.push(message.id);
               }
-              const taskIds = message.tool_calls
-                ?.filter((toolCall) => toolCall.name === "task")
-                .map((toolCall) => toolCall.id);
+              const taskIds = message.tool_calls?.flatMap((toolCall) =>
+                toolCall.name === "task" && toolCall.id ? [toolCall.id] : [],
+              );
               for (const taskId of taskIds ?? []) {
                 results.push(
                   <SubtaskCard
                     key={"task-group-" + taskId}
-                    taskId={taskId!}
+                    taskId={taskId}
                     threadId={threadId}
-                    isLoading={thread.isLoading}
+                    isLoading={groupIsLoading}
                   />,
                 );
               }
             }
             return (
               <div
-                key={"subtask-group-" + group.id}
+                key={`subtask-group-${groupKey}`}
                 className="relative z-1 flex flex-col gap-2"
               >
                 {results}
@@ -539,7 +669,7 @@ export function MessageList({
             );
           }
           return (
-            <div key={"group-" + group.id} className="w-full">
+            <div key={`group-${groupKey}`} className="w-full">
               <MessageGroup
                 messages={group.messages}
                 isLoading={thread.isLoading}
@@ -558,7 +688,13 @@ export function MessageList({
             </div>
           );
         })}
-        {thread.isLoading && <StreamingIndicator className="my-4" />}
+        {thread.isLoading && !hasActiveAssistantText && (
+          <div className="w-full">
+            <Reasoning isStreaming={true} startTimeProp={turnStartTime}>
+              <ReasoningTrigger hasContent={false} />
+            </Reasoning>
+          </div>
+        )}
         <div style={{ height: `${paddingBottom}px` }} />
       </ConversationContent>
       <SubtaskDetailSheet threadId={threadId} />

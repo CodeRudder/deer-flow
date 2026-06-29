@@ -8,7 +8,6 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
-import { Streamdown } from "streamdown";
 
 import {
   ChainOfThought,
@@ -31,6 +30,7 @@ import { useI18n } from "@/core/i18n/hooks";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { streamdownPluginsWithWordAnimation } from "@/core/streamdown";
+import { SafeStreamdown } from "@/core/streamdown/components";
 import {
   useSubtask,
   useSubtaskContext,
@@ -281,12 +281,12 @@ export function SubtaskCard({
           {task.prompt && (
             <ChainOfThoughtStep
               label={
-                <Streamdown
+                <SafeStreamdown
                   {...streamdownPluginsWithWordAnimation}
                   components={{ a: CitationLink }}
                 >
                   {task.prompt}
-                </Streamdown>
+                </SafeStreamdown>
               }
             ></ChainOfThoughtStep>
           )}

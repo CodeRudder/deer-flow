@@ -179,8 +179,9 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         # Create the image details message with text and image content
         image_content = self._create_image_details_message(state)
 
-        # Create a new human message with mixed content (text + images).
-        # This is model context, not a user-authored chat turn, so hide it from UI surfaces.
+        # Create a new human message with mixed content (text + images). This is
+        # internal context for the model only, so hide it from the chat UI and IM
+        # channels (matches the other middleware-injected context messages).
         human_msg = HumanMessage(
             content=image_content,
             name="view_image_context",
