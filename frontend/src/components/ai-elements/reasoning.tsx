@@ -161,16 +161,21 @@ const defaultGetThinkingMessage = (
   duration?: number,
   startTime?: number | null,
 ) => {
+  const normalizedDuration =
+    typeof duration === "number" && Number.isFinite(duration)
+      ? Math.max(0, Math.floor(duration))
+      : undefined;
+
   if (isStreaming && startTime != null && startTime !== undefined) {
     return <LiveTimer startTime={startTime} />;
   }
-  if (isStreaming || duration === 0) {
+  if (isStreaming) {
     return <Shimmer duration={1}>Thinking...</Shimmer>;
   }
-  if (duration === undefined) {
+  if (normalizedDuration === undefined) {
     return <span>Thought for a few seconds</span>;
   }
-  return <span>Thought for {duration} seconds</span>;
+  return <span>Thought for {normalizedDuration} seconds</span>;
 };
 
 export const ReasoningTrigger = memo(
