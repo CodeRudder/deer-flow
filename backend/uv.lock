@@ -760,7 +760,7 @@ version = "2.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "bcrypt" },
-    { name = "deerflow-harness" },
+    { name = "deerflow-harness", extra = ["postgres"] },
     { name = "dingtalk-stream" },
     { name = "email-validator" },
     { name = "fastapi" },
@@ -800,7 +800,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bcrypt", specifier = ">=4.0.0" },
-    { name = "deerflow-harness", editable = "packages/harness" },
+    { name = "deerflow-harness", extras = ["postgres"], editable = "packages/harness" },
     { name = "deerflow-harness", extras = ["postgres"], marker = "extra == 'postgres'", editable = "packages/harness" },
     { name = "dingtalk-stream", specifier = ">=0.24.3" },
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7.0" },
@@ -842,6 +842,7 @@ dependencies = [
     { name = "agent-sandbox" },
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "asyncpg" },
     { name = "cryptography" },
     { name = "ddgs" },
     { name = "dotenv" },
@@ -881,7 +882,6 @@ ollama = [
     { name = "langchain-ollama" },
 ]
 postgres = [
-    { name = "asyncpg" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
@@ -899,7 +899,7 @@ requires-dist = [
     { name = "agent-sandbox", specifier = ">=0.0.19" },
     { name = "aiosqlite", specifier = ">=0.19" },
     { name = "alembic", specifier = ">=1.13" },
-    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
+    { name = "asyncpg", specifier = ">=0.29" },
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "ddgs", specifier = ">=9.10.0" },
     { name = "dotenv", specifier = ">=0.9.9" },
