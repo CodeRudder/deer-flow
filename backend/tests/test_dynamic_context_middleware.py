@@ -1,7 +1,7 @@
 """Tests for DynamicContextMiddleware.
 
 Verifies that memory and current date are injected as a <system-reminder> into
-the first HumanMessage exactly once per session (frozen-snapshot pattern).
+the current user turn exactly once per session (frozen-snapshot pattern).
 """
 
 from types import SimpleNamespace
@@ -260,8 +260,13 @@ def test_legacy_systemmessage_reminder_without_key_detected():
     assert result is None  # same day detected from content → no re-injection
 
 
-def test_injects_only_into_first_human_message_not_later_ones():
-    """Reminder targets the first HumanMessage; subsequent messages are not touched."""
+def test_legacy_without_reminder_targets_latest_human_message_not_earlier_ones():
+    """Legacy state with no reminder targets the latest HumanMessage.
+
+    Old checkpoints can contain multiple historical HumanMessages but no dynamic
+    context marker. Injecting into the first one rewrites history and appends an
+    ``old-id__user`` message to the tail, so the safe target is the current turn.
+    """
     mw = _make_middleware()
     state = {
         "messages": [
@@ -277,15 +282,15 @@ def test_injects_only_into_first_human_message_not_later_ones():
 
     assert result is not None
     msgs = result["messages"]
-    # Only the two injected messages are returned (reminder + original first query)
+    # Only the two injected messages are returned (reminder + latest user query)
     assert len(msgs) == 2
-    assert msgs[0].id == "msg-1"  # reminder takes first message's ID
+    assert msgs[0].id == "msg-2"  # reminder takes latest message's ID
     assert msgs[0].additional_kwargs.get(_DYNAMIC_CONTEXT_REMINDER_KEY) is True
     assert _SYSTEM_REMINDER_TAG in msgs[0].content
-    assert msgs[1].id == "msg-1__user"  # original content with derived ID
-    assert msgs[1].content == "First"
-    # "Second" (msg-2) is not in the returned update — it is left unchanged
-    assert all(m.id != "msg-2" for m in msgs)
+    assert msgs[1].id == "msg-2__user"  # latest content with derived ID
+    assert msgs[1].content == "Second"
+    # "First" (msg-1) is not in the returned update — it is left unchanged.
+    assert all(m.id != "msg-1__user" for m in msgs)
 
 
 def test_summary_human_message_is_not_used_as_injection_target():
@@ -310,6 +315,79 @@ def test_summary_human_message_is_not_used_as_injection_target():
     assert msgs[0].additional_kwargs.get(_DYNAMIC_CONTEXT_REMINDER_KEY) is True
     assert msgs[1].id == "msg-2__user"
     assert msgs[1].content == "Follow-up"
+
+
+def test_legacy_multiturn_without_reminder_uses_current_run_message():
+    """Regression: legacy restored threads must not ID-swap an old user turn.
+
+    ThreadDataMiddleware stamps the latest request's HumanMessage with the run_id
+    before DynamicContextMiddleware runs. If a legacy checkpoint lacks a detectable
+    dynamic reminder, injection should target that current-run message rather than
+    the first historical HumanMessage.
+    """
+    mw = _make_middleware()
+    state = {
+        "messages": [
+            HumanMessage(content="请帮我开发 Dino Runner", id="old-id"),
+            AIMessage(content="已生成 index.html"),
+            HumanMessage(
+                content="同步到 git 仓库",
+                id="new-id",
+                name="user-input",
+                additional_kwargs={"run_id": "run-current"},
+            ),
+        ]
+    }
+
+    with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value=""), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        mock_dt.now.return_value.strftime.return_value = "2026-07-01, Wednesday"
+        result = mw.before_agent(state, _fake_runtime())
+
+    assert result is not None
+    ids = [message.id for message in result["messages"]]
+    assert "old-id__user" not in ids
+    assert ids == ["new-id", "new-id__user"]
+    assert result["messages"][1].content == "同步到 git 仓库"
+    assert result["messages"][1].additional_kwargs.get("run_id") == "run-current"
+
+
+def test_legacy_multiturn_without_run_id_uses_latest_human_message():
+    """When run_id is absent/None, reverse selection still targets the current turn."""
+    mw = _make_middleware()
+    state = {
+        "messages": [
+            HumanMessage(content="old question", id="old-id"),
+            AIMessage(content="old answer"),
+            HumanMessage(content="current question", id="new-id"),
+        ]
+    }
+
+    with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value=""), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        mock_dt.now.return_value.strftime.return_value = "2026-07-01, Wednesday"
+        result = mw.before_agent(state, _fake_runtime())
+
+    assert result is not None
+    ids = [message.id for message in result["messages"]]
+    assert "old-id__user" not in ids
+    assert ids == ["new-id", "new-id__user"]
+    assert result["messages"][1].content == "current question"
+
+
+def test_legacy_multiturn_without_trailing_human_skips_injection():
+    """If the current input cannot be identified at the tail, do not rewrite history."""
+    mw = _make_middleware()
+    state = {
+        "messages": [
+            HumanMessage(content="old question", id="old-id"),
+            AIMessage(content="old answer"),
+        ]
+    }
+
+    with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value=""), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        mock_dt.now.return_value.strftime.return_value = "2026-07-01, Wednesday"
+        result = mw.before_agent(state, _fake_runtime())
+
+    assert result is None
 
 
 # ---------------------------------------------------------------------------

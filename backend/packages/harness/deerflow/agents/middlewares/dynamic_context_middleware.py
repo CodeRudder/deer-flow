@@ -4,7 +4,9 @@ The system prompt is kept fully static for maximum prefix-cache reuse across use
 and sessions.  The current date is always injected.  Per-user memory is also injected
 when ``memory.injection_enabled`` is True in the app config.  Both are delivered once
 per conversation as a dedicated <system-reminder> SystemMessage inserted before the
-first user message (frozen-snapshot pattern).
+current user turn (frozen-snapshot pattern). In fresh one-message threads this is the
+first user message; in legacy threads missing prior reminder metadata it is the
+latest real user message so historical messages are not rewritten.
 
 When a conversation spans midnight the middleware detects the date change and injects
 a lightweight date-update reminder as a separate SystemMessage before the current turn.
@@ -122,15 +124,49 @@ def _is_user_injection_target(message: object) -> bool:
     return True
 
 
+def _message_run_id(message: object) -> object:
+    """Return a message's run_id marker, if ThreadDataMiddleware attached one."""
+    kwargs = getattr(message, "additional_kwargs", None) or {}
+    if not isinstance(kwargs, dict):
+        return None
+    return kwargs.get("run_id")
+
+
+def _current_turn_injection_target_index(messages: list) -> int | None:
+    """Return the current turn's injection target index.
+
+    Legacy checkpoints may have many historical HumanMessages but no dynamic-context
+    reminder marker. The old first-turn path used the first eligible HumanMessage,
+    which rewrote historical content and appended ``{old_id}__user`` to the tail.
+    Choose from the tail instead, using the latest eligible HumanMessage as the
+    current turn. When ThreadDataMiddleware supplies run_id markers, this still
+    scopes to the current run; when run_id is absent/None, the reverse scan
+    naturally selects the latest real user message.
+    """
+    if not messages:
+        return None
+
+    latest_message = messages[-1]
+    if not _is_user_injection_target(latest_message):
+        return None
+
+    current_run_id = _message_run_id(latest_message)
+    for index in reversed(range(len(messages))):
+        message = messages[index]
+        if _is_user_injection_target(message) and _message_run_id(message) == current_run_id:
+            return index
+    return None
+
+
 class DynamicContextMiddleware(AgentMiddleware):
     """Inject memory and current date as a SystemMessage <system-reminder>.
 
-    First turn
-    ----------
-    Prepends a full system-reminder (memory + date) to the first HumanMessage and
-    persists it (same message ID).  The first message is then frozen for the whole
-    session — its content never changes again, so the prefix cache can hit on every
-    subsequent turn.
+    First visible injection
+    -----------------------
+    Prepends a full system-reminder (memory + date) to the current-turn HumanMessage
+    and persists it (same message ID). In a brand-new thread that message is also
+    the first HumanMessage; in legacy restored threads it is deliberately the latest
+    real user turn so old messages are never moved to the tail by the ID-swap.
 
     Midnight crossing
     -----------------
@@ -252,16 +288,16 @@ class DynamicContextMiddleware(AgentMiddleware):
 
         if last_date is None:
             # ── First turn: inject full reminder as a SystemMessage ─────
-            first_idx = next((i for i, m in enumerate(messages) if _is_user_injection_target(m)), None)
-            if first_idx is None:
+            target_idx = _current_turn_injection_target_index(messages)
+            if target_idx is None:
                 return None
             date_reminder, memory_block = self._build_full_reminder()
             logger.info(
-                "DynamicContextMiddleware: injecting full reminder (has_memory=%s) into first HumanMessage id=%r",
+                "DynamicContextMiddleware: injecting full reminder (has_memory=%s) into current HumanMessage id=%r",
                 memory_block is not None,
-                messages[first_idx].id,
+                messages[target_idx].id,
             )
-            result_msgs = self._make_reminder_and_user_messages(messages[first_idx], date_reminder, memory_block, reminder_date=current_date)
+            result_msgs = self._make_reminder_and_user_messages(messages[target_idx], date_reminder, memory_block, reminder_date=current_date)
             return {"messages": result_msgs}
 
         if last_date == current_date:

@@ -308,7 +308,7 @@ def build_middlewares(
     middlewares.append(MainSessionMiddleware())
 
     # Always inject current date (and optionally memory) as <system-reminder> into the
-    # first HumanMessage to keep the system prompt fully static for prefix-cache reuse.
+    # current user turn, keeping the base system prompt static for prefix-cache reuse.
     from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
 
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name, app_config=resolved_app_config))

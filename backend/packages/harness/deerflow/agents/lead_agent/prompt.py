@@ -862,7 +862,7 @@ def apply_prompt_template(
 
     # Build and return the fully static system prompt.
     # Memory and current date are injected per-turn via DynamicContextMiddleware
-    # as a <system-reminder> in the first HumanMessage, keeping this prompt
+    # as a <system-reminder> on the current user turn, keeping this prompt
     # identical across users and sessions for maximum prefix-cache reuse.
     return SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",

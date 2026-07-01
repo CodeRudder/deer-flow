@@ -199,7 +199,7 @@ class ClaudeChatModel(ChatAnthropic):
 
         The system prompt is expected to be fully static (no per-user memory or
         current date).  Dynamic context is injected per-turn via
-        DynamicContextMiddleware as a <system-reminder> in the first HumanMessage.
+        DynamicContextMiddleware as a <system-reminder> on the current user turn.
         """
         MAX_CACHE_BREAKPOINTS = 4
 

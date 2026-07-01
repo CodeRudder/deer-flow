@@ -218,7 +218,7 @@ Lead-agent middlewares are assembled in strict order across three functions: the
 
 **Lead-only middlewares** (`build_middlewares`, appended after the base):
 
-11. **DynamicContextMiddleware** - Injects the current date (and optionally memory) as a `<system-reminder>` into the first HumanMessage, keeping the base system prompt fully static for prefix-cache reuse
+11. **DynamicContextMiddleware** - Injects the current date (and optionally memory) as a `<system-reminder>` into the current user turn, keeping the base system prompt fully static for prefix-cache reuse while avoiding legacy-history rewrites
 12. **SkillActivationMiddleware** - Detects strict `/skill-name task` syntax on the latest real user message, resolves only enabled and runtime-allowed skills, injects the `SKILL.md` body as hidden current-turn context, and records a `middleware:skill_activation` audit event
 13. **SummarizationMiddleware** - *(optional, if enabled)* Context reduction when approaching token limits
 14. **TodoListMiddleware** - *(optional, if `is_plan_mode`)* Task tracking with the `write_todos` tool
