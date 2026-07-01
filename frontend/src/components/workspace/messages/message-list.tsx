@@ -222,9 +222,10 @@ export function MessageList({
   );
   const updateSubtask = useUpdateSubtask();
   const prevStatusFingerprintRef = useRef("");
+  const prevMessageSubtaskFingerprintRef = useRef("");
   const updateSubtaskRef = useRef(updateSubtask);
   updateSubtaskRef.current = updateSubtask;
-  const messageSubtaskUpdates = useMemo(() => {
+  const { messageSubtaskUpdates, messageSubtaskFingerprint } = useMemo(() => {
     const updates = new Map<string, Partial<Subtask> & { id: string }>();
     for (const message of messages) {
       if (message.type === "ai") {
@@ -255,7 +256,9 @@ export function MessageList({
         });
       }
     }
-    return Array.from(updates.values());
+    const messageSubtaskUpdates = Array.from(updates.values());
+    const messageSubtaskFingerprint = JSON.stringify(messageSubtaskUpdates);
+    return { messageSubtaskUpdates, messageSubtaskFingerprint };
   }, [messages]);
 
   useEffect(() => {
@@ -287,10 +290,17 @@ export function MessageList({
   }, [subtaskStatuses]);
 
   useEffect(() => {
+    if (
+      messageSubtaskFingerprint === prevMessageSubtaskFingerprintRef.current
+    ) {
+      return;
+    }
+    prevMessageSubtaskFingerprintRef.current = messageSubtaskFingerprint;
+
     for (const taskUpdate of messageSubtaskUpdates) {
       updateSubtaskRef.current(taskUpdate);
     }
-  }, [messageSubtaskUpdates]);
+  }, [messageSubtaskFingerprint, messageSubtaskUpdates]);
 
   const groupedMessages = getMessageGroups(messages);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<
