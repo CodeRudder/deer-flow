@@ -12,6 +12,7 @@ def _make_config(*, allow_host_bash: bool, sandbox_use: str = "deerflow.sandbox.
             *(extra_tools or []),
         ],
         models=[],
+        vision_models=[],
         sandbox=SimpleNamespace(
             use=sandbox_use,
             allow_host_bash=allow_host_bash,

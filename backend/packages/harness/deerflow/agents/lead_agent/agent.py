@@ -44,6 +44,7 @@ from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddlewar
 from deerflow.agents.thread_state import ThreadState
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
+from deerflow.config.vision_model_config import has_configured_vision_model
 from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.models import create_chat_model
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
@@ -343,10 +344,12 @@ def build_middlewares(
     # Add MemoryMiddleware (after TitleMiddleware)
     middlewares.append(MemoryMiddleware(agent_name=agent_name, memory_config=resolved_app_config.memory))
 
-    # Add ViewImageMiddleware only if the current model supports vision.
+    # Add ViewImageMiddleware only for the legacy path where the main model
+    # itself consumes image inputs. Independent vision models return text
+    # directly from view_image and must not trigger base64 injection.
     # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
     model_config = resolved_app_config.get_model_config(model_name) if model_name else None
-    if model_config is not None and model_config.supports_vision:
+    if not has_configured_vision_model(resolved_app_config) and model_config is not None and model_config.supports_vision:
         middlewares.append(ViewImageMiddleware())
 
     # Hide deferred tool schemas from model binding until tool_search promotes them.

@@ -4,6 +4,7 @@ from langchain.tools import BaseTool
 
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
+from deerflow.config.vision_model_config import has_configured_vision_model
 from deerflow.reflection import resolve_variable
 from deerflow.sandbox.security import is_host_bash_allowed
 from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, view_image_tool
@@ -104,11 +105,17 @@ def get_available_tools(
     if model_name is None and config.models:
         model_name = config.models[0].name
 
-    # Add view_image_tool only if the model supports vision
+    # Add view_image_tool when an independent vision model is configured, or
+    # when the main model can consume image inputs via ViewImageMiddleware.
     model_config = config.get_model_config(model_name) if model_name else None
-    if model_config is not None and model_config.supports_vision:
+    if has_configured_vision_model(config) or (model_config is not None and model_config.supports_vision):
         builtin_tools.append(view_image_tool)
-        logger.info(f"Including view_image_tool for model '{model_name}' (supports_vision=True)")
+        logger.info(
+            "Including view_image_tool for model %r (independent_vision=%s, supports_vision=%s)",
+            model_name,
+            has_configured_vision_model(config),
+            bool(model_config is not None and model_config.supports_vision),
+        )
 
     # Get cached MCP tools if enabled
     # NOTE: We use ExtensionsConfig.from_file() instead of config.extensions

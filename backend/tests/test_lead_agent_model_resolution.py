@@ -17,11 +17,17 @@ from deerflow.config.memory_config import MemoryConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.summarization_config import SummarizationConfig
+from deerflow.config.vision_model_config import VisionModelConfig
 
 
-def _make_app_config(models: list[ModelConfig], loop_detection: LoopDetectionConfig | None = None) -> AppConfig:
+def _make_app_config(
+    models: list[ModelConfig],
+    loop_detection: LoopDetectionConfig | None = None,
+    vision_models: list[VisionModelConfig] | None = None,
+) -> AppConfig:
     return AppConfig(
         models=models,
+        vision_models=vision_models or [],
         sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
         loop_detection=loop_detection or LoopDetectionConfig(),
     )
@@ -345,6 +351,41 @@ def test_build_middlewares_uses_resolved_model_name_for_vision(monkeypatch):
     assert len(middlewares) > 0 and isinstance(middlewares[-3], MagicMock)
 
 
+def test_build_middlewares_skips_view_image_middleware_when_independent_vision_model_configured(monkeypatch):
+    app_config = _make_app_config(
+        [
+            ModelConfig(
+                name="vision-model",
+                display_name="vision-model",
+                description=None,
+                use="langchain_openai:ChatOpenAI",
+                model="vision-model",
+                supports_thinking=False,
+                supports_vision=True,
+            )
+        ],
+        vision_models=[
+            VisionModelConfig(
+                name="company-vision",
+                model="kimi-k2.6",
+                base_url="https://vision.example.test/api/v1/messages",
+            )
+        ],
+    )
+
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+
+    middlewares = lead_agent_module.build_middlewares(
+        {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
+        model_name="vision-model",
+        app_config=app_config,
+    )
+
+    assert not any(isinstance(m, lead_agent_module.ViewImageMiddleware) for m in middlewares)
+
+
 def test_build_middlewares_passes_explicit_app_config_to_shared_factory(monkeypatch):
     app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
     captured: dict[str, object] = {}
@@ -400,7 +441,7 @@ def test_build_middlewares_mounts_main_session_and_summarization_loop(monkeypatc
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda *, app_config=None: fake_summarization)
     monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
 
-    middlewares = lead_agent_module._build_middlewares(
+    middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
         model_name="safe-model",
         app_config=app_config,

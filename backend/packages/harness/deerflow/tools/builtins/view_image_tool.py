@@ -8,8 +8,12 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from deerflow.agents.thread_state import ThreadDataState
+from deerflow.config import get_app_config
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
+from deerflow.config.vision_model_config import get_default_vision_model_config
 from deerflow.tools.types import Runtime
+from deerflow.vision import VisionClient, VisionUnderstandingError
+from deerflow.vision.vision_client import VISION_UNDERSTANDING_ERROR_MESSAGE
 
 _ALLOWED_IMAGE_VIRTUAL_ROOTS = (
     f"{VIRTUAL_PATH_PREFIX}/workspace",
@@ -46,6 +50,13 @@ def _sanitize_image_error(error: Exception, thread_data: ThreadDataState | None)
     return mask_local_paths_in_output(f"{type(error).__name__}: {error}", thread_data)
 
 
+def _get_runtime_app_config(runtime: Runtime):
+    context = runtime.context if runtime is not None else None
+    if isinstance(context, dict) and context.get("app_config") is not None:
+        return context["app_config"]
+    return get_app_config()
+
+
 @tool("view_image", parse_docstring=True)
 def view_image_tool(
     runtime: Runtime,
@@ -54,7 +65,7 @@ def view_image_tool(
 ) -> Command:
     """Read an image file.
 
-    Use this tool to read an image file and make it available for display.
+    Use this tool to read an image file. When an independent vision model is configured, this tool returns a text understanding of the image. Otherwise, it makes the image available to the main vision-capable model.
 
     When to use the view_image tool:
     - When you need to view an image file.
@@ -152,6 +163,28 @@ def view_image_tool(
         )
     mime_type = detected_mime_type
     image_base64 = base64.b64encode(image_data).decode("utf-8")
+
+    vision_model_config = get_default_vision_model_config(_get_runtime_app_config(runtime))
+    if vision_model_config is not None:
+        try:
+            understanding = VisionClient(vision_model_config).understand_image_base64(
+                image_base64=image_base64,
+                mime_type=mime_type,
+                image_path=image_path,
+            )
+        except VisionUnderstandingError:
+            return Command(
+                update={
+                    "viewed_images": {},
+                    "messages": [ToolMessage(VISION_UNDERSTANDING_ERROR_MESSAGE, tool_call_id=tool_call_id)],
+                },
+            )
+        return Command(
+            update={
+                "viewed_images": {},
+                "messages": [ToolMessage(understanding, tool_call_id=tool_call_id)],
+            },
+        )
 
     # Update viewed_images in state
     # The merge_viewed_images reducer will handle merging with existing images

@@ -15,6 +15,7 @@ from deerflow.config.app_config import AppConfig, CircuitBreakerConfig
 from deerflow.config.guardrails_config import GuardrailsConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
+from deerflow.config.vision_model_config import VisionModelConfig
 
 
 def _request(name: str = "web_search", tool_call_id: str | None = "tc-1"):
@@ -31,7 +32,7 @@ def _module(name: str, **attrs):
     return module
 
 
-def _make_app_config(*, supports_vision: bool = False) -> AppConfig:
+def _make_app_config(*, supports_vision: bool = False, vision_models: list[VisionModelConfig] | None = None) -> AppConfig:
     return AppConfig(
         models=[
             ModelConfig(
@@ -43,6 +44,7 @@ def _make_app_config(*, supports_vision: bool = False) -> AppConfig:
                 supports_vision=supports_vision,
             )
         ],
+        vision_models=vision_models or [],
         sandbox=SandboxConfig(use="test"),
         guardrails=GuardrailsConfig(enabled=False),
         circuit_breaker=CircuitBreakerConfig(failure_threshold=7, recovery_timeout_sec=11),
@@ -322,6 +324,24 @@ def test_subagent_runtime_middlewares_include_view_image_for_default_vision_mode
 
 def test_subagent_runtime_middlewares_skip_view_image_for_text_model(monkeypatch):
     app_config = _make_app_config(supports_vision=False)
+    _stub_runtime_middleware_imports(monkeypatch)
+
+    middlewares = build_subagent_runtime_middlewares(app_config=app_config, model_name="test-model")
+
+    assert not any(isinstance(middleware, ViewImageMiddleware) for middleware in middlewares)
+
+
+def test_subagent_runtime_middlewares_skip_view_image_when_independent_vision_model_configured(monkeypatch):
+    app_config = _make_app_config(
+        supports_vision=True,
+        vision_models=[
+            VisionModelConfig(
+                name="company-vision",
+                model="kimi-k2.6",
+                base_url="https://vision.example.test/api/v1/messages",
+            )
+        ],
+    )
     _stub_runtime_middleware_imports(monkeypatch)
 
     middlewares = build_subagent_runtime_middlewares(app_config=app_config, model_name="test-model")

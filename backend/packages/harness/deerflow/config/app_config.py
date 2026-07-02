@@ -39,6 +39,7 @@ from deerflow.config.token_usage_config import TokenUsageConfig
 from deerflow.config.tool_config import ToolConfig, ToolGroupConfig
 from deerflow.config.tool_output_config import ToolOutputConfig
 from deerflow.config.tool_search_config import ToolSearchConfig, load_tool_search_config_from_dict
+from deerflow.config.vision_model_config import VisionModelConfig
 
 load_dotenv()
 
@@ -102,6 +103,7 @@ class AppConfig(BaseModel):
     token_usage: TokenUsageConfig = Field(default_factory=TokenUsageConfig, description="Token usage tracking configuration")
     token_budget: TokenBudgetConfig = Field(default_factory=TokenBudgetConfig, description="Token Budget tracking and limits configuration.")
     models: list[ModelConfig] = Field(default_factory=list, description="Available models")
+    vision_models: list[VisionModelConfig] = Field(default_factory=list, description="Independent image-understanding model configuration")
     sandbox: SandboxConfig = Field(
         description=format_field_description(
             "sandbox",
@@ -433,6 +435,15 @@ class AppConfig(BaseModel):
         self._models_by_name = models_by_name
         self._tools_by_name = tools_by_name
         self._tool_groups_by_name = tool_groups_by_name
+        return self
+
+    @model_validator(mode="after")
+    def _validate_vision_models(self) -> "AppConfig":
+        """Validate independent vision-model configuration."""
+        if len(self.vision_models) > 1:
+            raise ValueError("Only one entry is currently supported under `vision_models`.")
+        if self.vision_models and self.vision_models[0].stream:
+            raise ValueError("`vision_models[0].stream` must be false; streaming vision responses are not supported.")
         return self
 
     def get_model_config(self, name: str) -> ModelConfig | None:

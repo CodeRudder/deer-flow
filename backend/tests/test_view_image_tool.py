@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from deerflow.config.app_config import AppConfig
+from deerflow.config.model_config import ModelConfig
+from deerflow.config.sandbox_config import SandboxConfig
+from deerflow.config.vision_model_config import VisionModelConfig
 from deerflow.tools.builtins.view_image_tool import view_image_tool
 
 view_image_module = importlib.import_module("deerflow.tools.builtins.view_image_tool")
@@ -28,11 +32,31 @@ def _make_thread_data(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def _make_runtime(thread_data: dict[str, str]) -> SimpleNamespace:
+def _make_runtime(thread_data: dict[str, str], *, app_config=None) -> SimpleNamespace:
+    context = {"thread_id": "thread-1"}
+    if app_config is not None:
+        context["app_config"] = app_config
     return SimpleNamespace(
         state={"thread_data": thread_data},
-        context={"thread_id": "thread-1"},
+        context=context,
         config={},
+    )
+
+
+def _make_app_config(*, vision_model: VisionModelConfig | None = None) -> AppConfig:
+    return AppConfig(
+        models=[
+            ModelConfig(
+                name="text-model",
+                display_name="text-model",
+                description=None,
+                use="langchain_openai:ChatOpenAI",
+                model="text-model",
+                supports_vision=False,
+            )
+        ],
+        vision_models=[vision_model] if vision_model else [],
+        sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
     )
 
 
@@ -55,7 +79,8 @@ def test_view_image_rejects_external_absolute_path(tmp_path: Path) -> None:
     assert "viewed_images" not in result.update
 
 
-def test_view_image_reads_virtual_uploads_path(tmp_path: Path) -> None:
+def test_view_image_reads_virtual_uploads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(view_image_module, "get_app_config", lambda: _make_app_config())
     thread_data = _make_thread_data(tmp_path)
     image_path = Path(thread_data["uploads_path"]) / "sample.png"
     image_path.write_bytes(PNG_BYTES)
@@ -70,6 +95,77 @@ def test_view_image_reads_virtual_uploads_path(tmp_path: Path) -> None:
     viewed_image = result.update["viewed_images"]["/mnt/user-data/uploads/sample.png"]
     assert viewed_image["base64"] == base64.b64encode(PNG_BYTES).decode("utf-8")
     assert viewed_image["mime_type"] == "image/png"
+
+
+def test_view_image_uses_independent_vision_model_without_viewed_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vision_model = VisionModelConfig(
+        name="company-vision",
+        model="kimi-k2.6",
+        base_url="https://vision.example.test/api/v1/messages",
+        api_key="test-key",
+    )
+    app_config = _make_app_config(vision_model=vision_model)
+
+    def _raise_global_config():
+        raise AssertionError("runtime app_config should be used when present")
+
+    monkeypatch.setattr(view_image_module, "get_app_config", _raise_global_config)
+
+    captured: dict[str, object] = {}
+
+    def _fake_understand(self, *, image_base64: str, mime_type: str, image_path: str):
+        captured["config"] = self.config
+        captured["image_base64"] = image_base64
+        captured["mime_type"] = mime_type
+        captured["image_path"] = image_path
+        return "图片里有一面红旗。"
+
+    monkeypatch.setattr(view_image_module.VisionClient, "understand_image_base64", _fake_understand)
+    thread_data = _make_thread_data(tmp_path)
+    image_path = Path(thread_data["uploads_path"]) / "sample.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    result = view_image_tool.func(
+        runtime=_make_runtime(thread_data, app_config=app_config),
+        image_path="/mnt/user-data/uploads/sample.png",
+        tool_call_id="tc-vision",
+    )
+
+    assert _message_content(result) == "图片里有一面红旗。"
+    assert result.update["viewed_images"] == {}
+    assert captured == {
+        "config": vision_model,
+        "image_base64": base64.b64encode(PNG_BYTES).decode("utf-8"),
+        "mime_type": "image/png",
+        "image_path": "/mnt/user-data/uploads/sample.png",
+    }
+
+
+def test_view_image_reports_independent_vision_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vision_model = VisionModelConfig(
+        name="company-vision",
+        model="kimi-k2.6",
+        base_url="https://vision.example.test/api/v1/messages",
+        api_key="test-key",
+    )
+    monkeypatch.setattr(view_image_module, "get_app_config", lambda: _make_app_config(vision_model=vision_model))
+
+    def _raise_understand(*args, **kwargs):
+        raise view_image_module.VisionUnderstandingError("boom")
+
+    monkeypatch.setattr(view_image_module.VisionClient, "understand_image_base64", _raise_understand)
+    thread_data = _make_thread_data(tmp_path)
+    image_path = Path(thread_data["uploads_path"]) / "sample.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    result = view_image_tool.func(
+        runtime=_make_runtime(thread_data),
+        image_path="/mnt/user-data/uploads/sample.png",
+        tool_call_id="tc-vision-fail",
+    )
+
+    assert _message_content(result) == "多模态的工具理解调用异常"
+    assert result.update["viewed_images"] == {}
 
 
 def test_view_image_rejects_spoofed_extension(tmp_path: Path) -> None:
