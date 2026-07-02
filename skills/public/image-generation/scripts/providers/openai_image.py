@@ -65,6 +65,17 @@ def _build_session() -> requests.Session:
     return session
 
 
+def _images_generations_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/images/generations"
+
+
+def _images_generations_params() -> dict[str, str] | None:
+    api_version = os.getenv("OPENAI_IMAGE_API_VERSION")
+    if not api_version:
+        return None
+    return {"api-version": api_version}
+
+
 def _build_payload(
     *,
     prompt_text: str,
@@ -186,9 +197,10 @@ def _post_images_generations(
     timeout_seconds: int,
 ) -> tuple[str, str]:
     response = session.post(
-        f"{base_url}/images/generations",
+        _images_generations_url(base_url),
         headers=_headers(api_key),
         json=payload,
+        params=_images_generations_params(),
         timeout=(10, timeout_seconds),
     )
     if not response.ok:

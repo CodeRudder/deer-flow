@@ -1187,6 +1187,8 @@ image_generation:
     - name: openai_image
       display_name: ChatGPT Image
       api_key: $OPENAI_IMAGE_API_KEY
+      # Optional for GPT image proxy channels that require an API version query:
+      # set OPENAI_IMAGE_API_VERSION=2024-02-01 in the runtime environment.
       models:
         - name: gpt-image-2
           display_name: gpt-image-2
