@@ -29,7 +29,6 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
         lambda: SimpleNamespace(model_extra={}),
     )
     monkeypatch.setenv("QWEN_IMAGE_API_KEY", "test-key")
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -37,9 +36,8 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
     providers = {provider.name: provider for provider in response.providers}
 
     assert response.skill_enabled is True
-    assert [provider.name for provider in response.providers] == ["qwen_image", "gemini", "openai_image"]
+    assert [provider.name for provider in response.providers] == ["qwen_image", "openai_image"]
     assert providers["qwen_image"].configured is True
-    assert providers["gemini"].configured is False
     assert providers["openai_image"].configured is False
     assert providers["qwen_image"].models[0].name == "qwen-image-2.0-pro"
 

@@ -55,17 +55,6 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
         ),
     ),
     _ProviderDefinition(
-        name="gemini",
-        display_name="Gemini",
-        api_key_env="GEMINI_API_KEY",
-        models=(
-            ImageGenerationModel(
-                name="gemini-3-pro-image-preview",
-                display_name="Gemini 3 Pro Image Preview",
-            ),
-        ),
-    ),
-    _ProviderDefinition(
         name="openai_image",
         display_name="ChatGPT Image",
         api_key_env="OPENAI_IMAGE_API_KEY",

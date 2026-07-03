@@ -25,10 +25,6 @@ qwen_module = _load_module(
     "image_generation_qwen_image",
     SCRIPT_DIR / "providers" / "qwen_image.py",
 )
-gemini_module = _load_module(
-    "image_generation_gemini",
-    SCRIPT_DIR / "providers" / "gemini.py",
-)
 openai_image_module = _load_module(
     "image_generation_openai_image",
     SCRIPT_DIR / "providers" / "openai_image.py",
@@ -307,6 +303,7 @@ def test_openai_image_posts_and_downloads_url(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_IMAGE_BASE_URL", "https://www.packyapi.com/v1")
     monkeypatch.delenv("OPENAI_IMAGE_MODE", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_API_VERSION", raising=False)
 
     post_response = Mock()
     post_response.ok = True
@@ -344,6 +341,45 @@ def test_openai_image_posts_and_downloads_url(monkeypatch, tmp_path):
     session.get.assert_called_once_with("https://cdn.example/result.png", timeout=(10, 60))
     assert output_file.read_bytes() == b"fake-png-bytes"
     assert "provider=openai_image" in result
+
+
+def test_openai_image_posts_with_optional_api_version(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_IMAGE_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "OPENAI_IMAGE_BASE_URL",
+        "https://jlc-ai-codeing-image.openai.azure.com/openai/deployments/gpt-image-2",
+    )
+    monkeypatch.setenv("OPENAI_IMAGE_API_VERSION", "2024-02-01")
+    monkeypatch.delenv("OPENAI_IMAGE_MODE", raising=False)
+
+    post_response = Mock()
+    post_response.ok = True
+    post_response.json.return_value = {
+        "data": [
+            {
+                "b64_json": base64.b64encode(b"fake-png-bytes").decode("ascii"),
+            }
+        ]
+    }
+    output_file = tmp_path / "out.png"
+
+    session = Mock()
+    session.post.return_value = post_response
+    with patch.object(openai_image_module, "_build_session", return_value=session):
+        openai_image_module.generate(
+            prompt_text="一只橘猫戴着橙色围巾抱着水獭，温暖插画风格",
+            reference_images=[],
+            output_file=str(output_file),
+            aspect_ratio="16:9",
+            model="gpt-image-2",
+        )
+
+    session.post.assert_called_once()
+    assert session.post.call_args.args[0] == ("https://jlc-ai-codeing-image.openai.azure.com/openai/deployments/gpt-image-2/images/generations")
+    assert session.post.call_args.kwargs["params"] == {"api-version": "2024-02-01"}
+    assert session.post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert session.post.call_args.kwargs["json"]["size"] == "3840x2160"
+    assert output_file.read_bytes() == b"fake-png-bytes"
 
 
 def test_openai_image_uses_openai_api_key_fallback(monkeypatch, tmp_path):
@@ -462,7 +498,7 @@ def test_generate_reads_json_prompt_for_all_providers(tmp_path):
         encoding="utf-8",
     )
 
-    prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "gemini")
+    prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "openai_image")
 
     assert prompt_text == "A red kite"
     assert negative_prompt == "blurry"
@@ -497,45 +533,10 @@ def test_generate_keeps_json_without_prompt_backward_compatible(tmp_path):
     raw_prompt = json.dumps({"style": "watercolor", "composition": "window side"})
     prompt_file.write_text(raw_prompt, encoding="utf-8")
 
-    prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "gemini")
+    prompt_text, negative_prompt = generate_module._read_prompt(str(prompt_file), "qwen_image")
 
     assert prompt_text == raw_prompt
     assert negative_prompt is None
-
-
-def test_gemini_preserves_reference_images(monkeypatch, tmp_path):
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
-    prompt_text = "prompt"
-    ref_file = tmp_path / "ref.jpg"
-    ref_file.write_bytes(b"reference-bytes")
-    output_file = tmp_path / "out.jpg"
-    image_b64 = base64.b64encode(b"generated-bytes").decode("utf-8")
-
-    response = Mock()
-    response.raise_for_status = Mock()
-    response.json.return_value = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [{"inlineData": {"data": image_b64}}],
-                }
-            }
-        ]
-    }
-
-    with patch.object(gemini_module.requests, "post", return_value=response) as post:
-        result = gemini_module.generate(
-            prompt_text=prompt_text,
-            reference_images=[str(ref_file)],
-            output_file=str(output_file),
-            aspect_ratio="16:9",
-        )
-
-    payload_parts = post.call_args.kwargs["json"]["contents"][0]["parts"]
-    assert payload_parts[0]["inlineData"]["data"] == base64.b64encode(b"reference-bytes").decode("utf-8")
-    assert payload_parts[-1]["text"] == prompt_text
-    assert output_file.read_bytes() == b"generated-bytes"
-    assert result == f"Successfully generated image to {output_file}"
 
 
 def test_generate_uses_provider_registry(monkeypatch, tmp_path):
@@ -682,7 +683,7 @@ image_generation:
             prompt_file=str(prompt_file),
             reference_images=[],
             output_file=str(tmp_path / "out.png"),
-            provider="gemini",
+            provider="openai_image",
         )
 
     message = str(exc.value)

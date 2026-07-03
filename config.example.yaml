@@ -1178,12 +1178,6 @@ image_generation:
         - name: wan2.7-image-pro
           display_name: wan2.7-image-pro
           description: 功能最全面，支持组图生成和高达4096x4096的分辨率，并增强了五官控制、色彩控制和超长文字渲染能力
-    - name: gemini
-      display_name: Gemini
-      api_key: $GEMINI_API_KEY
-      models:
-        - name: gemini-3-pro-image-preview
-          display_name: Gemini 3 Pro Image Preview
     - name: openai_image
       display_name: ChatGPT Image
       api_key: $OPENAI_IMAGE_API_KEY

@@ -260,7 +260,7 @@ if __name__ == "__main__":
         "--provider",
         required=False,
         default=None,
-        help="Image generation provider, e.g. gemini or qwen_image",
+        help="Image generation provider, e.g. qwen_image or openai_image",
     )
     parser.add_argument(
         "--model",

@@ -84,7 +84,7 @@ Parameters:
 - `--reference-images`: Absolute paths to reference images (optional, space-separated)
 - `--output-file`: Absolute path to output image file (required)
 - `--aspect-ratio`: Aspect ratio of the generated image (optional, default: 16:9)
-- `--provider`: Image generation provider (optional, default: `gemini`; use `qwen_image` for Qwen-Image)
+- `--provider`: Image generation provider (optional; use `qwen_image` for Qwen-Image or `openai_image` for OpenAI-compatible image generation)
 - `--model`: Provider model name (optional)
 - `--negative-prompt`: Negative prompt for providers that support it (optional)
 - `--prompt-extend`: Whether the provider should extend the prompt, `true` or `false` (optional)
@@ -92,9 +92,8 @@ Parameters:
 
 Provider can also be configured with environment variables:
 
-- `IMAGE_GENERATION_PROVIDER`: override provider, e.g. `gemini` or `qwen_image`
+- `IMAGE_GENERATION_PROVIDER`: override provider, e.g. `qwen_image` or `openai_image`
 - `IMAGE_GENERATION_MODEL`: override provider model
-- `GEMINI_API_KEY`: API key for Gemini
 - `QWEN_IMAGE_API_KEY`: Bearer token for Qwen-Image
 - `QWEN_IMAGE_BASE_URL`: Qwen API base URL (optional, default: `https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1`)
 
