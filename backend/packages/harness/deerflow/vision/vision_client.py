@@ -78,7 +78,7 @@ class VisionClient:
             raise VisionUnderstandingError("Vision model response has no text content")
         return "\n\n".join(text_parts)
 
-    def understand_image_base64(
+    async def understand_image_base64(
         self,
         *,
         image_base64: str,
@@ -89,8 +89,8 @@ class VisionClient:
         payload = self._build_payload(image_base64=image_base64, mime_type=mime_type)
         headers = self._build_headers()
         try:
-            with httpx.Client(timeout=self.config.timeout) as client:
-                response = client.post(self.config.base_url, headers=headers, json=payload)
+            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+                response = await client.post(self.config.base_url, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
             return self._extract_text_content(data)

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import importlib
 import os
@@ -64,12 +65,21 @@ def _message_content(result) -> str:
     return result.update["messages"][0].content
 
 
-def test_view_image_rejects_external_absolute_path(tmp_path: Path) -> None:
+async def _call_view_image(*, runtime, image_path: str, tool_call_id: str):
+    return await view_image_tool.coroutine(
+        runtime=runtime,
+        image_path=image_path,
+        tool_call_id=tool_call_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_view_image_rejects_external_absolute_path(tmp_path: Path) -> None:
     thread_data = _make_thread_data(tmp_path)
     outside_image = tmp_path / "outside.png"
     outside_image.write_bytes(PNG_BYTES)
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path=str(outside_image),
         tool_call_id="tc-external",
@@ -79,13 +89,14 @@ def test_view_image_rejects_external_absolute_path(tmp_path: Path) -> None:
     assert "viewed_images" not in result.update
 
 
-def test_view_image_reads_virtual_uploads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_view_image_reads_virtual_uploads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(view_image_module, "get_app_config", lambda: _make_app_config())
     thread_data = _make_thread_data(tmp_path)
     image_path = Path(thread_data["uploads_path"]) / "sample.png"
     image_path.write_bytes(PNG_BYTES)
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/sample.png",
         tool_call_id="tc-uploads",
@@ -97,7 +108,33 @@ def test_view_image_reads_virtual_uploads_path(tmp_path: Path, monkeypatch: pyte
     assert viewed_image["mime_type"] == "image/png"
 
 
-def test_view_image_uses_independent_vision_model_without_viewed_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_view_image_offloads_file_loading_to_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(view_image_module, "get_app_config", lambda: _make_app_config())
+    thread_data = _make_thread_data(tmp_path)
+    image_path = Path(thread_data["uploads_path"]) / "sample.png"
+    image_path.write_bytes(PNG_BYTES)
+    to_thread_calls: list[object] = []
+    original_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func)
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(view_image_module.asyncio, "to_thread", _spy_to_thread)
+
+    result = await _call_view_image(
+        runtime=_make_runtime(thread_data),
+        image_path="/mnt/user-data/uploads/sample.png",
+        tool_call_id="tc-uploads",
+    )
+
+    assert _message_content(result) == "Successfully read image"
+    assert view_image_module._load_image_file_sync in to_thread_calls
+
+
+@pytest.mark.asyncio
+async def test_view_image_uses_independent_vision_model_without_viewed_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     vision_model = VisionModelConfig(
         name="company-vision",
         model="kimi-k2.6",
@@ -113,7 +150,7 @@ def test_view_image_uses_independent_vision_model_without_viewed_images(tmp_path
 
     captured: dict[str, object] = {}
 
-    def _fake_understand(self, *, image_base64: str, mime_type: str, image_path: str):
+    async def _fake_understand(self, *, image_base64: str, mime_type: str, image_path: str):
         captured["config"] = self.config
         captured["image_base64"] = image_base64
         captured["mime_type"] = mime_type
@@ -125,7 +162,7 @@ def test_view_image_uses_independent_vision_model_without_viewed_images(tmp_path
     image_path = Path(thread_data["uploads_path"]) / "sample.png"
     image_path.write_bytes(PNG_BYTES)
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data, app_config=app_config),
         image_path="/mnt/user-data/uploads/sample.png",
         tool_call_id="tc-vision",
@@ -141,7 +178,8 @@ def test_view_image_uses_independent_vision_model_without_viewed_images(tmp_path
     }
 
 
-def test_view_image_reports_independent_vision_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_view_image_reports_independent_vision_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     vision_model = VisionModelConfig(
         name="company-vision",
         model="kimi-k2.6",
@@ -150,7 +188,7 @@ def test_view_image_reports_independent_vision_failure(tmp_path: Path, monkeypat
     )
     monkeypatch.setattr(view_image_module, "get_app_config", lambda: _make_app_config(vision_model=vision_model))
 
-    def _raise_understand(*args, **kwargs):
+    async def _raise_understand(*args, **kwargs):
         raise view_image_module.VisionUnderstandingError("boom")
 
     monkeypatch.setattr(view_image_module.VisionClient, "understand_image_base64", _raise_understand)
@@ -158,7 +196,7 @@ def test_view_image_reports_independent_vision_failure(tmp_path: Path, monkeypat
     image_path = Path(thread_data["uploads_path"]) / "sample.png"
     image_path.write_bytes(PNG_BYTES)
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/sample.png",
         tool_call_id="tc-vision-fail",
@@ -168,12 +206,13 @@ def test_view_image_reports_independent_vision_failure(tmp_path: Path, monkeypat
     assert result.update["viewed_images"] == {}
 
 
-def test_view_image_rejects_spoofed_extension(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_view_image_rejects_spoofed_extension(tmp_path: Path) -> None:
     thread_data = _make_thread_data(tmp_path)
     image_path = Path(thread_data["uploads_path"]) / "not-really.png"
     image_path.write_bytes(b"not an image")
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/not-really.png",
         tool_call_id="tc-spoofed",
@@ -183,12 +222,13 @@ def test_view_image_rejects_spoofed_extension(tmp_path: Path) -> None:
     assert "viewed_images" not in result.update
 
 
-def test_view_image_rejects_mismatched_magic_bytes(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_view_image_rejects_mismatched_magic_bytes(tmp_path: Path) -> None:
     thread_data = _make_thread_data(tmp_path)
     image_path = Path(thread_data["uploads_path"]) / "jpeg-named-png.png"
     image_path.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/jpeg-named-png.png",
         tool_call_id="tc-mismatch",
@@ -198,13 +238,14 @@ def test_view_image_rejects_mismatched_magic_bytes(tmp_path: Path) -> None:
     assert "viewed_images" not in result.update
 
 
-def test_view_image_rejects_oversized_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_view_image_rejects_oversized_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     thread_data = _make_thread_data(tmp_path)
     image_path = Path(thread_data["uploads_path"]) / "sample.png"
     image_path.write_bytes(PNG_BYTES)
     monkeypatch.setattr(view_image_module, "_MAX_IMAGE_BYTES", len(PNG_BYTES) - 1)
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/sample.png",
         tool_call_id="tc-oversized",
@@ -214,7 +255,8 @@ def test_view_image_rejects_oversized_image(tmp_path: Path, monkeypatch: pytest.
     assert "viewed_images" not in result.update
 
 
-def test_view_image_sanitizes_read_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_view_image_sanitizes_read_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     thread_data = _make_thread_data(tmp_path)
     image_path = Path(thread_data["uploads_path"]) / "sample.png"
     image_path.write_bytes(PNG_BYTES)
@@ -224,7 +266,7 @@ def test_view_image_sanitizes_read_errors(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr("builtins.open", _open)
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/sample.png",
         tool_call_id="tc-read-error",
@@ -239,7 +281,8 @@ def test_view_image_sanitizes_read_errors(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink semantics differ on Windows")
-def test_view_image_rejects_uploads_symlink_escape(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_view_image_rejects_uploads_symlink_escape(tmp_path: Path) -> None:
     thread_data = _make_thread_data(tmp_path)
     outside_image = tmp_path / "outside-target.png"
     outside_image.write_bytes(PNG_BYTES)
@@ -250,7 +293,7 @@ def test_view_image_rejects_uploads_symlink_escape(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"symlink creation failed: {exc}")
 
-    result = view_image_tool.func(
+    result = await _call_view_image(
         runtime=_make_runtime(thread_data),
         image_path="/mnt/user-data/uploads/escape.png",
         tool_call_id="tc-symlink",

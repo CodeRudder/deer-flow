@@ -68,6 +68,17 @@ def test_get_available_tools_exposes_view_image_for_independent_vision_model(mon
     assert "view_image" in names
 
 
+def test_get_available_tools_wraps_async_view_image_for_sync_callers(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _app_config(main_supports_vision=False, vision_models=[_vision_model()])
+    monkeypatch.setattr("deerflow.tools.tools.is_host_bash_allowed", lambda config: True)
+
+    tools = get_available_tools(include_mcp=False, subagent_enabled=False, app_config=config)
+    view_image = next(tool for tool in tools if tool.name == "view_image")
+
+    assert view_image.coroutine is not None
+    assert view_image.func is not None
+
+
 def test_get_available_tools_omits_view_image_without_any_vision(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _app_config(main_supports_vision=False)
     monkeypatch.setattr("deerflow.tools.tools.is_host_bash_allowed", lambda config: True)

@@ -160,7 +160,7 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
 
    To route OpenAI models through `/v1/responses`, keep using `langchain_openai:ChatOpenAI` and set `use_responses_api: true` with `output_version: responses/v1`.
 
-   To give text-only main models image-understanding ability, configure one optional `vision_models` entry. DeerFlow still exposes the same `view_image` tool; it sends base64 image data to the vision endpoint and returns the text understanding to the main model. Each request includes a top-level `system` prompt, using `system_prompt` when configured or DeerFlow's built-in default when omitted.
+   To give text-only main models image-understanding ability, configure one optional `vision_models` entry. DeerFlow still exposes the same `view_image` tool; it sends base64 image data to the vision endpoint asynchronously and returns the text understanding to the main model. Each request includes a top-level `system` prompt, using `system_prompt` when configured or DeerFlow's built-in default when omitted.
 
    ```yaml
    vision_models:

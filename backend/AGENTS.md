@@ -731,7 +731,7 @@ See [docs/summarization.md](docs/summarization.md) for details.
 
 With `vision_models[0]` configured:
 - `view_image_tool` is added even if the main model is text-only
-- `view_image_tool` validates and reads the image, calls the independent vision endpoint with base64 image data, and returns the text understanding as the tool result
+- `view_image_tool` is an async tool: local file loading is offloaded with `asyncio.to_thread`, then `VisionClient` calls the independent vision endpoint with `httpx.AsyncClient` and base64 image data, returning the text understanding as the tool result
 - `ViewImageMiddleware` is not mounted, and `view_image_tool` does not write `viewed_images`, preventing duplicate base64 injection into the main model
 - Internal calls are centralized in `deerflow.vision.vision_client.VisionClient`.
 

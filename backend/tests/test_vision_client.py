@@ -80,9 +80,10 @@ def test_build_payload_uses_configured_top_level_system_prompt() -> None:
     assert payload["system"] == "自定义视觉系统提示词"
 
 
-def test_understand_image_base64_posts_payload_and_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_understand_image_base64_posts_payload_and_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
-    original_client = httpx.Client
+    original_client = httpx.AsyncClient
 
     def _handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
@@ -91,9 +92,9 @@ def test_understand_image_base64_posts_payload_and_headers(monkeypatch: pytest.M
         captured["payload"] = json.loads(request.read().decode())
         return httpx.Response(200, json={"content": [{"type": "text", "text": "图片里有日落。"}]})
 
-    monkeypatch.setattr(httpx, "Client", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
-    result = vision_module.VisionClient(_vision_config()).understand_image_base64(
+    result = await vision_module.VisionClient(_vision_config()).understand_image_base64(
         image_base64="BASE64",
         mime_type="image/png",
         image_path="/mnt/user-data/uploads/sunset.png",
@@ -109,15 +110,16 @@ def test_understand_image_base64_posts_payload_and_headers(monkeypatch: pytest.M
     assert payload["messages"][0]["content"][0]["source"]["type"] == "base64"
 
 
-def test_understand_image_base64_omits_authorization_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_understand_image_base64_omits_authorization_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
-    original_client = httpx.Client
+    original_client = httpx.AsyncClient
 
     def _handler(request: httpx.Request) -> httpx.Response:
         captured["authorization"] = request.headers.get("authorization")
         return httpx.Response(200, json={"content": [{"type": "text", "text": "图片里有日落。"}]})
 
-    monkeypatch.setattr(httpx, "Client", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     config = VisionModelConfig(
         name="company-vision",
@@ -125,7 +127,7 @@ def test_understand_image_base64_omits_authorization_without_api_key(monkeypatch
         base_url="https://vision.example.test/api/v1/messages",
     )
 
-    result = vision_module.VisionClient(config).understand_image_base64(
+    result = await vision_module.VisionClient(config).understand_image_base64(
         image_base64="BASE64",
         mime_type="image/png",
         image_path="/mnt/user-data/uploads/sunset.png",
@@ -135,48 +137,51 @@ def test_understand_image_base64_omits_authorization_without_api_key(monkeypatch
     assert captured["authorization"] is None
 
 
-def test_understand_image_base64_normalizes_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_client = httpx.Client
+@pytest.mark.asyncio
+async def test_understand_image_base64_normalizes_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})
 
-    monkeypatch.setattr(httpx, "Client", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     with pytest.raises(vision_module.VisionUnderstandingError):
-        vision_module.VisionClient(_vision_config()).understand_image_base64(
+        await vision_module.VisionClient(_vision_config()).understand_image_base64(
             image_base64="BASE64",
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/broken.png",
         )
 
 
-def test_understand_image_base64_normalizes_unusable_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_client = httpx.Client
+@pytest.mark.asyncio
+async def test_understand_image_base64_normalizes_unusable_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"content": [{"type": "thinking", "thinking": "..."}]})
 
-    monkeypatch.setattr(httpx, "Client", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     with pytest.raises(vision_module.VisionUnderstandingError, match="no text"):
-        vision_module.VisionClient(_vision_config()).understand_image_base64(
+        await vision_module.VisionClient(_vision_config()).understand_image_base64(
             image_base64="BASE64",
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/no-text.png",
         )
 
 
-def test_understand_image_base64_normalizes_missing_content_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_client = httpx.Client
+@pytest.mark.asyncio
+async def test_understand_image_base64_normalizes_missing_content_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"content": "not-a-list"})
 
-    monkeypatch.setattr(httpx, "Client", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     with pytest.raises(vision_module.VisionUnderstandingError, match="no content list"):
-        vision_module.VisionClient(_vision_config()).understand_image_base64(
+        await vision_module.VisionClient(_vision_config()).understand_image_base64(
             image_base64="BASE64",
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/no-list.png",

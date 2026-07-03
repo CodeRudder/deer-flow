@@ -1,5 +1,6 @@
+import asyncio
 import base64
-import mimetypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -30,6 +31,18 @@ _EXTENSION_TO_MIME = {
 }
 
 
+@dataclass(frozen=True)
+class _LoadedImage:
+    data: bytes
+    expected_mime_type: str
+
+
+class _ViewImageInputError(ValueError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _is_allowed_image_virtual_path(image_path: str) -> bool:
     return any(image_path == root or image_path.startswith(f"{root}/") for root in _ALLOWED_IMAGE_VIRTUAL_ROOTS)
 
@@ -57,8 +70,50 @@ def _get_runtime_app_config(runtime: Runtime):
     return get_app_config()
 
 
+def _load_image_file_sync(image_path: str, thread_data: ThreadDataState | None) -> _LoadedImage:
+    from deerflow.sandbox.exceptions import SandboxRuntimeError
+    from deerflow.sandbox.tools import (
+        resolve_and_validate_user_data_path,
+        validate_local_tool_path,
+    )
+
+    try:
+        validate_local_tool_path(image_path, thread_data, read_only=True)
+        actual_path = resolve_and_validate_user_data_path(image_path, thread_data)
+    except (PermissionError, SandboxRuntimeError) as e:
+        raise _ViewImageInputError(f"Error: {str(e)}") from e
+
+    path = Path(actual_path)
+
+    if not path.exists():
+        raise _ViewImageInputError(f"Error: Image file not found: {image_path}")
+
+    if not path.is_file():
+        raise _ViewImageInputError(f"Error: Path is not a file: {image_path}")
+
+    expected_mime_type = _EXTENSION_TO_MIME.get(path.suffix.lower())
+    if expected_mime_type is None:
+        raise _ViewImageInputError(f"Error: Unsupported image format: {path.suffix}. Supported formats: {', '.join(_EXTENSION_TO_MIME)}")
+
+    try:
+        image_size = path.stat().st_size
+    except OSError as e:
+        raise _ViewImageInputError(f"Error reading image metadata: {_sanitize_image_error(e, thread_data)}") from e
+
+    if image_size > _MAX_IMAGE_BYTES:
+        raise _ViewImageInputError(f"Error: Image file is too large: {image_size} bytes. Maximum supported size is {_MAX_IMAGE_BYTES} bytes")
+
+    try:
+        with open(actual_path, "rb") as f:
+            image_data = f.read()
+    except Exception as e:
+        raise _ViewImageInputError(f"Error reading image file: {_sanitize_image_error(e, thread_data)}") from e
+
+    return _LoadedImage(data=image_data, expected_mime_type=expected_mime_type)
+
+
 @tool("view_image", parse_docstring=True)
-def view_image_tool(
+async def view_image_tool(
     runtime: Runtime,
     image_path: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
@@ -77,12 +132,7 @@ def view_image_tool(
     Args:
         image_path: Absolute /mnt/user-data virtual path to the image file. Common formats supported: jpg, jpeg, png, webp.
     """
-    from deerflow.sandbox.exceptions import SandboxRuntimeError
-    from deerflow.sandbox.tools import (
-        get_thread_data,
-        resolve_and_validate_user_data_path,
-        validate_local_tool_path,
-    )
+    from deerflow.sandbox.tools import get_thread_data
 
     thread_data = get_thread_data(runtime)
 
@@ -99,67 +149,21 @@ def view_image_tool(
         )
 
     try:
-        validate_local_tool_path(image_path, thread_data, read_only=True)
-        actual_path = resolve_and_validate_user_data_path(image_path, thread_data)
-    except (PermissionError, SandboxRuntimeError) as e:
+        loaded = await asyncio.to_thread(_load_image_file_sync, image_path, thread_data)
+    except _ViewImageInputError as e:
         return Command(
-            update={"messages": [ToolMessage(f"Error: {str(e)}", tool_call_id=tool_call_id)]},
+            update={"messages": [ToolMessage(e.message, tool_call_id=tool_call_id)]},
         )
 
-    path = Path(actual_path)
-
-    # Validate that the file exists
-    if not path.exists():
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Image file not found: {image_path}", tool_call_id=tool_call_id)]},
-        )
-
-    # Validate that it's a file (not a directory)
-    if not path.is_file():
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Path is not a file: {image_path}", tool_call_id=tool_call_id)]},
-        )
-
-    # Validate image extension
-    expected_mime_type = _EXTENSION_TO_MIME.get(path.suffix.lower())
-    if expected_mime_type is None:
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Unsupported image format: {path.suffix}. Supported formats: {', '.join(_EXTENSION_TO_MIME)}", tool_call_id=tool_call_id)]},
-        )
-
-    # Detect MIME type from file extension
-    mime_type, _ = mimetypes.guess_type(actual_path)
-    if mime_type is None:
-        mime_type = expected_mime_type
-
-    try:
-        image_size = path.stat().st_size
-    except OSError as e:
-        return Command(
-            update={"messages": [ToolMessage(f"Error reading image metadata: {_sanitize_image_error(e, thread_data)}", tool_call_id=tool_call_id)]},
-        )
-    if image_size > _MAX_IMAGE_BYTES:
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Image file is too large: {image_size} bytes. Maximum supported size is {_MAX_IMAGE_BYTES} bytes", tool_call_id=tool_call_id)]},
-        )
-
-    # Read image file and convert to base64
-    try:
-        with open(actual_path, "rb") as f:
-            image_data = f.read()
-    except Exception as e:
-        return Command(
-            update={"messages": [ToolMessage(f"Error reading image file: {_sanitize_image_error(e, thread_data)}", tool_call_id=tool_call_id)]},
-        )
-
+    image_data = loaded.data
     detected_mime_type = _detect_image_mime(image_data)
     if detected_mime_type is None:
         return Command(
             update={"messages": [ToolMessage("Error: File contents do not match a supported image format", tool_call_id=tool_call_id)]},
         )
-    if detected_mime_type != expected_mime_type:
+    if detected_mime_type != loaded.expected_mime_type:
         return Command(
-            update={"messages": [ToolMessage(f"Error: Image contents are {detected_mime_type}, but file extension indicates {expected_mime_type}", tool_call_id=tool_call_id)]},
+            update={"messages": [ToolMessage(f"Error: Image contents are {detected_mime_type}, but file extension indicates {loaded.expected_mime_type}", tool_call_id=tool_call_id)]},
         )
     mime_type = detected_mime_type
     image_base64 = base64.b64encode(image_data).decode("utf-8")
@@ -167,7 +171,7 @@ def view_image_tool(
     vision_model_config = get_default_vision_model_config(_get_runtime_app_config(runtime))
     if vision_model_config is not None:
         try:
-            understanding = VisionClient(vision_model_config).understand_image_base64(
+            understanding = await VisionClient(vision_model_config).understand_image_base64(
                 image_base64=image_base64,
                 mime_type=mime_type,
                 image_path=image_path,
