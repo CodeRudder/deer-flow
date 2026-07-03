@@ -322,9 +322,14 @@ export default function LoginPage() {
         )}
 
         <div className="text-muted-foreground text-center text-xs">
-          <Link href="/" className="hover:underline">
-            {t.login.backToHome}
-          </Link>
+          <a
+            href="https://deerflow.tech/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline"
+          >
+            {t.login.officialWebsite}
+          </a>
         </div>
       </div>
     </div>

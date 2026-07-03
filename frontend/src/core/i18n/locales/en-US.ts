@@ -585,6 +585,7 @@ export const enUS: Translations = {
     noAccountSignUp: "Don't have an account? Sign up",
     haveAccountSignIn: "Already have an account? Sign in",
     backToHome: "← Back to home",
+    officialWebsite: "Visit DeerFlow official website",
     networkError: "Network error. Please try again.",
     authFailed: "Authentication failed.",
     errors: {

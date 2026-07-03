@@ -562,6 +562,7 @@ export const zhCN: Translations = {
     noAccountSignUp: "还没有账号？立即注册",
     haveAccountSignIn: "已有账号？立即登录",
     backToHome: "← 返回首页",
+    officialWebsite: "访问 DeerFlow 官方网站",
     networkError: "网络错误，请重试。",
     authFailed: "身份验证失败。",
     errors: {

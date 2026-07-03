@@ -487,6 +487,7 @@ export interface Translations {
     noAccountSignUp: string;
     haveAccountSignIn: string;
     backToHome: string;
+    officialWebsite: string;
     networkError: string;
     authFailed: string;
     errors: {
