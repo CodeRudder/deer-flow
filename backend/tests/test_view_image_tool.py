@@ -10,7 +10,7 @@ import pytest
 from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 from deerflow.tools.builtins.view_image_tool import view_image_tool
 
 view_image_module = importlib.import_module("deerflow.tools.builtins.view_image_tool")
@@ -33,10 +33,12 @@ def _make_thread_data(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def _make_runtime(thread_data: dict[str, str], *, app_config=None) -> SimpleNamespace:
+def _make_runtime(thread_data: dict[str, str], *, app_config=None, vision_model_name: str | None = None) -> SimpleNamespace:
     context = {"thread_id": "thread-1"}
     if app_config is not None:
         context["app_config"] = app_config
+    if vision_model_name is not None:
+        context["vision_model_name"] = vision_model_name
     return SimpleNamespace(
         state={"thread_data": thread_data},
         context=context,
@@ -44,7 +46,12 @@ def _make_runtime(thread_data: dict[str, str], *, app_config=None) -> SimpleName
     )
 
 
-def _make_app_config(*, vision_model: VisionModelConfig | None = None) -> AppConfig:
+def _make_app_config(
+    *,
+    vision_model: VisionModelConfig | None = None,
+    vision_models: list[VisionModelConfig] | None = None,
+) -> AppConfig:
+    configured_vision_models = vision_models if vision_models is not None else ([vision_model] if vision_model else [])
     return AppConfig(
         models=[
             ModelConfig(
@@ -56,7 +63,7 @@ def _make_app_config(*, vision_model: VisionModelConfig | None = None) -> AppCon
                 supports_vision=False,
             )
         ],
-        vision_models=[vision_model] if vision_model else [],
+        vision=VisionConfig(models=configured_vision_models),
         sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
     )
 
@@ -151,7 +158,8 @@ async def test_view_image_uses_independent_vision_model_without_viewed_images(tm
     captured: dict[str, object] = {}
 
     async def _fake_understand(self, *, image_base64: str, mime_type: str, image_path: str):
-        captured["config"] = self.config
+        captured["model_config"] = self.model_config
+        captured["vision_config"] = self.vision_config
         captured["image_base64"] = image_base64
         captured["mime_type"] = mime_type
         captured["image_path"] = image_path
@@ -171,11 +179,70 @@ async def test_view_image_uses_independent_vision_model_without_viewed_images(tm
     assert _message_content(result) == "图片里有一面红旗。"
     assert result.update["viewed_images"] == {}
     assert captured == {
-        "config": vision_model,
+        "model_config": vision_model,
+        "vision_config": app_config.vision,
         "image_base64": base64.b64encode(PNG_BYTES).decode("utf-8"),
         "mime_type": "image/png",
         "image_path": "/mnt/user-data/uploads/sample.png",
     }
+
+
+@pytest.mark.asyncio
+async def test_view_image_uses_selected_vision_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    default_model = VisionModelConfig(
+        name="default-vision",
+        model="kimi-k2.6",
+        base_url="https://vision.example.test/api/v1/messages",
+    )
+    selected_model = VisionModelConfig(
+        name="doubao-vision",
+        model="doubao-seed-2.0-pro",
+        base_url="https://vision.example.test/api/v1/messages",
+    )
+    app_config = _make_app_config(vision_models=[default_model, selected_model])
+    captured: dict[str, object] = {}
+
+    async def _fake_understand(self, *, image_base64: str, mime_type: str, image_path: str):
+        captured["model_config"] = self.model_config
+        return "选中的视觉模型结果"
+
+    monkeypatch.setattr(view_image_module.VisionClient, "understand_image_base64", _fake_understand)
+    thread_data = _make_thread_data(tmp_path)
+    image_path = Path(thread_data["uploads_path"]) / "sample.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    result = await _call_view_image(
+        runtime=_make_runtime(thread_data, app_config=app_config, vision_model_name="doubao-vision"),
+        image_path="/mnt/user-data/uploads/sample.png",
+        tool_call_id="tc-selected-vision",
+    )
+
+    assert _message_content(result) == "选中的视觉模型结果"
+    assert result.update["viewed_images"] == {}
+    assert captured["model_config"] == selected_model
+
+
+@pytest.mark.asyncio
+async def test_view_image_reports_invalid_selected_vision_model(tmp_path: Path) -> None:
+    app_config = _make_app_config(
+        vision_model=VisionModelConfig(
+            name="default-vision",
+            model="kimi-k2.6",
+            base_url="https://vision.example.test/api/v1/messages",
+        )
+    )
+    thread_data = _make_thread_data(tmp_path)
+    image_path = Path(thread_data["uploads_path"]) / "sample.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    result = await _call_view_image(
+        runtime=_make_runtime(thread_data, app_config=app_config, vision_model_name="missing-vision"),
+        image_path="/mnt/user-data/uploads/sample.png",
+        tool_call_id="tc-missing-vision",
+    )
+
+    assert _message_content(result) == "多模态的工具理解调用异常"
+    assert result.update["viewed_images"] == {}
 
 
 @pytest.mark.asyncio

@@ -7,14 +7,26 @@ exact semantics of the linear scan they replaced (match, miss -> None,
 first-match-wins on duplicate names) and confirm a config reload rebuilds them.
 """
 
+import pytest
+
 from deerflow.config.app_config import AppConfig
 
 
-def _build(model_names=(), tool_names=(), group_names=()):
+def _build(model_names=(), vision_model_names=(), tool_names=(), group_names=()):
     return AppConfig.model_validate(
         {
             "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
             "models": [{"name": n, "use": "pkg:Cls", "model": n} for n in model_names],
+            "vision": {
+                "models": [
+                    {
+                        "name": n,
+                        "model": n,
+                        "base_url": f"https://vision.example.test/{n}",
+                    }
+                    for n in vision_model_names
+                ]
+            },
             "tools": [{"name": n, "group": "default", "use": "pkg:fn"} for n in tool_names],
             "tool_groups": [{"name": n} for n in group_names],
         }
@@ -22,8 +34,9 @@ def _build(model_names=(), tool_names=(), group_names=()):
 
 
 def test_get_config_returns_matching_entry():
-    cfg = _build(model_names=["m1", "m2"], tool_names=["t1", "t2"], group_names=["g1"])
+    cfg = _build(model_names=["m1", "m2"], vision_model_names=["v1", "v2"], tool_names=["t1", "t2"], group_names=["g1"])
     assert cfg.get_model_config("m2").name == "m2"
+    assert cfg.get_vision_model_config("v2").name == "v2"
     assert cfg.get_tool_config("t1").name == "t1"
     assert cfg.get_tool_group_config("g1").name == "g1"
 
@@ -31,6 +44,7 @@ def test_get_config_returns_matching_entry():
 def test_get_config_returns_none_for_missing():
     cfg = _build(model_names=["m1"], tool_names=["t1"], group_names=["g1"])
     assert cfg.get_model_config("nope") is None
+    assert cfg.get_vision_model_config("nope") is None
     assert cfg.get_tool_config("nope") is None
     assert cfg.get_tool_group_config("nope") is None
 
@@ -50,10 +64,17 @@ def test_get_config_first_match_wins_on_duplicate_names():
     assert cfg.get_model_config("dup").model == "first"
 
 
+def test_duplicate_vision_model_names_are_rejected():
+    with pytest.raises(ValueError, match="Duplicate vision model name"):
+        _build(vision_model_names=["dup", "dup"])
+
+
 def test_index_matches_linear_scan_reference():
-    cfg = _build(model_names=["a", "b", "c"], tool_names=["x", "y"], group_names=["g"])
+    cfg = _build(model_names=["a", "b", "c"], vision_model_names=["va", "vb"], tool_names=["x", "y"], group_names=["g"])
     for n in ["a", "b", "c", "missing"]:
         assert cfg.get_model_config(n) == next((m for m in cfg.models if m.name == n), None)
+    for n in ["va", "vb", "missing"]:
+        assert cfg.get_vision_model_config(n) == next((m for m in cfg.vision.models if m.name == n), None)
     for n in ["x", "y", "missing"]:
         assert cfg.get_tool_config(n) == next((t for t in cfg.tools if t.name == n), None)
     for n in ["g", "missing"]:
@@ -63,5 +84,6 @@ def test_index_matches_linear_scan_reference():
 def test_empty_config_lookups_return_none():
     cfg = _build()
     assert cfg.get_model_config("anything") is None
+    assert cfg.get_vision_model_config("anything") is None
     assert cfg.get_tool_config("anything") is None
     assert cfg.get_tool_group_config("anything") is None

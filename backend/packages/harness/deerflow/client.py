@@ -853,6 +853,8 @@ class DeerFlowClient:
         token_usage_enabled = getattr(getattr(self._app_config, "token_usage", None), "enabled", False)
         if not isinstance(token_usage_enabled, bool):
             token_usage_enabled = False
+        vision_config = getattr(self._app_config, "vision", None)
+        vision_models = getattr(vision_config, "models", []) or []
 
         return {
             "models": [
@@ -865,6 +867,14 @@ class DeerFlowClient:
                     "supports_reasoning_effort": getattr(model, "supports_reasoning_effort", False),
                 }
                 for model in self._app_config.models
+            ],
+            "vision_models": [
+                {
+                    "name": model.name,
+                    "model": getattr(model, "model", None),
+                    "display_name": getattr(model, "display_name", None),
+                }
+                for model in vision_models
             ],
             "token_usage": {"enabled": token_usage_enabled},
         }

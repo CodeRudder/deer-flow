@@ -83,6 +83,9 @@ export interface Translations {
     imageGenerationNotConfigured: string;
     imageGenerationSkillDisabled: string;
     imageGenerationLoadFailed: string;
+    chatModel: string;
+    visionModel: string;
+    defaultVisionModel: string;
     reasoningEffort: string;
     reasoningEffortMinimal: string;
     reasoningEffortMinimalDescription: string;

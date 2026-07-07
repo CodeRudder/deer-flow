@@ -128,6 +128,7 @@ _DEFAULT_ASSISTANT_ID = "lead_agent"
 _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
     {
         "model_name",
+        "vision_model_name",
         "mode",
         "thinking_enabled",
         "reasoning_effort",
@@ -380,19 +381,30 @@ async def start_run(
 
     body_context = getattr(body, "context", None) or {}
     model_name = body_context.get("model_name")
+    vision_model_name = body_context.get("vision_model_name")
 
     # Coerce non-string model_name values to str before truncation.
     if model_name is not None and not isinstance(model_name, str):
         model_name = str(model_name)
+    if vision_model_name is not None and not isinstance(vision_model_name, str):
+        vision_model_name = str(vision_model_name)
 
-    # Validate model against the allowlist when a model_name is provided.
-    if model_name:
+    # Validate models against the allowlists when explicit names are provided.
+    if model_name or vision_model_name:
         app_config = get_app_config()
+    if model_name:
         resolved = app_config.get_model_config(model_name)
         if resolved is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"Model {model_name!r} is not in the configured model allowlist",
+            )
+    if vision_model_name:
+        resolved_vision = app_config.get_vision_model_config(vision_model_name)
+        if resolved_vision is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Vision model {vision_model_name!r} is not in the configured vision model allowlist",
             )
 
     owner_user_id = get_trusted_internal_owner_user_id(request)

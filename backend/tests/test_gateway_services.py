@@ -405,6 +405,7 @@ def test_run_create_request_accepts_context():
         input={"messages": [{"role": "user", "content": "hi"}]},
         context={
             "model_name": "deepseek-v3",
+            "vision_model_name": "doubao-vision",
             "thinking_enabled": True,
             "is_plan_mode": True,
             "subagent_enabled": True,
@@ -413,6 +414,7 @@ def test_run_create_request_accepts_context():
     )
     assert body.context is not None
     assert body.context["model_name"] == "deepseek-v3"
+    assert body.context["vision_model_name"] == "doubao-vision"
     assert body.context["is_plan_mode"] is True
     assert body.context["subagent_enabled"] is True
 
@@ -502,6 +504,7 @@ def test_context_merges_into_configurable():
 
     context = {
         "model_name": "deepseek-v3",
+        "vision_model_name": "doubao-vision",
         "mode": "ultra",
         "reasoning_effort": "high",
         "thinking_enabled": True,
@@ -515,6 +518,7 @@ def test_context_merges_into_configurable():
 
     _CONTEXT_CONFIGURABLE_KEYS = {
         "model_name",
+        "vision_model_name",
         "mode",
         "thinking_enabled",
         "reasoning_effort",
@@ -530,6 +534,7 @@ def test_context_merges_into_configurable():
             configurable.setdefault(key, context[key])
 
     assert config["configurable"]["model_name"] == "deepseek-v3"
+    assert config["configurable"]["vision_model_name"] == "doubao-vision"
     assert config["configurable"]["thinking_enabled"] is True
     assert config["configurable"]["is_plan_mode"] is True
     assert config["configurable"]["subagent_enabled"] is True
@@ -555,12 +560,14 @@ def test_merge_run_context_overrides_propagates_to_runtime_context():
     from app.gateway.services import build_run_config, merge_run_context_overrides
 
     config = build_run_config("thread-1", None, None)
-    merge_run_context_overrides(config, {"agent_name": "my-agent", "is_bootstrap": True, "thread_id": "ignored"})
+    merge_run_context_overrides(config, {"agent_name": "my-agent", "is_bootstrap": True, "vision_model_name": "doubao-vision", "thread_id": "ignored"})
 
     assert config["configurable"]["agent_name"] == "my-agent"
     assert config["configurable"]["is_bootstrap"] is True
+    assert config["configurable"]["vision_model_name"] == "doubao-vision"
     assert config["context"]["agent_name"] == "my-agent"
     assert config["context"]["is_bootstrap"] is True
+    assert config["context"]["vision_model_name"] == "doubao-vision"
     # Non-whitelisted keys are not forwarded.
     assert "thread_id" not in config["context"]
 

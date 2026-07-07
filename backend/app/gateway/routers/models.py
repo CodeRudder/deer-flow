@@ -24,10 +24,19 @@ class TokenUsageResponse(BaseModel):
     enabled: bool = Field(default=False, description="Whether token usage display is enabled")
 
 
+class VisionModelResponse(BaseModel):
+    """Response model for independent vision model information."""
+
+    name: str = Field(..., description="Unique identifier for the vision model")
+    model: str = Field(..., description="Actual provider model identifier")
+    display_name: str | None = Field(None, description="Human-readable name")
+
+
 class ModelsListResponse(BaseModel):
     """Response model for listing all models."""
 
     models: list[ModelResponse]
+    vision_models: list[VisionModelResponse] = Field(default_factory=list)
     token_usage: TokenUsageResponse
 
 
@@ -67,6 +76,13 @@ async def list_models(config: AppConfig = Depends(get_config)) -> ModelsListResp
                     "supports_reasoning_effort": false
                 }
             ],
+            "vision_models": [
+                {
+                    "name": "doubao-vision",
+                    "model": "doubao-seed-2.0-pro",
+                    "display_name": "Doubao Seed 视觉理解"
+                }
+            ],
             "token_usage": {
                 "enabled": true
             }
@@ -84,8 +100,17 @@ async def list_models(config: AppConfig = Depends(get_config)) -> ModelsListResp
         )
         for model in config.models
     ]
+    vision_models = [
+        VisionModelResponse(
+            name=model.name,
+            model=model.model,
+            display_name=model.display_name,
+        )
+        for model in config.vision.models
+    ]
     return ModelsListResponse(
         models=models,
+        vision_models=vision_models,
         token_usage=TokenUsageResponse(enabled=config.token_usage.enabled),
     )
 

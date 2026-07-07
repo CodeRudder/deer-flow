@@ -160,23 +160,25 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
 
    To route OpenAI models through `/v1/responses`, keep using `langchain_openai:ChatOpenAI` and set `use_responses_api: true` with `output_version: responses/v1`.
 
-   To give text-only main models image-understanding ability, configure one optional `vision_models` entry. DeerFlow still exposes the same `view_image` tool; it sends base64 image data to the vision endpoint asynchronously and returns the text understanding to the main model. Each request includes a top-level `system` prompt, using `system_prompt` when configured or DeerFlow's built-in default when omitted.
+   To give text-only main models image-understanding ability, configure optional `vision.models` entries. DeerFlow still exposes the same `view_image` tool; it sends base64 image data to the selected vision endpoint asynchronously and returns the text understanding to the main model. Each request includes shared `vision.system_prompt` and `vision.prompt` values, using DeerFlow's built-in defaults when omitted.
 
    ```yaml
-   vision_models:
-     - name: company-vision
-       model: kimi-k2.6
-       base_url: https://claude.jlcops.com/api/v1/messages
-       api_key: $COMPANY_VISION_API_KEY
-       max_tokens: 10240
-       stream: false
-       timeout: 60.0
-       system_prompt: |
-         你是一个专业的多模态视觉理解模型。
-         请客观、准确、结构化地描述图片内容，提取对后续任务有帮助的信息。
-         不要输出推理过程。
-       prompt: |
-         请理解这张图片的主要内容，提取对后续任务有帮助的信息。
+   vision:
+     system_prompt: |
+       你是一个专业的多模态视觉理解模型。
+       请客观、准确、结构化地描述图片内容，提取对后续任务有帮助的信息。
+       不要输出推理过程。
+     prompt: |
+       请理解这张图片的主要内容，提取对后续任务有帮助的信息。
+     models:
+       - name: company-vision
+         display_name: 公司视觉理解模型
+         model: kimi-k2.6
+         base_url: https://claude.jlcops.com/api/v1/messages
+         api_key: $COMPANY_VISION_API_KEY
+         max_tokens: 10240
+         stream: false
+         timeout: 60.0
    ```
 
    For vLLM 0.19.0, use `deerflow.models.vllm_provider:VllmChatModel`. For Qwen-style reasoning models, DeerFlow toggles reasoning with `extra_body.chat_template_kwargs.enable_thinking` and preserves vLLM's non-standard `reasoning` field across multi-turn tool-call conversations. Legacy `thinking` configs are normalized automatically for backward compatibility. Reasoning models may also require the server to be started with `--reasoning-parser ...`. If your local vLLM deployment accepts any non-empty API key, you can still set `VLLM_API_KEY` to a placeholder value.

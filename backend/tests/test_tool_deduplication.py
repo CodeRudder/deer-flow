@@ -56,7 +56,7 @@ def _make_minimal_config(tools):
     config = MagicMock()
     config.tools = tools
     config.models = []
-    config.vision_models = []
+    config.vision.models = []
     config.tool_search.enabled = False
     config.skill_evolution.enabled = False
     config.sandbox = MagicMock()

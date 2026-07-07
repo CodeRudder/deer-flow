@@ -17,7 +17,7 @@ from deerflow.config.memory_config import MemoryConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.summarization_config import SummarizationConfig
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 
 
 def _make_app_config(
@@ -27,7 +27,7 @@ def _make_app_config(
 ) -> AppConfig:
     return AppConfig(
         models=models,
-        vision_models=vision_models or [],
+        vision=VisionConfig(models=vision_models or []),
         sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
         loop_detection=loop_detection or LoopDetectionConfig(),
     )

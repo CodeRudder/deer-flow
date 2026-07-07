@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 from deerflow.vision import vision_client as vision_module
 
 
@@ -18,8 +18,18 @@ def _vision_config() -> VisionModelConfig:
     )
 
 
+def _vision_client(
+    model_config: VisionModelConfig | None = None,
+    vision_config: VisionConfig | None = None,
+) -> vision_module.VisionClient:
+    return vision_module.VisionClient(
+        model_config or _vision_config(),
+        vision_config or VisionConfig(),
+    )
+
+
 def test_extract_text_content_ignores_thinking() -> None:
-    text = vision_module.VisionClient(_vision_config())._extract_text_content(
+    text = _vision_client()._extract_text_content(
         {
             "content": [
                 {"type": "thinking", "thinking": "hidden chain of thought"},
@@ -34,11 +44,11 @@ def test_extract_text_content_ignores_thinking() -> None:
 
 def test_extract_text_content_requires_text() -> None:
     with pytest.raises(vision_module.VisionUnderstandingError, match="no text"):
-        vision_module.VisionClient(_vision_config())._extract_text_content({"content": [{"type": "thinking", "thinking": "..."}]})
+        _vision_client()._extract_text_content({"content": [{"type": "thinking", "thinking": "..."}]})
 
 
 def test_build_payload_uses_base64_source() -> None:
-    payload = vision_module.VisionClient(_vision_config())._build_payload(
+    payload = _vision_client()._build_payload(
         image_base64="BASE64",
         mime_type="image/png",
     )
@@ -55,7 +65,7 @@ def test_build_payload_uses_base64_source() -> None:
 
 
 def test_build_payload_includes_default_top_level_system_prompt() -> None:
-    payload = vision_module.VisionClient(_vision_config())._build_payload(
+    payload = _vision_client()._build_payload(
         image_base64="BASE64",
         mime_type="image/png",
     )
@@ -65,19 +75,27 @@ def test_build_payload_includes_default_top_level_system_prompt() -> None:
 
 
 def test_build_payload_uses_configured_top_level_system_prompt() -> None:
-    config = VisionModelConfig(
-        name="doubao-vision",
-        model="doubao-seed-2.0-pro",
-        base_url="https://vision.example.test/api/v1/messages",
+    config = VisionConfig(
         system_prompt="自定义视觉系统提示词",
     )
-
-    payload = vision_module.VisionClient(config)._build_payload(
+    payload = _vision_client(vision_config=config)._build_payload(
         image_base64="BASE64",
         mime_type="image/png",
     )
 
     assert payload["system"] == "自定义视觉系统提示词"
+
+
+def test_build_payload_uses_configured_shared_prompt() -> None:
+    config = VisionConfig(
+        prompt="请提取图片中的核心内容。",
+    )
+    payload = _vision_client(vision_config=config)._build_payload(
+        image_base64="BASE64",
+        mime_type="image/png",
+    )
+
+    assert payload["messages"][0]["content"][1]["text"] == "请提取图片中的核心内容。"
 
 
 @pytest.mark.asyncio
@@ -94,7 +112,7 @@ async def test_understand_image_base64_posts_payload_and_headers(monkeypatch: py
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
-    result = await vision_module.VisionClient(_vision_config()).understand_image_base64(
+    result = await _vision_client().understand_image_base64(
         image_base64="BASE64",
         mime_type="image/png",
         image_path="/mnt/user-data/uploads/sunset.png",
@@ -122,12 +140,12 @@ async def test_understand_image_base64_omits_authorization_without_api_key(monke
     monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     config = VisionModelConfig(
-        name="company-vision",
+        name="doubao-vision",
         model="kimi-k2.6",
         base_url="https://vision.example.test/api/v1/messages",
     )
 
-    result = await vision_module.VisionClient(config).understand_image_base64(
+    result = await _vision_client(model_config=config).understand_image_base64(
         image_base64="BASE64",
         mime_type="image/png",
         image_path="/mnt/user-data/uploads/sunset.png",
@@ -147,7 +165,7 @@ async def test_understand_image_base64_normalizes_http_errors(monkeypatch: pytes
     monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     with pytest.raises(vision_module.VisionUnderstandingError):
-        await vision_module.VisionClient(_vision_config()).understand_image_base64(
+        await _vision_client().understand_image_base64(
             image_base64="BASE64",
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/broken.png",
@@ -164,7 +182,7 @@ async def test_understand_image_base64_normalizes_unusable_body(monkeypatch: pyt
     monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     with pytest.raises(vision_module.VisionUnderstandingError, match="no text"):
-        await vision_module.VisionClient(_vision_config()).understand_image_base64(
+        await _vision_client().understand_image_base64(
             image_base64="BASE64",
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/no-text.png",
@@ -181,7 +199,7 @@ async def test_understand_image_base64_normalizes_missing_content_list(monkeypat
     monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
 
     with pytest.raises(vision_module.VisionUnderstandingError, match="no content list"):
-        await vision_module.VisionClient(_vision_config()).understand_image_base64(
+        await _vision_client().understand_image_base64(
             image_base64="BASE64",
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/no-list.png",

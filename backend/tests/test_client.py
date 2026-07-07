@@ -38,6 +38,7 @@ def mock_app_config():
 
     config = MagicMock()
     config.models = [model]
+    config.vision.models = []
     config.token_usage.enabled = False
     return config
 
@@ -125,6 +126,7 @@ class TestConfigQueries:
         assert "models" in result
         assert result["token_usage"] == {"enabled": False}
         assert len(result["models"]) == 1
+        assert result["vision_models"] == []
         assert result["models"][0]["name"] == "test-model"
         # Verify Gateway-aligned fields are present
         assert "model" in result["models"][0]
@@ -2319,6 +2321,11 @@ class TestGatewayConformance:
         model.supports_thinking = False
         model.supports_reasoning_effort = False
         mock_app_config.models = [model]
+        vision_model = MagicMock()
+        vision_model.name = "vision-test"
+        vision_model.model = "doubao-seed-2.0-pro"
+        vision_model.display_name = "Vision Test"
+        mock_app_config.vision.models = [vision_model]
         mock_app_config.token_usage.enabled = True
 
         with patch("deerflow.client.get_app_config", return_value=mock_app_config):
@@ -2329,6 +2336,9 @@ class TestGatewayConformance:
         assert len(parsed.models) == 1
         assert parsed.models[0].name == "test-model"
         assert parsed.models[0].model == "gpt-test"
+        assert len(parsed.vision_models) == 1
+        assert parsed.vision_models[0].name == "vision-test"
+        assert parsed.vision_models[0].display_name == "Vision Test"
         assert parsed.token_usage.enabled is True
 
     def test_get_model(self, mock_app_config):

@@ -4,7 +4,9 @@ import type { ChatStatus } from "ai";
 import {
   CheckIcon,
   GraduationCapIcon,
+  ImageIcon,
   LightbulbIcon,
+  MessageSquareIcon,
   PaperclipIcon,
   PlusIcon,
   SparklesIcon,
@@ -94,6 +96,7 @@ import { ModeHoverGuide } from "./mode-hover-guide";
 import { Tooltip } from "./tooltip";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
+type ModelSelectorCategory = "chat" | "vision";
 
 const MAX_SKILL_SUGGESTIONS = 6;
 const SUGGESTION_TEMPLATE_PLACEHOLDER_PATTERN =
@@ -219,7 +222,9 @@ export function InputBox({
   const { t } = useI18n();
   const searchParams = useSearchParams();
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
-  const { models } = useModels();
+  const [modelSelectorCategory, setModelSelectorCategory] =
+    useState<ModelSelectorCategory>("chat");
+  const { models, visionModels } = useModels();
   const { thread, isMock } = useThread();
   const { textInput } = usePromptInputController();
   const { skills } = useSkills();
@@ -268,12 +273,41 @@ export function InputBox({
     });
   }, [context, models, onContextChange]);
 
+  useEffect(() => {
+    if (!context.vision_model_name) {
+      return;
+    }
+    if (visionModels.some((m) => m.name === context.vision_model_name)) {
+      return;
+    }
+    onContextChange?.({
+      ...context,
+      vision_model_name: undefined,
+    });
+  }, [context, onContextChange, visionModels]);
+
+  useEffect(() => {
+    if (modelSelectorCategory === "vision" && visionModels.length === 0) {
+      setModelSelectorCategory("chat");
+    }
+  }, [modelSelectorCategory, visionModels.length]);
+
   const selectedModel = useMemo(() => {
     if (models.length === 0) {
       return undefined;
     }
     return models.find((m) => m.name === context.model_name) ?? models[0];
   }, [context.model_name, models]);
+
+  const selectedVisionModel = useMemo(() => {
+    if (visionModels.length === 0) {
+      return undefined;
+    }
+    return (
+      visionModels.find((m) => m.name === context.vision_model_name) ??
+      visionModels[0]
+    );
+  }, [context.vision_model_name, visionModels]);
 
   const resolvedModelName = selectedModel?.name;
 
@@ -337,9 +371,22 @@ export function InputBox({
         mode: getResolvedMode(context.mode, model.supports_thinking ?? false),
         reasoning_effort: context.reasoning_effort,
       });
-      setModelDialogOpen(false);
     },
     [onContextChange, context, models],
+  );
+
+  const handleVisionModelSelect = useCallback(
+    (vision_model_name: string) => {
+      const model = visionModels.find((m) => m.name === vision_model_name);
+      if (!model) {
+        return;
+      }
+      onContextChange?.({
+        ...context,
+        vision_model_name,
+      });
+    },
+    [context, onContextChange, visionModels],
   );
 
   const handleModeSelect = useCallback(
@@ -1209,36 +1256,96 @@ export function InputBox({
             >
               <ModelSelectorTrigger asChild>
                 <PromptInputButton className="max-w-40 min-w-0 sm:max-w-56">
-                  <div className="flex min-w-0 flex-col items-start text-left">
-                    <ModelSelectorName className="text-xs font-normal">
-                      {selectedModel?.display_name}
-                    </ModelSelectorName>
-                  </div>
+                  <ModelSelectorName className="text-xs font-normal">
+                    {selectedModel?.display_name}
+                  </ModelSelectorName>
                 </PromptInputButton>
               </ModelSelectorTrigger>
-              <ModelSelectorContent>
+              <ModelSelectorContent className="sm:max-w-md">
                 <ModelSelectorInput placeholder={t.inputBox.searchModels} />
-                <ModelSelectorList>
-                  {models.map((m) => (
-                    <ModelSelectorItem
-                      key={m.name}
-                      value={m.name}
-                      onSelect={() => handleModelSelect(m.name)}
-                    >
-                      <div className="flex min-w-0 flex-1 flex-col">
-                        <ModelSelectorName>{m.display_name}</ModelSelectorName>
-                        <span className="text-muted-foreground truncate text-[10px]">
-                          {m.model}
-                        </span>
+                <div className="border-t">
+                  {visionModels.length > 0 ? (
+                    <div className="border-b px-3 py-2">
+                      <div className="bg-muted inline-grid w-full grid-cols-2 rounded-md p-1">
+                        <button
+                          className={cn(
+                            "flex min-h-8 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-xs transition-colors",
+                            modelSelectorCategory === "chat"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                          type="button"
+                          onClick={() => setModelSelectorCategory("chat")}
+                        >
+                          <MessageSquareIcon className="size-3.5 shrink-0" />
+                          <span className="truncate">
+                            {t.inputBox.chatModel}
+                          </span>
+                        </button>
+                        <button
+                          className={cn(
+                            "flex min-h-8 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-xs transition-colors",
+                            modelSelectorCategory === "vision"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                          type="button"
+                          onClick={() => setModelSelectorCategory("vision")}
+                        >
+                          <ImageIcon className="size-3.5 shrink-0" />
+                          <span className="truncate">
+                            {t.inputBox.visionModel}
+                          </span>
+                        </button>
                       </div>
-                      {m.name === context.model_name ? (
-                        <CheckIcon className="ml-auto size-4" />
-                      ) : (
-                        <div className="ml-auto size-4" />
-                      )}
-                    </ModelSelectorItem>
-                  ))}
-                </ModelSelectorList>
+                    </div>
+                  ) : null}
+                  <ModelSelectorList className="max-h-80">
+                    {modelSelectorCategory === "chat"
+                      ? models.map((m) => (
+                          <ModelSelectorItem
+                            key={m.name}
+                            value={`chat:${m.name} ${m.display_name} ${m.model}`}
+                            onSelect={() => handleModelSelect(m.name)}
+                          >
+                            <div className="flex min-w-0 flex-1 flex-col">
+                              <ModelSelectorName>
+                                {m.display_name}
+                              </ModelSelectorName>
+                              <span className="text-muted-foreground truncate text-[10px]">
+                                {m.model}
+                              </span>
+                            </div>
+                            {m.name === selectedModel?.name ? (
+                              <CheckIcon className="ml-auto size-4" />
+                            ) : (
+                              <div className="ml-auto size-4" />
+                            )}
+                          </ModelSelectorItem>
+                        ))
+                      : visionModels.map((m) => (
+                          <ModelSelectorItem
+                            key={m.name}
+                            value={`vision:${m.name} ${m.display_name ?? ""} ${m.model}`}
+                            onSelect={() => handleVisionModelSelect(m.name)}
+                          >
+                            <div className="flex min-w-0 flex-1 flex-col">
+                              <ModelSelectorName>
+                                {m.display_name ?? m.name}
+                              </ModelSelectorName>
+                              <span className="text-muted-foreground truncate text-[10px]">
+                                {m.model}
+                              </span>
+                            </div>
+                            {m.name === selectedVisionModel?.name ? (
+                              <CheckIcon className="ml-auto size-4" />
+                            ) : (
+                              <div className="ml-auto size-4" />
+                            )}
+                          </ModelSelectorItem>
+                        ))}
+                  </ModelSelectorList>
+                </div>
               </ModelSelectorContent>
             </ModelSelector>
             <PromptInputSubmit

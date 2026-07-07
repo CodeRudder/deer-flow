@@ -11,6 +11,7 @@ export function useModels({ enabled = true }: { enabled?: boolean } = {}) {
   });
   return {
     models: data?.models ?? [],
+    visionModels: data?.vision_models ?? [],
     tokenUsageEnabled: data?.token_usage.enabled ?? false,
     isLoading,
     error,

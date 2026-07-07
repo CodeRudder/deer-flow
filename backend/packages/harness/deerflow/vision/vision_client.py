@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -17,25 +17,26 @@ class VisionUnderstandingError(RuntimeError):
 class VisionClient:
     """HTTP client for the configured independent vision model."""
 
-    def __init__(self, config: VisionModelConfig) -> None:
-        self.config = config
+    def __init__(self, model_config: VisionModelConfig, vision_config: VisionConfig) -> None:
+        self.model_config = model_config
+        self.vision_config = vision_config
 
     def _build_headers(self) -> dict[str, str]:
         headers = {
             "content-type": "application/json",
         }
-        if self.config.api_key:
-            headers["authorization"] = f"Bearer {self.config.api_key}"
-        if self.config.headers:
-            headers.update(self.config.headers)
+        if self.model_config.api_key:
+            headers["authorization"] = f"Bearer {self.model_config.api_key}"
+        if self.model_config.headers:
+            headers.update(self.model_config.headers)
         return headers
 
     def _build_payload(self, *, image_base64: str, mime_type: str) -> dict[str, Any]:
         return {
-            "model": self.config.model,
-            "max_tokens": self.config.max_tokens,
-            "stream": self.config.stream,
-            "system": self.config.system_prompt,
+            "model": self.model_config.model,
+            "max_tokens": self.model_config.max_tokens,
+            "stream": self.model_config.stream,
+            "system": self.vision_config.system_prompt,
             "messages": [
                 {
                     "role": "user",
@@ -50,7 +51,7 @@ class VisionClient:
                         },
                         {
                             "type": "text",
-                            "text": self.config.prompt,
+                            "text": self.vision_config.prompt,
                         },
                     ],
                 }
@@ -89,14 +90,14 @@ class VisionClient:
         payload = self._build_payload(image_base64=image_base64, mime_type=mime_type)
         headers = self._build_headers()
         try:
-            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                response = await client.post(self.config.base_url, headers=headers, json=payload)
+            async with httpx.AsyncClient(timeout=self.model_config.timeout) as client:
+                response = await client.post(self.model_config.base_url, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
             return self._extract_text_content(data)
         except VisionUnderstandingError:
-            logger.exception("Vision understanding returned unusable response: model=%s image_path=%s", self.config.name, image_path)
+            logger.exception("Vision understanding returned unusable response: model=%s image_path=%s", self.model_config.name, image_path)
             raise
         except Exception as exc:
-            logger.exception("Vision understanding request failed: model=%s image_path=%s error=%s", self.config.name, image_path, exc)
+            logger.exception("Vision understanding request failed: model=%s image_path=%s error=%s", self.model_config.name, image_path, exc)
             raise VisionUnderstandingError(str(exc)) from exc

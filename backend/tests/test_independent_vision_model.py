@@ -8,7 +8,7 @@ from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddlewar
 from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 from deerflow.tools.tools import get_available_tools
 
 
@@ -35,18 +35,36 @@ def _vision_model(name: str = "company-vision") -> VisionModelConfig:
 def _app_config(*, main_supports_vision: bool = False, vision_models: list[VisionModelConfig] | None = None) -> AppConfig:
     return AppConfig(
         models=[_model(supports_vision=main_supports_vision)],
-        vision_models=vision_models or [],
+        vision=VisionConfig(models=vision_models or []),
         sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
     )
 
 
-def test_app_config_rejects_multiple_vision_models() -> None:
-    with pytest.raises(ValueError, match="Only one entry"):
-        _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-b")])
+def test_app_config_allows_multiple_vision_models() -> None:
+    config = _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-b")])
+
+    assert [model.name for model in config.vision.models] == ["vision-a", "vision-b"]
+    assert config.get_vision_model_config("vision-b") == config.vision.models[1]
+
+
+def test_app_config_rejects_legacy_top_level_vision_models() -> None:
+    with pytest.raises(ValueError, match="vision_models.*vision\\.models"):
+        AppConfig.model_validate(
+            {
+                "models": [_model().model_dump()],
+                "vision_models": [_vision_model().model_dump()],
+                "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
+            }
+        )
+
+
+def test_app_config_rejects_duplicate_vision_model_names() -> None:
+    with pytest.raises(ValueError, match="Duplicate vision model name"):
+        _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-a")])
 
 
 def test_app_config_rejects_streaming_vision_model() -> None:
-    with pytest.raises(ValueError, match="stream"):
+    with pytest.raises(ValueError, match="vision\\.models\\[0\\]\\.stream"):
         _app_config(
             vision_models=[
                 VisionModelConfig(

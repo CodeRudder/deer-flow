@@ -11,7 +11,7 @@ from langgraph.types import Command
 from deerflow.agents.thread_state import ThreadDataState
 from deerflow.config import get_app_config
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
-from deerflow.config.vision_model_config import get_default_vision_model_config
+from deerflow.config.vision_model_config import get_vision_model_config, has_configured_vision_model
 from deerflow.tools.types import Runtime
 from deerflow.vision import VisionClient, VisionUnderstandingError
 from deerflow.vision.vision_client import VISION_UNDERSTANDING_ERROR_MESSAGE
@@ -68,6 +68,18 @@ def _get_runtime_app_config(runtime: Runtime):
     if isinstance(context, dict) and context.get("app_config") is not None:
         return context["app_config"]
     return get_app_config()
+
+
+def _get_runtime_vision_model_name(runtime: Runtime) -> str | None:
+    context = runtime.context if runtime is not None else None
+    if not isinstance(context, dict):
+        return None
+    value = context.get("vision_model_name")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    return str(value)
 
 
 def _load_image_file_sync(image_path: str, thread_data: ThreadDataState | None) -> _LoadedImage:
@@ -168,10 +180,19 @@ async def view_image_tool(
     mime_type = detected_mime_type
     image_base64 = base64.b64encode(image_data).decode("utf-8")
 
-    vision_model_config = get_default_vision_model_config(_get_runtime_app_config(runtime))
+    app_config = _get_runtime_app_config(runtime)
+    vision_model_name = _get_runtime_vision_model_name(runtime)
+    vision_model_config = get_vision_model_config(app_config, vision_model_name)
+    if vision_model_name and vision_model_config is None and has_configured_vision_model(app_config):
+        return Command(
+            update={
+                "viewed_images": {},
+                "messages": [ToolMessage(VISION_UNDERSTANDING_ERROR_MESSAGE, tool_call_id=tool_call_id)],
+            },
+        )
     if vision_model_config is not None:
         try:
-            understanding = await VisionClient(vision_model_config).understand_image_base64(
+            understanding = await VisionClient(vision_model_config, app_config.vision).understand_image_base64(
                 image_base64=image_base64,
                 mime_type=mime_type,
                 image_path=image_path,

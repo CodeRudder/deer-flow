@@ -339,7 +339,7 @@ Proxied through nginx: `/api/langgraph/*` → Gateway LangGraph-compatible runti
 3. **Built-in tools**:
    - `present_files` - Make output files visible to user (only `/mnt/user-data/outputs`)
    - `ask_clarification` - Request clarification (intercepted by ClarificationMiddleware → interrupts)
-   - `view_image` - Read image files. Added when `vision_models[0]` is configured or when the selected main model supports vision; independent vision mode returns text understanding directly, legacy mode stores base64 for `ViewImageMiddleware`
+   - `view_image` - Read image files. Added when `vision.models[0]` is configured or when the selected main model supports vision; independent vision mode returns text understanding directly, legacy mode stores base64 for `ViewImageMiddleware`
    - `setup_agent` - Bootstrap-only: persist a brand-new custom agent's `SOUL.md` and `config.yaml`. Bound only when `is_bootstrap=True`.
    - `update_agent` - Custom-agent-only: persist self-updates to the current agent's `SOUL.md` / `config.yaml` from inside a normal chat (partial update + atomic write). Bound when `agent_name` is set and `is_bootstrap=False`.
 4. **Subagent tool** (if enabled):
@@ -576,7 +576,7 @@ Returns `{}` when Langfuse is not in the enabled providers — LangSmith-only de
 
 **`config.yaml`** key sections:
 - `models[]` - LLM configs with `use` class path, `supports_thinking`, `supports_vision`, provider-specific fields
-- `vision_models[]` - Optional independent image-understanding model configuration. Current support is 0 or 1 entry. When present, `view_image` is exposed even for text-only main models and returns text understanding directly; `ViewImageMiddleware` is not mounted so base64 images are not injected into the main model. Each vision request includes a top-level `system` field from `vision_models[0].system_prompt`, falling back to the built-in default when omitted.
+- `vision` - Optional independent image-understanding configuration. `vision.system_prompt` and `vision.prompt` are shared by all entries in `vision.models[]`; each model entry describes endpoint/model-call differences and may include `display_name` for UI selection. When any `vision.models[]` entry is present, `view_image` is exposed even for text-only main models and returns text understanding directly; `ViewImageMiddleware` is not mounted so base64 images are not injected into the main model. Runtime `vision_model_name` selects a configured vision model, falling back to `vision.models[0]` when omitted.
 - vLLM reasoning models should use `deerflow.models.vllm_provider:VllmChatModel`; for Qwen-style parsers prefer `when_thinking_enabled.extra_body.chat_template_kwargs.enable_thinking`, and DeerFlow will also normalize the older `thinking` alias
 - `tools[]` - Tool configs with `use` variable path and `group`
 - `tool_groups[]` - Logical groupings for tools
@@ -729,13 +729,14 @@ See [docs/summarization.md](docs/summarization.md) for details.
 
 ### Vision Support
 
-With `vision_models[0]` configured:
+With `vision.models[0]` configured:
 - `view_image_tool` is added even if the main model is text-only
-- `view_image_tool` is an async tool: local file loading is offloaded with `asyncio.to_thread`, then `VisionClient` calls the independent vision endpoint with `httpx.AsyncClient` and base64 image data, returning the text understanding as the tool result
+- `view_image_tool` is an async tool: local file loading is offloaded with `asyncio.to_thread`, then `VisionClient` calls the selected independent vision endpoint with `httpx.AsyncClient` and base64 image data, returning the text understanding as the tool result
+- `vision_model_name` in run context selects the model from `vision.models[]`; omitted values use the first configured model
 - `ViewImageMiddleware` is not mounted, and `view_image_tool` does not write `viewed_images`, preventing duplicate base64 injection into the main model
 - Internal calls are centralized in `deerflow.vision.vision_client.VisionClient`.
 
-Without `vision_models`, legacy behavior is preserved for models with `supports_vision: true`:
+Without `vision.models`, legacy behavior is preserved for models with `supports_vision: true`:
 - `ViewImageMiddleware` processes images in conversation
 - `view_image_tool` added to agent's toolset
 - Images automatically converted to base64 and injected into state

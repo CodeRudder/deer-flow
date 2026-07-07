@@ -2,10 +2,13 @@ import {
   DEFAULT_LOCAL_SETTINGS,
   LOCAL_SETTINGS_KEY,
   THREAD_MODEL_KEY_PREFIX,
+  THREAD_VISION_MODEL_KEY_PREFIX,
   getLocalSettings,
   getThreadModelName,
+  getThreadVisionModelName,
   saveLocalSettings,
   saveThreadModelName,
+  saveThreadVisionModelName,
   type LocalSettings,
 } from "./local";
 
@@ -18,6 +21,7 @@ export type LocalSettingsSetter = <K extends keyof LocalSettings>(
 
 const listeners = new Set<Listener>();
 const threadModelNames = new Map<string, string | undefined>();
+const threadVisionModelNames = new Map<string, string | undefined>();
 
 let baseSettings: LocalSettings = DEFAULT_LOCAL_SETTINGS;
 let baseSettingsLoaded = false;
@@ -71,6 +75,7 @@ function handleStorage(event: StorageEvent) {
   if (event.key === null) {
     baseSettings = getLocalSettings();
     threadModelNames.clear();
+    threadVisionModelNames.clear();
     emitChange();
     return;
   }
@@ -81,13 +86,18 @@ function handleStorage(event: StorageEvent) {
     return;
   }
 
-  if (!event.key.startsWith(THREAD_MODEL_KEY_PREFIX)) {
+  if (event.key.startsWith(THREAD_MODEL_KEY_PREFIX)) {
+    const threadId = event.key.slice(THREAD_MODEL_KEY_PREFIX.length);
+    threadModelNames.set(threadId, getThreadModelName(threadId));
+    emitChange();
     return;
   }
 
-  const threadId = event.key.slice(THREAD_MODEL_KEY_PREFIX.length);
-  threadModelNames.set(threadId, getThreadModelName(threadId));
-  emitChange();
+  if (event.key.startsWith(THREAD_VISION_MODEL_KEY_PREFIX)) {
+    const threadId = event.key.slice(THREAD_VISION_MODEL_KEY_PREFIX.length);
+    threadVisionModelNames.set(threadId, getThreadVisionModelName(threadId));
+    emitChange();
+  }
 }
 
 export function subscribe(listener: Listener): () => void {
@@ -113,6 +123,18 @@ export function getThreadModelSnapshot(threadId: string): string | undefined {
   }
 
   return threadModelNames.get(threadId);
+}
+
+export function getThreadVisionModelSnapshot(
+  threadId: string,
+): string | undefined {
+  ensureBaseSettingsLoaded();
+
+  if (!threadVisionModelNames.has(threadId)) {
+    threadVisionModelNames.set(threadId, getThreadVisionModelName(threadId));
+  }
+
+  return threadVisionModelNames.get(threadId);
 }
 
 export const updateLocalSettings: LocalSettingsSetter = (key, value) => {
@@ -144,6 +166,16 @@ export function updateThreadSettings<K extends keyof LocalSettings>(
     const threadModelName = contextValue.model_name;
     threadModelNames.set(threadId, threadModelName);
     saveThreadModelName(threadId, threadModelName);
+  }
+
+  if (
+    key === "context" &&
+    Object.prototype.hasOwnProperty.call(value, "vision_model_name")
+  ) {
+    const contextValue = value as Partial<LocalSettings["context"]>;
+    const threadVisionModelName = contextValue.vision_model_name;
+    threadVisionModelNames.set(threadId, threadVisionModelName);
+    saveThreadVisionModelName(threadId, threadVisionModelName);
   }
 
   emitChange();

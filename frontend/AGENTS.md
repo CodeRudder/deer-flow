@@ -68,6 +68,13 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 3. TanStack Query manages server state; localStorage stores user settings
 4. Components subscribe to thread state and render updates
 
+Model selection stores two independent per-thread context fields:
+`model_name` selects the chat model, while `vision_model_name` selects the
+independent image-understanding model exposed by `/api/models` as
+`vision_models`. The model picker groups chat models and vision models; when no
+vision model is pinned, the backend falls back to the first configured
+`vision.models[]` entry.
+
 ### Key Patterns
 
 - **Server Components by default**, `"use client"` only for interactive components

@@ -15,7 +15,7 @@ from deerflow.config.app_config import AppConfig, CircuitBreakerConfig
 from deerflow.config.guardrails_config import GuardrailsConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 
 
 def _request(name: str = "web_search", tool_call_id: str | None = "tc-1"):
@@ -44,7 +44,7 @@ def _make_app_config(*, supports_vision: bool = False, vision_models: list[Visio
                 supports_vision=supports_vision,
             )
         ],
-        vision_models=vision_models or [],
+        vision=VisionConfig(models=vision_models or []),
         sandbox=SandboxConfig(use="test"),
         guardrails=GuardrailsConfig(enabled=False),
         circuit_breaker=CircuitBreakerConfig(failure_threshold=7, recovery_timeout_sec=11),

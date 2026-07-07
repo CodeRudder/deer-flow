@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 16
+config_version: 17
 
 # ============================================================================
 # Logging
@@ -563,27 +563,29 @@ models:
 # ============================================================================
 # Independent Vision Model Configuration
 # ============================================================================
-# Optional: configure one dedicated image-understanding model.
+# Optional: configure dedicated image-understanding models.
 # When present, the `view_image` tool is available even if the selected main
 # chat model does not support vision. `view_image` sends base64 image data to
-# this endpoint and returns the text understanding to the main model.
-# Current limitation: configure at most one entry.
-vision_models:
-  # - name: company-vision
-  #   model: kimi-k2.6
-  #   base_url: https://claude.jlcops.com/api/v1/messages
-  #   api_key: $COMPANY_VISION_API_KEY
-  #   max_tokens: 10240
-  #   stream: false
-  #   timeout: 60.0
-  #   # Optional override. When omitted, DeerFlow sends a built-in top-level
-  #   # `system` prompt with every vision request.
-  #   system_prompt: |
+# the selected vision endpoint and returns the text understanding to the main
+# model. `system_prompt` and `prompt` are shared by all configured vision
+# models; each model entry only describes endpoint/model-call differences.
+vision:
+  # system_prompt: |
   #     你是一个专业的多模态视觉理解模型。
   #     请客观、准确、结构化地描述图片内容，提取对后续任务有帮助的信息。
   #     不要输出推理过程。
-  #   prompt: |
+  # prompt: |
   #     请理解这张图片的主要内容，提取对后续任务有帮助的信息。
+  models: []
+  # models:
+  #   - name: company-vision
+  #     display_name: 公司视觉理解模型
+  #     model: kimi-k2.6
+  #     base_url: https://claude.jlcops.com/api/v1/messages
+  #     api_key: $COMPANY_VISION_API_KEY
+  #     max_tokens: 10240
+  #     stream: false
+  #     timeout: 60.0
 
 # ============================================================================
 # Tool Groups Configuration

@@ -39,7 +39,7 @@ from deerflow.config.token_usage_config import TokenUsageConfig
 from deerflow.config.tool_config import ToolConfig, ToolGroupConfig
 from deerflow.config.tool_output_config import ToolOutputConfig
 from deerflow.config.tool_search_config import ToolSearchConfig, load_tool_search_config_from_dict
-from deerflow.config.vision_model_config import VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 
 load_dotenv()
 
@@ -103,7 +103,7 @@ class AppConfig(BaseModel):
     token_usage: TokenUsageConfig = Field(default_factory=TokenUsageConfig, description="Token usage tracking configuration")
     token_budget: TokenBudgetConfig = Field(default_factory=TokenBudgetConfig, description="Token Budget tracking and limits configuration.")
     models: list[ModelConfig] = Field(default_factory=list, description="Available models")
-    vision_models: list[VisionModelConfig] = Field(default_factory=list, description="Independent image-understanding model configuration")
+    vision: VisionConfig = Field(default_factory=VisionConfig, description="Independent image-understanding configuration")
     sandbox: SandboxConfig = Field(
         description=format_field_description(
             "sandbox",
@@ -172,6 +172,7 @@ class AppConfig(BaseModel):
     # / ``get_tool_group_config`` O(1) instead of an O(n) ``next(...)`` scan per
     # call. Private attrs are excluded from serialization.
     _models_by_name: dict[str, ModelConfig] = PrivateAttr(default_factory=dict)
+    _vision_models_by_name: dict[str, VisionModelConfig] = PrivateAttr(default_factory=dict)
     _tools_by_name: dict[str, ToolConfig] = PrivateAttr(default_factory=dict)
     _tool_groups_by_name: dict[str, ToolGroupConfig] = PrivateAttr(default_factory=dict)
 
@@ -197,6 +198,8 @@ class AppConfig(BaseModel):
         error when null — there is nothing to fall back to.
         """
         if isinstance(data, dict):
+            if "vision_models" in data:
+                raise ValueError("`vision_models` has moved to `vision.models`; configure shared `vision.system_prompt`, `vision.prompt`, and `vision.models`.")
             return {key: value for key, value in data.items() if value is not None}
         return data
 
@@ -426,6 +429,9 @@ class AppConfig(BaseModel):
         models_by_name: dict[str, ModelConfig] = {}
         for model in self.models:
             models_by_name.setdefault(model.name, model)
+        vision_models_by_name: dict[str, VisionModelConfig] = {}
+        for model in self.vision.models:
+            vision_models_by_name.setdefault(model.name, model)
         tools_by_name: dict[str, ToolConfig] = {}
         for tool in self.tools:
             tools_by_name.setdefault(tool.name, tool)
@@ -433,6 +439,7 @@ class AppConfig(BaseModel):
         for group in self.tool_groups:
             tool_groups_by_name.setdefault(group.name, group)
         self._models_by_name = models_by_name
+        self._vision_models_by_name = vision_models_by_name
         self._tools_by_name = tools_by_name
         self._tool_groups_by_name = tool_groups_by_name
         return self
@@ -440,10 +447,13 @@ class AppConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_vision_models(self) -> "AppConfig":
         """Validate independent vision-model configuration."""
-        if len(self.vision_models) > 1:
-            raise ValueError("Only one entry is currently supported under `vision_models`.")
-        if self.vision_models and self.vision_models[0].stream:
-            raise ValueError("`vision_models[0].stream` must be false; streaming vision responses are not supported.")
+        names: set[str] = set()
+        for index, model in enumerate(self.vision.models):
+            if model.name in names:
+                raise ValueError(f"Duplicate vision model name under `vision.models`: {model.name!r}.")
+            names.add(model.name)
+            if model.stream:
+                raise ValueError(f"`vision.models[{index}].stream` must be false; streaming vision responses are not supported.")
         return self
 
     def get_model_config(self, name: str) -> ModelConfig | None:
@@ -456,6 +466,10 @@ class AppConfig(BaseModel):
             The model config if found, otherwise None.
         """
         return self._models_by_name.get(name)
+
+    def get_vision_model_config(self, name: str) -> VisionModelConfig | None:
+        """Get the independent vision model config by name."""
+        return self._vision_models_by_name.get(name)
 
     def get_tool_config(self, name: str) -> ToolConfig | None:
         """Get the tool config by name.

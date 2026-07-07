@@ -12,7 +12,15 @@ export interface TokenUsageSettings {
   enabled: boolean;
 }
 
+export interface VisionModel {
+  id: string;
+  name: string;
+  model: string;
+  display_name?: string | null;
+}
+
 export interface ModelsResponse {
   models: Model[];
+  vision_models: VisionModel[];
   token_usage: TokenUsageSettings;
 }

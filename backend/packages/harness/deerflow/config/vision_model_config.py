@@ -10,26 +10,40 @@ class VisionModelConfig(BaseModel):
     """Config section for an independent image-understanding model."""
 
     name: str = Field(..., description="Unique name for the vision model")
+    display_name: str | None = Field(default=None, description="Human-readable name for display")
     model: str = Field(..., description="Provider model name")
     base_url: str = Field(..., description="Anthropic-compatible messages endpoint URL")
     api_key: str | None = Field(default=None, description="API key for the vision endpoint")
     max_tokens: int = Field(default=10240, description="Maximum output tokens for image understanding")
     stream: bool = Field(default=False, description="Whether to request streaming responses")
     timeout: float = Field(default=60.0, description="HTTP request timeout in seconds")
+    headers: dict[str, str] | None = Field(default=None, description="Optional HTTP headers for the vision endpoint")
+    model_config = ConfigDict(extra="allow")
+
+
+class VisionConfig(BaseModel):
+    """Shared image-understanding configuration."""
+
     system_prompt: str = Field(default=DEFAULT_VISION_SYSTEM_PROMPT, description="Top-level system prompt sent with each vision request")
     prompt: str = Field(default=DEFAULT_VISION_PROMPT, description="User prompt sent with each image")
-    headers: dict[str, str] | None = Field(default=None, description="Optional HTTP headers for the vision endpoint")
+    models: list[VisionModelConfig] = Field(default_factory=list, description="Independent image-understanding models")
     model_config = ConfigDict(extra="allow")
 
 
 def has_configured_vision_model(config: Any) -> bool:
     """Return True when an AppConfig-like object has an independent vision model."""
-    vision_models = getattr(config, "vision_models", None)
+    vision = getattr(config, "vision", None)
+    vision_models = getattr(vision, "models", None)
     return isinstance(vision_models, list) and len(vision_models) > 0
 
 
-def get_default_vision_model_config(config: Any) -> VisionModelConfig | None:
-    """Return the configured vision model, if present."""
+def get_vision_model_config(config: Any, name: str | None = None) -> VisionModelConfig | None:
+    """Return a named or default vision model config, if present."""
     if not has_configured_vision_model(config):
         return None
-    return config.vision_models[0]
+    if name:
+        getter = getattr(config, "get_vision_model_config", None)
+        if callable(getter):
+            return getter(name)
+        return next((model for model in config.vision.models if model.name == name), None)
+    return config.vision.models[0]
