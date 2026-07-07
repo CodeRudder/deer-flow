@@ -42,6 +42,37 @@ logger = logging.getLogger(__name__)
 _VALID_LG_MODES = {"values", "updates", "checkpoints", "tasks", "debug", "messages", "custom"}
 
 
+def _debug_thinking_enabled() -> bool:
+    return os.getenv("DEERFLOW_DEBUG_THINKING_WRAPPED") == "1"
+
+
+def _debug_stream_chunk(run_id: str, *, mode: str, sse_event: str, chunk: Any) -> None:
+    if not _debug_thinking_enabled():
+        return
+
+    message = chunk[0] if isinstance(chunk, tuple) and chunk else chunk
+    metadata = chunk[1] if isinstance(chunk, tuple) and len(chunk) == 2 and isinstance(chunk[1], dict) else {}
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        content_types = [part.get("type") if isinstance(part, dict) else type(part).__name__ for part in content]
+        content_preview = content[:2]
+    else:
+        content_types = [type(content).__name__]
+        content_preview = str(content)[:120] if content is not None else None
+
+    logger.warning(
+        "[deerflow-thinking][worker] run_id=%s mode=%s sse_event=%s message_type=%s content_types=%s content_preview=%r node=%s ls_model=%s",
+        run_id,
+        mode,
+        sse_event,
+        getattr(message, "type", type(message).__name__),
+        content_types,
+        content_preview,
+        metadata.get("langgraph_node"),
+        metadata.get("ls_model_name"),
+    )
+
+
 def _build_runtime_context(
     thread_id: str,
     run_id: str,
