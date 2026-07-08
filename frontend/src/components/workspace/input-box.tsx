@@ -22,6 +22,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type CSSProperties,
   type KeyboardEvent,
   type RefObject,
 } from "react";
@@ -165,6 +166,112 @@ function getResolvedMode(
     return mode;
   }
   return supportsThinking ? "pro" : "flash";
+}
+
+type ModelLogoSource = {
+  name: string;
+  model: string;
+  display_name?: string | null;
+};
+
+function getModelLogoProvider(model: ModelLogoSource): string | null {
+  const value = [model.name, model.model, model.display_name ?? ""]
+    .join(" ")
+    .toLowerCase();
+
+  if (value.includes("kimi") || value.includes("moonshot")) {
+    return "moonshotai-cn";
+  }
+  if (
+    value.includes("doubao") ||
+    value.includes("volcengine") ||
+    value.includes("volcano") ||
+    value.includes("seed")
+  ) {
+    return "doubao";
+  }
+  if (value.includes("gpt") || value.includes("openai")) {
+    return "openai";
+  }
+  if (value.includes("claude") || value.includes("anthropic")) {
+    return "anthropic";
+  }
+  if (value.includes("gemini") || value.includes("google")) {
+    return "google";
+  }
+  if (value.includes("deepseek")) {
+    return "deepseek";
+  }
+  if (value.includes("qwen") || value.includes("alibaba")) {
+    return "alibaba-cn";
+  }
+  if (value.includes("zhipu") || value.includes("glm")) {
+    return "zhipuai";
+  }
+  if (value.includes("minimax")) {
+    return "minimax";
+  }
+  if (value.includes("mistral")) {
+    return "mistral";
+  }
+  if (value.includes("llama") || value.includes("meta")) {
+    return "llama";
+  }
+
+  return null;
+}
+
+function getModelLogoColor(provider: string): string {
+  switch (provider) {
+    case "moonshotai-cn":
+      return "#111827";
+    case "doubao":
+      return "#2563eb";
+    case "openai":
+      return "#10a37f";
+    case "anthropic":
+      return "#d97757";
+    case "google":
+      return "#4285f4";
+    case "deepseek":
+      return "#4d6bfe";
+    case "alibaba-cn":
+      return "#ff6a00";
+    case "zhipuai":
+      return "#315cec";
+    case "minimax":
+      return "#7c3aed";
+    case "mistral":
+      return "#ff7000";
+    case "llama":
+      return "#0467df";
+    default:
+      return "#f59e0b";
+  }
+}
+
+function ModelProviderLogo({ model }: { model: ModelLogoSource }) {
+  const provider = getModelLogoProvider(model);
+  const logoStyle = provider
+    ? ({
+        "--model-logo-color": getModelLogoColor(provider),
+        "--model-logo-url": `url("https://models.dev/logos/${provider}.svg")`,
+      } as CSSProperties)
+    : undefined;
+
+  return (
+    <span className="bg-background flex size-6 shrink-0 items-center justify-center rounded-md border">
+      {provider ? (
+        <span
+          aria-hidden
+          className="size-4 bg-(--model-logo-color) [-webkit-mask:var(--model-logo-url)_center/contain_no-repeat] [mask:var(--model-logo-url)_center/contain_no-repeat]"
+          style={logoStyle}
+        />
+      ) : (
+        <SparklesIcon className="size-3.5 text-[#f59e0b]" />
+      )}
+    </span>
+  );
 }
 
 export function InputBox({
@@ -1261,7 +1368,7 @@ export function InputBox({
                   </ModelSelectorName>
                 </PromptInputButton>
               </ModelSelectorTrigger>
-              <ModelSelectorContent className="sm:max-w-md">
+              <ModelSelectorContent className="sm:max-w-lg">
                 <ModelSelectorInput placeholder={t.inputBox.searchModels} />
                 <div className="border-t">
                   {visionModels.length > 0 ? (
@@ -1269,7 +1376,7 @@ export function InputBox({
                       <div className="bg-muted inline-grid w-full grid-cols-2 rounded-md p-1">
                         <button
                           className={cn(
-                            "flex min-h-8 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-xs transition-colors",
+                            "flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-sm transition-colors",
                             modelSelectorCategory === "chat"
                               ? "bg-background text-foreground shadow-sm"
                               : "text-muted-foreground hover:text-foreground",
@@ -1277,14 +1384,14 @@ export function InputBox({
                           type="button"
                           onClick={() => setModelSelectorCategory("chat")}
                         >
-                          <MessageSquareIcon className="size-3.5 shrink-0" />
+                          <MessageSquareIcon className="size-4 shrink-0" />
                           <span className="truncate">
                             {t.inputBox.chatModel}
                           </span>
                         </button>
                         <button
                           className={cn(
-                            "flex min-h-8 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-xs transition-colors",
+                            "flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-sm transition-colors",
                             modelSelectorCategory === "vision"
                               ? "bg-background text-foreground shadow-sm"
                               : "text-muted-foreground hover:text-foreground",
@@ -1292,7 +1399,7 @@ export function InputBox({
                           type="button"
                           onClick={() => setModelSelectorCategory("vision")}
                         >
-                          <ImageIcon className="size-3.5 shrink-0" />
+                          <ImageIcon className="size-4 shrink-0" />
                           <span className="truncate">
                             {t.inputBox.visionModel}
                           </span>
@@ -1305,17 +1412,19 @@ export function InputBox({
                       ? models.map((m) => (
                           <ModelSelectorItem
                             key={m.name}
-                            value={`chat:${m.name} ${m.display_name} ${m.model}`}
+                            className={cn(
+                              "h-10 gap-3",
+                              m.name === selectedModel?.name
+                                ? "text-accent-foreground"
+                                : "text-muted-foreground/75",
+                            )}
+                            value={`chat:${m.name} ${m.display_name}`}
                             onSelect={() => handleModelSelect(m.name)}
                           >
-                            <div className="flex min-w-0 flex-1 flex-col">
-                              <ModelSelectorName>
-                                {m.display_name}
-                              </ModelSelectorName>
-                              <span className="text-muted-foreground truncate text-[10px]">
-                                {m.model}
-                              </span>
-                            </div>
+                            <ModelProviderLogo model={m} />
+                            <ModelSelectorName className="text-sm font-medium">
+                              {m.display_name}
+                            </ModelSelectorName>
                             {m.name === selectedModel?.name ? (
                               <CheckIcon className="ml-auto size-4" />
                             ) : (
@@ -1326,17 +1435,19 @@ export function InputBox({
                       : visionModels.map((m) => (
                           <ModelSelectorItem
                             key={m.name}
-                            value={`vision:${m.name} ${m.display_name ?? ""} ${m.model}`}
+                            className={cn(
+                              "h-10 gap-3",
+                              m.name === selectedVisionModel?.name
+                                ? "text-accent-foreground"
+                                : "text-muted-foreground/75",
+                            )}
+                            value={`vision:${m.name} ${m.display_name ?? ""}`}
                             onSelect={() => handleVisionModelSelect(m.name)}
                           >
-                            <div className="flex min-w-0 flex-1 flex-col">
-                              <ModelSelectorName>
-                                {m.display_name ?? m.name}
-                              </ModelSelectorName>
-                              <span className="text-muted-foreground truncate text-[10px]">
-                                {m.model}
-                              </span>
-                            </div>
+                            <ModelProviderLogo model={m} />
+                            <ModelSelectorName className="text-sm font-medium">
+                              {m.display_name ?? m.name}
+                            </ModelSelectorName>
                             {m.name === selectedVisionModel?.name ? (
                               <CheckIcon className="ml-auto size-4" />
                             ) : (
