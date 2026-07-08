@@ -1191,6 +1191,31 @@ image_generation:
           description: 具备行业顶尖的密集长文本指令对齐与多复杂主体构图能力，擅长深度挖掘提示词中的隐式物理常识与逻辑关联，实现精准且高创意的意图还原
 
 # ============================================================================
+# Image Editing Configuration
+# ============================================================================
+# Dedicated provider configuration for editing an existing image in place.
+
+image_editing:
+  # Providers are selected by the agent and resolved only on the backend.
+  # `Authorization` should contain the raw header value to send to the provider.
+  enabled: false
+  default_provider: openai_image_edit
+  providers:
+    - name: openai_image_edit
+      display_name: ChatGPT Image Edit
+      Authorization: $OPENAI_IMAGE_AUTHORIZATION
+      base_url: https://jlc-ai-codeing-image.openai.azure.com/openai/deployments/gpt-image-2
+      api_version: "2025-04-01-preview"
+      timeout: 300
+      size: auto
+      quality: high
+      output_format: png
+      models:
+        - name: gpt-image-2
+          display_name: GPT Image 2 Edit
+          description: 适合对已有图片做局部替换、风格保持和精细修改
+
+# ============================================================================
 # Title Generation Configuration
 # ============================================================================
 # Automatic conversation title generation settings

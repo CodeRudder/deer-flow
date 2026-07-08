@@ -101,10 +101,13 @@ Non-secret defaults can be configured in `config.yaml`:
 
 ```yaml
 image_generation:
-  provider: qwen_image
+  providers:
+    - name: qwen_image
+      models:
+        - qwen-image-2.0-pro
 ```
 
-Only the default provider belongs in `config.yaml`. Provider-specific defaults such as model, base URL, timeout, prompt extension, and watermark live in the provider implementation and can be overridden with CLI arguments or environment variables when needed.
+The configured provider list in `config.yaml` controls which providers are selectable. Provider-specific defaults such as model, base URL, timeout, prompt extension, and watermark live in the provider implementation and can be overridden with CLI arguments or environment variables when needed.
 
 Priority: CLI arguments > environment variables > `config.yaml` provider > provider built-in defaults.
 

@@ -45,7 +45,7 @@ deer-flow/
 │   │           ├── tools/builtins/    # Built-in tools (present_files, ask_clarification, view_image)
 │   │           ├── mcp/               # MCP integration (tools, cache, client)
 │   │           ├── models/            # Model factory with thinking/vision support
-│   │           ├── skills/            # Skills discovery, loading, parsing
+│   │           ├── skills/            # Skills discovery, loading, parsing, built-in image workflows
 │   │           ├── config/            # Configuration system (app, model, sandbox, tool, etc.)
 │   │           ├── community/         # Community tools (search/fetch/scrape, image search, AIO sandbox)
 │   │           ├── reflection/        # Dynamic module loading (resolve_variable, resolve_class)

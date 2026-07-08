@@ -75,6 +75,11 @@ independent image-understanding model exposed by `/api/models` as
 vision model is pinned, the backend falls back to the first configured
 `vision.models[]` entry.
 
+Image generation continues to use the existing workspace provider picker and
+`image_generation_provider/model` thread context. Image editing is backend-only
+in this iteration and is triggered through the `image-editing` skill, so there
+is no separate frontend selector yet.
+
 ### Key Patterns
 
 - **Server Components by default**, `"use client"` only for interactive components
