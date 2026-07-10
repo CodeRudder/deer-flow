@@ -209,7 +209,9 @@ The user selected an image generation preference for the current run:
 
 This selection is only a preference for image generation tasks. It does not mean the user is asking for an image.
 - If the current user request is normal chat, answer normally and do not use the image-generation skill.
-- If the current user request asks to create, edit, visualize, or otherwise generate an image, use the built-in image-generation skill and pass the selected provider/model explicitly.
+- Use the built-in image-generation skill only when creating a new image from text or using references as loose inspiration, and pass the selected provider/model explicitly.
+- If an uploaded or previously generated image is the source whose structure, geometry, layout, identity, or composition must be preserved or transformed, use the image-editing skill instead.
+  This includes requests to generate a realistic product/photo from a design drawing, sketch, blueprint, or CAD-style image, even when the user says "generate" or "create".
 - The current run preference supersedes older provider/model choices mentioned in conversation history.
 - When executing the skill, include these arguments in the command:
   `{" ".join(command_parts)}`

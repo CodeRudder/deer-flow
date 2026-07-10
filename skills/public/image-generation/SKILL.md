@@ -1,6 +1,6 @@
 ---
 name: image-generation
-description: Use this skill when the user requests to generate, create, imagine, or visualize images including characters, scenes, products, or any visual content. Supports structured prompts and reference images for guided generation.
+description: Use this skill to create a new image from text, or when reference images are only loose inspiration for style or composition. Do not use it when an uploaded or previously generated image is the source whose structure, geometry, layout, identity, or composition must be preserved or transformed; use image-editing for those cases, including design drawing, sketch, blueprint, or CAD-style image to realistic product/photo requests even when the user says "generate".
 ---
 
 # Image Generation Skill
@@ -29,6 +29,12 @@ When a user requests image generation, identify:
 - Reference images: Any images to guide generation
 - You don't need to check the folder under `/mnt/user-data`
 
+Routing rule:
+
+- Use `image-generation` when creating a new image from text or using references only as loose inspiration.
+- Use `image-editing` when the user uploaded an image and expects the result to preserve or transform that image's structure, geometry, layout, identity, or composition.
+- Requests such as "这是零件设计图，帮我生成实物图" are image-editing tasks because the design drawing is the source of truth, even though the user says "生成".
+
 ### Step 2: Create Prompt JSON
 
 Generate a JSON file in `/mnt/user-data/workspace/` with naming pattern: `{descriptive-name}.json`.
@@ -37,7 +43,7 @@ The `prompt` field is the authoritative image prompt. By default, copy the user'
 
 Do not translate, rewrite, summarize, expand, or infer missing visual details unless the user explicitly asks for prompt optimization, translation, rewriting, or enrichment.
 
-For follow-up image modification requests that clearly refer to a previously generated image, such as "make it red", "change the background", or "adjust the previous image", create a new complete prompt instead of using only the short modification phrase. The new prompt should preserve the previous image prompt's core subject, style, composition, and constraints, then apply the user's latest requested changes. Do not use reference images for this follow-up workflow unless a future instruction explicitly enables provider-specific image editing.
+For follow-up image modification requests that clearly refer to an uploaded or previously generated image, such as "make it red", "change the background", "adjust the previous image", or "turn this design into a real product photo", stop this workflow and use the `image-editing` skill instead.
 
 Use this default shape:
 
