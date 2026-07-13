@@ -1006,7 +1006,7 @@ export function SessionTracePanel() {
       <section className="bg-muted/20 overflow-hidden rounded-lg border shadow-xs">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1840px] text-sm">
-            <thead className="text-muted-foreground bg-muted/60 border-b text-left text-xs">
+            <thead className="text-muted-foreground bg-muted/60 border-b text-left text-sm">
               <tr>
                 {[
                   "标题",
@@ -1025,7 +1025,7 @@ export function SessionTracePanel() {
                 ].map((label) => (
                   <th
                     key={label}
-                    className={`px-3 py-3 font-medium ${label === "标题" ? "bg-muted sticky left-0 z-10" : ""}`}
+                    className={`px-3 py-3 font-bold ${label === "标题" ? "bg-muted sticky left-0 z-10" : ""}`}
                   >
                     {label}
                   </th>
@@ -1042,9 +1042,12 @@ export function SessionTracePanel() {
                   <td
                     className={`group-hover:bg-accent sticky left-0 z-10 max-w-64 px-3 py-4 ${index % 2 === 0 ? "bg-background" : "bg-muted"}`}
                   >
-                    <b className="block truncate" title={run.thread_title}>
+                    <span
+                      className="block truncate font-semibold"
+                      title={run.thread_title}
+                    >
                       {run.thread_title}
-                    </b>
+                    </span>
                   </td>
                   <td className="px-3 font-mono text-xs">{run.thread_id}</td>
                   <td className="px-3 font-mono text-xs">{run.run_id}</td>
