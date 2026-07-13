@@ -118,17 +118,21 @@ function KpiCard({
   value,
   note,
   icon: Icon,
+  tone,
 }: {
   label: string;
   value: string;
   note?: string;
   icon: LucideIcon;
+  tone: string;
 }) {
   return (
     <div className="bg-background rounded-lg border p-4 shadow-xs">
       <div className="text-muted-foreground flex items-center justify-between text-xs">
         <span>{label}</span>
-        <Icon className="size-4" />
+        <span className={`grid size-8 place-items-center rounded-md ${tone}`}>
+          <Icon className="size-4" aria-hidden="true" />
+        </span>
       </div>
       <div className="mt-3 text-2xl font-semibold tracking-normal">{value}</div>
       {note ? (
@@ -1176,29 +1180,34 @@ export function AdminDashboard() {
                 value={formatNumber(summary?.total_tokens ?? 0)}
                 note={`输入 ${formatNumber(summary?.total_input_tokens ?? 0)} · 输出 ${formatNumber(summary?.total_output_tokens ?? 0)}`}
                 icon={BarChart3}
+                tone="bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
               />
               <KpiCard
                 label="模型请求"
                 value={formatNumber(summary?.model_requests ?? 0)}
                 note={`${formatNumber(summary?.run_count ?? 0)} 个 run`}
                 icon={SlidersHorizontal}
+                tone="bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
               />
               <KpiCard
                 label="生图次数"
                 value={formatNumber(summary?.image_generations ?? 0)}
                 note="生成与修改合并计数"
                 icon={ImageIcon}
+                tone="bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
               />
               <KpiCard
                 label="活跃用户"
                 value={formatNumber(summary?.active_users ?? 0)}
                 note="有 run 的用户"
                 icon={Users}
+                tone="bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
               />
               <KpiCard
                 label="运行中任务"
                 value={formatNumber(summary?.running_runs ?? 0)}
                 icon={ShieldCheck}
+                tone="bg-cyan-50 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300"
               />
             </div>
 
