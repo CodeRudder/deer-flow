@@ -81,6 +81,7 @@ class RunJournal(BaseCallbackHandler):
 
         # Per-model token accumulator
         self._tokens_by_model: dict[str, dict[str, int]] = {}
+        self._image_generation_count = 0
 
         # Dedup: LangChain may fire on_llm_end multiple times for the same run_id
         self._counted_llm_run_ids: set[str] = set()
@@ -467,11 +468,12 @@ class RunJournal(BaseCallbackHandler):
             return
         bucket = self._tokens_by_model.setdefault(
             model_name or "unknown",
-            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 0},
         )
         bucket["input_tokens"] += int(input_tokens or 0)
         bucket["output_tokens"] += int(output_tokens or 0)
         bucket["total_tokens"] += int(total_tokens)
+        bucket["call_count"] += 1
 
     # -- Public methods (called by worker) --
 
@@ -530,6 +532,13 @@ class RunJournal(BaseCallbackHandler):
     def set_first_human_message(self, content: str) -> None:
         """Record the first human message for convenience fields."""
         self._first_human_msg = content[:2000] if content else None
+
+    def record_image_generation(self, count: int = 1) -> None:
+        """Record successful image generation command executions for this run."""
+        if count <= 0:
+            return
+        self._image_generation_count += int(count)
+        self._schedule_progress_flush()
 
     def record_middleware(self, tag: str, *, name: str, hook: str, action: str, changes: dict) -> None:
         """Record a middleware state-change event.
@@ -656,6 +665,7 @@ class RunJournal(BaseCallbackHandler):
             "subagent_tokens": self._subagent_tokens,
             "middleware_tokens": self._middleware_tokens,
             "token_usage_by_model": {model: dict(usage) for model, usage in self._tokens_by_model.items()},
+            "image_generation_count": self._image_generation_count,
             "message_count": self._msg_count,
             "last_ai_message": self._last_ai_msg,
             "first_human_message": self._first_human_msg,

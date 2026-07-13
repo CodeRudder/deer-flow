@@ -83,7 +83,7 @@ class TestJournalByModel:
         )
         data = j.get_completion_data()
         assert data["token_usage_by_model"] == {
-            "lead-model": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            "lead-model": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "call_count": 1},
         }
         assert data["lead_agent_tokens"] == 15
         assert data["total_tokens"] == 15
@@ -105,8 +105,8 @@ class TestJournalByModel:
         )
         data = j.get_completion_data()
         assert data["token_usage_by_model"] == {
-            "lead-model": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-            "title-model": {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+            "lead-model": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "call_count": 1},
+            "title-model": {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5, "call_count": 1},
         }
         assert data["lead_agent_tokens"] == 15
         assert data["middleware_tokens"] == 5
@@ -121,7 +121,7 @@ class TestJournalByModel:
         )
         data = j.get_completion_data()
         assert data["token_usage_by_model"] == {
-            "unknown": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+            "unknown": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5, "call_count": 1},
         }
 
     def test_same_model_aggregates_across_calls(self) -> None:
@@ -135,7 +135,7 @@ class TestJournalByModel:
             )
         data = j.get_completion_data()
         assert data["token_usage_by_model"] == {
-            "lead-model": {"input_tokens": 14, "output_tokens": 6, "total_tokens": 20},
+            "lead-model": {"input_tokens": 14, "output_tokens": 6, "total_tokens": 20, "call_count": 2},
         }
 
     def test_subagent_external_records_attribute_to_real_model(self) -> None:
@@ -165,8 +165,8 @@ class TestJournalByModel:
         )
         data = j.get_completion_data()
         assert data["token_usage_by_model"] == {
-            "lead-model": {"input_tokens": 6, "output_tokens": 4, "total_tokens": 10},
-            "subagent-model": {"input_tokens": 15, "output_tokens": 10, "total_tokens": 25},
+            "lead-model": {"input_tokens": 6, "output_tokens": 4, "total_tokens": 10, "call_count": 1},
+            "subagent-model": {"input_tokens": 15, "output_tokens": 10, "total_tokens": 25, "call_count": 1},
         }
         assert data["total_tokens"] == 35
         # by_caller stays accurate too.
@@ -190,7 +190,7 @@ class TestJournalByModel:
         )
         data = j.get_completion_data()
         assert data["token_usage_by_model"] == {
-            "unknown": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            "unknown": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7, "call_count": 1},
         }
 
     def test_on_llm_end_dedup_does_not_double_count_model(self) -> None:
@@ -204,7 +204,7 @@ class TestJournalByModel:
         data = j.get_completion_data()
         assert data["total_tokens"] == 15
         assert data["token_usage_by_model"] == {
-            "lead-model": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            "lead-model": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "call_count": 1},
         }
 
     def test_external_records_dedup_does_not_double_count_model(self) -> None:
@@ -222,7 +222,7 @@ class TestJournalByModel:
         data = j.get_completion_data()
         assert data["subagent_tokens"] == 25
         assert data["token_usage_by_model"] == {
-            "subagent-model": {"input_tokens": 15, "output_tokens": 10, "total_tokens": 25},
+            "subagent-model": {"input_tokens": 15, "output_tokens": 10, "total_tokens": 25, "call_count": 1},
         }
 
     def test_track_tokens_disabled_keeps_by_model_empty(self) -> None:

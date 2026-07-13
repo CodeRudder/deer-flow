@@ -40,6 +40,7 @@ class RunRow(Base):
     subagent_tokens: Mapped[int] = mapped_column(default=0)
     middleware_tokens: Mapped[int] = mapped_column(default=0)
     token_usage_by_model: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    image_generation_count: Mapped[int] = mapped_column(default=0, server_default=text("0"))
 
     # Follow-up association
     follow_up_to_run_id: Mapped[str | None] = mapped_column(String(64))
@@ -47,4 +48,8 @@ class RunRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
-    __table_args__ = (Index("ix_runs_thread_status", "thread_id", "status"),)
+    __table_args__ = (
+        Index("ix_runs_thread_status", "thread_id", "status"),
+        Index("ix_runs_created_at", "created_at"),
+        Index("ix_runs_user_created_at", "user_id", "created_at"),
+    )

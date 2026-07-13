@@ -199,12 +199,20 @@ async def run_agent(
         if event_store is not None:
             from deerflow.runtime.journal import RunJournal
 
+            async def _report_progress(snapshot: dict) -> None:
+                prepare_quota_period = runtime_ctx.get("__quota_period_prepare")
+                if callable(prepare_quota_period):
+                    result = prepare_quota_period()
+                    if inspect.isawaitable(result):
+                        await result
+                await run_manager.update_run_progress(run_id, **snapshot)
+
             journal = RunJournal(
                 run_id=run_id,
                 thread_id=thread_id,
                 event_store=event_store,
                 track_token_usage=getattr(run_events_config, "track_token_usage", True),
-                progress_reporter=lambda snapshot: run_manager.update_run_progress(run_id, **snapshot),
+                progress_reporter=_report_progress,
             )
 
         # 1. Mark running

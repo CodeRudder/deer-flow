@@ -12,6 +12,7 @@ from app.gateway.config import get_gateway_config
 from app.gateway.csrf_middleware import get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
 from app.gateway.routers import (
+    admin,
     agents,
     artifacts,
     assistants_compat,
@@ -442,6 +443,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
         )
 
     # Include routers
+    # Admin dashboard and quota-control API is mounted at /api/admin
+    app.include_router(admin.router)
+
     # Models API is mounted at /api/models
     app.include_router(models.router)
 

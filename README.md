@@ -117,6 +117,8 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
 
    > **Advanced / manual configuration**: If you prefer to edit `config.yaml` directly, run `make config` instead to copy the full template. See `config.example.yaml` for the complete reference including CLI-backed providers (Codex CLI, Claude Code OAuth), OpenRouter, Responses API, and more.
 
+   Administrators can enable monthly per-user model-token, model-request, and image-generation quotas with `quota_control` in `config.yaml`. Quota control requires `database.backend: sqlite` or `postgres`; running tasks are allowed to finish, while subsequent runs and image-generation calls are blocked after their monthly limits are reached. Per-dimension Config switches override user-period enforcement without stopping usage tracking. The administrator dashboard is available at `/workspace/admin`, with interactive trend tooltips and an independently scrollable Top-20 session list. Startup migrations automatically normalize the historical admin-quota revision IDs used by earlier development builds before upgrading the schema.
+
    <details>
    <summary>Manual model configuration examples</summary>
 
@@ -606,7 +608,7 @@ Skills are what make DeerFlow do *almost anything*.
 
 A standard Agent Skill is a structured capability module — a Markdown file that defines a workflow, best practices, and references to supporting resources. DeerFlow ships with built-in skills for research, report generation, slide creation, web pages, image and video generation, and more. But the real power is extensibility: add your own skills, replace the built-in ones, or combine them into compound workflows.
 
-Image generation uses the existing workspace provider picker. Image editing is backend-only in this iteration and is triggered through the `image-editing` skill when the user wants to modify an existing image in place.
+Image generation uses the existing workspace provider picker. Image editing is backend-only in this iteration and is triggered through the `image-editing` skill when an uploaded or previously generated image is the source to preserve or transform. This includes turning design drawings, sketches, blueprints, or CAD-style images into realistic product images, even when the request uses words such as "generate" or "create". Administrator usage and quota control currently count image generation and image editing together under the existing image-generation metric.
 
 Skills are loaded progressively — only when the task needs them, not all at once. This keeps the context window lean and makes DeerFlow work well even with token-sensitive models.
 

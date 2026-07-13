@@ -61,8 +61,8 @@ def _normalize_default(value: object) -> str | None:
         return None
     if isinstance(value, sa.sql.elements.TextClause):
         text = value.text
-    elif isinstance(value, sa.schema.DefaultClause) and isinstance(value.arg, sa.sql.elements.TextClause):
-        text = value.arg.text
+    elif isinstance(value, sa.schema.DefaultClause):
+        return _normalize_default(value.arg)
     else:
         text = str(value)
     text = text.strip()
@@ -187,3 +187,56 @@ def safe_drop_column(table: str, column_name: str) -> None:
         return
     with op.batch_alter_table(table) as batch:
         batch.drop_column(column_name)
+
+
+def safe_create_table(table: str, *columns: sa.SchemaItem, **kwargs: object) -> None:
+    """Create a table unless it already exists, warning on column drift.
+
+    Legacy bootstrap can encounter tables already provisioned by
+    ``Base.metadata.create_all``. In that case the revision still validates
+    reflected columns, but leaves constraints and existing data untouched.
+    """
+    insp = _inspector()
+    if table not in insp.get_table_names():
+        op.create_table(table, *columns, **kwargs)
+        return
+
+    existing = {column["name"]: column for column in insp.get_columns(table)}
+    for desired in columns:
+        if not isinstance(desired, sa.Column):
+            continue
+        actual = existing.get(desired.name)
+        if actual is None:
+            logger.warning(
+                "safe_create_table: %s already exists but column %s is missing; leaving as-is -- a manual migration is required.",
+                table,
+                desired.name,
+            )
+            continue
+        _check_column_drift(table, desired, actual)
+
+
+def safe_drop_table(table: str) -> None:
+    """Drop a table only when it exists."""
+    if table in _inspector().get_table_names():
+        op.drop_table(table)
+
+
+def safe_create_index(index: str, table: str, columns: list[str], **kwargs: object) -> None:
+    """Create an index only when both the table and index state allow it."""
+    insp = _inspector()
+    if table not in insp.get_table_names():
+        return
+    if index in {item["name"] for item in insp.get_indexes(table)}:
+        return
+    op.create_index(index, table, columns, **kwargs)
+
+
+def safe_drop_index(index: str, table: str) -> None:
+    """Drop an index only when it exists."""
+    insp = _inspector()
+    if table not in insp.get_table_names():
+        return
+    if index not in {item["name"] for item in insp.get_indexes(table)}:
+        return
+    op.drop_index(index, table_name=table)

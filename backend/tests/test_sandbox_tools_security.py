@@ -9,9 +9,11 @@ from deerflow.sandbox.exceptions import SandboxError
 from deerflow.sandbox.tools import (
     VIRTUAL_PATH_PREFIX,
     _apply_cwd_prefix,
+    _bash_tool_async,
     _compiled_mask_patterns,
     _get_custom_mount_for_path,
     _get_custom_mounts,
+    _image_generation_invocation_count,
     _is_acp_workspace_path,
     _is_custom_mount_path,
     _is_skills_path,
@@ -19,6 +21,7 @@ from deerflow.sandbox.tools import (
     _resolve_acp_workspace_path,
     _resolve_and_validate_user_data_path,
     _resolve_skills_path,
+    bash_background_tool,
     bash_tool,
     mask_local_paths_in_output,
     replace_virtual_path,
@@ -569,6 +572,139 @@ def test_bash_tool_blocks_relative_traversal_before_host_execution(monkeypatch) 
     )
 
     assert "path traversal" in result
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("python /mnt/skills/public/image-generation/scripts/generate.py --prompt x", 1),
+        ("python /mnt/skills/public/image-editing/scripts/edit.py --image a.png --prompt x --output-file b.png", 1),
+        ("python image-editing/scripts/edit.py --image a.png --prompt x --output-file b.png", 1),
+        ("python image-generation/scripts/generate.py --prompt x && python image-generation/scripts/generate.py --prompt y", 2),
+        ("python image-generation/scripts/generate.py --prompt x && python image-editing/scripts/edit.py --image a.png --prompt y --output-file b.png", 2),
+        ("echo /mnt/skills/public/image-generation/scripts/generate.py", 0),
+        ("echo /mnt/skills/public/image-editing/scripts/edit.py", 0),
+        ("cat image-generation/scripts/generate.py", 0),
+        ("bash -c 'python /mnt/skills/public/image-generation/scripts/generate.py --prompt x'", 1),
+    ],
+)
+def test_image_generation_invocation_count_only_matches_execution(command: str, expected: int) -> None:
+    assert _image_generation_invocation_count(command) == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+        "python /mnt/skills/public/image-editing/scripts/edit.py --image a.png --prompt x --output-file b.png",
+    ],
+)
+def test_bash_background_rejects_image_generation_before_dispatch(monkeypatch, command: str) -> None:
+    runtime = SimpleNamespace(state={}, context={"thread_id": "thread-1"})
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools.ensure_sandbox_initialized",
+        lambda runtime: pytest.fail("image generation must be rejected before sandbox dispatch"),
+    )
+
+    result = bash_background_tool.func(
+        runtime=runtime,
+        description="generate image",
+        command=command,
+    )
+
+    assert "foreground bash" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+        "python /mnt/skills/public/image-editing/scripts/edit.py --image a.png --prompt x --output-file b.png",
+    ],
+)
+async def test_async_bash_quota_rejection_skips_image_dispatch(monkeypatch, command: str) -> None:
+    async def consume(count: int):
+        assert count == 1
+        return {"allowed": False, "message": "本月生图额度已用尽", "exceeded_quota": "image_generations"}
+
+    runtime = SimpleNamespace(state={}, context={"__quota_image_generation_consume": consume})
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("quota-rejected image command must not dispatch"),
+    )
+
+    result = await _bash_tool_async(
+        runtime,
+        "generate image",
+        command,
+    )
+
+    assert "image_generations" in result
+
+
+@pytest.mark.asyncio
+async def test_async_bash_releases_image_reservation_when_dispatch_does_not_start(monkeypatch) -> None:
+    released: list[int] = []
+
+    async def consume(count: int):
+        return {"allowed": True}
+
+    async def release(count: int):
+        released.append(count)
+
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_image_generation_consume": consume,
+            "__quota_image_generation_release": release,
+        },
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr("deerflow.sandbox.tools._execute_bash_tool", lambda *_args: ("Error: invalid path", False))
+
+    await _bash_tool_async(
+        runtime,
+        "generate image",
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+    )
+
+    assert released == [1]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+        "python /mnt/skills/public/image-editing/scripts/edit.py --image a.png --prompt x --output-file b.png",
+    ],
+)
+def test_failed_dispatched_image_script_is_still_recorded(monkeypatch, command: str) -> None:
+    recorded: list[int] = []
+    journal = SimpleNamespace(record_image_generation=lambda count: recorded.append(count))
+    runtime = SimpleNamespace(state={}, context={"__run_journal": journal})
+    sandbox = SimpleNamespace(execute_command=lambda _command: "Exit Code: 1")
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized", lambda _runtime: sandbox)
+    monkeypatch.setattr("deerflow.sandbox.tools.is_local_sandbox", lambda _runtime: False)
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_thread_directories_exist", lambda _runtime: None)
+
+    result = bash_tool.func(
+        runtime=runtime,
+        description="generate image",
+        command=command,
+    )
+
+    assert result == "Exit Code: 1"
+    assert recorded == [1]
 
 
 # ---------- Skills path tests ----------

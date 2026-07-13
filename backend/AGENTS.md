@@ -53,6 +53,7 @@ deer-flow/
 │   │           └── client.py          # Embedded Python client (DeerFlowClient)
 │   ├── app/                   # Application layer (import: app.*)
 │   │   ├── gateway/           # FastAPI Gateway API
+│   │   │   ├── admin/         # Administrator usage dashboard and quota control
 │   │   │   ├── app.py         # FastAPI application
 │   │   │   └── routers/       # FastAPI route modules (models, mcp, memory, skills, uploads, threads, artifacts, agents, suggestions, channels)
 │   │   └── channels/          # IM platform integrations
@@ -289,6 +290,14 @@ CORS is same-origin by default when requests enter through nginx on port 2026. S
 | **Thread Runs** (`/api/threads/{id}/runs`) | `POST /` - create background run; `POST /stream` - create + SSE stream; `POST /wait` - create + block; `POST /regenerate/prepare` - prepare clean input + checkpoint metadata for regenerating the latest assistant answer; `GET /` - list runs; `GET /{rid}` - run details; `POST /{rid}/cancel` - cancel; `GET /{rid}/join` - join SSE; `GET /{rid}/messages` - paginated messages `{data, has_more}`; `GET /{rid}/events` - full event stream; `GET /../messages` - thread messages with feedback; `GET /../token-usage` - aggregate tokens |
 | **Feedback** (`/api/threads/{id}/runs/{rid}/feedback`) | `PUT /` - upsert feedback; `DELETE /` - delete user feedback; `POST /` - create feedback; `GET /` - list feedback; `GET /stats` - aggregate stats; `DELETE /{fid}` - delete specific |
 | **Runs** (`/api/runs`) | `POST /stream` - stateless run + SSE; `POST /wait` - stateless run + block; `GET /{rid}/messages` - paginated messages by run_id `{data, has_more}` (cursor: `after_seq`/`before_seq`); `GET /{rid}/feedback` - list feedback by run_id |
+| **Admin** (`/api/admin`) | Usage summary/trends/sessions/models plus monthly per-user quota listing and updates; admin role and persistent database required |
+
+**Administrator usage and quota control**:
+- `app/gateway/admin/usage_service.py` owns read-only aggregation from `runs`; its session projection unwraps complete input-sanitization boundary markers from `first_human_message` for the API title without changing the stored value. `admin/quota_service.py` owns period snapshots, enforcement, and atomic image reservations. The domain package also contains API schemas and period parsing, while its HTTP endpoints remain in the shared router layer at `app/gateway/routers/admin.py`.
+- Model token/request usage is copied from cumulative run progress as positive deltas in the same transaction as `runs` updates. Image generation is reserved atomically before foreground sandbox dispatch and counted after dispatch even when the script fails.
+- `quota_control.defaults.*.enabled` is both the system-level enforcement gate and the default copied into new monthly rows. A disabled Config dimension overrides an enabled user-period row for enforcement while usage counters continue to advance; re-enabling Config restores the stored user-period decision.
+- Model-distribution requests sum every available `token_usage_by_model[*].call_count`; historical rows without `call_count` are skipped, and the API returns `null` only when a model has no known call counts in the selected range.
+- `quota_control.enabled=true` requires SQLite or Postgres. New monthly rows always copy the current `config.yaml` defaults and never inherit the previous month.
 
 **RunManager / RunStore contract**:
 - `RunManager.get()` is async; direct callers must `await` it.
@@ -378,6 +387,7 @@ Additional providers also live here (`brave`, `browserless`, `ddg_search`, `exa`
 - **Format**: Directory with `SKILL.md` (YAML frontmatter: name, description, license, allowed-tools)
 - **Loading**: `load_skills()` recursively scans `skills/{public,custom}` for `SKILL.md`, parses metadata, and reads enabled state from extensions_config.json
 - **Injection**: Enabled skills listed in agent system prompt with container paths
+- **Image routing**: Route by the role of the source image. Structure-preserving transformations of uploaded/generated images, including design drawing-to-realistic-product requests, use `image-editing` even when the user says "generate"; text-to-image and loose visual inspiration use `image-generation`. Both skill scripts share the existing image-generation usage counter and monthly quota; this iteration does not distinguish generate versus edit usage.
 - **Slash activation**: `/skill-name task` loads that enabled skill's `SKILL.md` for the current model call only. The resolver rejects leading whitespace, missing separators, reserved channel commands (`/new`, `/help`, `/bootstrap`, `/status`, `/models`, `/memory`), disabled skills, and skills outside a custom agent's whitelist.
 - **Installation**: `POST /api/skills/install` extracts .skill ZIP archive to custom/ directory
 
@@ -517,7 +527,7 @@ DeerFlow's application tables (`runs`, `threads_meta`, `feedback`, `users`, `run
 | legacy (DeerFlow tables, no `alembic_version`) | `create_all` (baseline tables only, backfill) + `alembic stamp 0001_baseline` + `upgrade head` |
 | versioned (`alembic_version` row exists)  | `alembic upgrade head`                  |
 
-The legacy branch handles pre-alembic databases that already have at least one DeerFlow-owned table. `create_all` runs first because stamping at `0001_baseline` makes alembic skip the baseline's own `create_table` DDL on the subsequent upgrade — so any baseline table introduced into `Base.metadata` after the user's DB was first provisioned (e.g. the `channel_*` tables from PR #1930 for users upgrading across multiple releases) would otherwise never be created, and the first request hitting that table would 500 with `no such table`. The backfill is **restricted to `_BASELINE_TABLE_NAMES`** so it does not also create tables that future revisions introduce — those revisions' own `op.create_table` would otherwise fail with `relation already exists`. A guard test pins `_BASELINE_TABLE_NAMES` against `0001_baseline.upgrade()`'s actual output, so editing 0001 to add or remove a table forces a matching update to the constant. Column-level shape (pre-#3658 vs post-#3658 vs manual-ALTER for `token_usage_by_model`) is answered by each `versions/*.py` revision via the idempotent helpers in `migrations/_helpers.py` (`safe_add_column` / `safe_drop_column`) which no-op when the change is already present and `logger.warning` on shape drift. **Adding a new ORM column / table only requires a new revision file — no edit to `bootstrap.py` is needed** *unless* the new revision adds a new baseline table (rare; only happens when a new model is part of the baseline rather than introduced by its own revision).
+The legacy branch handles pre-alembic databases that already have at least one DeerFlow-owned table. `create_all` runs first because stamping at `0001_baseline` makes alembic skip the baseline's own `create_table` DDL on the subsequent upgrade — so any baseline table introduced into `Base.metadata` after the user's DB was first provisioned (e.g. the `channel_*` tables from PR #1930 for users upgrading across multiple releases) would otherwise never be created, and the first request hitting that table would 500 with `no such table`. The backfill is **restricted to `_BASELINE_TABLE_NAMES`** so it does not also create tables that future revisions introduce — those revisions' own `op.create_table` would otherwise fail with `relation already exists`. A guard test pins `_BASELINE_TABLE_NAMES` against `0001_baseline.upgrade()`'s actual output, so editing 0001 to add or remove a table forces a matching update to the constant. Column/table/index shape is answered by each `versions/*.py` revision via the idempotent helpers in `migrations/_helpers.py` (`safe_add_column`, `safe_create_table`, `safe_create_index`, and matching drop helpers), which no-op when the change is already present and warn on reflected column drift. **Adding a new ORM column / table only requires a new revision file — no edit to `bootstrap.py` is needed** *unless* the new revision adds a new baseline table (rare; only happens when a new model is part of the baseline rather than introduced by its own revision).
 
 The empty-DB path keeps using `create_all` because `Base.metadata` is the only authoritative schema source — `create_all` renders both SQLite (JSON, type affinity) and Postgres (JSONB, partial indexes) correctly without anyone having to keep a hand-written baseline in lockstep. `0001_baseline.upgrade()` is therefore almost never executed in practice; it exists as a stamp target + chain root.
 
@@ -532,10 +542,11 @@ This invokes `alembic revision --autogenerate` against the live ORM models. Revi
 **Where things live**:
 - `migrations/env.py` — alembic env, delegates filter to `_env_filters.py`, sets `render_as_batch=True` for SQLite ALTER support
 - `migrations/_env_filters.py::include_object` — drops LangGraph checkpointer tables from alembic's view
-- `migrations/_helpers.py` — `safe_add_column` / `safe_drop_column`
+- `migrations/_helpers.py` — idempotent column/table/index create/drop helpers
 - `migrations/versions/0001_baseline.py` — chain root, matches the schema `create_all` produces from `Base.metadata`
 - `migrations/versions/0002_runs_token_usage.py` — fixes issue #3682
-- `persistence/bootstrap.py` — `bootstrap_schema(engine, backend=...)`, the three-branch decision + locking
+- `migrations/versions/company_20260709_admin_quota_control.py` — monthly user quota storage, image-generation run counter, and statistics indexes; company prefix avoids consuming an upstream numeric revision ID
+- `persistence/bootstrap.py` — `bootstrap_schema(engine, backend=...)`, the three-branch decision + locking; known historical names of the admin-quota revision are normalized transactionally before Alembic resolves the versioned migration chain
 - Tests: `tests/test_persistence_bootstrap.py` (branches), `tests/test_persistence_bootstrap_concurrency.py` (concurrency), `tests/test_persistence_bootstrap_regression.py` (issue #3682), `tests/test_persistence_migrations_env.py` (filter), `tests/blocking_io/test_persistence_bootstrap.py` (asyncio.to_thread anchor)
 
 ### Terminal Workbench / TUI (`packages/harness/deerflow/tui/`)

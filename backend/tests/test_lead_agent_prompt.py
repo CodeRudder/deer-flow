@@ -33,6 +33,20 @@ def test_build_self_update_section_present_for_custom_agent():
     assert '"null"' in section
 
 
+def test_image_generation_preference_routes_source_image_transformations_to_image_editing():
+    section = prompt_module._build_image_generation_runtime_section(
+        prompt_module.ImageGenerationPreference(
+            provider="openai_image",
+            model="gpt-image-2",
+        )
+    )
+
+    assert "creating a new image from text" in section
+    assert "use the image-editing skill instead" in section
+    assert "design drawing, sketch, blueprint, or CAD-style image" in section
+    assert "asks to create, edit, visualize" not in section
+
+
 def test_build_custom_mounts_section_returns_empty_when_no_mounts(monkeypatch):
     config = SimpleNamespace(sandbox=SimpleNamespace(mounts=[]))
     monkeypatch.setattr("deerflow.config.get_app_config", lambda: config)

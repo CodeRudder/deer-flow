@@ -4,8 +4,13 @@ Uses a temp SQLite DB to test ORM-backed CRUD operations.
 """
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
+from app.gateway.admin.quota_service import QuotaExceededError, QuotaService
+from deerflow.config.quota_control_config import QuotaControlConfig
+from deerflow.persistence.engine import get_session_factory
+from deerflow.persistence.quota.model import UserQuotaPeriodRow
 from deerflow.persistence.run import RunRepository
 from deerflow.runtime import RunManager, RunStatus
 from deerflow.runtime.runs.store.base import RunStore
@@ -69,7 +74,7 @@ class TestRunRepository:
     async def test_put_and_get(self, tmp_path):
         repo = await _make_repo(tmp_path)
         await repo.put("r1", thread_id="t1", status="pending")
-        row = await repo.get("r1")
+        row = await repo.get("r1", user_id=None)
         assert row is not None
         assert row["run_id"] == "r1"
         assert row["thread_id"] == "t1"
@@ -311,6 +316,67 @@ class TestRunRepository:
         assert row["status"] == "success"
         assert row["total_tokens"] == 100
         assert row["llm_call_count"] == 1
+        await _cleanup()
+
+    @pytest.mark.anyio
+    async def test_progress_and_completion_apply_only_positive_quota_deltas(self, tmp_path):
+        repo = await _make_repo(tmp_path)
+        quota = QuotaService(
+            get_session_factory(),
+            QuotaControlConfig.model_validate(
+                {
+                    "enabled": True,
+                    "defaults": {"model_tokens": {"enabled": True, "limit_value": 100}},
+                }
+            ),
+        )
+        await quota.ensure_user_period("user-1")
+        await repo.put("r1", thread_id="t1", user_id="user-1", status="running")
+
+        await repo.update_run_progress("r1", total_tokens=100, llm_call_count=2)
+        with pytest.raises(QuotaExceededError):
+            await quota.check_run_creation("user-1")
+        await repo.update_run_progress("r1", total_tokens=150, llm_call_count=3)
+        # Out-of-order cumulative snapshots must not regress runs or subtract
+        # from quota usage.
+        await repo.update_run_progress("r1", total_tokens=120, llm_call_count=2)
+        await repo.update_run_completion("r1", status="success", total_tokens=180, llm_call_count=4)
+        # Completion retries are idempotent.
+        await repo.update_run_completion("r1", status="success", total_tokens=180, llm_call_count=4)
+
+        row = await repo.get("r1", user_id=None)
+        assert row["total_tokens"] == 180
+        assert row["llm_call_count"] == 4
+        async with get_session_factory()() as session:
+            period = (await session.execute(select(UserQuotaPeriodRow))).scalar_one()
+        assert period.model_tokens_used == 180
+        assert period.model_requests_used == 4
+        await _cleanup()
+
+    @pytest.mark.anyio
+    async def test_progress_tracks_model_usage_when_config_dimensions_are_disabled(self, tmp_path):
+        repo = await _make_repo(tmp_path)
+        quota = QuotaService(
+            get_session_factory(),
+            QuotaControlConfig.model_validate(
+                {
+                    "enabled": True,
+                    "defaults": {
+                        "model_tokens": {"enabled": False, "limit_value": 100},
+                        "model_requests": {"enabled": False, "limit_value": 10},
+                    },
+                }
+            ),
+        )
+        await quota.ensure_user_period("user-1")
+        await repo.put("r1", thread_id="t1", user_id="user-1", status="running")
+
+        await repo.update_run_progress("r1", total_tokens=75, llm_call_count=3)
+
+        async with get_session_factory()() as session:
+            period = (await session.execute(select(UserQuotaPeriodRow))).scalar_one()
+        assert period.model_tokens_used == 75
+        assert period.model_requests_used == 3
         await _cleanup()
 
     @pytest.mark.anyio

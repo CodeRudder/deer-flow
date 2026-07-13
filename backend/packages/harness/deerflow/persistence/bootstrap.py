@@ -106,6 +106,16 @@ _HEAD_REVISION: str | None = None
 # real revision id in the script tree.
 _BASELINE_REVISION = "0001_baseline"
 
+# Historical names for the same admin quota-control revision. These IDs were
+# briefly used before the company-prefixed ID was finalized. Normalize the
+# alembic bookkeeping row before Alembic resolves the migration graph; keeping
+# alias revisions in ``versions/`` would create an unnecessary branch from
+# 0002 and could conflict with upstream's next numbered revision.
+_REVISION_ALIASES: dict[str, str] = {
+    "0003_admin_quota_control": "company_20260709_quota_control",
+    "company_20260709_admin_quota_control": "company_20260709_quota_control",
+}
+
 # Stable advisory-lock key for Postgres. Two random 32-bit halves picked once
 # so we never collide with any other application's advisory locks. Do not
 # change without coordinating a one-time migration (a key change effectively
@@ -300,6 +310,37 @@ def _run_baseline_create_all_sync(sync_conn: Any) -> None:
     Base.metadata.create_all(sync_conn, tables=baseline_tables, checkfirst=True)
 
 
+def _normalize_revision_aliases_sync(sync_conn: Any) -> list[tuple[str, str]]:
+    """Replace known historical revision IDs in ``alembic_version``.
+
+    Alias IDs represent the same completed DDL as their target, so this only
+    repairs Alembic bookkeeping. It must run before ``alembic upgrade`` because
+    Alembic resolves every current revision against the script tree first.
+    """
+    if "alembic_version" not in sa_inspect(sync_conn).get_table_names():
+        return []
+
+    revisions = set(sync_conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
+    normalized: list[tuple[str, str]] = []
+    for legacy, current in _REVISION_ALIASES.items():
+        if legacy not in revisions:
+            continue
+        if current in revisions:
+            sync_conn.execute(
+                text("DELETE FROM alembic_version WHERE version_num = :legacy"),
+                {"legacy": legacy},
+            )
+        else:
+            sync_conn.execute(
+                text("UPDATE alembic_version SET version_num = :current WHERE version_num = :legacy"),
+                {"current": current, "legacy": legacy},
+            )
+            revisions.add(current)
+        revisions.discard(legacy)
+        normalized.append((legacy, current))
+    return normalized
+
+
 def _stamp(cfg: AlembicConfig, revision: str) -> None:
     """Synchronous alembic stamp; callers must wrap in ``asyncio.to_thread``."""
     alembic_command.stamp(cfg, revision)
@@ -443,6 +484,10 @@ async def bootstrap_schema(engine: AsyncEngine, *, backend: str) -> None:
             await asyncio.to_thread(_upgrade, cfg, "head")
 
         elif decision == "versioned":
+            async with engine.begin() as conn:
+                normalized = await conn.run_sync(_normalize_revision_aliases_sync)
+            for legacy, current in normalized:
+                logger.info("bootstrap: normalized historical revision %s -> %s", legacy, current)
             logger.info("bootstrap: branch=versioned -> upgrade head (%s)", head)
             await asyncio.to_thread(_upgrade, cfg, "head")
 

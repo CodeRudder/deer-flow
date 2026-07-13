@@ -34,6 +34,12 @@ _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FILE_URL_PATTERN = re.compile(r"\bfile://\S+", re.IGNORECASE)
 _URL_WITH_SCHEME_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 _URL_IN_COMMAND_PATTERN = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'`;&|<>()]+", re.IGNORECASE)
+_IMAGE_GENERATION_COMMAND_MARKERS = (
+    "/mnt/skills/public/image-generation/scripts/generate.py",
+    "image-generation/scripts/generate.py",
+    "/mnt/skills/public/image-editing/scripts/edit.py",
+    "image-editing/scripts/edit.py",
+)
 _DOTDOT_PATH_SEGMENT_PATTERN = re.compile(r"(?:^|[/\\=])\.\.(?:$|[/\\])")
 _LOCAL_BASH_SYSTEM_PATH_PREFIXES = (
     "/bin/",
@@ -1385,6 +1391,114 @@ def _truncate_ls_output(output: str, max_chars: int) -> str:
     return f"{output[:kept]}{marker}"
 
 
+def _is_image_generation_script(token: str) -> bool:
+    normalized = token.strip()
+    return any(normalized == marker or normalized.endswith(f"/{marker}") for marker in _IMAGE_GENERATION_COMMAND_MARKERS)
+
+
+def _image_generation_invocation_count(command: str) -> int:
+    """Count billable image-generation and image-editing script invocations."""
+    try:
+        lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return 0
+
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(char in ";&|" for char in token):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(token)
+
+    count = 0
+    for segment in segments:
+        if not segment:
+            continue
+        index = 0
+        while index < len(segment) and ("=" in segment[index] and not segment[index].startswith("=")):
+            index += 1
+        if index >= len(segment):
+            continue
+        executable = posixpath.basename(segment[index])
+        args = segment[index + 1 :]
+        if executable == "env":
+            nested = " ".join(args)
+            count += _image_generation_invocation_count(nested)
+        elif executable in {"bash", "sh", "zsh"} and "-c" in args:
+            shell_index = args.index("-c")
+            if shell_index + 1 < len(args):
+                count += _image_generation_invocation_count(args[shell_index + 1])
+        elif executable in {"python", "python3", "uv"}:
+            if any(_is_image_generation_script(arg) for arg in args):
+                count += 1
+        elif _is_image_generation_script(segment[index]):
+            count += 1
+    return count
+
+
+async def _run_runtime_callback_async(callback: object, *args: object) -> object:
+    if not callable(callback):
+        return None
+    result = callback(*args)
+    if hasattr(result, "__await__"):
+        return await result
+    return result
+
+
+def _quota_error(result: object) -> str | None:
+    if not isinstance(result, dict) or result.get("allowed", True):
+        return None
+    message = result.get("message") or "本月生图额度已用尽"
+    exceeded = result.get("exceeded_quota")
+    return f"{message}（{exceeded}）" if exceeded else str(message)
+
+
+def _execute_bash_tool(runtime: Runtime, command: str, image_generation_count: int) -> tuple[str, bool]:
+    """Execute prepared bash work and report whether dispatch was attempted."""
+    dispatched = False
+    try:
+        sandbox = ensure_sandbox_initialized(runtime)
+        if is_local_sandbox(runtime):
+            if not is_host_bash_allowed():
+                return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}", dispatched
+            ensure_thread_directories_exist(runtime)
+            thread_data = get_thread_data(runtime)
+            validate_local_bash_command_paths(command, thread_data)
+            command = replace_virtual_paths_in_command(command, thread_data)
+            command = _apply_cwd_prefix(command, thread_data)
+        else:
+            ensure_thread_directories_exist(runtime)
+
+        try:
+            from deerflow.config.app_config import get_app_config
+
+            sandbox_cfg = get_app_config().sandbox
+            max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
+        except Exception:
+            max_chars = 20000
+
+        dispatched = True
+        output = sandbox.execute_command(command)
+        if is_local_sandbox(runtime):
+            output = mask_local_paths_in_output(output, get_thread_data(runtime))
+        return _truncate_bash_output(output, max_chars), dispatched
+    except SandboxError as exc:
+        return f"Error: {exc}", dispatched
+    except PermissionError as exc:
+        return f"Error: {exc}", dispatched
+    except Exception as exc:
+        return f"Error: Unexpected error executing command: {_sanitize_error(exc, runtime)}", dispatched
+    finally:
+        if dispatched and image_generation_count > 0:
+            journal = runtime.context.get("__run_journal") if runtime.context is not None else None
+            if hasattr(journal, "record_image_generation"):
+                journal.record_image_generation(image_generation_count)
+
+
 @tool("bash", parse_docstring=True)
 def bash_tool(runtime: Runtime, description: str, command: str) -> str:
     """Execute a bash command in a Linux environment.
@@ -1398,44 +1512,42 @@ def bash_tool(runtime: Runtime, description: str, command: str) -> str:
         description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         command: The bash command to execute. Always use absolute paths for files and directories.
     """
-    try:
-        sandbox = ensure_sandbox_initialized(runtime)
-        if is_local_sandbox(runtime):
-            if not is_host_bash_allowed():
-                return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}"
-            ensure_thread_directories_exist(runtime)
-            thread_data = get_thread_data(runtime)
-            validate_local_bash_command_paths(command, thread_data)
-            command = replace_virtual_paths_in_command(command, thread_data)
-            command = _apply_cwd_prefix(command, thread_data)
-            output = sandbox.execute_command(command)
-            try:
-                from deerflow.config.app_config import get_app_config
-
-                sandbox_cfg = get_app_config().sandbox
-                max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
-            except Exception:
-                max_chars = 20000
-            return _truncate_bash_output(mask_local_paths_in_output(output, thread_data), max_chars)
-        ensure_thread_directories_exist(runtime)
-        try:
-            from deerflow.config.app_config import get_app_config
-
-            sandbox_cfg = get_app_config().sandbox
-            max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
-        except Exception:
-            max_chars = 20000
-        return _truncate_bash_output(sandbox.execute_command(command), max_chars)
-    except SandboxError as e:
-        return f"Error: {e}"
-    except PermissionError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error: Unexpected error executing command: {_sanitize_error(e, runtime)}"
+    image_generation_count = _image_generation_invocation_count(command)
+    callback = runtime.context.get("__quota_image_generation_consume") if runtime.context is not None else None
+    if image_generation_count and callable(callback):
+        return "Error: Image generation quota checks require asynchronous foreground bash execution."
+    return _execute_bash_tool(runtime, command, image_generation_count)[0]
 
 
 async def _bash_tool_async(runtime: Runtime, description: str, command: str) -> str:
-    return await _run_sync_tool_after_async_sandbox_init(bash_tool.func, runtime, description, command)
+    try:
+        await ensure_sandbox_initialized_async(runtime)
+    except SandboxError as exc:
+        return f"Error: {exc}"
+    except Exception as exc:
+        return f"Error: Unexpected error initializing sandbox: {_sanitize_error(exc, runtime)}"
+
+    image_generation_count = _image_generation_invocation_count(command)
+    consume_callback = runtime.context.get("__quota_image_generation_consume") if runtime.context is not None else None
+    release_callback = runtime.context.get("__quota_image_generation_release") if runtime.context is not None else None
+    reserved = False
+    if image_generation_count and callable(consume_callback):
+        try:
+            result = await _run_runtime_callback_async(consume_callback, image_generation_count)
+        except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
+            return f"Error: Failed to check image generation quota: {exc}"
+        error = _quota_error(result)
+        if error:
+            return f"Error: {error}"
+        reserved = True
+
+    output, dispatched = await asyncio.to_thread(_execute_bash_tool, runtime, command, image_generation_count)
+    if reserved and not dispatched and callable(release_callback):
+        try:
+            await _run_runtime_callback_async(release_callback, image_generation_count)
+        except Exception as exc:  # noqa: BLE001 - reservation repair is visible to the caller
+            return f"{output}\nError: Failed to release unused image generation quota: {exc}"
+    return output
 
 
 bash_tool.coroutine = _bash_tool_async
@@ -1453,6 +1565,8 @@ def bash_background_tool(runtime: Runtime, description: str, command: str) -> st
         command: The bash command to execute in the background. Always use absolute paths for files and directories.
     """
     try:
+        if _image_generation_invocation_count(command):
+            return "Error: Image generation must use foreground bash so quota and execution can be recorded."
         sandbox = ensure_sandbox_initialized(runtime)
         if is_local_sandbox(runtime):
             if not is_host_bash_allowed():

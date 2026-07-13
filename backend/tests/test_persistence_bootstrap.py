@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0002_runs_token_usage"
+HEAD = "company_20260709_quota_control"
 BASELINE = "0001_baseline"
 
 
@@ -137,10 +137,12 @@ async def test_empty_branch_creates_all_and_stamps_head(tmp_path: Path) -> None:
             "channel_credentials",
             "channel_conversations",
             "channel_oauth_states",
+            "user_quota_periods",
             "alembic_version",
         }:
             assert required in tables, f"missing table: {required}"
         assert "token_usage_by_model" in await _runs_columns(engine)
+        assert "image_generation_count" in await _runs_columns(engine)
         assert await _alembic_version(engine) == HEAD
     finally:
         await engine.dispose()
@@ -393,9 +395,32 @@ async def test_versioned_branch_is_noop_at_head(tmp_path: Path) -> None:
         await engine.dispose()
 
 
+@asyncio_test
+@pytest.mark.parametrize(
+    "legacy_revision",
+    ["0003_admin_quota_control", "company_20260709_admin_quota_control"],
+)
+async def test_versioned_branch_normalizes_legacy_admin_quota_revision(tmp_path: Path, legacy_revision: str) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(sa.text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            await conn.execute(
+                sa.text("INSERT INTO alembic_version (version_num) VALUES (:revision)"),
+                {"revision": legacy_revision},
+            )
+
+        await bootstrap_schema(engine, backend="sqlite")
+
+        assert await _alembic_version(engine) == HEAD
+    finally:
+        await engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Schema-parity guard: legacy-upgraded DB must end up structurally identical
-# to a fresh DB on the columns the migration touches. This is the property
+# to a fresh DB on the columns the migrations touch. This is the property
 # that catches drift between ``Base.metadata`` and ``0002``'s DDL -- exactly
 # the failure mode of the original #3682 bug, just at a different layer.
 # ---------------------------------------------------------------------------
@@ -430,6 +455,24 @@ async def test_token_usage_column_parity_between_fresh_and_upgraded(tmp_path: Pa
     finally:
         await fresh.dispose()
         await upgraded.dispose()
+
+
+@asyncio_test
+async def test_admin_quota_schema_exists_after_legacy_upgrade(tmp_path: Path) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        # A legacy unversioned DB built from current metadata already contains
+        # the quota table and image column. The company revision must treat
+        # both as idempotent instead of failing with "table already exists".
+        await _seed_legacy_with_column(engine)
+
+        await bootstrap_schema(engine, backend="sqlite")
+
+        assert "user_quota_periods" in await _table_names(engine)
+        assert "image_generation_count" in await _runs_columns(engine)
+        assert await _alembic_version(engine) == HEAD
+    finally:
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -615,8 +658,20 @@ class TestDecideState:
 # ---------------------------------------------------------------------------
 
 
-def test_head_revision_is_token_usage_revision() -> None:
+def test_head_revision_is_company_admin_quota_revision() -> None:
     assert _get_head_revision() == HEAD
+
+
+def test_all_revision_ids_fit_alembic_version_column() -> None:
+    from alembic.config import Config  # noqa: PLC0415
+    from alembic.script import ScriptDirectory  # noqa: PLC0415
+
+    migrations_dir = Path(__file__).resolve().parents[1] / "packages/harness/deerflow/persistence/migrations"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(migrations_dir))
+    script = ScriptDirectory.from_config(cfg)
+
+    assert all(len(revision.revision) <= 32 for revision in script.walk_revisions())
 
 
 def test_baseline_revision_id_is_known() -> None:

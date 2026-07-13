@@ -87,3 +87,14 @@ def test_empty_config_lookups_return_none():
     assert cfg.get_vision_model_config("anything") is None
     assert cfg.get_tool_config("anything") is None
     assert cfg.get_tool_group_config("anything") is None
+
+
+def test_quota_control_requires_persistent_database():
+    with pytest.raises(ValueError, match="quota_control.enabled requires database.backend"):
+        AppConfig.model_validate(
+            {
+                "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
+                "database": {"backend": "memory"},
+                "quota_control": {"enabled": True},
+            }
+        )

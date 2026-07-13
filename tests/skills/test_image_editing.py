@@ -7,6 +7,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "skills" / "public" / "image-editing" / "scripts"
+IMAGE_EDITING_SKILL = SCRIPT_DIR.parent / "SKILL.md"
+IMAGE_GENERATION_SKILL = REPO_ROOT / "skills" / "public" / "image-generation" / "SKILL.md"
 
 
 def _load_module(module_name: str, path: Path):
@@ -23,6 +25,16 @@ provider_module = _load_module(
     "image_editing_openai_image_edit",
     SCRIPT_DIR / "providers" / "openai_image_edit.py",
 )
+
+
+def test_skill_routing_covers_design_drawing_to_realistic_product():
+    editing_content = IMAGE_EDITING_SKILL.read_text(encoding="utf-8")
+    generation_content = IMAGE_GENERATION_SKILL.read_text(encoding="utf-8")
+
+    assert "even if the user says \"generate\" or \"create\"" in editing_content
+    assert "design drawing, sketch, blueprint, CAD-style image" in editing_content
+    assert "turn this design into a real product photo" in generation_content
+    assert "use the `image-editing` skill instead" in generation_content
 
 
 def _make_png(path: Path) -> None:

@@ -7,6 +7,7 @@ The actual ORM classes have moved to entity-specific subpackages:
 - ``deerflow.persistence.thread_meta``
 - ``deerflow.persistence.run``
 - ``deerflow.persistence.feedback``
+- ``deerflow.persistence.quota``
 - ``deerflow.persistence.user``
 
 ``RunEventRow`` remains in ``deerflow.persistence.models.run_event`` because
@@ -22,6 +23,7 @@ from deerflow.persistence.channel_connections.model import (
 )
 from deerflow.persistence.feedback.model import FeedbackRow
 from deerflow.persistence.models.run_event import RunEventRow
+from deerflow.persistence.quota.model import UserQuotaPeriodRow
 from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
 from deerflow.persistence.user.model import UserRow
@@ -33,6 +35,7 @@ __all__ = [
     "ChannelOAuthStateRow",
     "FeedbackRow",
     "RunEventRow",
+    "UserQuotaPeriodRow",
     "RunRow",
     "ThreadMetaRow",
     "UserRow",
