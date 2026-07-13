@@ -143,6 +143,42 @@ test.describe("Chat workspace", () => {
     });
   });
 
+  test("does not stop a running task when Enter is pressed again", async ({
+    page,
+  }) => {
+    let releaseStream!: () => void;
+    const streamCanFinish = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let streamStarted!: () => void;
+    const streamStartedPromise = new Promise<void>((resolve) => {
+      streamStarted = resolve;
+    });
+
+    await page.route("**/runs/stream", async (route) => {
+      streamStarted();
+      await streamCanFinish;
+      return handleRunStream(route);
+    });
+
+    await page.goto("/workspace/chats/new");
+
+    const textarea = page.getByPlaceholder(/how can i assist you/i);
+    await expect(textarea).toBeVisible({ timeout: 15_000 });
+    await textarea.fill("Run a long task");
+    await textarea.press("Enter");
+    await streamStartedPromise;
+
+    await textarea.fill("Do not interrupt the task");
+    await textarea.press("Enter");
+    await expect(textarea).toHaveValue("Do not interrupt the task");
+
+    releaseStream();
+    await expect(page.getByText("Hello from DeerFlow!")).toBeVisible({
+      timeout: 10_000,
+    });
+  });
+
   test("long markdown message does not create page horizontal scrolling", async ({
     page,
   }) => {

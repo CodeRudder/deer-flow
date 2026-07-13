@@ -809,13 +809,22 @@ export function InputBox({
 
   const handlePromptTextareaKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (
+        status === "streaming" &&
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !isIMEComposing(event)
+      ) {
+        event.preventDefault();
+        return;
+      }
       handleSkillSuggestionKeyDown(event);
       if (event.defaultPrevented) {
         return;
       }
       handlePromptHistoryKeyDown(event);
     },
-    [handlePromptHistoryKeyDown, handleSkillSuggestionKeyDown],
+    [handlePromptHistoryKeyDown, handleSkillSuggestionKeyDown, status],
   );
 
   const handlePromptTextareaChange = useCallback(() => {
