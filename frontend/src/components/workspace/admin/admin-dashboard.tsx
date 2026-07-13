@@ -176,6 +176,13 @@ function formatExactNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(Math.round(value));
 }
 
+function formatUsageMetric(
+  metric: TrendMetric | SessionMetric,
+  value: number,
+): string {
+  return metric === "tokens" ? formatNumber(value) : formatExactNumber(value);
+}
+
 export function TrendChart({ points }: { points: TrendPoint[] }) {
   const gradientId = useId().replaceAll(":", "");
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -309,7 +316,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
                     fontWeight="600"
                     textAnchor="end"
                   >
-                    {formatExactNumber(activePoint[key])}
+                    {formatUsageMetric(key, activePoint[key])}
                   </text>
                 </g>
               ))}
@@ -325,7 +332,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
             const hitLeft = index === 0 ? left : (previousX + x) / 2;
             const hitRight =
               index === data.length - 1 ? right : (x + nextX) / 2;
-            const ariaLabel = `${point.label}，Token ${formatExactNumber(point.tokens)}，模型请求 ${formatExactNumber(point.requests)}，生图次数 ${formatExactNumber(point.images)}`;
+            const ariaLabel = `${point.label}，Token ${formatUsageMetric("tokens", point.tokens)}，模型请求 ${formatUsageMetric("requests", point.requests)}，生图次数 ${formatUsageMetric("images", point.images)}`;
             return (
               <rect
                 key={`hit-${point.label}-${index}`}
@@ -365,7 +372,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
       </svg>
       <div className="sr-only" aria-live="polite">
         {activePoint
-          ? `${activePoint.label}，Token ${formatExactNumber(activePoint.tokens)}，模型请求 ${formatExactNumber(activePoint.requests)}，生图次数 ${formatExactNumber(activePoint.images)}`
+          ? `${activePoint.label}，Token ${formatUsageMetric("tokens", activePoint.tokens)}，模型请求 ${formatUsageMetric("requests", activePoint.requests)}，生图次数 ${formatUsageMetric("images", activePoint.images)}`
           : ""}
       </div>
     </div>
@@ -730,7 +737,7 @@ export function SessionUsagePanel({
                 }`}
                 tabIndex={0}
                 role="button"
-                aria-label={`第 ${index + 1} 名，${item.email}，${item.title}，${config.label} ${formatExactNumber(item.value)}`}
+                aria-label={`第 ${index + 1} 名，${item.email}，${item.title}，${config.label} ${formatUsageMetric(metric, item.value)}`}
                 onClick={(event) => {
                   if (activeIndex === index) {
                     hideTooltip();
@@ -810,7 +817,7 @@ export function SessionUsagePanel({
             <div className="shrink-0 space-y-1.5 border-t pt-2">
               <TooltipRow
                 label={config.label}
-                value={formatExactNumber(activeSession.value)}
+                value={formatUsageMetric(metric, activeSession.value)}
               />
               <TooltipRow
                 label="占 Top 1"
@@ -823,7 +830,7 @@ export function SessionUsagePanel({
 
       <div className="sr-only" aria-live="polite">
         {activeSession
-          ? `第 ${activeIndex! + 1} 名，${activeSession.email}，${activeSession.title}，${config.label} ${formatExactNumber(activeSession.value)}`
+          ? `第 ${activeIndex! + 1} 名，${activeSession.email}，${activeSession.title}，${config.label} ${formatUsageMetric(metric, activeSession.value)}`
           : ""}
       </div>
     </section>
