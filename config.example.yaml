@@ -68,13 +68,13 @@ quota_control:
   defaults:
     model_tokens:
       enabled: false
-      limit_value: 1000000
+      limit_value: 50000000
     model_requests:
       enabled: false
       limit_value: 500
     image_generations:
       enabled: true
-      limit_value: 50
+      limit_value: 60
 
 # ============================================================================
 # Token Budget — Per-run token limits
