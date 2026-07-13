@@ -941,7 +941,7 @@ export function SessionTracePanel() {
       </div>
       <section className="bg-muted/20 overflow-hidden rounded-lg border shadow-xs">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1750px] text-sm">
+          <table className="w-full min-w-[1840px] text-sm">
             <thead className="text-muted-foreground bg-muted/60 border-b text-left text-xs">
               <tr>
                 {[
@@ -957,6 +957,7 @@ export function SessionTracePanel() {
                   "模型调用",
                   "生图",
                   "创建时间",
+                  "详情",
                 ].map((label) => (
                   <th
                     key={label}
@@ -1013,6 +1014,19 @@ export function SessionTracePanel() {
                     {run.created_at
                       ? new Date(run.created_at).toLocaleString("zh-CN")
                       : "-"}
+                  </td>
+                  <td className="px-3 whitespace-nowrap">
+                    <button
+                      type="button"
+                      className="text-blue-600 hover:text-blue-700 hover:underline focus-visible:underline focus-visible:outline-none dark:text-blue-400 dark:hover:text-blue-300"
+                      aria-label={`查看 Run ${run.run_id} 详情`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedRun(run);
+                      }}
+                    >
+                      详情
+                    </button>
                   </td>
                 </tr>
               ))}
