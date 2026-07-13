@@ -184,6 +184,17 @@ class TraceEvent(BaseModel):
     created_at: str
 
 
+class TraceToolUsage(BaseModel):
+    name: str
+    call_count: int
+
+
+class TraceToolSummary(BaseModel):
+    total_calls: int
+    tools: list[TraceToolUsage]
+    complete: bool
+
+
 class TraceEventsResponse(BaseModel):
     run_id: str
     thread_id: str
@@ -191,3 +202,4 @@ class TraceEventsResponse(BaseModel):
     returned: int
     limit: int
     truncated: bool
+    tool_summary: TraceToolSummary

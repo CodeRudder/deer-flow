@@ -117,11 +117,53 @@ async def test_run_filters_use_and_and_events_validate_ownership(trace_service):
     mismatch = await service.list_runs(user_id="user-b", thread_id="thread-a", run_id=None, page=1, page_size=20)
     assert mismatch["items"] == []
 
-    for index in range(3):
-        await events.put(thread_id="thread-a", run_id="run-a-new", event_type=f"event-{index}", category="trace")
+    await events.put(
+        thread_id="thread-a",
+        run_id="run-a-new",
+        event_type="llm.ai.response",
+        category="message",
+        content={
+            "type": "ai",
+            "tool_calls": [
+                {"id": "call-1", "name": "web_search", "args": {}},
+                {"id": "call-2", "name": "web_search", "args": {}},
+                {"id": "call-3", "name": "view_image", "args": {}},
+            ],
+        },
+    )
+    await events.put(
+        thread_id="thread-a",
+        run_id="run-a-new",
+        event_type="llm.tool.result",
+        category="message",
+        content={"type": "tool", "name": "web_search", "tool_call_id": "call-1"},
+    )
+    await events.put(thread_id="thread-a", run_id="run-a-new", event_type="run.end", category="trace")
     detail = await service.run_events("run-a-new", thread_id="thread-a", limit=2)
     assert [item["seq"] for item in detail["items"]] == [1, 2]
     assert detail["truncated"] is True
+    assert detail["tool_summary"] == {
+        "total_calls": 3,
+        "tools": [
+            {"name": "web_search", "call_count": 2},
+            {"name": "view_image", "call_count": 1},
+        ],
+        "complete": False,
+    }
+
+    await events.put(
+        thread_id="thread-a",
+        run_id="run-a-old",
+        event_type="llm.tool.result",
+        category="message",
+        content={"type": "tool", "name": "legacy_tool", "tool_call_id": "legacy-1"},
+    )
+    legacy_detail = await service.run_events("run-a-old", thread_id="thread-a", limit=10)
+    assert legacy_detail["tool_summary"] == {
+        "total_calls": 1,
+        "tools": [{"name": "legacy_tool", "call_count": 1}],
+        "complete": True,
+    }
 
     with pytest.raises(SessionTraceNotFoundError):
         await service.run_events("run-a-new", thread_id="thread-b", limit=2)

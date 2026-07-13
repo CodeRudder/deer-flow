@@ -6,6 +6,7 @@ import {
   Hash,
   ImageIcon,
   MessageSquare,
+  Wrench,
   Workflow,
   X,
 } from "lucide-react";
@@ -106,6 +107,23 @@ const traceModelColors = [
 const traceModelColor = (index: number) =>
   traceModelColors[index] ??
   `hsl(${Math.round((index * 137.508 + 210) % 360)} 48% 45%)`;
+
+const toolTones = [
+  "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
+  "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300",
+  "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900 dark:bg-violet-950 dark:text-violet-300",
+  "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300",
+  "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-900 dark:bg-cyan-950 dark:text-cyan-300",
+];
+
+const toolTone = (name: string) => {
+  const hash = [...name].reduce(
+    (value, character) => value * 31 + character.charCodeAt(0),
+    0,
+  );
+  return toolTones[Math.abs(hash) % toolTones.length];
+};
 
 function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
   const gradientId = useId().replaceAll(":", "");
@@ -715,6 +733,52 @@ function RunDrawer({
                 </div>
               ))}
             </div>
+            <section className="bg-background overflow-hidden rounded-md border shadow-xs">
+              <div className="bg-muted flex items-center justify-between gap-3 border-b px-3 py-2">
+                <div className="flex items-center gap-2 text-xs font-medium">
+                  <Wrench className="size-3.5 text-blue-600 dark:text-blue-400" />
+                  工具调用概览
+                </div>
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {events.data
+                    ? `共 ${events.data.tool_summary.total_calls} 次`
+                    : "-"}
+                </span>
+              </div>
+              <div className="min-h-16 p-3">
+                {events.isLoading ? (
+                  <p className="text-muted-foreground text-sm">
+                    正在加载工具调用…
+                  </p>
+                ) : events.isError ? (
+                  <p className="text-destructive text-sm">
+                    工具调用概览加载失败
+                  </p>
+                ) : events.data?.tool_summary.tools.length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {events.data.tool_summary.tools.map((tool) => (
+                      <span
+                        key={tool.name}
+                        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium ${toolTone(tool.name)}`}
+                      >
+                        <Wrench className="size-3" aria-hidden="true" />
+                        <span className="font-mono">{tool.name}</span>
+                        <span className="tabular-nums opacity-70">
+                          × {tool.call_count}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">未触发工具</p>
+                )}
+                {events.data && !events.data.tool_summary.complete ? (
+                  <p className="text-muted-foreground mt-2 text-xs">
+                    事件数量超过展示上限，工具次数基于当前返回事件统计。
+                  </p>
+                ) : null}
+              </div>
+            </section>
             <section className="bg-background overflow-hidden rounded-md border shadow-xs">
               <div className="bg-muted border-b px-3 py-2 text-xs font-medium">
                 输入

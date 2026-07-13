@@ -188,4 +188,9 @@ export interface TraceEventsResponse {
   returned: number;
   limit: number;
   truncated: boolean;
+  tool_summary: {
+    total_calls: number;
+    tools: Array<{ name: string; call_count: number }>;
+    complete: boolean;
+  };
 }

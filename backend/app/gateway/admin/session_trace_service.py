@@ -30,6 +30,36 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
+def _tool_summary(events: list[dict[str, Any]], *, complete: bool) -> dict[str, Any]:
+    call_names: list[str] = []
+    result_names: list[str] = []
+    for event in events:
+        content = event.get("content")
+        if not isinstance(content, dict):
+            continue
+        tool_calls = content.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                name = tool_call.get("name")
+                if isinstance(name, str) and name.strip():
+                    call_names.append(name.strip())
+        if event.get("event_type") == "llm.tool.result":
+            name = content.get("name")
+            if isinstance(name, str) and name.strip():
+                result_names.append(name.strip())
+
+    counts: dict[str, int] = {}
+    for name in call_names or result_names:
+        counts[name] = counts.get(name, 0) + 1
+    return {
+        "total_calls": sum(counts.values()),
+        "tools": [{"name": name, "call_count": count} for name, count in counts.items()],
+        "complete": complete,
+    }
+
+
 def _cursor_offset(cursor: str | None) -> int:
     if not cursor:
         return 0
@@ -202,11 +232,13 @@ class SessionTraceService:
             raise SessionTraceNotFoundError("Run not found")
         capped = min(max(1, limit), 500)
         events = await self._events.list_events(thread_id, run_id, limit=capped + 1)
+        truncated = len(events) > capped
         return {
             "run_id": run_id,
             "thread_id": thread_id,
             "items": events[:capped],
             "returned": min(len(events), capped),
             "limit": capped,
-            "truncated": len(events) > capped,
+            "truncated": truncated,
+            "tool_summary": _tool_summary(events, complete=not truncated),
         }
