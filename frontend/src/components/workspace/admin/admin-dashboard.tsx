@@ -1004,6 +1004,7 @@ export function AdminDashboard() {
   const [keyword, setKeyword] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const [quotaPage, setQuotaPage] = useState(1);
+  const [quotaPageSize, setQuotaPageSize] = useState(15);
   const [selectedUser, setSelectedUser] = useState<QuotaUser | null>(null);
 
   const customMonthStart = `${quotaMonth}-01`;
@@ -1027,7 +1028,7 @@ export function AdminDashboard() {
     status: quotaStatus,
     keyword: debouncedKeyword,
     page: quotaPage,
-    page_size: 50,
+    page_size: quotaPageSize,
   });
 
   const refreshAll = () => {
@@ -1335,35 +1336,47 @@ export function AdminDashboard() {
                     当前筛选条件下暂无用户
                   </div>
                 )}
-                {(quotas.data?.total ?? 0) > (quotas.data?.page_size ?? 50) && (
-                  <div className="mt-4 flex items-center justify-end gap-2 border-t pt-4">
-                    <span className="text-muted-foreground text-sm">
-                      共 {quotas.data?.total ?? 0} 位用户
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={quotaPage <= 1}
-                      onClick={() =>
-                        setQuotaPage((page) => Math.max(1, page - 1))
-                      }
-                    >
-                      上一页
-                    </Button>
-                    <span className="text-sm">第 {quotaPage} 页</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={
-                        quotaPage * (quotas.data?.page_size ?? 50) >=
-                        (quotas.data?.total ?? 0)
-                      }
-                      onClick={() => setQuotaPage((page) => page + 1)}
-                    >
-                      下一页
-                    </Button>
-                  </div>
-                )}
+              </div>
+              <div className="text-muted-foreground mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm">
+                <span>共 {quotas.data?.total ?? 0} 位用户</span>
+                <div className="flex items-center gap-2">
+                  <select
+                    className="bg-background h-8 rounded-md border px-2"
+                    aria-label="每页用户数量"
+                    value={quotaPageSize}
+                    onChange={(event) => {
+                      setQuotaPageSize(Number(event.target.value));
+                      setQuotaPage(1);
+                    }}
+                  >
+                    {[15, 30, 50].map((size) => (
+                      <option key={size} value={size}>
+                        每页 {size} 条
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={quotaPage <= 1}
+                    onClick={() =>
+                      setQuotaPage((page) => Math.max(1, page - 1))
+                    }
+                  >
+                    上一页
+                  </Button>
+                  <span className="text-sm">第 {quotaPage} 页</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      quotaPage * quotaPageSize >= (quotas.data?.total ?? 0)
+                    }
+                    onClick={() => setQuotaPage((page) => page + 1)}
+                  >
+                    下一页
+                  </Button>
+                </div>
               </div>
             </section>
           </TabsContent>
