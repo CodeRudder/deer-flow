@@ -79,3 +79,42 @@ test("quota update keeps null limit in JSON payload", async () => {
     image_generations: { enabled: false, limit: null },
   });
 });
+
+test("trace run list sends all exact filters and pagination", async () => {
+  const { loadTraceRuns } = await import("@/core/admin/api");
+
+  await loadTraceRuns({
+    user_id: "user-1",
+    thread_id: "thread-1",
+    run_id: "run-1",
+    page: 2,
+    page_size: 15,
+  });
+
+  const url = new URL(
+    fetchWithAuth.mock.calls[0]![0] as string,
+    "http://localhost:2026",
+  );
+  expect(url.pathname).toBe("/api/admin/session-traces/runs");
+  expect(url.searchParams.get("user_id")).toBe("user-1");
+  expect(url.searchParams.get("thread_id")).toBe("thread-1");
+  expect(url.searchParams.get("run_id")).toBe("run-1");
+  expect(url.searchParams.get("page_size")).toBe("15");
+});
+
+test("trace overview and events encode path identifiers", async () => {
+  const { loadTraceEvents, loadTraceUserOverview } =
+    await import("@/core/admin/api");
+
+  await loadTraceUserOverview("user/1");
+  await loadTraceEvents("run/1", "thread/1");
+
+  expect(fetchWithAuth.mock.calls[0]![0]).toContain("/users/user%2F1/overview");
+  const eventUrl = new URL(
+    fetchWithAuth.mock.calls[1]![0] as string,
+    "http://localhost:2026",
+  );
+  expect(eventUrl.pathname).toContain("/runs/run%2F1/events");
+  expect(eventUrl.searchParams.get("thread_id")).toBe("thread/1");
+  expect(eventUrl.searchParams.get("limit")).toBe("500");
+});

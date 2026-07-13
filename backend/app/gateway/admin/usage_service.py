@@ -8,21 +8,14 @@ from typing import Any
 from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.gateway.admin.display import format_user_input
 from app.gateway.admin.periods import APP_TZ, PeriodWindow, period_response
 from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.user.model import UserRow
 
-_USER_INPUT_BEGIN = "--- BEGIN USER INPUT ---"
-_USER_INPUT_END = "--- END USER INPUT ---"
-
 
 def _session_title(first_human_message: str | None, thread_id: str) -> str:
-    if not first_human_message:
-        return thread_id
-    title = first_human_message.strip()
-    if title.startswith(_USER_INPUT_BEGIN) and title.endswith(_USER_INPUT_END):
-        title = title[len(_USER_INPUT_BEGIN) : -len(_USER_INPUT_END)].strip()
-    return title or thread_id
+    return format_user_input(first_human_message, thread_id)
 
 
 class AdminUsageService:

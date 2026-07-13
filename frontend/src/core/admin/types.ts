@@ -102,3 +102,90 @@ export interface QuotaUpdatePayload {
   model_requests?: { enabled?: boolean; limit?: number | null };
   image_generations?: { enabled?: boolean; limit?: number | null };
 }
+
+export interface TraceUserOption {
+  user_id: string;
+  email: string;
+  last_active_at: string | null;
+}
+
+export interface TraceUsersResponse {
+  items: TraceUserOption[];
+  next_cursor: string | null;
+}
+
+export interface TraceUserOverview {
+  user: TraceUserOption;
+  period: {
+    days: number;
+    period_start: string;
+    period_end: string;
+    timezone: string;
+  };
+  summary: {
+    thread_count: number;
+    run_count: number;
+    total_tokens: number;
+    model_requests: number;
+    image_generations: number;
+  };
+  trends: Array<{
+    date: string;
+    tokens: number;
+    model_requests: number;
+    image_generations: number;
+  }>;
+  models: Array<{ model: string; tokens: number; share: number }>;
+}
+
+export interface TraceRun {
+  run_id: string;
+  thread_id: string;
+  thread_title: string;
+  user_id: string | null;
+  email: string | null;
+  status: string;
+  model_name: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  duration_ms: number | null;
+  duration_approximate: boolean;
+  first_human_message: string | null;
+  last_ai_message: string | null;
+  input_preview: string;
+  output_preview: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  llm_call_count: number;
+  image_generation_count: number;
+  token_usage_by_model: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface TraceRunsResponse {
+  items: TraceRun[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface TraceEvent {
+  thread_id: string;
+  run_id: string;
+  event_type: string;
+  category: string;
+  content: unknown;
+  metadata: Record<string, unknown>;
+  seq: number;
+  created_at: string;
+}
+
+export interface TraceEventsResponse {
+  run_id: string;
+  thread_id: string;
+  items: TraceEvent[];
+  returned: number;
+  limit: number;
+  truncated: boolean;
+}

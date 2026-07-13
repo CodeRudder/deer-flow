@@ -1,5 +1,6 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   ImageIcon,
@@ -61,6 +62,7 @@ import {
   type TrendMetric,
   type TrendPoint,
 } from "./admin-dashboard-helpers";
+import { SessionTracePanel } from "./session-trace-panel";
 
 const ranges: Array<[UsageRange, string]> = [
   ["day", "天"],
@@ -983,6 +985,7 @@ function QuotaEditor({
 
 export function AdminDashboard() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState("overview");
   const [range, setRange] = useState<UsageRange>("month");
   const [metric, setMetric] = useState<SessionMetric>("tokens");
@@ -1031,8 +1034,12 @@ export function AdminDashboard() {
         usage.sessions.refetch(),
         usage.models.refetch(),
       ]);
-    } else {
+    } else if (tab === "quota") {
       void quotas.refetch();
+    } else {
+      void queryClient.invalidateQueries({
+        queryKey: ["admin", "session-traces"],
+      });
     }
   };
 
@@ -1041,6 +1048,8 @@ export function AdminDashboard() {
       const period = quotas.data?.period;
       return period ? `额度周期 · ${period.label} · 月度` : "额度周期";
     }
+    if (tab === "trace")
+      return "会话追踪 · 用户概览近 30 天 · 全部运行记录按创建时间倒序";
     const period = usage.summary.data?.period;
     return period ? `${period.label} · UTC+08:00` : "统计概览";
   }, [quotas.data?.period, tab, usage.summary.data?.period]);
@@ -1110,7 +1119,7 @@ export function AdminDashboard() {
                   </div>
                 )}
               </>
-            ) : (
+            ) : tab === "quota" ? (
               <>
                 <div className="bg-background flex rounded-md border p-1">
                   {quotaPeriods.map(([key, label]) => (
@@ -1133,7 +1142,7 @@ export function AdminDashboard() {
                   />
                 )}
               </>
-            )}
+            ) : null}
             <Button variant="outline" size="sm" onClick={refreshAll}>
               <RefreshCw className="size-4" />
               刷新
@@ -1147,6 +1156,7 @@ export function AdminDashboard() {
           <TabsList>
             <TabsTrigger value="overview">统计概览</TabsTrigger>
             <TabsTrigger value="quota">额度管控</TabsTrigger>
+            <TabsTrigger value="trace">会话追踪</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="mt-5 space-y-5">
@@ -1347,6 +1357,10 @@ export function AdminDashboard() {
                 )}
               </div>
             </section>
+          </TabsContent>
+
+          <TabsContent value="trace" className="mt-5">
+            <SessionTracePanel />
           </TabsContent>
         </Tabs>
       </div>

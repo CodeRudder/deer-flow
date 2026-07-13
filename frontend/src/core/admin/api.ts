@@ -8,6 +8,10 @@ import type {
   QuotaUser,
   QuotaUsersResponse,
   SessionMetric,
+  TraceEventsResponse,
+  TraceRunsResponse,
+  TraceUserOverview,
+  TraceUsersResponse,
   UsageModels,
   UsageRange,
   UsageSessions,
@@ -109,5 +113,53 @@ export function updateQuotaUser(userId: string, payload: QuotaUpdatePayload) {
     },
   ).then((response) =>
     readOrThrow<QuotaUser>(response, "Failed to update quota"),
+  );
+}
+
+export function loadTraceUsers(params: {
+  keyword?: string;
+  limit?: number;
+  cursor?: string;
+}) {
+  return fetch(adminUrl("/api/admin/session-traces/users", params)).then(
+    (response) =>
+      readOrThrow<TraceUsersResponse>(response, "Failed to load trace users"),
+  );
+}
+
+export function loadTraceUserOverview(userId: string) {
+  return fetch(
+    adminUrl(
+      `/api/admin/session-traces/users/${encodeURIComponent(userId)}/overview`,
+    ),
+  ).then((response) =>
+    readOrThrow<TraceUserOverview>(response, "Failed to load user overview"),
+  );
+}
+
+export function loadTraceRuns(params: {
+  user_id?: string;
+  thread_id?: string;
+  run_id?: string;
+  page?: number;
+  page_size?: number;
+}) {
+  return fetch(adminUrl("/api/admin/session-traces/runs", params)).then(
+    (response) =>
+      readOrThrow<TraceRunsResponse>(response, "Failed to load trace runs"),
+  );
+}
+
+export function loadTraceEvents(runId: string, threadId: string, limit = 500) {
+  return fetch(
+    adminUrl(
+      `/api/admin/session-traces/runs/${encodeURIComponent(runId)}/events`,
+      {
+        thread_id: threadId,
+        limit,
+      },
+    ),
+  ).then((response) =>
+    readOrThrow<TraceEventsResponse>(response, "Failed to load run events"),
   );
 }

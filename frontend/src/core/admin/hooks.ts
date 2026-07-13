@@ -2,6 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   loadQuotaUsers,
+  loadTraceEvents,
+  loadTraceRuns,
+  loadTraceUserOverview,
+  loadTraceUsers,
   loadUsageModels,
   loadUsageSessions,
   loadUsageSummary,
@@ -78,5 +82,48 @@ export function useUpdateQuotaUser() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["admin", "quotas"] });
     },
+  });
+}
+
+export function useTraceUsers(keyword: string) {
+  return useQuery({
+    queryKey: ["admin", "session-traces", "users", keyword],
+    queryFn: () => loadTraceUsers({ keyword: keyword || undefined, limit: 20 }),
+  });
+}
+
+export function useTraceUserOverview(
+  userId: string | null,
+  exactMode: boolean,
+) {
+  return useQuery({
+    queryKey: ["admin", "session-traces", "overview", userId],
+    queryFn: () => loadTraceUserOverview(userId!),
+    enabled: Boolean(userId) && !exactMode,
+  });
+}
+
+export function useTraceRuns(params: {
+  user_id?: string;
+  thread_id?: string;
+  run_id?: string;
+  page: number;
+  page_size: number;
+}) {
+  return useQuery({
+    queryKey: ["admin", "session-traces", "runs", params],
+    queryFn: () => loadTraceRuns(params),
+  });
+}
+
+export function useTraceEvents(
+  runId: string | null,
+  threadId: string | null,
+  open: boolean,
+) {
+  return useQuery({
+    queryKey: ["admin", "session-traces", "events", threadId, runId],
+    queryFn: () => loadTraceEvents(runId!, threadId!),
+    enabled: open && Boolean(runId && threadId),
   });
 }
