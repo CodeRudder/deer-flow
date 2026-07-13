@@ -9,7 +9,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,8 @@ import type {
   TraceUserOption,
   TraceUserOverview,
 } from "@/core/admin/types";
+
+import { buildDonutSegments, smoothTrendPath } from "./admin-dashboard-helpers";
 
 const formatNumber = (value: number) =>
   new Intl.NumberFormat("zh-CN", {
@@ -80,14 +82,455 @@ function statusBadge(status: string) {
   );
 }
 
-function linePath(values: number[], width = 680, height = 260) {
-  const max = Math.max(...values, 1);
-  return values
-    .map(
-      (value, index) =>
-        `${index ? "L" : "M"} ${(16 + (index / Math.max(1, values.length - 1)) * (width - 32)).toFixed(1)} ${(height - 34 - (value / max) * (height - 62)).toFixed(1)}`,
-    )
-    .join(" ");
+const traceSeries = [
+  { key: "tokens", label: "Token", color: "#ce5a2c" },
+  { key: "model_requests", label: "模型调用", color: "#168979" },
+  { key: "image_generations", label: "生图", color: "#3f5f99" },
+] as const;
+
+const traceModelColors = [
+  "#315d9e",
+  "#168979",
+  "#ce5a2c",
+  "#76589b",
+  "#b54769",
+  "#2f7f9d",
+  "#7a8f39",
+  "#9a6540",
+  "#526f91",
+  "#a06b35",
+  "#4f8a6b",
+  "#9b5f87",
+];
+
+const traceModelColor = (index: number) =>
+  traceModelColors[index] ??
+  `hsl(${Math.round((index * 137.508 + 210) % 360)} 48% 45%)`;
+
+function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
+  const gradientId = useId().replaceAll(":", "");
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const bounds = { left: 24, right: 656, top: 24, bottom: 256 };
+  const coordinates = useMemo(
+    () =>
+      Object.fromEntries(
+        traceSeries.map(({ key }) => {
+          const max = Math.max(...trends.map((point) => point[key]), 1);
+          return [
+            key,
+            trends.map((point, index) => ({
+              x:
+                trends.length === 1
+                  ? (bounds.left + bounds.right) / 2
+                  : bounds.left +
+                    (index / Math.max(1, trends.length - 1)) *
+                      (bounds.right - bounds.left),
+              y:
+                bounds.bottom -
+                (point[key] / max) * (bounds.bottom - bounds.top),
+            })),
+          ];
+        }),
+      ) as Record<
+        (typeof traceSeries)[number]["key"],
+        Array<{ x: number; y: number }>
+      >,
+    [bounds.bottom, bounds.left, bounds.right, bounds.top, trends],
+  );
+  const pathFor = (key: (typeof traceSeries)[number]["key"]) =>
+    smoothTrendPath(coordinates[key]);
+  const activePoint = activeIndex == null ? null : trends[activeIndex];
+  const activeX =
+    activeIndex == null ? null : coordinates.tokens[activeIndex]?.x;
+  const tooltipX =
+    activeX == null ? 0 : activeX > 450 ? activeX - 210 : activeX + 12;
+  const tokenPath = pathFor("tokens");
+  const tokenArea = trends.length
+    ? `${tokenPath} L ${coordinates.tokens.at(-1)!.x} ${bounds.bottom} L ${coordinates.tokens[0]!.x} ${bounds.bottom} Z`
+    : "";
+  const labelIndexes = trends.length
+    ? [0, Math.floor((trends.length - 1) / 2), trends.length - 1].filter(
+        (index, position, indexes) => indexes.indexOf(index) === position,
+      )
+    : [];
+
+  if (!trends.length) {
+    return (
+      <div className="text-muted-foreground grid h-[340px] place-items-center text-sm">
+        最近 30 天暂无趋势数据
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 h-[340px]">
+      <svg
+        className="size-full select-none"
+        viewBox="0 0 680 296"
+        role="img"
+        aria-label="最近30天使用趋势，悬停或聚焦时间节点查看详细数据"
+        onPointerLeave={() => setActiveIndex(null)}
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#ce5a2c" stopOpacity="0.16" />
+            <stop offset="100%" stopColor="#ce5a2c" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <g className="text-border" stroke="currentColor" strokeDasharray="3 6">
+          {[24, 82, 140, 198, 256].map((y) => (
+            <line key={y} x1={bounds.left} x2={bounds.right} y1={y} y2={y} />
+          ))}
+        </g>
+        <path d={tokenArea} fill={`url(#${gradientId})`} />
+        {traceSeries.map(({ key, color }) => (
+          <g key={key}>
+            <path
+              d={pathFor(key)}
+              fill="none"
+              stroke={color}
+              strokeWidth={key === "tokens" ? 3.5 : 3}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            {coordinates[key].map((point, index) => (
+              <circle
+                key={`${key}-${trends[index]!.date}`}
+                cx={point.x}
+                cy={point.y}
+                r={activeIndex === index ? 4.5 : 2.5}
+                fill="var(--background)"
+                stroke={color}
+                strokeWidth={activeIndex === index ? 3 : 2}
+                opacity={
+                  activeIndex == null || activeIndex === index ? 1 : 0.55
+                }
+              />
+            ))}
+          </g>
+        ))}
+        {activeX != null && activePoint ? (
+          <g pointerEvents="none">
+            <line
+              x1={activeX}
+              x2={activeX}
+              y1={bounds.top}
+              y2={bounds.bottom}
+              stroke="var(--muted-foreground)"
+              strokeDasharray="4 5"
+              opacity="0.5"
+            />
+            <g transform={`translate(${tooltipX} 28)`}>
+              <rect
+                width="198"
+                height="112"
+                rx="6"
+                fill="var(--popover)"
+                stroke="var(--border)"
+              />
+              <text
+                x="12"
+                y="21"
+                fill="var(--popover-foreground)"
+                fontSize="12"
+                fontWeight="600"
+              >
+                {activePoint.date}
+              </text>
+              {traceSeries.map(({ key, label, color }, rowIndex) => (
+                <g key={key} transform={`translate(0 ${36 + rowIndex * 23})`}>
+                  <circle cx="15" cy="5" r="3.5" fill={color} />
+                  <text
+                    x="26"
+                    y="9"
+                    fill="var(--muted-foreground)"
+                    fontSize="11"
+                  >
+                    {label}
+                  </text>
+                  <text
+                    x="186"
+                    y="9"
+                    fill="var(--popover-foreground)"
+                    fontSize="12"
+                    fontWeight="600"
+                    textAnchor="end"
+                  >
+                    {key === "tokens"
+                      ? formatTokenNumber(activePoint[key])
+                      : formatNumber(activePoint[key])}
+                  </text>
+                </g>
+              ))}
+            </g>
+          </g>
+        ) : null}
+        {trends.map((point, index) => {
+          const x = coordinates.tokens[index]!.x;
+          const previousX = coordinates.tokens[index - 1]?.x ?? bounds.left;
+          const nextX = coordinates.tokens[index + 1]?.x ?? bounds.right;
+          const hitLeft = index === 0 ? bounds.left : (previousX + x) / 2;
+          const hitRight =
+            index === trends.length - 1 ? bounds.right : (x + nextX) / 2;
+          return (
+            <rect
+              key={`hit-${point.date}`}
+              x={hitLeft}
+              y={bounds.top}
+              width={Math.max(1, hitRight - hitLeft)}
+              height={bounds.bottom - bounds.top}
+              fill="transparent"
+              tabIndex={0}
+              role="button"
+              aria-label={`${point.date}，Token ${formatTokenNumber(point.tokens)}，模型调用 ${formatNumber(point.model_requests)}，生图 ${formatNumber(point.image_generations)}`}
+              onFocus={() => setActiveIndex(index)}
+              onBlur={() => setActiveIndex(null)}
+              onPointerEnter={() => setActiveIndex(index)}
+            />
+          );
+        })}
+        <g className="fill-muted-foreground text-[11px]">
+          {labelIndexes.map((index, labelIndex) => (
+            <text
+              key={trends[index]!.date}
+              x={coordinates.tokens[index]!.x}
+              y="288"
+              textAnchor={
+                labelIndex === 0
+                  ? "start"
+                  : labelIndex === labelIndexes.length - 1
+                    ? "end"
+                    : "middle"
+              }
+            >
+              {trends[index]!.date.slice(5)}
+            </text>
+          ))}
+        </g>
+      </svg>
+      <div className="sr-only" aria-live="polite">
+        {activePoint
+          ? `${activePoint.date}，Token ${formatTokenNumber(activePoint.tokens)}，模型调用 ${formatNumber(activePoint.model_requests)}，生图 ${formatNumber(activePoint.image_generations)}`
+          : ""}
+      </div>
+    </div>
+  );
+}
+
+function TraceModelDistribution({
+  models,
+  hasOverview,
+}: {
+  models: TraceUserOverview["models"];
+  hasOverview: boolean;
+}) {
+  const [view, setView] = useState<"chart" | "table">("chart");
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const segments = useMemo(
+    () => buildDonutSegments(models.map((model) => model.tokens)),
+    [models],
+  );
+  const totalTokens = models.reduce((sum, model) => sum + model.tokens, 0);
+  const activeModel = activeIndex == null ? null : models[activeIndex];
+  const activeSegment =
+    activeIndex == null ? null : (segments[activeIndex] ?? null);
+
+  return (
+    <section className="bg-background flex min-h-[356px] flex-col rounded-lg border p-4 shadow-xs">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium">模型分布</h3>
+          <p className="text-muted-foreground truncate text-xs">
+            最近 30 天 Token 占比
+          </p>
+        </div>
+        <div className="flex shrink-0 rounded-md border p-1">
+          {(["chart", "table"] as const).map((key) => (
+            <Button
+              key={key}
+              size="sm"
+              variant={view === key ? "secondary" : "ghost"}
+              onClick={() => {
+                setActiveIndex(null);
+                setView(key);
+              }}
+            >
+              {key === "chart" ? "环形图" : "表格"}
+            </Button>
+          ))}
+        </div>
+      </div>
+      {view === "chart" ? (
+        <div
+          className="relative mt-3 flex min-h-72 flex-1 items-center gap-5"
+          onPointerLeave={() => setActiveIndex(null)}
+        >
+          {models.length ? (
+            <>
+              <svg
+                className="size-40 shrink-0 select-none"
+                viewBox="0 0 120 120"
+                role="img"
+                aria-label="模型 Token 分布环形图"
+              >
+                <circle
+                  cx="60"
+                  cy="60"
+                  r="44"
+                  fill="none"
+                  stroke="var(--muted)"
+                  strokeWidth="16"
+                />
+                <g transform="rotate(-90 60 60)">
+                  {models.map((model, index) => {
+                    const segment = segments[index]!;
+                    const active = activeIndex === index;
+                    return (
+                      <circle
+                        key={model.model}
+                        cx="60"
+                        cy="60"
+                        r="44"
+                        pathLength="100"
+                        fill="none"
+                        stroke={traceModelColor(index)}
+                        strokeWidth={active ? 20 : 16}
+                        strokeDasharray={`${segment.share} ${100 - segment.share}`}
+                        strokeDashoffset={-segment.offset}
+                        opacity={
+                          activeIndex == null || activeIndex === index
+                            ? 1
+                            : 0.55
+                        }
+                        className="cursor-pointer transition-[opacity,stroke-width] duration-150 focus:outline-none"
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`${model.model}，Token ${formatTokenNumber(model.tokens)}，占比 ${segment.share.toFixed(1)}%`}
+                        onFocus={() => setActiveIndex(index)}
+                        onBlur={() => setActiveIndex(null)}
+                        onPointerEnter={() => setActiveIndex(index)}
+                      />
+                    );
+                  })}
+                </g>
+                <text
+                  x="60"
+                  y="56"
+                  textAnchor="middle"
+                  fill="var(--muted-foreground)"
+                  fontSize="8"
+                >
+                  Token 总量
+                </text>
+                <text
+                  x="60"
+                  y="70"
+                  textAnchor="middle"
+                  fill="var(--foreground)"
+                  fontSize="12"
+                  fontWeight="700"
+                >
+                  {formatTokenNumber(totalTokens)}
+                </text>
+              </svg>
+              <div className="max-h-48 min-w-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-2">
+                {models.map((model, index) => (
+                  <button
+                    key={model.model}
+                    type="button"
+                    className={`focus-visible:ring-ring grid min-h-9 w-full grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none ${activeIndex === index ? "bg-accent" : "hover:bg-accent"}`}
+                    onFocus={() => setActiveIndex(index)}
+                    onBlur={() => setActiveIndex(null)}
+                    onPointerEnter={() => setActiveIndex(index)}
+                  >
+                    <span
+                      className="size-2.5 rounded-full"
+                      style={{
+                        backgroundColor: traceModelColor(index),
+                      }}
+                    />
+                    <span className="truncate text-xs font-medium">
+                      {model.model}
+                    </span>
+                    <span className="text-muted-foreground text-xs tabular-nums">
+                      {segments[index]!.share.toFixed(1)}%
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {activeModel && activeSegment ? (
+                <div className="bg-popover text-popover-foreground pointer-events-none absolute bottom-2 left-2 z-10 w-[218px] rounded-md border p-3 text-xs shadow-lg">
+                  <strong className="mb-2 block truncate">
+                    {activeModel.model}
+                  </strong>
+                  <div className="space-y-1.5">
+                    <div className="text-muted-foreground flex justify-between gap-4">
+                      <span>Token</span>
+                      <b className="text-popover-foreground tabular-nums">
+                        {formatTokenNumber(activeModel.tokens)}
+                      </b>
+                    </div>
+                    <div className="text-muted-foreground flex justify-between gap-4">
+                      <span>Token 占比</span>
+                      <b className="text-popover-foreground tabular-nums">
+                        {activeSegment.share.toFixed(1)}%
+                      </b>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="text-muted-foreground grid size-full place-items-center text-sm">
+              {hasOverview
+                ? "最近 30 天暂无模型用量"
+                : "选择用户后查看模型分布"}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mt-3 h-80 overflow-auto overscroll-contain pr-1">
+          <table className="w-full min-w-[360px] text-sm">
+            <thead className="text-muted-foreground bg-background sticky top-0 z-10 border-b text-left text-xs">
+              <tr>
+                <th className="py-2 font-medium">模型</th>
+                <th className="font-medium">Token</th>
+                <th className="text-right font-medium">占比</th>
+              </tr>
+            </thead>
+            <tbody>
+              {models.map((model, index) => (
+                <tr
+                  key={model.model}
+                  className="hover:bg-accent border-b transition-colors last:border-0"
+                >
+                  <td className="py-3 font-medium">{model.model}</td>
+                  <td className="tabular-nums">
+                    {formatTokenNumber(model.tokens)}
+                  </td>
+                  <td className="text-right tabular-nums">
+                    {segments[index]!.share.toFixed(1)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!models.length ? (
+            <div className="text-muted-foreground py-10 text-center text-sm">
+              {hasOverview
+                ? "最近 30 天暂无模型用量"
+                : "选择用户后查看模型分布"}
+            </div>
+          ) : null}
+        </div>
+      )}
+      <div className="sr-only" aria-live="polite">
+        {activeModel && activeSegment
+          ? `${activeModel.model}，Token ${formatTokenNumber(activeModel.tokens)}，占比 ${activeSegment.share.toFixed(1)}%`
+          : ""}
+      </div>
+    </section>
+  );
 }
 
 function UserOverview({
@@ -130,13 +573,6 @@ function UserOverview({
       tone: "bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
     },
   ];
-  const series = [
-    ["tokens", "Token", "#ce5a2c"],
-    ["model_requests", "模型调用", "#168979"],
-    ["image_generations", "生图", "#3f5f99"],
-  ] as const;
-  let offset = 0;
-  const circumference = 301.59;
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
@@ -175,7 +611,7 @@ function UserOverview({
               </p>
             </div>
             <div className="text-muted-foreground flex gap-3 text-xs">
-              {series.map(([, label, color]) => (
+              {traceSeries.map(({ label, color }) => (
                 <span key={label} className="flex items-center gap-1">
                   <i
                     className="size-2 rounded-full"
@@ -187,116 +623,17 @@ function UserOverview({
             </div>
           </div>
           {data ? (
-            <svg
-              className="mt-3 h-72 w-full"
-              viewBox="0 0 680 260"
-              role="img"
-              aria-label="最近30天使用趋势"
-            >
-              {[40, 85, 130, 175, 220].map((y) => (
-                <line
-                  key={y}
-                  x1="16"
-                  x2="664"
-                  y1={y}
-                  y2={y}
-                  stroke="currentColor"
-                  className="text-border"
-                  strokeDasharray="3 6"
-                />
-              ))}
-              {series.map(([key, label, color]) => (
-                <path
-                  key={key}
-                  d={linePath(data.trends.map((point) => point[key]))}
-                  fill="none"
-                  stroke={color}
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                >
-                  <title>{label}</title>
-                </path>
-              ))}
-              <text
-                x="16"
-                y="254"
-                fill="currentColor"
-                className="text-muted-foreground text-[11px]"
-              >
-                30 天前
-              </text>
-              <text
-                x="664"
-                y="254"
-                textAnchor="end"
-                fill="currentColor"
-                className="text-muted-foreground text-[11px]"
-              >
-                今天
-              </text>
-            </svg>
+            <TraceTrendChart trends={data.trends} />
           ) : (
-            <div className="text-muted-foreground grid h-72 place-items-center text-sm">
+            <div className="text-muted-foreground grid h-[340px] place-items-center text-sm">
               选择用户后查看趋势
             </div>
           )}
         </section>
-        <section className="bg-background rounded-lg border p-4 shadow-xs">
-          <h3 className="text-sm font-medium">模型分布</h3>
-          <p className="text-muted-foreground text-xs">最近 30 天 Token 占比</p>
-          {data?.models.length ? (
-            <div className="mt-4 flex min-h-72 items-center gap-6">
-              <svg
-                className="size-40 shrink-0 -rotate-90"
-                viewBox="0 0 120 120"
-              >
-                {data.models.map((model, index) => {
-                  const length = circumference * model.share;
-                  const circle = (
-                    <circle
-                      key={model.model}
-                      cx="60"
-                      cy="60"
-                      r="48"
-                      fill="none"
-                      stroke={["#315d9e", "#ce5a2c", "#6f6a5f"][index % 3]}
-                      strokeWidth="16"
-                      strokeDasharray={`${length} ${circumference - length}`}
-                      strokeDashoffset={-offset}
-                    />
-                  );
-                  offset += length;
-                  return circle;
-                })}
-              </svg>
-              <div className="min-w-0 flex-1 space-y-3">
-                {data.models.map((model, index) => (
-                  <div
-                    key={model.model}
-                    className="flex justify-between gap-3 text-xs"
-                  >
-                    <span className="truncate">
-                      <i
-                        className="mr-2 inline-block size-2 rounded-full"
-                        style={{
-                          background: ["#315d9e", "#ce5a2c", "#6f6a5f"][
-                            index % 3
-                          ],
-                        }}
-                      />
-                      {model.model}
-                    </span>
-                    <b>{(model.share * 100).toFixed(1)}%</b>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="text-muted-foreground grid h-72 place-items-center text-sm">
-              选择用户后查看模型分布
-            </div>
-          )}
-        </section>
+        <TraceModelDistribution
+          models={data?.models ?? []}
+          hasOverview={Boolean(data)}
+        />
       </div>
     </div>
   );
