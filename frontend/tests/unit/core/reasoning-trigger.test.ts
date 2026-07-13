@@ -8,10 +8,18 @@ rs.mock("streamdown", () => ({
 }));
 
 import {
+  formatDuration,
   Reasoning,
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
+
+test("formatDuration switches from seconds to minutes at 60 seconds", () => {
+  expect(formatDuration(59)).toBe("59s");
+  expect(formatDuration(60)).toBe("1m 0s");
+  expect(formatDuration(61)).toBe("1m 1s");
+  expect(formatDuration(121)).toBe("2m 1s");
+});
 
 test("ReasoningTrigger default message uses phrasing content", () => {
   const html = renderToStaticMarkup(
@@ -37,7 +45,7 @@ test("ReasoningTrigger renders completed zero-second duration as completed", () 
     ),
   );
 
-  expect(html).toContain("Thought for 0 seconds");
+  expect(html).toContain("Thought for 0s");
   expect(html).not.toContain("Thinking...");
 });
 
@@ -51,8 +59,8 @@ test("ReasoningTrigger clamps negative completed duration to zero", () => {
     ),
   );
 
-  expect(html).toContain("Thought for 0 seconds");
-  expect(html).not.toContain("Thought for -3 seconds");
+  expect(html).toContain("Thought for 0s");
+  expect(html).not.toContain("Thought for -3s");
 });
 
 test("ReasoningTrigger falls back for non-finite completed duration", () => {

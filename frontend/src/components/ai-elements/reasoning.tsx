@@ -45,6 +45,13 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
 const AUTO_CLOSE_DELAY = 1000;
 const MS_IN_S = 1000;
 
+export function formatDuration(seconds: number): string {
+  const normalized = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(normalized / 60);
+  const remainingSeconds = normalized % 60;
+  return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${normalized}s`;
+}
+
 export const Reasoning = memo(
   ({
     className,
@@ -151,7 +158,9 @@ const LiveTimer = ({ startTime }: { startTime: number }) => {
   return (
     <span className="flex items-center gap-2">
       <Shimmer duration={1}>Thinking...</Shimmer>
-      <span className="text-muted-foreground/80">({elapsed}s)</span>
+      <span className="text-muted-foreground/80">
+        ({formatDuration(elapsed)})
+      </span>
     </span>
   );
 };
@@ -175,7 +184,7 @@ const defaultGetThinkingMessage = (
   if (normalizedDuration === undefined) {
     return <span>Thought for a few seconds</span>;
   }
-  return <span>Thought for {normalizedDuration} seconds</span>;
+  return <span>Thought for {formatDuration(normalizedDuration)}</span>;
 };
 
 export const ReasoningTrigger = memo(
