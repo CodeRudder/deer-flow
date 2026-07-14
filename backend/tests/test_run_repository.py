@@ -3,7 +3,12 @@
 Uses a temp SQLite DB to test ORM-backed CRUD operations.
 """
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
+from langchain_core.messages import AIMessage
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
@@ -14,6 +19,7 @@ from deerflow.persistence.quota.model import UserQuotaPeriodRow
 from deerflow.persistence.run import RunRepository
 from deerflow.runtime import RunManager, RunStatus
 from deerflow.runtime.runs.store.base import RunStore
+from deerflow.runtime.runs.worker import RunContext, run_agent
 
 
 async def _make_repo(tmp_path):
@@ -690,4 +696,70 @@ class TestRunRepository:
 
         row = await repo.get(record.run_id)
         assert row["model_name"] == "model-2"
+        await _cleanup()
+
+    @pytest.mark.anyio
+    async def test_run_agent_persists_fallback_outcome_to_only_the_current_run_row(self, tmp_path):
+        repo = await _make_repo(tmp_path)
+        manager = RunManager(store=repo)
+        bridge = SimpleNamespace(
+            publish=AsyncMock(),
+            publish_end=AsyncMock(),
+            cleanup=AsyncMock(),
+        )
+        historical_fallback = AIMessage(
+            content="The configured LLM provider is unavailable.",
+            additional_kwargs={
+                "deerflow_error_fallback": True,
+                "error_reason": "transient",
+                "error_detail": "First run provider error.",
+            },
+        )
+
+        class FailedAgent:
+            async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+                runtime = config["configurable"]["__pregel_runtime"]
+                runtime.context["__run_outcome"].record_llm_error_fallback(historical_fallback)
+                yield {"messages": [historical_fallback]}
+
+        first = await manager.create("thread-1")
+        await run_agent(
+            bridge,
+            manager,
+            first,
+            ctx=RunContext(checkpointer=None),
+            agent_factory=lambda *, config: FailedAgent(),
+            graph_input={},
+            config={},
+        )
+
+        class SuccessfulAgent:
+            async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+                yield {
+                    "messages": [
+                        historical_fallback,
+                        AIMessage(content="Current run succeeded."),
+                    ]
+                }
+
+        second = await manager.create("thread-1")
+        await run_agent(
+            bridge,
+            manager,
+            second,
+            ctx=RunContext(checkpointer=None),
+            agent_factory=lambda *, config: SuccessfulAgent(),
+            graph_input={},
+            config={},
+        )
+        await asyncio.sleep(0)
+
+        first_row = await repo.get(first.run_id, user_id=None)
+        second_row = await repo.get(second.run_id, user_id=None)
+        assert first_row is not None
+        assert first_row["status"] == "error"
+        assert first_row["error"] == "First run provider error."
+        assert second_row is not None
+        assert second_row["status"] == "success"
+        assert second_row["error"] is None
         await _cleanup()

@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
 from deerflow.config.app_config import AppConfig
+from deerflow.runtime.run_outcome import RUN_OUTCOME_CONTEXT_KEY, RunOutcomeTracker
 
 logger = logging.getLogger(__name__)
 
@@ -269,14 +270,19 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     def _finalize_error_fallback_message(self, message: AIMessage, request: ModelRequest) -> AIMessage:
         runtime = getattr(request, "runtime", None)
         context = getattr(runtime, "context", None)
-        journal = context.get("__run_journal") if isinstance(context, dict) else None
-        if journal is None:
+        if not isinstance(context, dict):
             return message
 
-        try:
-            journal.record_llm_error_fallback_message(message, caller="lead_agent")
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record LLM error fallback message", exc_info=True)
+        outcome = context.get(RUN_OUTCOME_CONTEXT_KEY)
+        if isinstance(outcome, RunOutcomeTracker) and context.get("is_subagent") is not True:
+            outcome.record_llm_error_fallback(message)
+
+        journal = context.get("__run_journal")
+        if journal is not None:
+            try:
+                journal.record_llm_error_fallback_message(message, caller="lead_agent")
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to record LLM error fallback message", exc_info=True)
         return message
 
     def _build_user_message(self, exc: BaseException, reason: str) -> str:

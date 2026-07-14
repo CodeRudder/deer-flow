@@ -212,7 +212,7 @@ Lead-agent middlewares are assembled in strict order across three functions: the
 4. **UploadsMiddleware** - Tracks and injects newly uploaded files into conversation (lead agent only)
 5. **SandboxMiddleware** - Acquires sandbox, stores `sandbox_id` in state
 6. **DanglingToolCallMiddleware** - Injects placeholder ToolMessages for AIMessage tool_calls that lack responses (e.g., user interruption), preserving raw provider tool-call payloads in `additional_kwargs["tool_calls"]`
-7. **LLMErrorHandlingMiddleware** - Normalizes provider/model invocation failures into recoverable assistant-facing errors before later stages run
+7. **LLMErrorHandlingMiddleware** - Normalizes provider/model invocation failures into recoverable assistant-facing errors before later stages run; top-level lead-agent fallbacks are recorded on the current run's `RunOutcomeTracker`, while subagent fallbacks remain isolated
 8. **GuardrailMiddleware** - *(optional, if `guardrails.enabled`)* Pre-tool-call authorization via pluggable `GuardrailProvider`; returns an error ToolMessage on deny. Providers: built-in `AllowlistProvider` (zero deps), OAP policy providers (e.g. `aport-agent-guardrails`), or custom. See [docs/GUARDRAILS.md](docs/GUARDRAILS.md)
 9. **SandboxAuditMiddleware** - Audits sandboxed shell/file operations for security logging before tool execution
 10. **ToolErrorHandlingMiddleware** - Converts tool exceptions into error `ToolMessage`s so the run can continue instead of aborting
@@ -308,6 +308,7 @@ CORS is same-origin by default when requests enter through nginx on port 2026. S
 - Store-only hydrated runs are readable history. If the current worker has no in-memory task/control state for that run, cancellation APIs can return 409 because this worker cannot stop the task.
 - `POST /wait` (both thread-scoped and `/api/runs/wait`) drains the stream bridge via `wait_for_run_completion()` instead of bare `await record.task`, so it honours the run's `on_disconnect` setting and cancels the background run on real client disconnect rather than returning a stale checkpoint (issue #3265).
 - Thread-scoped run creation accepts `checkpoint` / `checkpoint_id`; Gateway validates the checkpoint belongs to the request thread before writing `checkpoint_id` / `checkpoint_ns` into `config.configurable` for LangGraph branching.
+- Run terminal status is run-scoped: `run_agent()` creates a `RunOutcomeTracker` in runtime context under `__run_outcome`, forces the worker-owned top-level role to `is_subagent=False`, and `LLMErrorHandlingMiddleware` records only fallbacks produced by the current top-level lead-agent run. Caller context must not override this role. The worker must not infer current failure by scanning streamed `values` or checkpoint message history because those snapshots include earlier runs; `RunJournal` remains an observability record rather than the status source of truth.
 
 Proxied through nginx: `/api/langgraph/*` → Gateway LangGraph-compatible runtime, all other `/api/*` → Gateway REST APIs.
 

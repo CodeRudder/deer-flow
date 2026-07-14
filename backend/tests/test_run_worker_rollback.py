@@ -13,10 +13,8 @@ from deerflow.runtime.runs.worker import (
     RunContext,
     _agent_factory_supports_app_config,
     _build_runtime_context,
-    _extract_llm_error_fallback_message,
     _install_runtime_context,
     _rollback_to_pre_run_checkpoint,
-    _try_extract_from_message,
     run_agent,
 )
 
@@ -48,7 +46,12 @@ def test_build_runtime_context_includes_app_config_when_present():
 
 def test_install_runtime_context_preserves_existing_thread_id_and_threads_app_config():
     app_config = object()
-    config = {"context": {"thread_id": "caller-thread"}}
+    config = {
+        "context": {
+            "thread_id": "caller-thread",
+            "is_subagent": True,
+        }
+    }
 
     _install_runtime_context(
         config,
@@ -61,6 +64,7 @@ def test_install_runtime_context_preserves_existing_thread_id_and_threads_app_co
 
     assert config["context"]["thread_id"] == "caller-thread"
     assert config["context"]["run_id"] == "run-1"
+    assert config["context"]["is_subagent"] is False
     assert config["context"]["app_config"] is app_config
 
 
@@ -117,19 +121,23 @@ async def test_run_agent_marks_llm_error_fallback_as_error_status():
 
     class DummyAgent:
         async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
-            yield {
-                "messages": [
-                    AIMessage(
-                        content="The configured LLM provider is temporarily unavailable after multiple retries.",
-                        additional_kwargs={
-                            "deerflow_error_fallback": True,
-                            "error_type": "APIConnectionError",
-                            "error_reason": "transient",
-                            "error_detail": "Connection error.",
-                        },
-                    )
-                ]
-            }
+            fallback = AIMessage(
+                content="The configured LLM provider is temporarily unavailable after multiple retries.",
+                additional_kwargs={
+                    "deerflow_error_fallback": True,
+                    "error_type": "APIConnectionError",
+                    "error_reason": "transient",
+                    "error_detail": "Connection error.",
+                },
+            )
+            runtime = config["configurable"]["__pregel_runtime"]
+            assert config["context"]["is_subagent"] is False
+            assert runtime.context["is_subagent"] is False
+            outcome = runtime.context.get("__run_outcome")
+            if outcome is not None:
+                assert outcome.run_id == record.run_id
+                outcome.record_llm_error_fallback(fallback)
+            yield {"messages": [fallback]}
 
     def factory(*, config):
         return DummyAgent()
@@ -141,7 +149,7 @@ async def test_run_agent_marks_llm_error_fallback_as_error_status():
         ctx=RunContext(checkpointer=None),
         agent_factory=factory,
         graph_input={},
-        config={},
+        config={"context": {"is_subagent": True}},
     )
 
     fetched = await run_manager.get(record.run_id)
@@ -149,6 +157,108 @@ async def test_run_agent_marks_llm_error_fallback_as_error_status():
     assert fetched.status == RunStatus.error
     assert fetched.error == "Connection error."
     bridge.publish_end.assert_awaited_once_with(record.run_id)
+
+
+@pytest.mark.anyio
+async def test_run_agent_ignores_historical_llm_error_fallback_from_prior_run():
+    run_manager = RunManager()
+    bridge = SimpleNamespace(
+        publish=AsyncMock(),
+        publish_end=AsyncMock(),
+        cleanup=AsyncMock(),
+    )
+    historical_fallback = AIMessage(
+        content="The configured LLM provider is temporarily unavailable after multiple retries.",
+        additional_kwargs={
+            "deerflow_error_fallback": True,
+            "error_type": "APIConnectionError",
+            "error_reason": "transient",
+            "error_detail": "Old provider error.",
+        },
+    )
+
+    class FailedRunAgent:
+        async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+            runtime = config["configurable"]["__pregel_runtime"]
+            outcome = runtime.context.get("__run_outcome")
+            if outcome is not None:
+                outcome.record_llm_error_fallback(historical_fallback)
+            yield {"messages": [historical_fallback]}
+
+    first = await run_manager.create("thread-1")
+    await run_agent(
+        bridge,
+        run_manager,
+        first,
+        ctx=RunContext(checkpointer=None),
+        agent_factory=lambda *, config: FailedRunAgent(),
+        graph_input={},
+        config={},
+    )
+    assert first.status == RunStatus.error
+    assert first.error == "Old provider error."
+
+    class SuccessfulRunAgent:
+        async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+            assert set(stream_mode) == {"values", "messages"}
+            yield (
+                "values",
+                {
+                    "messages": [
+                        historical_fallback,
+                        AIMessage(content="This run completed normally."),
+                    ]
+                },
+            )
+
+    second = await run_manager.create("thread-1")
+    await run_agent(
+        bridge,
+        run_manager,
+        second,
+        ctx=RunContext(checkpointer=None),
+        agent_factory=lambda *, config: SuccessfulRunAgent(),
+        graph_input={},
+        config={},
+        stream_modes=["values", "messages-tuple"],
+    )
+
+    assert second.status == RunStatus.success
+    assert second.error is None
+
+    current_fallback = AIMessage(
+        content="The newly selected provider rejected the request.",
+        additional_kwargs={
+            "deerflow_error_fallback": True,
+            "error_type": "AuthenticationError",
+            "error_reason": "auth",
+            "error_detail": "Current provider error.",
+        },
+    )
+
+    class CurrentFailedRunAgent:
+        async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+            runtime = config["configurable"]["__pregel_runtime"]
+            runtime.context["__run_outcome"].record_llm_error_fallback(current_fallback)
+            yield (
+                "values",
+                {"messages": [historical_fallback, current_fallback]},
+            )
+
+    third = await run_manager.create("thread-1")
+    await run_agent(
+        bridge,
+        run_manager,
+        third,
+        ctx=RunContext(checkpointer=None),
+        agent_factory=lambda *, config: CurrentFailedRunAgent(),
+        graph_input={},
+        config={},
+        stream_modes=["values", "messages-tuple"],
+    )
+
+    assert third.status == RunStatus.error
+    assert third.error == "Current provider error."
 
 
 @pytest.mark.anyio
@@ -499,7 +609,11 @@ def test_agent_factory_supports_app_config_detects_supported_signature():
 
 def test_build_runtime_context_defaults_to_thread_and_run_id():
     ctx = _build_runtime_context("thread-1", "run-1", None)
-    assert ctx == {"thread_id": "thread-1", "run_id": "run-1"}
+    assert ctx == {
+        "thread_id": "thread-1",
+        "run_id": "run-1",
+        "is_subagent": False,
+    }
 
 
 def test_build_runtime_context_merges_caller_context():
@@ -529,9 +643,23 @@ def test_build_runtime_context_caller_cannot_override_thread_id_or_run_id():
     assert ctx["agent_name"] == "ok"
 
 
+def test_build_runtime_context_caller_cannot_mark_root_run_as_subagent():
+    ctx = _build_runtime_context(
+        "thread-1",
+        "run-1",
+        {"is_subagent": True},
+    )
+
+    assert ctx["is_subagent"] is False
+
+
 def test_build_runtime_context_ignores_non_dict_caller_context():
     ctx = _build_runtime_context("thread-1", "run-1", "not-a-dict")
-    assert ctx == {"thread_id": "thread-1", "run_id": "run-1"}
+    assert ctx == {
+        "thread_id": "thread-1",
+        "run_id": "run-1",
+        "is_subagent": False,
+    }
 
 
 def test_agent_factory_supports_app_config_returns_false_when_signature_lookup_fails(monkeypatch):
@@ -542,133 +670,3 @@ def test_agent_factory_supports_app_config_returns_false_when_signature_lookup_f
     monkeypatch.setattr("deerflow.runtime.runs.worker.inspect.signature", lambda _obj: (_ for _ in ()).throw(ValueError("boom")))
 
     assert _agent_factory_supports_app_config(BrokenCallable()) is False
-
-
-# ---------------------------------------------------------------------------
-# _extract_llm_error_fallback_message coverage
-# ---------------------------------------------------------------------------
-
-
-def test_try_extract_from_message_finds_fallback_on_message_object():
-    msg = AIMessage(
-        content="fallback",
-        additional_kwargs={
-            "deerflow_error_fallback": True,
-            "error_detail": "Connection error.",
-            "error_reason": "transient",
-        },
-    )
-    assert _try_extract_from_message(msg) == "Connection error."
-
-
-def test_try_extract_from_message_finds_fallback_on_dict():
-    msg = {
-        "content": "fallback",
-        "additional_kwargs": {
-            "deerflow_error_fallback": True,
-            "error_detail": "Quota exceeded.",
-        },
-    }
-    assert _try_extract_from_message(msg) == "Quota exceeded."
-
-
-def test_try_extract_from_message_returns_none_for_normal_message():
-    msg = AIMessage(content="hello")
-    assert _try_extract_from_message(msg) is None
-
-
-def test_extract_llm_error_fallback_message_large_state_chunk_no_fallback():
-    """Normal-size state dict without fallback markers must not raise and should return None."""
-    large_state = {
-        "messages": [
-            AIMessage(content="Hello!"),
-            {"role": "user", "content": "Hi there"},
-        ],
-        "foo": "x" * 10_000,
-        "bar": {"nested": {"deep": {"data": list(range(1000))}}},
-        "baz": [{"id": i, "payload": "y" * 1000} for i in range(500)],
-    }
-    assert _extract_llm_error_fallback_message(large_state) is None
-
-
-def test_extract_llm_error_fallback_message_finds_fallback_in_messages_list():
-    state = {
-        "messages": [
-            AIMessage(content="Hello!"),
-            AIMessage(
-                content="Unavailable.",
-                additional_kwargs={
-                    "deerflow_error_fallback": True,
-                    "error_detail": "Connection error.",
-                },
-            ),
-        ],
-        "other_state": "large_value" * 1000,
-    }
-    assert _extract_llm_error_fallback_message(state) == "Connection error."
-
-
-def test_extract_llm_error_fallback_message_finds_fallback_in_raw_message():
-    msg = AIMessage(
-        content="Unavailable.",
-        additional_kwargs={
-            "deerflow_error_fallback": True,
-            "error_reason": "quota",
-        },
-    )
-    assert _extract_llm_error_fallback_message(msg) == "quota"
-
-
-def test_extract_llm_error_fallback_message_finds_fallback_in_tuple():
-    item = (
-        "messages",
-        AIMessage(
-            content="Unavailable.",
-            additional_kwargs={
-                "deerflow_error_fallback": True,
-                "error_detail": "Circuit open.",
-            },
-        ),
-    )
-    assert _extract_llm_error_fallback_message(item) == "Circuit open."
-
-
-def test_extract_llm_error_fallback_message_returns_none_for_empty_values():
-    assert _extract_llm_error_fallback_message({}) is None
-    assert _extract_llm_error_fallback_message([]) is None
-    assert _extract_llm_error_fallback_message(None) is None
-    assert _extract_llm_error_fallback_message("string") is None
-
-
-def test_extract_llm_error_fallback_message_finds_fallback_in_updates_mode():
-    """stream_mode='updates' yields dicts keyed by node name (e.g. {'call_model': {...}}).
-    Fallback marker is nested inside the node's state update, not at the top level."""
-    update_chunk = {
-        "call_model": {
-            "messages": [
-                AIMessage(
-                    content="Unavailable.",
-                    additional_kwargs={
-                        "deerflow_error_fallback": True,
-                        "error_detail": "Connection error.",
-                    },
-                )
-            ]
-        }
-    }
-    assert _extract_llm_error_fallback_message(update_chunk) == "Connection error."
-
-
-def test_extract_llm_error_fallback_message_updates_mode_no_fallback():
-    """Normal updates chunk without any fallback should return None safely."""
-    update_chunk = {
-        "__interrupt__": [
-            {
-                "value": "ask_human",
-                "resumable": True,
-                "ns": ["agent"],
-                "when": "during",
-            }
-        ]
-    }
-    assert _extract_llm_error_fallback_message(update_chunk) is None

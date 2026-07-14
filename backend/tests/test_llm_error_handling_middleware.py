@@ -16,6 +16,7 @@ from deerflow.config.app_config import AppConfig
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.runtime.events.store.memory import MemoryRunEventStore
 from deerflow.runtime.journal import RunJournal
+from deerflow.runtime.run_outcome import RUN_OUTCOME_CONTEXT_KEY, RunOutcomeTracker
 
 
 def _make_app_config() -> AppConfig:
@@ -47,8 +48,8 @@ def _build_middleware(**attrs: int) -> LLMErrorHandlingMiddleware:
     return middleware
 
 
-def _request_with_journal(journal: RunJournal) -> SimpleNamespace:
-    return SimpleNamespace(runtime=SimpleNamespace(context={"__run_journal": journal}))
+def _request_with_context(**context: Any) -> SimpleNamespace:
+    return SimpleNamespace(runtime=SimpleNamespace(context=context))
 
 
 def test_async_model_call_retries_busy_provider_then_succeeds(
@@ -110,11 +111,15 @@ def test_sync_model_call_records_error_fallback_to_run_journal() -> None:
     middleware = _build_middleware(retry_max_attempts=1)
     store = MemoryRunEventStore()
     journal = RunJournal("run-1", "thread-1", store, flush_threshold=100)
+    outcome = RunOutcomeTracker(run_id="run-1")
 
     def handler(_request) -> AIMessage:
         raise FakeError("insufficient_quota: account balance is empty", code="insufficient_quota")
 
-    result = middleware.wrap_model_call(_request_with_journal(journal), handler)
+    result = middleware.wrap_model_call(
+        _request_with_context(__run_journal=journal, **{RUN_OUTCOME_CONTEXT_KEY: outcome}),
+        handler,
+    )
     asyncio.run(journal.flush())
 
     messages = asyncio.run(store.list_messages("thread-1"))
@@ -128,6 +133,8 @@ def test_sync_model_call_records_error_fallback_to_run_journal() -> None:
     assert messages[0]["metadata"]["caller"] == "lead_agent"
     assert journal.had_llm_error_fallback is True
     assert journal.llm_error_fallback_message == "insufficient_quota: account balance is empty"
+    assert outcome.had_llm_error_fallback is True
+    assert outcome.llm_error_fallback_message == "insufficient_quota: account balance is empty"
 
 
 @pytest.mark.anyio
@@ -135,11 +142,15 @@ async def test_async_model_call_records_empty_response_fallback_to_run_journal()
     middleware = _build_middleware(retry_max_attempts=1)
     store = MemoryRunEventStore()
     journal = RunJournal("run-1", "thread-1", store, flush_threshold=100)
+    outcome = RunOutcomeTracker(run_id="run-1")
 
     async def handler(_request) -> AIMessage:
         return AIMessage(content="")
 
-    result = await middleware.awrap_model_call(_request_with_journal(journal), handler)
+    result = await middleware.awrap_model_call(
+        _request_with_context(__run_journal=journal, **{RUN_OUTCOME_CONTEXT_KEY: outcome}),
+        handler,
+    )
     await journal.flush()
 
     messages = await store.list_messages("thread-1")
@@ -150,21 +161,73 @@ async def test_async_model_call_records_empty_response_fallback_to_run_journal()
     assert messages[0]["content"]["content"] == _EMPTY_RESPONSE_FALLBACK
     assert journal.had_llm_error_fallback is True
     assert journal.llm_error_fallback_message == "LLM returned empty content without tool calls"
+    assert outcome.had_llm_error_fallback is True
+    assert outcome.llm_error_fallback_message == "LLM returned empty content without tool calls"
 
 
 def test_error_fallback_without_run_journal_still_returns_message() -> None:
     middleware = _build_middleware(retry_max_attempts=1)
+    outcome = RunOutcomeTracker(run_id="run-1")
 
     def handler(_request) -> AIMessage:
         raise FakeError("unauthorized", status_code=401)
 
-    result = middleware.wrap_model_call(SimpleNamespace(runtime=SimpleNamespace(context={})), handler)
+    result = middleware.wrap_model_call(
+        _request_with_context(**{RUN_OUTCOME_CONTEXT_KEY: outcome}),
+        handler,
+    )
 
     assert isinstance(result, AIMessage)
     assert result.id is not None
     assert result.id.startswith("deerflow:error-fallback:")
     assert "authentication or access is invalid" in result.content
     assert result.additional_kwargs["deerflow_error_fallback"] is True
+    assert outcome.llm_error_fallback_message == "unauthorized"
+
+
+def test_error_fallback_does_not_record_parent_outcome_for_subagent() -> None:
+    middleware = _build_middleware(retry_max_attempts=1)
+    outcome = RunOutcomeTracker(run_id="parent-run")
+
+    def handler(_request) -> AIMessage:
+        raise FakeError("unauthorized", status_code=401)
+
+    result = middleware.wrap_model_call(
+        _request_with_context(
+            **{
+                RUN_OUTCOME_CONTEXT_KEY: outcome,
+                "is_subagent": True,
+            }
+        ),
+        handler,
+    )
+
+    assert isinstance(result, AIMessage)
+    assert result.additional_kwargs["deerflow_error_fallback"] is True
+    assert outcome.had_llm_error_fallback is False
+
+
+def test_journal_failure_does_not_prevent_run_outcome_recording() -> None:
+    middleware = _build_middleware(retry_max_attempts=1)
+    outcome = RunOutcomeTracker(run_id="run-1")
+
+    class FailingJournal:
+        def record_llm_error_fallback_message(self, message, *, caller):
+            raise RuntimeError("journal unavailable")
+
+    def handler(_request) -> AIMessage:
+        raise FakeError("unauthorized", status_code=401)
+
+    result = middleware.wrap_model_call(
+        _request_with_context(
+            __run_journal=FailingJournal(),
+            **{RUN_OUTCOME_CONTEXT_KEY: outcome},
+        ),
+        handler,
+    )
+
+    assert isinstance(result, AIMessage)
+    assert outcome.llm_error_fallback_message == "unauthorized"
 
 
 def test_async_model_call_marks_transient_retry_exhaustion_as_error_fallback(

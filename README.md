@@ -696,6 +696,8 @@ This is the difference between a chatbot with tool access and an agent with an a
 
 **Strict Tool-Call Recovery**: When a provider or middleware interrupts a tool-call loop, DeerFlow now strips provider-level raw tool-call metadata on forced-stop assistant messages and injects placeholder tool results for dangling calls before the next model invocation. This keeps OpenAI-compatible reasoning models that strictly validate `tool_call_id` sequences from failing with malformed history errors.
 
+**Run-Scoped Model Errors**: Model fallback errors are attributed only to the run that produced them. A fallback retained in a thread's checkpoint remains visible in conversation history, but it cannot mark a later successful run as failed, including after switching models.
+
 ### Long-Term Memory
 
 Most agents forget everything the moment a conversation ends. DeerFlow remembers.
