@@ -591,6 +591,8 @@ class TestJsonlRunEventStore:
         assert r["seq"] == 1
         messages = await s.list_messages("t1")
         assert len(messages) == 1
+        events = await s.list_events("t1", "r1", user_id=None)
+        assert len(events) == 1
 
     @pytest.mark.anyio
     async def test_file_at_correct_path(self, tmp_path):

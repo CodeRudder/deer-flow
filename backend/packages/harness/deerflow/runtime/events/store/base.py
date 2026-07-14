@@ -6,12 +6,15 @@ through the same interface, distinguished by the ``category`` field.
 
 Implementations:
 - MemoryRunEventStore: in-memory dict (development, tests)
-- Future: DB-backed store (SQLAlchemy ORM), JSONL file store
+- DbRunEventStore: SQLAlchemy-backed persistent storage
+- JsonlRunEventStore: append-only local files
 """
 
 from __future__ import annotations
 
 import abc
+
+from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
 
 class RunEventStore(abc.ABC):
@@ -72,10 +75,14 @@ class RunEventStore(abc.ABC):
         *,
         event_types: list[str] | None = None,
         limit: int = 500,
+        user_id: str | None | _AutoSentinel = AUTO,
     ) -> list[dict]:
         """Return the full event stream for a run, ordered by seq ascending.
 
-        Optionally filter by event_types.
+        Optionally filter by event_types. SQL-backed stores enforce the
+        three-state user scope from :mod:`deerflow.runtime.user_context`;
+        stores without persisted ownership accept the scope for interface
+        compatibility and rely on their caller's thread authorization.
         """
 
     @abc.abstractmethod

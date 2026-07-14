@@ -227,11 +227,19 @@ class SessionTraceService:
 
     async def run_events(self, run_id: str, *, thread_id: str, limit: int) -> dict[str, Any]:
         async with self._sf() as session:
-            exists = await session.scalar(select(func.count()).select_from(RunRow).where(RunRow.run_id == run_id, RunRow.thread_id == thread_id))
-        if not exists:
+            existing_run_id = await session.scalar(
+                select(RunRow.run_id).where(
+                    RunRow.run_id == run_id,
+                    RunRow.thread_id == thread_id,
+                )
+            )
+        if existing_run_id is None:
             raise SessionTraceNotFoundError("Run not found")
         capped = min(max(1, limit), 500)
-        events = await self._events.list_events(thread_id, run_id, limit=capped + 1)
+        # The admin route has already authorized this read and the exact Run
+        # pair above bounds it. Do not inherit the requesting admin's owner
+        # scope; trusted unscoped access also includes legacy NULL-owner events.
+        events = await self._events.list_events(thread_id, run_id, limit=capped + 1, user_id=None)
         truncated = len(events) > capped
         return {
             "run_id": run_id,

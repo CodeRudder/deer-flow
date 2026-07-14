@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from deerflow.runtime.events.store.base import RunEventStore
+from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,15 @@ class JsonlRunEventStore(RunEventStore):
         else:
             return messages[-limit:]
 
-    async def list_events(self, thread_id, run_id, *, event_types=None, limit=500):
+    async def list_events(
+        self,
+        thread_id,
+        run_id,
+        *,
+        event_types=None,
+        limit=500,
+        user_id: str | None | _AutoSentinel = AUTO,
+    ):
         events = await asyncio.to_thread(self._read_run_events, thread_id, run_id)
         if event_types is not None:
             events = [e for e in events if e.get("event_type") in event_types]

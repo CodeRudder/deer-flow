@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -9,7 +10,9 @@ from deerflow.persistence.base import Base
 from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
 from deerflow.persistence.user.model import UserRow
+from deerflow.runtime.events.store.db import DbRunEventStore
 from deerflow.runtime.events.store.memory import MemoryRunEventStore
+from deerflow.runtime.user_context import reset_current_user, set_current_user
 
 
 @pytest_asyncio.fixture
@@ -167,3 +170,58 @@ async def test_run_filters_use_and_and_events_validate_ownership(trace_service):
 
     with pytest.raises(SessionTraceNotFoundError):
         await service.run_events("run-a-new", thread_id="thread-b", limit=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_auto_user
+async def test_admin_run_events_use_trusted_unscoped_db_read(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'admin-traces.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    events = DbRunEventStore(sf)
+
+    async with sf() as session:
+        session.add_all(
+            [
+                UserRow(id="user-a", email="alice@example.com", system_role="user"),
+                UserRow(id="admin-a", email="admin@example.com", system_role="admin"),
+                ThreadMetaRow(thread_id="thread-a", user_id="user-a", display_name="Alice thread"),
+                RunRow(run_id="run-a", thread_id="thread-a", user_id="user-a", status="success"),
+            ]
+        )
+        await session.commit()
+
+    owner_token = set_current_user(SimpleNamespace(id="user-a"))
+    try:
+        await events.put(
+            thread_id="thread-a",
+            run_id="run-a",
+            event_type="llm.ai.response",
+            category="message",
+            content={"type": "ai", "tool_calls": [{"id": "call-1", "name": "web_search", "args": {}}]},
+        )
+    finally:
+        reset_current_user(owner_token)
+
+    # Background and legacy writes can legitimately have no ambient owner.
+    await events.put(
+        thread_id="thread-a",
+        run_id="run-a",
+        event_type="run.end",
+        category="trace",
+    )
+
+    service = SessionTraceService(sf, events)
+    admin_token = set_current_user(SimpleNamespace(id="admin-a"))
+    try:
+        assert await events.list_events("thread-a", "run-a") == []
+        detail = await service.run_events("run-a", thread_id="thread-a", limit=500)
+    finally:
+        reset_current_user(admin_token)
+        await engine.dispose()
+
+    assert detail["returned"] == 2
+    assert detail["items"][0]["event_type"] == "llm.ai.response"
+    assert detail["items"][1]["event_type"] == "run.end"
+    assert detail["tool_summary"]["total_calls"] == 1
