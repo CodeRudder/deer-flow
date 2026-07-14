@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { FlickeringGrid } from "@/components/ui/flickering-grid";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/core/auth/AuthProvider";
+import { shouldShowSsoHint } from "@/core/auth/login";
 import {
   canCreateRegularAccount,
   fetchSetupStatus,
@@ -177,11 +178,15 @@ export default function LoginPage() {
         const data = await res.json();
         const authError = parseAuthError(data);
         setError(authError.message);
-        // On a failed login with SSO configured, surface a hint pointing at the
-        // SSO buttons — the "wrong password" may really mean "this is an SSO account".
-        if (isLogin && ssoProviders.length > 0) {
-          setShowSsoHint(true);
-        }
+        // A wrong password may mean this is an SSO-only account. Other failures,
+        // such as a blocked email domain, should keep their own actionable message.
+        setShowSsoHint(
+          shouldShowSsoHint({
+            isLogin,
+            errorCode: authError.code,
+            providerCount: ssoProviders.length,
+          }),
+        );
         return;
       }
 

@@ -85,7 +85,7 @@ test("record write/read-file run through the real frontend", async ({
 
   const reg = await context.request.post(`${APP}/api/v1/auth/register`, {
     data: {
-      email: `rec-${Date.now()}@example.com`,
+      email: `rec-${Date.now()}@sz-jlc.com`,
       password: "very-strong-password-123",
     },
   });

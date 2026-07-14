@@ -4,7 +4,34 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _normalize_email_domain(domain: str) -> str:
+    candidate = domain.strip()
+    if candidate.startswith("@"):
+        candidate = candidate[1:]
+    candidate = candidate.lower()
+
+    if not candidate or "@" in candidate:
+        raise ValueError("allowed_email_domains entries must be a valid email domain")
+
+    try:
+        ascii_domain = candidate.encode("ascii").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("allowed_email_domains entries must be a valid email domain") from exc
+
+    labels = ascii_domain.split(".")
+    if len(ascii_domain) > 253 or any(label.startswith("xn--") or not _is_valid_dns_label(label) for label in labels):
+        raise ValueError("allowed_email_domains entries must be a valid email domain")
+
+    return ascii_domain
+
+
+def _is_valid_dns_label(label: str) -> bool:
+    if not 1 <= len(label) <= 63 or not label[0].isalnum() or not label[-1].isalnum():
+        return False
+    return all(character.isalnum() or character == "-" for character in label)
 
 
 class OIDCProviderConfig(BaseModel):
@@ -70,4 +97,27 @@ class OIDCAuthConfig(BaseModel):
 class AuthAppConfig(BaseModel):
     """Authentication configuration section for the DeerFlow app config."""
 
+    allowed_email_domains: list[str] = Field(
+        default_factory=lambda: ["sz-jlc.com"],
+        description="Email domains allowed for local registration and email changes",
+    )
+    enforce_email_domain_on_login: bool = Field(
+        default=False,
+        description="Enforce allowed_email_domains after successful local email/password authentication",
+    )
     oidc: OIDCAuthConfig = Field(default_factory=OIDCAuthConfig, description="OIDC SSO authentication settings")
+
+    @field_validator("allowed_email_domains")
+    @classmethod
+    def _validate_allowed_email_domains(cls, domains: list[str]) -> list[str]:
+        if not domains:
+            raise ValueError("allowed_email_domains must contain at least one domain")
+
+        normalized_domains: list[str] = []
+        seen: set[str] = set()
+        for domain in domains:
+            normalized = _normalize_email_domain(domain)
+            if normalized not in seen:
+                normalized_domains.append(normalized)
+                seen.add(normalized)
+        return normalized_domains

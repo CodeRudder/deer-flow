@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 18
+config_version: 19
 
 # ============================================================================
 # Logging
@@ -1711,8 +1711,17 @@ run_events:
 #   recovery_timeout_sec: 60
 
 # ============================================================================
-# SSO / OIDC Authentication (optional)
+# Local Email/Password and SSO / OIDC Authentication
 # ============================================================================
+# Local registration and email changes always require one of the configured
+# ASCII DNS domains (internationalized/ACE domains are not supported). The
+# login switch only applies after a successful local password authentication;
+# it does not affect OIDC or platform authentication.
+auth:
+  allowed_email_domains:
+    - sz-jlc.com
+  enforce_email_domain_on_login: false
+
 # Enable SSO login via any OIDC-compatible provider (Keycloak, Google, Azure AD, Okta, etc.).
 # When enabled, the login page will show SSO buttons alongside the standard email/password form.
 #
@@ -1728,7 +1737,6 @@ run_events:
 #   2. Add Valid Redirect URI: http://localhost:8001/api/v1/auth/callback/keycloak
 #   3. Add Web Origin: http://localhost:8001 (or your frontend origin)
 
-# auth:
 #   oidc:
 #     enabled: true
 #     # Base URL of the frontend, used for redirects after SSO callback.

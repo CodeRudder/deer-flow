@@ -33,7 +33,7 @@ test.describe("multi-run thread renders chronologically (replay, no API key)", (
   }) => {
     const uniq = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const threadId = `e2e-multi-run-${uniq}`;
-    const email = `e2e-${uniq}@example.com`;
+    const email = `e2e-${uniq}@sz-jlc.com`;
 
     // Register through the frontend origin (same-origin proxy) so the auth
     // cookies are stored for localhost and forwarded to the gateway via the

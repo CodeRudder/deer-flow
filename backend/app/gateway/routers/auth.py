@@ -19,6 +19,7 @@ from app.gateway.auth import (
     create_access_token,
 )
 from app.gateway.auth.config import get_auth_config
+from app.gateway.auth.email_domain import enforce_email_domain_allowed
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.auth.oidc import OIDCError, OIDCService
 from app.gateway.auth.oidc_state import (
@@ -33,7 +34,8 @@ from app.gateway.auth.oidc_state import (
 )
 from app.gateway.auth.user_provisioning import get_or_provision_oidc_user
 from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, _request_origin, generate_csrf_token, is_secure_request
-from app.gateway.deps import get_current_user_from_request, get_local_provider
+from app.gateway.deps import get_config, get_current_user_from_request, get_local_provider
+from deerflow.config.app_config import AppConfig
 from deerflow.config.auth_config import OIDCProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -295,6 +297,7 @@ async def login_local(
     request: Request,
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    config: AppConfig = Depends(get_config),
 ):
     """Local email/password login."""
     client_ip = _get_client_ip(request)
@@ -309,6 +312,9 @@ async def login_local(
             detail=AuthErrorResponse(code=AuthErrorCode.INVALID_CREDENTIALS, message="Incorrect email or password").model_dump(),
         )
 
+    if config.auth.enforce_email_domain_on_login:
+        enforce_email_domain_allowed(user.email, config.auth.allowed_email_domains)
+
     _record_login_success(client_ip)
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request)
@@ -320,12 +326,14 @@ async def login_local(
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(request: Request, response: Response, body: RegisterRequest):
+async def register(request: Request, response: Response, body: RegisterRequest, config: AppConfig = Depends(get_config)):
     """Register a new user account (always 'user' role).
 
     The first admin is created explicitly through /initialize. This endpoint creates regular users.
     Auto-login by setting the session cookie.
     """
+    enforce_email_domain_allowed(body.email, config.auth.allowed_email_domains)
+
     try:
         user = await get_local_provider().create_user(email=body.email, password=body.password, system_role="user")
     except ValueError:
@@ -348,7 +356,7 @@ async def logout(request: Request, response: Response):
 
 
 @router.post("/change-password", response_model=MessageResponse)
-async def change_password(request: Request, response: Response, body: ChangePasswordRequest):
+async def change_password(request: Request, response: Response, body: ChangePasswordRequest, config: AppConfig = Depends(get_config)):
     """Change password for the currently authenticated user.
 
     Also handles the first-boot setup flow:
@@ -381,6 +389,7 @@ async def change_password(request: Request, response: Response, body: ChangePass
 
     # Update email if provided
     if body.new_email is not None:
+        enforce_email_domain_allowed(body.new_email, config.auth.allowed_email_domains)
         existing = await provider.get_user_by_email(body.new_email)
         if existing and str(existing.id) != str(user.id):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=AuthErrorResponse(code=AuthErrorCode.EMAIL_ALREADY_EXISTS, message="Email already in use").model_dump())

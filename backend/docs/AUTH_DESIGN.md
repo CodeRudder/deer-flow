@@ -110,11 +110,13 @@ enum UserScope:
 - 成功后签发 JWT，放入 `access_token` HttpOnly cookie。
 - 响应体只返回 `expires_in` 和 `needs_setup`，不返回 token。
 
+`auth.enforce_email_domain_on_login` 默认关闭。开启后，服务端先按现有流程验证邮箱和密码，再使用 `auth.allowed_email_domains` 校验数据库返回用户的完整邮箱域名，只有通过后才清空该 IP 的登录失败计数并签发新 session。错误密码仍统一返回 401，域名策略拒绝返回结构化 403，且既不新增也不清空已有失败计数。该规则覆盖所有走本地密码登录的角色，包括 admin；已有 session 不会因配置变化立即失效。
+
 登录失败会按客户端 IP 计数。IP 解析只在 TCP peer 属于 `AUTH_TRUSTED_PROXIES` 时信任 `X-Real-IP`，不使用 `X-Forwarded-For`。
 
 ### 注册
 
-`POST /api/v1/auth/register` 创建普通 `user`，并自动登录。
+`POST /api/v1/auth/register` 创建普通 `user`，并自动登录。注册始终要求邮箱的完整域名存在于 `auth.allowed_email_domains`；该行为没有关闭开关，默认只允许 `sz-jlc.com`。匹配不区分域名大小写，但不接受未显式配置的子域、仅字符串后缀相同的域名、Unicode 国际化域名或 `xn--` ACE 域名。
 
 当前实现允许在没有 admin 时注册普通用户，但 `setup-status` 仍会返回 `needs_setup=true`，因为 admin 仍不存在。这是当前产品策略边界：如果后续要求“必须先初始化 admin 才能注册普通用户”，需要在 `/register` 增加 admin-exists gate。
 
@@ -123,6 +125,7 @@ enum UserScope:
 `POST /api/v1/auth/change-password` 需要当前密码和新密码：
 
 - 校验当前密码。
+- 如果请求携带 `new_email`，在修改密码或邮箱前强制校验 `auth.allowed_email_domains`；该行为不受登录开关影响。
 - 更新 bcrypt hash。
 - `token_version += 1`，使旧 JWT 立即失效。
 - 重新签发 cookie。
@@ -298,12 +301,16 @@ PYTHONPATH=. python scripts/migrate_user_isolation.py --user-id <target-user-id>
 - 只有迁移脚本和 admin CLI 可以显式传 `user_id=None` 绕过隔离。
 - 本地文件路径必须通过 `Paths` 和 sandbox path validation 解析，不能拼接未校验的用户输入。
 - 捕获认证、迁移、后台任务异常必须记录日志；不能空 catch。
+- 本地注册和 `change-password.new_email` 必须始终按 `auth.allowed_email_domains` 校验；本地登录只由 `auth.enforce_email_domain_on_login` 控制。
+- 邮箱域名必须提取 `@` 后的完整域名并做规范化后的精确匹配，不能使用 `endswith`，避免 `fake-sz-jlc.com` 等伪后缀绕过；本地策略只接受 ASCII DNS 域名，并拒绝 Unicode 国际化域名和 `xn--` ACE 域名，避免 IDNA 版本差异造成域名混淆。
+- 域名登录校验必须在密码认证成功后执行，保证不存在账号和错误密码继续返回统一的 `invalid_credentials`。
 
 ## 已知边界
 
 | 边界 | 当前行为 | 后续方向 |
 |---|---|---|
 | 无 admin 时注册普通用户 | 允许注册普通 `user` | 如产品要求先初始化 admin，给 `/register` 加 gate |
+| 本地公司邮箱域名 | 注册和邮箱修改始终校验；登录校验默认关闭 | 开启登录校验前确认至少一个 admin 邮箱合规；紧急恢复可热更新关闭开关 |
 | 登录限速 | 进程内 dict，单 worker 精确，多 worker 近似 | Redis / DB-backed rate limiter |
 | OAuth / OIDC | 已实现通用 OIDC SSO（Keycloak, Google, Azure AD, Okta 等），支持 PKCE + nonce、auto-provisioning、email domain 限制（详见 [SSO.md](SSO.md)） | 支持 RP-initiated logout、自定义 scope 映射 |
 | IM 用户隔离 | channel 使用 `default` 内部用户 | 建立外部用户到 DeerFlow user 的映射 |
@@ -320,8 +327,9 @@ PYTHONPATH=. python scripts/migrate_user_isolation.py --user-id <target-user-id>
 | `app/gateway/auth/oidc.py` | OIDC 核心服务：discovery、token exchange、ID token 验证、userinfo |
 | `app/gateway/auth/oidc_state.py` | OIDC state 管理：signed cookie 存储 state/nonce/code_verifier |
 | `app/gateway/auth/user_provisioning.py` | OIDC 用户自动创建、email linking、domain 限制 |
+| `app/gateway/auth/email_domain.py` | 本地邮箱密码认证的公司域名精确匹配和结构化拒绝 |
 | `app/gateway/auth/models.py` | 用户数据模型（含 `oauth_provider` / `oauth_id`） |
-| `packages/harness/deerflow/config/auth_config.py` | OIDC 配置模型（OIDCProviderConfig / OIDCAuthConfig） |
+| `packages/harness/deerflow/config/auth_config.py` | 本地邮箱域名策略及 OIDC 配置模型 |
 | `app/gateway/auth/reset_admin.py` | 密码 reset CLI |
 | `app/gateway/auth/credential_file.py` | 0600 凭据文件写入 |
 | `app/gateway/authz.py` | 路由权限与 owner check |

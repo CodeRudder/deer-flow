@@ -265,7 +265,7 @@ def isolated_app(isolated_deer_flow_home: Path, monkeypatch: pytest.MonkeyPatch)
     return create_app()
 
 
-def _register_user(client, *, email: str = "runtime-e2e@example.com") -> str:
+def _register_user(client, *, email: str = "runtime-e2e@sz-jlc.com") -> str:
     response = client.post(
         "/api/v1/auth/register",
         json={"email": email, "password": "very-strong-password-123"},
@@ -491,7 +491,7 @@ def test_stream_run_executes_real_lead_agent_setup_agent_business_path(isolated_
         ),
         TestClient(isolated_app) as client,
     ):
-        csrf_token = _register_user(client, email="business-e2e@example.com")
+        csrf_token = _register_user(client, email="business-e2e@sz-jlc.com")
         auth_user_id = client.get("/api/v1/auth/me").json()["id"]
         thread_id = _create_thread(client, csrf_token)
 
@@ -554,7 +554,7 @@ def test_cancel_interrupt_stops_running_background_run(isolated_app):
         patch("app.gateway.services.resolve_agent_factory", return_value=factory),
         TestClient(isolated_app) as client,
     ):
-        csrf_token = _register_user(client, email="interrupt-e2e@example.com")
+        csrf_token = _register_user(client, email="interrupt-e2e@sz-jlc.com")
         thread_id = _create_thread(client, csrf_token)
 
         created = client.post(
@@ -645,7 +645,7 @@ def test_cancel_rollback_restores_pre_run_checkpoint(isolated_app):
         patch("app.gateway.services.resolve_agent_factory", return_value=factory),
         TestClient(isolated_app) as client,
     ):
-        csrf_token = _register_user(client, email="rollback-e2e@example.com")
+        csrf_token = _register_user(client, email="rollback-e2e@sz-jlc.com")
         thread_id = _create_thread(client, csrf_token)
 
         before = client.post(

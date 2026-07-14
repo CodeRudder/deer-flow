@@ -142,7 +142,7 @@ def drive_gateway(app, *, prompt: str, context: dict) -> list[dict]:
     with TestClient(app) as client:
         reg = client.post(
             "/api/v1/auth/register",
-            json={"email": f"e2e-{uuid.uuid4().hex[:8]}@example.com", "password": "very-strong-password-123"},
+            json={"email": f"e2e-{uuid.uuid4().hex[:8]}@sz-jlc.com", "password": "very-strong-password-123"},
         )
         assert reg.status_code == 201, reg.text
         csrf = client.cookies.get("csrf_token")

@@ -548,7 +548,7 @@ GET /api/threads/{thread_id}/artifacts/{path}
 
 ## Error Responses
 
-All APIs return errors in a consistent format:
+Most APIs return a detail string:
 
 ```json
 {
@@ -556,8 +556,21 @@ All APIs return errors in a consistent format:
 }
 ```
 
+Authentication policy errors use a stable structured detail:
+
+```json
+{
+  "detail": {
+    "code": "email_domain_not_allowed",
+    "message": "Please use an approved company email address (@sz-jlc.com)."
+  }
+}
+```
+
 **HTTP Status Codes:**
 - `400` - Bad Request: Invalid input
+- `401` - Unauthorized: Missing/invalid session or invalid local credentials
+- `403` - Forbidden: CSRF/origin rejection or an authenticated policy denial such as a disallowed email domain
 - `404` - Not Found: Resource not found
 - `422` - Validation Error: Request validation failed
 - `500` - Internal Server Error: Server-side error
@@ -569,17 +582,19 @@ All APIs return errors in a consistent format:
 DeerFlow enforces authentication for all non-public HTTP routes. Public routes are limited to health/docs metadata and these public auth endpoints:
 
 - `POST /api/v1/auth/initialize` creates the first admin account when no admin exists.
-- `POST /api/v1/auth/login/local` logs in with email/password and sets an HttpOnly `access_token` cookie.
-- `POST /api/v1/auth/register` creates a regular `user` account and sets the session cookie.
+- `POST /api/v1/auth/login/local` logs in with email/password and sets an HttpOnly `access_token` cookie. When `auth.enforce_email_domain_on_login=true`, the persisted user email must also match `auth.allowed_email_domains` after password verification.
+- `POST /api/v1/auth/register` creates a regular `user` account and sets the session cookie. Registration always requires an exact domain match in `auth.allowed_email_domains`.
 - `POST /api/v1/auth/logout` clears the session cookie.
 - `GET /api/v1/auth/setup-status` reports whether the first admin still needs to be created.
 
 The authenticated auth endpoints are:
 
 - `GET /api/v1/auth/me` returns the current user.
-- `POST /api/v1/auth/change-password` changes password, optionally changes email during setup, increments `token_version`, and reissues the cookie.
+- `POST /api/v1/auth/change-password` changes password, optionally changes email during setup, increments `token_version`, and reissues the cookie. Any submitted `new_email` must match `auth.allowed_email_domains`, regardless of the login-domain switch.
 
 Protected state-changing requests also require the CSRF double-submit token: send the `csrf_token` cookie value as the `X-CSRF-Token` header. Login/register/initialize/logout are bootstrap auth endpoints: they are exempt from the double-submit token but still reject hostile browser `Origin` headers.
+
+The local domain policy defaults to `allowed_email_domains: [sz-jlc.com]` and `enforce_email_domain_on_login: false`. Allowed entries must be ASCII DNS domains; Unicode internationalized domains and `xn--` ACE domains are rejected. A login rejected by the domain policy neither increments nor clears the IP's existing password-failure counter. The policy does not alter first-admin creation, OIDC provisioning, or platform-JWT provisioning. OIDC providers keep their independent `auth.oidc.providers.*.allowed_email_domains` setting.
 
 User isolation is enforced from the authenticated user context:
 

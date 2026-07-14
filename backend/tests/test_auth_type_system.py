@@ -516,7 +516,18 @@ def _make_auth_app():
 
 def _get_auth_client():
     """Get TestClient for auth API contract tests."""
-    return TestClient(_make_auth_app())
+    from app.gateway.deps import get_config
+    from deerflow.config.app_config import AppConfig
+    from deerflow.config.auth_config import AuthAppConfig
+    from deerflow.config.sandbox_config import SandboxConfig
+
+    app = _make_auth_app()
+    config = AppConfig(
+        sandbox=SandboxConfig(use="test"),
+        auth=AuthAppConfig(allowed_email_domains=["sz-jlc.com"]),
+    )
+    app.dependency_overrides[get_config] = lambda: config
+    return TestClient(app)
 
 
 def test_api_auth_me_no_cookie_returns_structured_401():
@@ -593,12 +604,12 @@ def test_api_login_success_no_token_in_body():
     # Register first
     client.post(
         "/api/v1/auth/register",
-        json={"email": "contract-test@test.com", "password": "securepassword123"},
+        json={"email": "contract-test@sz-jlc.com", "password": "securepassword123"},
     )
     # Login
     resp = client.post(
         "/api/v1/auth/login/local",
-        data={"username": "contract-test@test.com", "password": "securepassword123"},
+        data={"username": "contract-test@sz-jlc.com", "password": "securepassword123"},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -612,7 +623,7 @@ def test_api_register_duplicate_returns_structured_400():
     """Register with duplicate email → 400 with {code: 'email_already_exists'}."""
     _setup_config()
     client = _get_auth_client()
-    email = "dup-contract-test@test.com"
+    email = "dup-contract-test@sz-jlc.com"
     # First register
     client.post("/api/v1/auth/register", json={"email": email, "password": "Tr0ub4dor3a"})
     # Duplicate
@@ -626,7 +637,7 @@ def test_api_register_duplicate_returns_structured_400():
 
 
 def _unique_email(prefix: str) -> str:
-    return f"{prefix}-{secrets.token_hex(4)}@test.com"
+    return f"{prefix}-{secrets.token_hex(4)}@sz-jlc.com"
 
 
 def _get_set_cookie_headers(resp) -> list[str]:

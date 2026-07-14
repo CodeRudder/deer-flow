@@ -571,7 +571,7 @@ export const enUS: Translations = {
     signInTitle: "Sign in to your account",
     createAccountTitle: "Create a new account",
     email: "Email",
-    emailPlaceholder: "you@example.com",
+    emailPlaceholder: "you@sz-jlc.com",
     password: "Password",
     passwordPlaceholder: "•••••••",
     pleaseWait: "Please wait...",
@@ -585,7 +585,7 @@ export const enUS: Translations = {
     ssoHint:
       "If your account uses single sign-on, sign in with the option below instead.",
     continueWith: (provider: string) => `Continue with ${provider}`,
-    noAccountSignUp: "Don't have an account? Sign up",
+    noAccountSignUp: "Don't have an account? Sign up with your company email",
     haveAccountSignIn: "Already have an account? Sign in",
     backToHome: "← Back to home",
     officialWebsite: "Visit DeerFlow official website",

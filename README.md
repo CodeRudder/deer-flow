@@ -119,6 +119,17 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
 
    Administrators can enable monthly per-user model-token, model-request, and image-generation quotas with `quota_control` in `config.yaml`. Quota control requires `database.backend: sqlite` or `postgres`; running tasks are allowed to finish, while subsequent runs and image-generation calls are blocked after their monthly limits are reached. Per-dimension Config switches override user-period enforcement without stopping usage tracking. The administrator dashboard is available at `/workspace/admin`, with global usage statistics, quota controls, and read-only session tracing: tracing opens on the latest all-user Run page, while an explicit user selection enables that user's 30-day overview and scopes the Run list. Admins can also filter historical runs by thread/run ID and lazily open the persisted run-event timeline with a per-tool invocation summary; event detail supports cross-user and legacy unowned events without relaxing ordinary request-user isolation. Startup migrations automatically normalize the historical admin-quota revision IDs used by earlier development builds before upgrading the schema.
 
+   Local email/password registration and email changes are restricted to configured company email domains. The default is `sz-jlc.com`; password-login enforcement is independently configurable and remains off by default so existing accounts are not locked out during an upgrade:
+
+   ```yaml
+   auth:
+     allowed_email_domains:
+       - sz-jlc.com
+     enforce_email_domain_on_login: false
+   ```
+
+   Registration and any `new_email` submitted to the password-change endpoint always enforce `allowed_email_domains`. Setting `enforce_email_domain_on_login: true` also checks the persisted account email after a local password has been verified and before a new session is issued. The policy does not change first-admin creation, OIDC/SSO provisioning, or platform-JWT provisioning, but every account that later uses the local password-login endpoint is subject to the login switch, including administrators. Verify at least one administrator has an allowed email before enabling it.
+
    <details>
    <summary>Manual model configuration examples</summary>
 

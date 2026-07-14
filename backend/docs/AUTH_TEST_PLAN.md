@@ -53,6 +53,20 @@ make dev
 | `AUTH_JWT_SECRET` 未设 | 启动时 warning，自动生成临时密钥 |
 | `AUTH_JWT_SECRET` 已设 | 无 warning，重启后 session 保持 |
 
+### 1.4 测试邮箱域名配置
+
+本文档的手工示例大量使用 `@example.com`。执行测试前显式配置测试域名，避免依赖生产默认值：
+
+```yaml
+auth:
+  allowed_email_domains:
+    - example.com
+    - sz-jlc.com
+  enforce_email_domain_on_login: false
+```
+
+生产默认值仍是 `[sz-jlc.com]`。自动化测试必须通过 `get_config` dependency override 或 `set_app_config()` 注入测试配置，不能读取开发者机器上 gitignored 的 `config.yaml`。
+
 ---
 
 ## 二、接口流程测试
@@ -161,6 +175,45 @@ curl -s -X POST $BASE/api/v1/auth/logout -b cookies.txt | jq .
 ```
 
 **预期：** `{"message": "Successfully logged out"}`，后续用 cookies.txt 访问 `/auth/me` 返回 401
+
+### 2.1a 公司邮箱域名策略
+
+#### TC-API-DOM-01: 注册始终强校验
+
+1. 保持 `enforce_email_domain_on_login: false`。
+2. 使用 `user@outside.test` 调用 `/api/v1/auth/register`。
+3. **预期：** 返回 403，`detail.code=email_domain_not_allowed`，不创建用户且不签发新的 `access_token`。
+4. 使用 `user@example.com` 注册。
+5. **预期：** 返回 201。
+
+#### TC-API-DOM-02: 完整域名精确匹配
+
+配置只允许 `example.com`，分别注册 `user@sub.example.com`、`user@fake-example.com` 和 `user@example.com.evil.test`。
+
+**预期：** 三者均返回 `email_domain_not_allowed`；不能使用字符串后缀匹配。域名大小写不同的 `user@EXAMPLE.COM` 应通过策略判断。
+
+#### TC-API-DOM-03: 登录开关与错误优先级
+
+1. 临时把 `outside.test` 加入列表并注册历史测试账号，然后从列表移除。
+2. 开关为 `false` 时使用正确密码登录。
+3. **预期：** 登录成功。
+4. 把开关改为 `true`，无需重启再次登录。
+5. **预期：** 正确密码返回 403 `email_domain_not_allowed` 且不签发新的 `access_token`。
+6. 使用错误密码重试。
+7. **预期：** 仍返回 401 `invalid_credentials`，不会提前返回域名策略结果。
+
+#### TC-API-DOM-04: 修改邮箱始终强校验
+
+已登录用户调用 `/api/v1/auth/change-password`，携带正确 current password 和 `new_email=user@outside.test`。
+
+**预期：** 无论登录开关是否关闭，都返回 403；email、password hash、`token_version` 和 `needs_setup` 均不变。不传 `new_email` 的纯密码修改继续成功。
+
+#### TC-API-DOM-05: 排除范围
+
+- `/initialize` 继续允许使用非列表域名创建首个 admin。
+- OIDC 继续使用 provider 自己的 `auth.oidc.providers.*.allowed_email_domains`。
+- platform JWT 自动建号不受本地创建策略影响。
+- 已有 JWT session 不因修改域名配置而立即失效。
 
 ### 2.2 多租户隔离
 
@@ -774,14 +827,17 @@ grep AUTH_JWT_SECRET backend/.env || echo "NOT SET"
 - [ ] 服务正常可用
 - [ ] 重启后旧 session 失效（临时密钥变了）
 
-#### TC-UPG-08: 旧 config.yaml 无 auth 相关配置
+#### TC-UPG-08: 旧 config.yaml 无本地域名配置
 
 ```bash
-# 检查 config.yaml 没有 auth 段
-grep -c "auth" config.yaml || echo "0"
+# 检查 config.yaml 没有 allowed_email_domains
+grep -c "allowed_email_domains" config.yaml || echo "0"
 ```
 
-**预期：** auth 模块不依赖 config.yaml（配置走环境变量），旧 config.yaml 不影响启动
+**预期：**
+- 配置模型使用默认 `allowed_email_domains: [sz-jlc.com]` 和 `enforce_email_domain_on_login: false`
+- 服务可启动，但公开注册和 `new_email` 已按默认公司域名收紧
+- `make doctor` 提示配置版本落后；运行 `make config-upgrade` 后把版本 19 字段写入 `config.yaml`
 
 ### 5.5 前端兼容
 

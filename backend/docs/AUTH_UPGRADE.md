@@ -49,9 +49,25 @@ make dev
 
 后续访问 `http://localhost:2026/login`，使用已创建的邮箱和密码登录。
 
-### 5. 添加用户（可选）
+### 5. 配置公司邮箱域名
 
-其他用户通过 `/login` 页面注册，自动获得 **user** 角色。每个用户只能看到自己的对话、上传文件、输出文件、memory 和自定义 agent。
+本地邮箱密码注册和邮箱修改默认只允许 `sz-jlc.com`。如有多个公司域名，在项目根目录 `config.yaml` 中完整列出：
+
+```yaml
+auth:
+  allowed_email_domains:
+    - sz-jlc.com
+    # - another-company-domain.com
+  enforce_email_domain_on_login: false
+```
+
+注册和 `change-password.new_email` 始终校验该列表。登录校验默认关闭，便于历史外域账号完成升级；开启后，所有通过本地密码登录的账号都要匹配，包括 admin。开启前必须确认至少一个管理员邮箱合规。配置支持热加载，误配置导致无法登录时可将开关改回 `false`，下一次请求生效。
+
+首次 `/setup` 创建 admin、OIDC/SSO 自动建号和 platform JWT 自动建号不在创建时使用这组本地规则；但这些账号如果以后主动走 `/login/local`，仍按本地登录开关处理。
+
+### 6. 添加用户（可选）
+
+其他用户通过 `/login` 页面使用允许的公司邮箱注册，自动获得 **user** 角色。每个用户只能看到自己的对话、上传文件、输出文件、memory 和自定义 agent。
 
 ## 安全机制
 
@@ -60,6 +76,7 @@ make dev
 | JWT HttpOnly Cookie | Token 不暴露给 JavaScript，防止 XSS 窃取 |
 | CSRF Double Submit Cookie | 受保护的 POST/PUT/PATCH/DELETE 请求需携带 `X-CSRF-Token`；登录/注册/初始化/登出走 auth 端点 Origin 校验 |
 | bcrypt 密码哈希 | 密码不以明文存储 |
+| 公司邮箱域名策略 | 注册和新邮箱始终精确匹配 `auth.allowed_email_domains`；密码登录可按开关启用 |
 | Thread owner filter | `threads_meta.user_id` 由服务端认证上下文写入，搜索、读取、更新、删除默认按当前用户过滤 |
 | 文件系统隔离 | 线程数据写入 `{base_dir}/users/{user_id}/threads/{thread_id}/user-data/`，sandbox 内统一映射为 `/mnt/user-data/` |
 | Memory / agent 隔离 | 用户 memory 和自定义 agent 写入 `{base_dir}/users/{user_id}/...`；旧共享 agent 只作为只读兼容回退 |
@@ -114,11 +131,11 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/v1/auth/login/local` | POST | 邮箱密码登录（OAuth2 form） |
-| `/api/v1/auth/register` | POST | 注册新用户（user 角色） |
+| `/api/v1/auth/login/local` | POST | 邮箱密码登录（OAuth2 form）；可选公司域名校验 |
+| `/api/v1/auth/register` | POST | 使用允许的公司邮箱注册新用户（user 角色） |
 | `/api/v1/auth/logout` | POST | 登出（清除 cookie） |
 | `/api/v1/auth/me` | GET | 获取当前用户信息 |
-| `/api/v1/auth/change-password` | POST | 修改密码 |
+| `/api/v1/auth/change-password` | POST | 修改密码；提交 `new_email` 时强校验公司域名 |
 | `/api/v1/auth/setup-status` | GET | 检查 admin 是否存在 |
 | `/api/v1/auth/initialize` | POST | 首次初始化第一个 admin（仅无 admin 时可调用） |
 
@@ -127,6 +144,8 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 - **本地开发**（`make dev`）：Gateway embedded runtime 完全兼容；无 admin 时访问 `/setup` 初始化
 - **Gateway embedded runtime**：标准脚本、Docker dev 和生产部署均通过 Gateway 提供认证与 LangGraph-compatible API
 - **Docker 部署**：完全兼容，`.deer-flow/data/deerflow.db` 需持久化卷挂载
+- **旧配置**：未声明 `auth.allowed_email_domains` 时使用默认 `sz-jlc.com`；运行 `make config-upgrade` 可把版本 19 字段写入本地配置
+- **历史外域用户**：登录开关默认关闭时仍可登录；开启后下一次本地密码登录被拒绝，已有 session 不立即失效
 - **IM 渠道**（Feishu/Slack/Telegram）：通过 Gateway 内部认证通信，使用 `default` 用户桶
 - **DeerFlowClient**（嵌入式）：不经过 HTTP，不受认证影响
 
@@ -137,4 +156,6 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 | 启动后没看到密码 | 当前实现不在启动日志输出密码 | 首次安装访问 `/setup`；忘记密码用 `reset_admin` |
 | `/login` 自动跳到 `/setup` | 系统还没有 admin | 在 `/setup` 创建第一个 admin |
 | 登录后 POST 返回 403 | CSRF token 缺失 | 确认前端已更新 |
+| 注册或修改邮箱返回 `email_domain_not_allowed` | 邮箱完整域名不在 `auth.allowed_email_domains` | 修正邮箱或把实际公司域名加入配置；不要使用通配符 |
+| 开启域名登录校验后 admin 无法登录 | admin 邮箱不在允许列表 | 临时将 `enforce_email_domain_on_login` 改回 `false`，再迁移管理员邮箱 |
 | 重启后需要重新登录 | `.jwt_secret` 文件被删除且 `.env` 未设置 `AUTH_JWT_SECRET` | 在 `.env` 中设置固定密钥 |

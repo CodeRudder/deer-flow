@@ -36,6 +36,7 @@ export function buildLoginUrl(returnPath: string): string {
 
 const AUTH_ERROR_CODES = [
   "invalid_credentials",
+  "email_domain_not_allowed",
   "token_expired",
   "token_invalid",
   "user_not_found",

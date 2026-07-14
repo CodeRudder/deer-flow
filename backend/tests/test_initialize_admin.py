@@ -46,13 +46,25 @@ def _setup_auth(tmp_path):
 def client(_setup_auth):
     from app.gateway.app import create_app
     from app.gateway.auth.config import AuthConfig, set_auth_config
+    from app.gateway.deps import get_config
+    from deerflow.config.app_config import AppConfig
+    from deerflow.config.auth_config import AuthAppConfig
+    from deerflow.config.sandbox_config import SandboxConfig
 
     set_auth_config(AuthConfig(jwt_secret=_TEST_SECRET))
     app = create_app()
+    config = AppConfig(
+        sandbox=SandboxConfig(use="test"),
+        auth=AuthAppConfig(allowed_email_domains=["sz-jlc.com"]),
+    )
+    app.dependency_overrides[get_config] = lambda: config
     # Do NOT use TestClient as a context manager — that would trigger the
     # full lifespan which requires config.yaml. The auth endpoints work
     # without the lifespan (persistence engine is set up by _setup_auth).
-    yield TestClient(app)
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def _init_payload(**extra):
@@ -103,7 +115,7 @@ def test_initialize_rejected_when_admin_exists(client):
 def test_initialize_register_does_not_block_initialization(client):
     """/register creating a user before /initialize doesn't block admin creation."""
     # Register a regular user first
-    client.post("/api/v1/auth/register", json={"email": "regular@example.com", "password": "Tr0ub4dor3a"})
+    client.post("/api/v1/auth/register", json={"email": "regular@sz-jlc.com", "password": "Tr0ub4dor3a"})
     # /initialize should still succeed (checks admin_count, not total user_count)
     resp = client.post("/api/v1/auth/initialize", json=_init_payload())
     assert resp.status_code == 201
@@ -112,11 +124,11 @@ def test_initialize_register_does_not_block_initialization(client):
 
 def test_initialize_existing_regular_user_email_reports_email_conflict(client):
     """With no admin, reusing a regular user's email is an email conflict, not initialized."""
-    client.post("/api/v1/auth/register", json={"email": "regular@example.com", "password": "Tr0ub4dor3a"})
+    client.post("/api/v1/auth/register", json={"email": "regular@sz-jlc.com", "password": "Tr0ub4dor3a"})
 
     resp = client.post(
         "/api/v1/auth/initialize",
-        json={**_init_payload(), "email": "regular@example.com"},
+        json={**_init_payload(), "email": "regular@sz-jlc.com"},
     )
 
     assert resp.status_code == 400
@@ -179,7 +191,7 @@ def test_setup_status_after_initialization(client):
 
 def test_setup_status_true_when_only_regular_user_exists(client):
     """setup-status returns needs_setup=True even when regular users exist (no admin)."""
-    client.post("/api/v1/auth/register", json={"email": "regular@example.com", "password": "Tr0ub4dor3a"})
+    client.post("/api/v1/auth/register", json={"email": "regular@sz-jlc.com", "password": "Tr0ub4dor3a"})
     resp = client.get("/api/v1/auth/setup-status")
     assert resp.status_code == 200
     assert resp.json()["needs_setup"] is True
