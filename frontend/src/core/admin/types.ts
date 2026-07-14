@@ -55,6 +55,22 @@ export interface UsageSessions {
   items: UsageSession[];
 }
 
+export interface UsageUserRank {
+  rank: number;
+  user_id: string;
+  email: string;
+  value: number;
+}
+
+export interface UsageUsers {
+  period: PeriodInfo;
+  rankings: {
+    tokens: UsageUserRank[];
+    requests: UsageUserRank[];
+    images: UsageUserRank[];
+  };
+}
+
 export interface UsageModel {
   model: string;
   type: "LLM";

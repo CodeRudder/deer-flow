@@ -84,6 +84,50 @@ class AdminUsageService:
             ],
         }
 
+    async def usage_users(self, *, window: PeriodWindow, limit: int) -> dict[str, Any]:
+        async with self._sf() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        RunRow.user_id,
+                        UserRow.email,
+                        func.coalesce(func.sum(RunRow.total_tokens), 0),
+                        func.coalesce(func.sum(RunRow.llm_call_count), 0),
+                        func.coalesce(func.sum(RunRow.image_generation_count), 0),
+                    )
+                    .join(UserRow, UserRow.id == RunRow.user_id, isouter=True)
+                    .where(_runs_in_window(window), RunRow.user_id.is_not(None))
+                    .group_by(RunRow.user_id, UserRow.email)
+                )
+            ).all()
+
+        users = []
+        for user_id, email, tokens, requests, images in rows:
+            users.append(
+                {
+                    "user_id": user_id,
+                    "email": email or user_id,
+                    "tokens": int(tokens or 0),
+                    "requests": int(requests or 0),
+                    "images": int(images or 0),
+                }
+            )
+
+        size = min(max(1, limit), 50)
+        rankings: dict[str, list[dict[str, Any]]] = {}
+        for metric in ("tokens", "requests", "images"):
+            ordered = sorted(users, key=lambda item: (-int(item[metric]), str(item["user_id"])))[:size]
+            rankings[metric] = [
+                {
+                    "rank": index,
+                    "user_id": item["user_id"],
+                    "email": item["email"],
+                    "value": item[metric],
+                }
+                for index, item in enumerate(ordered, start=1)
+            ]
+        return {"period": period_response(window), "rankings": rankings}
+
     async def usage_models(self, *, window: PeriodWindow) -> dict[str, Any]:
         async with self._sf() as session:
             rows = (await session.execute(select(RunRow.model_name, RunRow.total_tokens, RunRow.token_usage_by_model).where(_runs_in_window(window)))).all()

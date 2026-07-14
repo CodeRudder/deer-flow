@@ -49,6 +49,7 @@ import type {
   UsageModel,
   UsageRange,
   UsageSession,
+  UsageUserRank,
 } from "@/core/admin/types";
 import { useAuth } from "@/core/auth/AuthProvider";
 
@@ -847,6 +848,206 @@ export function SessionUsagePanel({
   );
 }
 
+function UserRankingChart({
+  title,
+  users,
+  color,
+  format,
+  isLoading,
+}: {
+  title: string;
+  users: UsageUserRank[];
+  color: string;
+  format: (value: number) => string;
+  isLoading: boolean;
+}) {
+  const [activeRank, setActiveRank] = useState<number | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ left: 8, top: 8 });
+  const chartRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const pointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const maximum = Math.max(...users.map((user) => user.value), 1);
+  const activeUser = users.find((user) => user.rank === activeRank);
+
+  const positionTooltip = (
+    event: ReactMouseEvent<HTMLElement>,
+    rank: number,
+  ) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const rect = chart.getBoundingClientRect();
+    const pointer = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+    pointerPositionRef.current = pointer;
+    setActiveRank(rank);
+    setTooltipPosition(
+      placeFloatingTooltip(
+        rect.width,
+        rect.height,
+        pointer.x,
+        pointer.y,
+        tooltipRef.current?.offsetWidth ?? 224,
+        tooltipRef.current?.offsetHeight ?? 120,
+      ),
+    );
+  };
+
+  useLayoutEffect(() => {
+    const chart = chartRef.current;
+    const tooltip = tooltipRef.current;
+    const pointer = pointerPositionRef.current;
+    if (activeRank == null || !chart || !tooltip || !pointer) return;
+    setTooltipPosition(
+      placeFloatingTooltip(
+        chart.clientWidth,
+        chart.clientHeight,
+        pointer.x,
+        pointer.y,
+        tooltip.offsetWidth,
+        tooltip.offsetHeight,
+      ),
+    );
+  }, [activeRank]);
+
+  return (
+    <section className="bg-background flex h-[450px] min-h-0 flex-col overflow-hidden rounded-lg border p-4 shadow-xs">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium">{title} Top 20</h3>
+        <span className={`size-2.5 rounded-full ${color}`} />
+      </div>
+      <div
+        ref={chartRef}
+        className="relative mt-3 min-h-0 flex-1"
+        onPointerLeave={() => {
+          pointerPositionRef.current = null;
+          setActiveRank(null);
+        }}
+      >
+        <div className="[&::-webkit-scrollbar-thumb]:bg-border size-full overflow-x-auto overflow-y-hidden pb-3 [scrollbar-color:var(--border)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent">
+          <div className="flex h-full min-w-max items-end border-b px-3">
+            {users.map((user) => (
+              <article
+                key={`${user.user_id}-${user.rank}`}
+                className="w-24 shrink-0 px-2 focus:outline-none"
+                tabIndex={0}
+                onFocus={() => {
+                  pointerPositionRef.current = null;
+                  setTooltipPosition({ left: 8, top: 8 });
+                  setActiveRank(user.rank);
+                }}
+                onBlur={() => setActiveRank(null)}
+                onPointerEnter={(event) => positionTooltip(event, user.rank)}
+                onPointerMove={(event) => positionTooltip(event, user.rank)}
+              >
+                <div className="flex h-[300px] items-end justify-center">
+                  <div
+                    className={`w-10 rounded-t-sm transition-[height] duration-300 ${color}`}
+                    style={{
+                      height: `${user.value ? Math.max(3, (user.value / maximum) * 100) : 0}%`,
+                    }}
+                    role="img"
+                    aria-label={`第 ${user.rank} 名，${user.email}，${title} ${format(user.value)}`}
+                  />
+                </div>
+                <div className="mt-3 truncate text-center text-xs font-medium">
+                  {user.email}
+                </div>
+              </article>
+            ))}
+            {!isLoading && users.length === 0 ? (
+              <div className="text-muted-foreground grid h-full w-[min(720px,80vw)] place-items-center text-sm">
+                当前时间范围内暂无用户用量
+              </div>
+            ) : null}
+            {isLoading ? (
+              <div className="text-muted-foreground grid h-full w-[min(720px,80vw)] place-items-center text-sm">
+                正在加载用户用量…
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {activeUser ? (
+          <div
+            ref={tooltipRef}
+            className="bg-popover text-popover-foreground pointer-events-none absolute z-20 w-56 rounded-md border p-3 text-xs shadow-lg"
+            style={tooltipPosition}
+          >
+            <strong className="mb-2 block truncate">{activeUser.email}</strong>
+            <div className="text-muted-foreground flex items-center justify-between gap-4">
+              <span>排名</span>
+              <b className="text-popover-foreground tabular-nums">
+                第 {activeUser.rank} 名
+              </b>
+            </div>
+            <div className="text-muted-foreground mt-1.5 flex items-center justify-between gap-4">
+              <span className="flex items-center gap-1.5">
+                <span className={`size-2 rounded-full ${color}`} />
+                {title}
+              </span>
+              <b className="text-popover-foreground tabular-nums">
+                {format(activeUser.value)}
+              </b>
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="sr-only" aria-live="polite">
+        {activeUser
+          ? `第 ${activeUser.rank} 名，${activeUser.email}，${title} ${format(activeUser.value)}`
+          : ""}
+      </div>
+    </section>
+  );
+}
+
+function UserUsagePanel({
+  rankings,
+  isLoading,
+}: {
+  rankings: {
+    tokens: UsageUserRank[];
+    requests: UsageUserRank[];
+    images: UsageUserRank[];
+  };
+  isLoading: boolean;
+}) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <h2 className="font-medium">用户用量 Top 20</h2>
+        <p className="text-muted-foreground text-sm">
+          三项指标分别按实际用量独立排名
+        </p>
+      </div>
+      <div className="grid gap-3 xl:grid-cols-3">
+        <UserRankingChart
+          title="Token"
+          users={rankings.tokens}
+          color="bg-amber-500 dark:bg-amber-400"
+          format={formatNumber}
+          isLoading={isLoading}
+        />
+        <UserRankingChart
+          title="模型请求"
+          users={rankings.requests}
+          color="bg-emerald-600 dark:bg-emerald-400"
+          format={formatExactNumber}
+          isLoading={isLoading}
+        />
+        <UserRankingChart
+          title="生图"
+          users={rankings.images}
+          color="bg-blue-600 dark:bg-blue-400"
+          format={formatExactNumber}
+          isLoading={isLoading}
+        />
+      </div>
+    </section>
+  );
+}
+
 function QuotaUsageCell({ metric }: { metric: QuotaMetric }) {
   const percent = metricPercent(metric);
   const colors =
@@ -996,7 +1197,6 @@ export function AdminDashboard() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState("overview");
   const [range, setRange] = useState<UsageRange>("month");
-  const [metric, setMetric] = useState<SessionMetric>("tokens");
   const today = new Date().toISOString().slice(0, 10);
   const [usageStart, setUsageStart] = useState(today);
   const [usageEnd, setUsageEnd] = useState(today);
@@ -1023,7 +1223,6 @@ export function AdminDashboard() {
 
   const usage = useAdminUsage(
     range,
-    metric,
     range === "custom" ? { start: usageStart, end: usageEnd } : undefined,
   );
   const quotas = useQuotaUsers({
@@ -1040,7 +1239,7 @@ export function AdminDashboard() {
       void Promise.all([
         usage.summary.refetch(),
         usage.trends.refetch(),
-        usage.sessions.refetch(),
+        usage.users.refetch(),
         usage.models.refetch(),
       ]);
     } else if (tab === "quota") {
@@ -1072,17 +1271,21 @@ export function AdminDashboard() {
   }
 
   const summary = usage.summary.data;
-  const sessions = usage.sessions.data?.items ?? [];
+  const usageRankings = usage.users.data?.rankings ?? {
+    tokens: [],
+    requests: [],
+    images: [],
+  };
   const models = usage.models.data?.items ?? [];
   const usageError =
     usage.summary.isError ||
     usage.trends.isError ||
-    usage.sessions.isError ||
+    usage.users.isError ||
     usage.models.isError;
   const usageLoading =
     usage.summary.isLoading ||
     usage.trends.isLoading ||
-    usage.sessions.isLoading ||
+    usage.users.isLoading ||
     usage.models.isLoading;
 
   return (
@@ -1247,11 +1450,9 @@ export function AdminDashboard() {
               />
             </div>
 
-            <SessionUsagePanel
-              sessions={sessions}
-              metric={metric}
-              isLoading={usage.sessions.isLoading}
-              onMetricChange={setMetric}
+            <UserUsagePanel
+              rankings={usageRankings}
+              isLoading={usage.users.isLoading}
             />
           </TabsContent>
 

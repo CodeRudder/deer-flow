@@ -54,6 +54,18 @@ class UsageSessionsResponse(BaseModel):
     items: list[UsageSession]
 
 
+class UsageUserRank(BaseModel):
+    rank: int
+    user_id: str
+    email: str
+    value: int
+
+
+class UsageUsersResponse(BaseModel):
+    period: PeriodInfo
+    rankings: dict[Literal["tokens", "requests", "images"], list[UsageUserRank]]
+
+
 class UsageModel(BaseModel):
     model: str
     type: Literal["LLM"]

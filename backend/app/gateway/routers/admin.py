@@ -20,6 +20,7 @@ from app.gateway.admin.schemas import (
     UsageSessionsResponse,
     UsageSummaryResponse,
     UsageTrendsResponse,
+    UsageUsersResponse,
 )
 from app.gateway.admin.session_trace_service import SessionTraceNotFoundError, SessionTraceService
 from app.gateway.admin.usage_service import AdminUsageService
@@ -140,6 +141,7 @@ async def usage_trends(
     return await _usage_service().usage_trends(window=usage_range_window(range, start=start, end=end))
 
 
+# Retained session-dimension endpoint. The overview UI now uses /usage/users.
 @router.get("/usage/sessions", response_model=UsageSessionsResponse)
 async def usage_sessions(
     request: Request,
@@ -151,6 +153,18 @@ async def usage_sessions(
 ) -> dict[str, Any]:
     await _require_admin(request)
     return await _usage_service().usage_sessions(window=usage_range_window(range, start=start, end=end), metric=metric, limit=limit)
+
+
+@router.get("/usage/users", response_model=UsageUsersResponse)
+async def usage_users(
+    request: Request,
+    range: Literal["day", "week", "month", "custom"] = Query(default="month"),
+    limit: int = Query(default=20, ge=1, le=50),
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    await _require_admin(request)
+    return await _usage_service().usage_users(window=usage_range_window(range, start=start, end=end), limit=limit)
 
 
 @router.get("/usage/models", response_model=UsageModelsResponse)

@@ -38,6 +38,20 @@ test("custom usage range sends start and end query parameters", async () => {
   expect(url.searchParams.has("from")).toBe(false);
 });
 
+test("user usage requests all three rankings with one limit", async () => {
+  const { loadUsageUsers } = await import("@/core/admin/api");
+
+  await loadUsageUsers({ range: "month", limit: 20 });
+
+  const url = new URL(
+    fetchWithAuth.mock.calls[0]![0] as string,
+    "http://localhost:2026",
+  );
+  expect(url.pathname).toBe("/api/admin/usage/users");
+  expect(url.searchParams.has("sort_by")).toBe(false);
+  expect(url.searchParams.get("limit")).toBe("20");
+});
+
 test("quota list sends custom month, filter, search, and pagination", async () => {
   const { loadQuotaUsers } = await import("@/core/admin/api");
 

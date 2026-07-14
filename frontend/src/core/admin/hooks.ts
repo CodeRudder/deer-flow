@@ -7,22 +7,20 @@ import {
   loadTraceUserOverview,
   loadTraceUsers,
   loadUsageModels,
-  loadUsageSessions,
   loadUsageSummary,
   loadUsageTrends,
+  loadUsageUsers,
   updateQuotaUser,
 } from "./api";
 import type {
   QuotaPeriod,
   QuotaStatus,
   QuotaUpdatePayload,
-  SessionMetric,
   UsageRange,
 } from "./types";
 
 export function useAdminUsage(
   range: UsageRange,
-  metric: SessionMetric,
   custom?: { start?: string; end?: string },
 ) {
   const rangeParams = { range, start: custom?.start, end: custom?.end };
@@ -37,9 +35,9 @@ export function useAdminUsage(
     queryFn: () => loadUsageTrends(rangeParams),
     enabled,
   });
-  const sessions = useQuery({
-    queryKey: ["admin", "usage", "sessions", rangeParams, metric],
-    queryFn: () => loadUsageSessions({ ...rangeParams, metric }),
+  const users = useQuery({
+    queryKey: ["admin", "usage", "users", rangeParams],
+    queryFn: () => loadUsageUsers({ ...rangeParams, limit: 20 }),
     enabled,
   });
   const models = useQuery({
@@ -47,7 +45,7 @@ export function useAdminUsage(
     queryFn: () => loadUsageModels(rangeParams),
     enabled,
   });
-  return { summary, trends, sessions, models };
+  return { summary, trends, users, models };
 }
 
 export function useQuotaUsers(params: {

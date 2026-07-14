@@ -7,6 +7,7 @@ from app.gateway.admin.periods import PeriodWindow
 from app.gateway.admin.usage_service import AdminUsageService, _session_title
 from deerflow.persistence.base import Base
 from deerflow.persistence.run.model import RunRow
+from deerflow.persistence.user.model import UserRow
 
 
 @pytest.mark.parametrize(
@@ -124,5 +125,81 @@ async def test_usage_sessions_unwraps_sanitized_first_human_message(tmp_path):
         result = await AdminUsageService(sf).usage_sessions(window=window, metric="tokens", limit=20)
 
         assert result["items"][0]["title"] == "生成一张图片，动漫新海诚风格，内容你来定"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_usage_users_aggregates_three_metrics_and_supports_ranking(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'users.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    window = PeriodWindow(
+        period="month",
+        period_start=datetime(2026, 7, 1, tzinfo=UTC),
+        period_end=datetime(2026, 8, 1, tzinfo=UTC),
+        label="2026-07",
+    )
+    try:
+        async with sf() as session:
+            session.add_all(
+                [
+                    UserRow(id="user-a", email="a@example.com", system_role="user"),
+                    UserRow(id="user-b", email="b@example.com", system_role="user"),
+                    UserRow(id="user-c", email="c@example.com", system_role="user"),
+                    RunRow(
+                        run_id="run-a-1",
+                        thread_id="thread-a",
+                        user_id="user-a",
+                        status="success",
+                        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+                        total_tokens=600,
+                        llm_call_count=1,
+                    ),
+                    RunRow(
+                        run_id="run-a-2",
+                        thread_id="thread-a",
+                        user_id="user-a",
+                        status="success",
+                        created_at=datetime(2026, 7, 6, tzinfo=UTC),
+                        total_tokens=400,
+                    ),
+                    RunRow(
+                        run_id="run-b",
+                        thread_id="thread-b",
+                        user_id="user-b",
+                        status="success",
+                        created_at=datetime(2026, 7, 7, tzinfo=UTC),
+                        total_tokens=500,
+                        llm_call_count=10,
+                    ),
+                    RunRow(
+                        run_id="run-c",
+                        thread_id="thread-c",
+                        user_id="user-c",
+                        status="success",
+                        created_at=datetime(2026, 7, 8, tzinfo=UTC),
+                        image_generation_count=5,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        service = AdminUsageService(sf)
+        result = await service.usage_users(window=window, limit=20)
+        assert [item["user_id"] for item in result["rankings"]["tokens"]] == ["user-a", "user-b", "user-c"]
+        assert [item["user_id"] for item in result["rankings"]["requests"]] == ["user-b", "user-a", "user-c"]
+        assert [item["user_id"] for item in result["rankings"]["images"]] == ["user-c", "user-a", "user-b"]
+        assert result["rankings"]["requests"][0] == {
+            "rank": 1,
+            "user_id": "user-b",
+            "email": "b@example.com",
+            "value": 10,
+        }
+        limited = await service.usage_users(window=window, limit=2)
+        assert len(limited["rankings"]["tokens"]) == 2
+        assert len(limited["rankings"]["requests"]) == 2
+        assert len(limited["rankings"]["images"]) == 2
     finally:
         await engine.dispose()

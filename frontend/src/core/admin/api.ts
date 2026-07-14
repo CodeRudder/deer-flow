@@ -17,6 +17,7 @@ import type {
   UsageSessions,
   UsageSummary,
   UsageTrends,
+  UsageUsers,
 } from "./types";
 
 function adminUrl(
@@ -77,6 +78,17 @@ export function loadUsageSessions(params: {
 }) {
   return fetch(adminUrl("/api/admin/usage/sessions", params)).then((response) =>
     readOrThrow<UsageSessions>(response, "Failed to load session usage"),
+  );
+}
+
+export function loadUsageUsers(params: {
+  range: UsageRange;
+  limit?: number;
+  start?: string;
+  end?: string;
+}) {
+  return fetch(adminUrl("/api/admin/usage/users", params)).then((response) =>
+    readOrThrow<UsageUsers>(response, "Failed to load user usage"),
   );
 }
 
