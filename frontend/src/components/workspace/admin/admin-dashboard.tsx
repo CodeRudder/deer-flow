@@ -161,20 +161,24 @@ const sessionMetricConfig: Record<
 
 const quotaProgressColors = {
   normal: {
-    track: "bg-blue-100 dark:bg-blue-950/50",
-    indicator: "bg-blue-600",
+    track:
+      "bg-blue-100 ring-1 ring-inset ring-blue-200/70 dark:bg-blue-900/55 dark:ring-blue-700/60",
+    indicator: "bg-blue-600 dark:bg-blue-400",
   },
   warning: {
-    track: "bg-orange-100 dark:bg-orange-950/50",
-    indicator: "bg-orange-500",
+    track:
+      "bg-amber-100 ring-1 ring-inset ring-amber-200/70 dark:bg-amber-900/55 dark:ring-amber-700/60",
+    indicator: "bg-amber-500 dark:bg-amber-400",
   },
   exceeded: {
-    track: "bg-red-100 dark:bg-red-950/50",
-    indicator: "bg-red-600",
+    track:
+      "bg-rose-100 ring-1 ring-inset ring-rose-200/70 dark:bg-rose-900/55 dark:ring-rose-700/60",
+    indicator: "bg-red-600 dark:bg-rose-400",
   },
   disabled: {
-    track: "bg-gray-200 dark:bg-gray-800",
-    indicator: "bg-gray-400 dark:bg-gray-600",
+    track:
+      "bg-zinc-200 ring-1 ring-inset ring-zinc-300/70 dark:bg-zinc-700/70 dark:ring-zinc-600/70",
+    indicator: "bg-zinc-400 dark:bg-zinc-400",
   },
 } as const;
 
@@ -858,7 +862,7 @@ function QuotaUsageCell({ metric }: { metric: QuotaMetric }) {
         </span>
       </div>
       <div
-        className={`mt-2 h-1.5 overflow-hidden rounded-full ${colors.track}`}
+        className={`mt-2 h-2 overflow-hidden rounded-full ${colors.track}`}
         role="progressbar"
         aria-label="额度使用进度"
         aria-valuemin={0}

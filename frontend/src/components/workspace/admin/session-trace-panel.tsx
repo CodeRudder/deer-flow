@@ -704,8 +704,19 @@ function RunDrawer({
       <SheetContent className="bg-muted w-full overflow-y-auto sm:max-w-3xl">
         <SheetHeader>
           <SheetTitle>Run 执行详情</SheetTitle>
-          <SheetDescription className="font-mono">
-            {run?.run_id}
+          <SheetDescription className="space-y-1.5 text-xs">
+            <span className="grid grid-cols-[72px_minmax(0,1fr)] gap-2">
+              <span className="font-mono">thread_id:</span>
+              <span className="text-foreground font-mono break-all select-all">
+                {run?.thread_id ?? "-"}
+              </span>
+            </span>
+            <span className="grid grid-cols-[72px_minmax(0,1fr)] gap-2">
+              <span className="font-mono">run_id:</span>
+              <span className="text-foreground font-mono break-all select-all">
+                {run?.run_id ?? "-"}
+              </span>
+            </span>
           </SheetDescription>
         </SheetHeader>
         {run ? (
@@ -1005,10 +1016,12 @@ export function SessionTracePanel() {
       </div>
       <section className="bg-muted/20 overflow-hidden rounded-lg border shadow-xs">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1840px] text-sm">
+          <table className="w-full min-w-[1940px] text-sm">
             <thead className="text-muted-foreground bg-muted/60 border-b text-left text-sm">
               <tr>
                 {[
+                  "创建时间",
+                  "邮箱",
                   "标题",
                   "Thread ID",
                   "Run ID",
@@ -1020,12 +1033,11 @@ export function SessionTracePanel() {
                   "Token",
                   "模型调用",
                   "生图",
-                  "创建时间",
                   "详情",
                 ].map((label) => (
                   <th
                     key={label}
-                    className={`px-3 py-3 font-bold ${label === "标题" ? "bg-muted sticky left-0 z-10" : ""}`}
+                    className={`px-3 py-3 font-bold ${label === "创建时间" ? "bg-muted sticky left-0 z-10 min-w-44" : ""}`}
                   >
                     {label}
                   </th>
@@ -1040,8 +1052,16 @@ export function SessionTracePanel() {
                   onClick={() => setSelectedRun(run)}
                 >
                   <td
-                    className={`group-hover:bg-accent sticky left-0 z-10 max-w-64 px-3 py-4 ${index % 2 === 0 ? "bg-background" : "bg-muted"}`}
+                    className={`group-hover:bg-accent sticky left-0 z-10 px-3 py-4 font-medium whitespace-nowrap text-sky-700 dark:text-sky-300 ${index % 2 === 0 ? "bg-background" : "bg-muted"}`}
                   >
+                    {run.created_at
+                      ? new Date(run.created_at).toLocaleString("zh-CN")
+                      : "-"}
+                  </td>
+                  <td className="min-w-52 px-3 whitespace-nowrap">
+                    {run.email ?? "-"}
+                  </td>
+                  <td className="max-w-64 px-3 py-4">
                     <span
                       className="block truncate font-semibold"
                       title={run.thread_title}
@@ -1049,8 +1069,22 @@ export function SessionTracePanel() {
                       {run.thread_title}
                     </span>
                   </td>
-                  <td className="px-3 font-mono text-xs">{run.thread_id}</td>
-                  <td className="px-3 font-mono text-xs">{run.run_id}</td>
+                  <td className="w-64 max-w-64 px-3 font-mono text-xs">
+                    <span
+                      className="block truncate select-all"
+                      title={run.thread_id}
+                    >
+                      {run.thread_id}
+                    </span>
+                  </td>
+                  <td className="w-64 max-w-64 px-3 font-mono text-xs">
+                    <span
+                      className="block truncate select-all"
+                      title={run.run_id}
+                    >
+                      {run.run_id}
+                    </span>
+                  </td>
                   <td className="px-3">{statusBadge(run.status)}</td>
                   <td className="max-w-72 px-3">
                     <span className="block truncate" title={run.input_preview}>
@@ -1064,7 +1098,14 @@ export function SessionTracePanel() {
                         : (run.error ?? "-")}
                     </span>
                   </td>
-                  <td className="px-3">{run.model_name ?? "-"}</td>
+                  <td className="px-3">
+                    <span
+                      className="block w-max max-w-96 min-w-32 truncate"
+                      title={run.model_name ?? undefined}
+                    >
+                      {run.model_name ?? "-"}
+                    </span>
+                  </td>
                   <td className="px-3 whitespace-nowrap">
                     {run.duration_ms == null
                       ? "-"
@@ -1076,11 +1117,6 @@ export function SessionTracePanel() {
                   <td className="px-3 tabular-nums">{run.llm_call_count}</td>
                   <td className="px-3 tabular-nums">
                     {run.image_generation_count}
-                  </td>
-                  <td className="px-3 text-xs whitespace-nowrap">
-                    {run.created_at
-                      ? new Date(run.created_at).toLocaleString("zh-CN")
-                      : "-"}
                   </td>
                   <td className="px-3 whitespace-nowrap">
                     <button
