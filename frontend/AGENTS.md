@@ -84,7 +84,7 @@ is no separate frontend selector yet.
 
 - **Server Components by default**, `"use client"` only for interactive components
 - **Thread hooks** (`useThreadStream`, `useSubmitThread`, `useThreads`) are the primary API interface
-- **Admin session tracing** (`components/workspace/admin/session-trace-panel.tsx`, `core/admin/`) derives user-overview versus exact-trace mode from the user/thread/run filters. User overview queries are enabled only when a user is selected and both exact IDs are empty; Run events load only after the read-only detail drawer opens, whose tool-call overview consumes the backend-provided `tool_summary` instead of reparsing event payloads in the browser.
+- **Admin session tracing** (`components/workspace/admin/session-trace-panel.tsx`, `core/admin/`) derives user-overview versus exact-trace mode from the user/thread/run filters. It starts with no selected user and loads the latest all-user Run page; the separate user selector enables a 30-day overview and scopes the list only after explicit selection. User overview queries are enabled only when a user is selected and both exact IDs are empty; Run events load only after the read-only detail drawer opens, whose tool-call overview consumes the backend-provided `tool_summary` instead of reparsing event payloads in the browser.
 - **LangGraph client** is a singleton obtained via `getAPIClient()` in `core/api/`
 - **Environment validation** uses `@t3-oss/env-nextjs` with Zod schemas (`src/env.js`). Skip with `SKIP_ENV_VALIDATION=1`
 

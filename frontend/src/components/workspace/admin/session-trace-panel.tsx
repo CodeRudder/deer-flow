@@ -849,7 +849,6 @@ export function SessionTracePanel() {
   const [selectedUser, setSelectedUser] = useState<TraceUserOption | null>(
     null,
   );
-  const [autoSelectUser, setAutoSelectUser] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [threadId, setThreadId] = useState("");
   const [runId, setRunId] = useState("");
@@ -871,10 +870,6 @@ export function SessionTracePanel() {
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
   }, []);
   const users = useTraceUsers(debouncedKeyword);
-  useEffect(() => {
-    if (autoSelectUser && !selectedUser && !keyword && users.data?.items[0])
-      setSelectedUser(users.data.items[0]);
-  }, [autoSelectUser, keyword, selectedUser, users.data?.items]);
   const traceMode = getTraceMode(selectedUser?.user_id, threadId, runId);
   const exactMode = traceMode === "exact";
   const overview = useTraceUserOverview(
@@ -899,89 +894,98 @@ export function SessionTracePanel() {
   const modeText = exactMode
     ? `精确追踪 · 已按 ${[threadId.trim() && "Thread ID", runId.trim() && "Run ID"].filter(Boolean).join(" + ")} 查询，仅加载 Run 列表`
     : selectedUser
-      ? "用户概览 · 近 30 天统计 · 该用户最新 Run"
-      : "请选择用户，或输入 Thread ID / Run ID 精确查询";
+      ? `用户概览 · 近 30 天统计 · 该用户 Run 按创建时间倒序 · 每页 ${pageSize} 条`
+      : `全部运行记录 · 按创建时间倒序 · 每页 ${pageSize} 条`;
   return (
     <div className="space-y-3">
+      <div className="flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+          <span
+            className={`size-2 shrink-0 rounded-full ${exactMode ? "bg-blue-600" : "bg-emerald-600"}`}
+          />
+          {modeText}
+        </div>
+        <div
+          ref={userPickerRef}
+          className="relative w-full sm:w-[360px] sm:shrink-0"
+        >
+          <label className="sr-only" htmlFor="trace-user-search">
+            用户 · 邮箱或 USER ID
+          </label>
+          <div className="relative">
+            <Input
+              id="trace-user-search"
+              value={selectedUser ? selectedUser.email : keyword}
+              placeholder="搜索邮箱或 User ID"
+              onFocus={() => setUserMenuOpen(true)}
+              onChange={(event) => {
+                setSelectedUser(null);
+                setKeyword(event.target.value);
+                setUserMenuOpen(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && users.data?.items[0]) {
+                  setSelectedUser(users.data.items[0]);
+                  setKeyword("");
+                  setUserMenuOpen(false);
+                }
+              }}
+              className="bg-background/75 pr-9 shadow-xs"
+            />
+            <button
+              className="text-muted-foreground absolute top-1/2 right-2 -translate-y-1/2"
+              type="button"
+              onClick={() => {
+                if (selectedUser) {
+                  setSelectedUser(null);
+                  setKeyword("");
+                  setUserMenuOpen(false);
+                } else {
+                  setUserMenuOpen((open) => !open);
+                }
+              }}
+            >
+              {selectedUser ? (
+                <X className="size-4" />
+              ) : (
+                <ChevronDown className="size-4" />
+              )}
+            </button>
+          </div>
+          {userMenuOpen && !selectedUser ? (
+            <div className="bg-popover absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border p-1 shadow-lg">
+              {users.data?.items.map((user) => (
+                <button
+                  key={user.user_id}
+                  className="hover:bg-accent block w-full rounded px-3 py-2 text-left"
+                  onClick={() => {
+                    setSelectedUser(user);
+                    setKeyword("");
+                    setUserMenuOpen(false);
+                  }}
+                >
+                  <span className="block text-sm font-medium">
+                    {user.email}
+                  </span>
+                  <span className="text-muted-foreground block font-mono text-xs">
+                    {user.user_id}
+                  </span>
+                </button>
+              ))}
+              {!users.isLoading && !users.data?.items.length ? (
+                <div className="text-muted-foreground p-4 text-center text-sm">
+                  未找到用户
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
       {!exactMode ? (
         <UserOverview data={overview.data} loading={overview.isLoading} />
       ) : null}
       <section className="bg-muted/35 rounded-lg border p-3 shadow-xs">
-        <div className="grid gap-3 lg:grid-cols-3">
-          <div ref={userPickerRef} className="relative">
-            <label className="sr-only" htmlFor="trace-user-search">
-              用户 · 邮箱或 USER ID
-            </label>
-            <div className="relative">
-              <Input
-                id="trace-user-search"
-                value={selectedUser ? selectedUser.email : keyword}
-                placeholder="搜索邮箱或 User ID"
-                onFocus={() => setUserMenuOpen(true)}
-                onChange={(event) => {
-                  setSelectedUser(null);
-                  setAutoSelectUser(false);
-                  setKeyword(event.target.value);
-                  setUserMenuOpen(true);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && users.data?.items[0]) {
-                    setSelectedUser(users.data.items[0]);
-                    setKeyword("");
-                    setUserMenuOpen(false);
-                  }
-                }}
-                className="bg-background/75 pr-9 shadow-xs"
-              />
-              <button
-                className="text-muted-foreground absolute top-1/2 right-2 -translate-y-1/2"
-                type="button"
-                onClick={() => {
-                  if (selectedUser) {
-                    setSelectedUser(null);
-                    setAutoSelectUser(false);
-                    setKeyword("");
-                    setUserMenuOpen(false);
-                  } else {
-                    setUserMenuOpen((open) => !open);
-                  }
-                }}
-              >
-                {selectedUser ? (
-                  <X className="size-4" />
-                ) : (
-                  <ChevronDown className="size-4" />
-                )}
-              </button>
-            </div>
-            {userMenuOpen && !selectedUser ? (
-              <div className="bg-popover absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border p-1 shadow-lg">
-                {users.data?.items.map((user) => (
-                  <button
-                    key={user.user_id}
-                    className="hover:bg-accent block w-full rounded px-3 py-2 text-left"
-                    onClick={() => {
-                      setSelectedUser(user);
-                      setKeyword("");
-                      setUserMenuOpen(false);
-                    }}
-                  >
-                    <span className="block text-sm font-medium">
-                      {user.email}
-                    </span>
-                    <span className="text-muted-foreground block font-mono text-xs">
-                      {user.user_id}
-                    </span>
-                  </button>
-                ))}
-                {!users.isLoading && !users.data?.items.length ? (
-                  <div className="text-muted-foreground p-4 text-center text-sm">
-                    未找到用户
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
+        <div className="grid gap-3 lg:grid-cols-2">
           <div>
             <label className="sr-only" htmlFor="trace-thread-id">
               THREAD ID · 精确匹配
@@ -1008,12 +1012,6 @@ export function SessionTracePanel() {
           </div>
         </div>
       </section>
-      <div className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
-        <span
-          className={`size-2 rounded-full ${exactMode ? "bg-blue-600" : "bg-emerald-600"}`}
-        />
-        {modeText}
-      </div>
       <section className="bg-muted/20 overflow-hidden rounded-lg border shadow-xs">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1940px] text-sm">
