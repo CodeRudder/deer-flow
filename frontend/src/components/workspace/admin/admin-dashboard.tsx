@@ -912,7 +912,7 @@ function UserRankingChart({
   }, [activeRank]);
 
   return (
-    <section className="bg-background flex h-[450px] min-h-0 flex-col overflow-hidden rounded-lg border p-4 shadow-xs">
+    <section className="bg-background flex h-[400px] min-h-0 flex-col overflow-hidden rounded-lg border p-4 shadow-xs">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-medium">{title} Top 20</h3>
         <span className={`size-2.5 rounded-full ${color}`} />
@@ -941,7 +941,7 @@ function UserRankingChart({
                 onPointerEnter={(event) => positionTooltip(event, user.rank)}
                 onPointerMove={(event) => positionTooltip(event, user.rank)}
               >
-                <div className="flex h-[300px] items-end justify-center">
+                <div className="flex h-[260px] items-end justify-center">
                   <div
                     className={`w-10 rounded-t-sm transition-[height] duration-300 ${color}`}
                     style={{
@@ -1021,7 +1021,7 @@ function UserUsagePanel({
           三项指标分别按实际用量独立排名
         </p>
       </div>
-      <div className="grid gap-3 xl:grid-cols-3">
+      <div className="space-y-4">
         <UserRankingChart
           title="Token"
           users={rankings.tokens}
