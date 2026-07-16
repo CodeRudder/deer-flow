@@ -24,6 +24,11 @@ export type FloatingTooltipPosition = {
   top: number;
 };
 
+type QuotaModelGroupPriorityItem = {
+  status: "normal" | "warning" | "exceeded" | "unlimited";
+  source: "scope_default" | "temporary_override";
+};
+
 export const TREND_CHART_BOUNDS = {
   left: 48,
   right: 728,
@@ -56,6 +61,27 @@ export function quotaProgressTone(
   if (ratio >= 1) return "exceeded";
   if (ratio >= 0.8) return "warning";
   return "normal";
+}
+
+export function prioritizeQuotaModelGroups<
+  T extends QuotaModelGroupPriorityItem,
+>(groups: readonly T[]): T[] {
+  const priority = (group: T) => {
+    if (group.status === "exceeded") return 0;
+    if (group.status === "warning") return 1;
+    if (group.source === "temporary_override") return 2;
+    if (group.status === "normal") return 3;
+    return 4;
+  };
+
+  return groups
+    .map((group, index) => ({ group, index }))
+    .sort((left, right) =>
+      priority(left.group) === priority(right.group)
+        ? left.index - right.index
+        : priority(left.group) - priority(right.group),
+    )
+    .map(({ group }) => group);
 }
 
 export function placeFloatingTooltip(

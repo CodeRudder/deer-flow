@@ -309,6 +309,7 @@ class SubagentExecutor:
         oauth_provider: str | None = None,
         oauth_id: str | None = None,
         run_id: str | None = None,
+        quota_runtime_bridge: Any | None = None,
     ):
         """Initialize the executor.
 
@@ -332,6 +333,7 @@ class SubagentExecutor:
             oauth_id: Subject id at the external identity provider.
             run_id: Parent run id, so delegated guardrail decisions attribute to
                 the same run as the lead agent.
+            quota_runtime_bridge: Thin parent-loop proxy for model/image quota operations.
         """
         self.config = config
         self.app_config = app_config
@@ -356,6 +358,7 @@ class SubagentExecutor:
         self.oauth_provider = oauth_provider
         self.oauth_id = oauth_id
         self.run_id = run_id
+        self.quota_runtime_bridge = quota_runtime_bridge
 
         self._base_tools = _filter_tools(
             tools,
@@ -632,6 +635,9 @@ class SubagentExecutor:
             context["oauth_id"] = self.oauth_id
             context["run_id"] = self.run_id
             context["is_subagent"] = True
+            if self.quota_runtime_bridge is not None:
+                context["__quota_enforcement_required"] = True
+                context["__quota_runtime_bridge"] = self.quota_runtime_bridge
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} starting async execution with max_turns={self.config.max_turns}")
 

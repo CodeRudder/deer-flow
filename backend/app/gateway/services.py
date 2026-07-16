@@ -20,7 +20,8 @@ from langchain_core.messages import BaseMessage
 from langchain_core.messages.utils import convert_to_messages
 from langgraph.types import Command
 
-from app.gateway.admin.quota_service import QuotaExceededError, QuotaService, quota_exceeded_http_error
+from app.gateway.admin.quota_runtime import QuotaRuntimeBridge
+from app.gateway.admin.quota_service import QuotaService
 from app.gateway.deps import get_checkpointer, get_run_context, get_run_manager, get_stream_bridge
 from app.gateway.internal_auth import INTERNAL_SYSTEM_ROLE, get_trusted_internal_owner_user_id
 from app.gateway.utils import sanitize_log_param
@@ -211,7 +212,8 @@ def get_quota_service_or_none() -> QuotaService | None:
     sf = get_session_factory()
     if sf is None:
         return None
-    return QuotaService(sf, get_app_config().quota_control)
+    config = get_app_config()
+    return QuotaService(sf, configured_models=config.models)
 
 
 def resolve_agent_factory(assistant_id: str | None):
@@ -456,12 +458,6 @@ async def start_run(
     try:
         billable_user_id = resolve_billable_user_id(request)
         quota_service = get_quota_service_or_none()
-        if billable_user_id and quota_service is not None and quota_service.is_enabled():
-            try:
-                await quota_service.check_run_creation(billable_user_id)
-            except QuotaExceededError as exc:
-                raise quota_exceeded_http_error(exc) from exc
-
         try:
             record = await run_mgr.create_or_reject(
                 thread_id,
@@ -515,32 +511,14 @@ async def start_run(
         # Only agent-relevant keys are forwarded; unknown keys (e.g. thread_id) are ignored.
         merge_run_context_overrides(config, getattr(body, "context", None))
         inject_authenticated_user_context(config, request)
-        if billable_user_id and quota_service is not None and quota_service.is_enabled():
-
-            async def _prepare_quota_period() -> None:
-                await quota_service.ensure_user_period(billable_user_id)
-
-            async def _consume_image_generation_quota(count: int) -> dict[str, Any]:
-                try:
-                    used = await quota_service.consume_image_generations(billable_user_id, count=count)
-                except QuotaExceededError as exc:
-                    exceeded = exc.exceeded
-                    return {
-                        "allowed": False,
-                        "message": "本月生图额度已用尽",
-                        "exceeded_quota": exceeded.quota_type,
-                        "used": exceeded.used,
-                        "limit": exceeded.limit,
-                    }
-                return {"allowed": True, "used": used}
-
-            async def _release_image_generation_quota(count: int) -> None:
-                await quota_service.release_image_generations(billable_user_id, count=count)
-
+        if billable_user_id and quota_service is not None:
             runtime_context = config.setdefault("context", {})
-            runtime_context["__quota_period_prepare"] = _prepare_quota_period
-            runtime_context["__quota_image_generation_consume"] = _consume_image_generation_quota
-            runtime_context["__quota_image_generation_release"] = _release_image_generation_quota
+            runtime_context["__quota_enforcement_required"] = True
+            runtime_context["__quota_runtime_bridge"] = QuotaRuntimeBridge(
+                quota_service,
+                billable_user_id,
+                owner_loop=asyncio.get_running_loop(),
+            )
 
         stream_modes = normalize_stream_modes(body.stream_mode)
 

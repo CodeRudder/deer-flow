@@ -1440,23 +1440,6 @@ def _image_generation_invocation_count(command: str) -> int:
     return count
 
 
-async def _run_runtime_callback_async(callback: object, *args: object) -> object:
-    if not callable(callback):
-        return None
-    result = callback(*args)
-    if hasattr(result, "__await__"):
-        return await result
-    return result
-
-
-def _quota_error(result: object) -> str | None:
-    if not isinstance(result, dict) or result.get("allowed", True):
-        return None
-    message = result.get("message") or "本月生图额度已用尽"
-    exceeded = result.get("exceeded_quota")
-    return f"{message}（{exceeded}）" if exceeded else str(message)
-
-
 def _execute_bash_tool(runtime: Runtime, command: str, image_generation_count: int) -> tuple[str, bool]:
     """Execute prepared bash work and report whether dispatch was attempted."""
     dispatched = False
@@ -1499,6 +1482,56 @@ def _execute_bash_tool(runtime: Runtime, command: str, image_generation_count: i
                 journal.record_image_generation(image_generation_count)
 
 
+def _sync_image_quota_error(runtime: Runtime, image_generation_count: int) -> str | None:
+    """Reject image commands that require the asynchronous quota bridge."""
+    if image_generation_count <= 0:
+        return None
+    context = runtime.context or {}
+    quota_bridge = context.get("__quota_runtime_bridge")
+    if context.get("__quota_enforcement_required") and quota_bridge is None:
+        return "Error: Image generation quota service is unavailable."
+    if quota_bridge is not None:
+        return "Error: Image generation quota checks require asynchronous foreground bash execution."
+    return None
+
+
+async def _reserve_image_quota(
+    runtime: Runtime,
+    image_generation_count: int,
+) -> tuple[object | None, str | None]:
+    """Reserve image quota without executing the Bash command."""
+    if image_generation_count <= 0:
+        return None, None
+
+    context = runtime.context or {}
+    quota_bridge = context.get("__quota_runtime_bridge")
+    if context.get("__quota_enforcement_required") and quota_bridge is None:
+        return None, "Error: Image generation quota service is unavailable."
+    if quota_bridge is None:
+        return None, None
+
+    try:
+        result = await quota_bridge.reserve_image_generations(image_generation_count)
+    except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
+        return None, f"Error: Failed to check image generation quota: {exc}"
+    if not isinstance(result, dict) or not result.get("allowed", False):
+        message = result.get("message") if isinstance(result, dict) else None
+        return None, f"Error: {message or '生图额度检查返回无效结果'}"
+    return result.get("reservation"), None
+
+
+async def _release_image_quota(runtime: Runtime, reservation: object) -> str | None:
+    """Release an image reservation when command dispatch never started."""
+    quota_bridge = (runtime.context or {}).get("__quota_runtime_bridge")
+    if quota_bridge is None:
+        return "Error: Image generation quota service is unavailable."
+    try:
+        await quota_bridge.release_image_generations(reservation)
+    except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
+        return f"Error: Failed to release unused image generation quota: {exc}"
+    return None
+
+
 @tool("bash", parse_docstring=True)
 def bash_tool(runtime: Runtime, description: str, command: str) -> str:
     """Execute a bash command in a Linux environment.
@@ -1513,9 +1546,8 @@ def bash_tool(runtime: Runtime, description: str, command: str) -> str:
         command: The bash command to execute. Always use absolute paths for files and directories.
     """
     image_generation_count = _image_generation_invocation_count(command)
-    callback = runtime.context.get("__quota_image_generation_consume") if runtime.context is not None else None
-    if image_generation_count and callable(callback):
-        return "Error: Image generation quota checks require asynchronous foreground bash execution."
+    if quota_error := _sync_image_quota_error(runtime, image_generation_count):
+        return quota_error
     return _execute_bash_tool(runtime, command, image_generation_count)[0]
 
 
@@ -1528,25 +1560,19 @@ async def _bash_tool_async(runtime: Runtime, description: str, command: str) -> 
         return f"Error: Unexpected error initializing sandbox: {_sanitize_error(exc, runtime)}"
 
     image_generation_count = _image_generation_invocation_count(command)
-    consume_callback = runtime.context.get("__quota_image_generation_consume") if runtime.context is not None else None
-    release_callback = runtime.context.get("__quota_image_generation_release") if runtime.context is not None else None
-    reserved = False
-    if image_generation_count and callable(consume_callback):
-        try:
-            result = await _run_runtime_callback_async(consume_callback, image_generation_count)
-        except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
-            return f"Error: Failed to check image generation quota: {exc}"
-        error = _quota_error(result)
-        if error:
-            return f"Error: {error}"
-        reserved = True
+    reservation, quota_error = await _reserve_image_quota(runtime, image_generation_count)
+    if quota_error:
+        return quota_error
 
-    output, dispatched = await asyncio.to_thread(_execute_bash_tool, runtime, command, image_generation_count)
-    if reserved and not dispatched and callable(release_callback):
-        try:
-            await _run_runtime_callback_async(release_callback, image_generation_count)
-        except Exception as exc:  # noqa: BLE001 - reservation repair is visible to the caller
-            return f"{output}\nError: Failed to release unused image generation quota: {exc}"
+    output, dispatched = await asyncio.to_thread(
+        _execute_bash_tool,
+        runtime,
+        command,
+        image_generation_count,
+    )
+    if reservation is not None and not dispatched:
+        if release_error := await _release_image_quota(runtime, reservation):
+            return f"{output}\n{release_error}"
     return output
 
 

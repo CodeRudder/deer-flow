@@ -80,30 +80,27 @@ class UsageModelsResponse(BaseModel):
     items: list[UsageModel]
 
 
-class QuotaMetricResponse(BaseModel):
-    enabled: bool
-    used: int
-    limit: int | None
-    remaining: int | None
-
-
-class QuotaUserResponse(BaseModel):
-    user_id: str
-    email: str
-    role: str
-    status: Literal["normal", "warning", "exceeded", "unlimited"]
-    period: PeriodInfo
-    model_tokens: QuotaMetricResponse
-    model_requests: QuotaMetricResponse
-    image_generations: QuotaMetricResponse
-
-
 class QuotaUsersResponse(BaseModel):
-    items: list[QuotaUserResponse]
+    items: list[dict[str, Any]]
     total: int
     page: int
     page_size: int
-    period: PeriodInfo
+    reference_at: str
+    timezone: str
+
+
+class QuotaUserResponse(BaseModel):
+    user: dict[str, Any]
+    reference_at: str
+    timezone: str
+    status: Literal["normal", "warning", "exceeded", "unlimited"]
+    items: list[dict[str, Any]]
+
+
+class QuotaScopesResponse(BaseModel):
+    items: list[dict[str, Any]]
+    unmatched_models: list[dict[str, str]]
+    configuration_warnings: list[dict[str, Any]]
 
 
 class TraceUserOption(BaseModel):

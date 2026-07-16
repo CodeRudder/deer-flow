@@ -4,7 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   ImageIcon,
+  Pencil,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -37,15 +40,22 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   useAdminUsage,
+  useOverrideUserCurrentPeriod,
+  useQuotaScopes,
+  useQuotaUserDetail,
   useQuotaUsers,
-  useUpdateQuotaUser,
+  useRestoreUserCurrentPeriod,
+  useSaveQuotaScope,
 } from "@/core/admin/hooks";
 import type {
   QuotaMetric,
-  QuotaPeriod,
+  QuotaScope,
+  QuotaScopePayload,
   QuotaStatus,
   QuotaUser,
+  QuotaUserModelGroupItem,
   SessionMetric,
+  UserQuotaItem,
   UsageModel,
   UsageRange,
   UsageSession,
@@ -72,12 +82,6 @@ const ranges: Array<[UsageRange, string]> = [
   ["custom", "自定义"],
 ];
 
-const quotaPeriods: Array<[QuotaPeriod, string]> = [
-  ["this_month", "本月"],
-  ["last_month", "上月"],
-  ["custom", "自定义月份"],
-];
-
 const quotaFilters: Array<[QuotaStatus, string]> = [
   ["all", "全部"],
   ["normal", "正常"],
@@ -95,7 +99,7 @@ function formatNumber(value: number | null | undefined): string {
 }
 
 function metricPercent(metric: QuotaMetric): number {
-  if (!metric.enabled || metric.limit == null || metric.limit <= 0) return 0;
+  if (!metric.enforced || metric.limit == null || metric.limit <= 0) return 0;
   return Math.min(100, Math.round((metric.used / metric.limit) * 100));
 }
 
@@ -1052,14 +1056,14 @@ function QuotaUsageCell({ metric }: { metric: QuotaMetric }) {
   const percent = metricPercent(metric);
   const colors =
     quotaProgressColors[
-      quotaProgressTone(metric.enabled, metric.used, metric.limit)
+      quotaProgressTone(metric.enforced, metric.used, metric.limit)
     ];
   return (
     <div className="min-w-40">
       <div className="flex justify-between text-xs">
         <span>{formatNumber(metric.used)}</span>
         <span className="text-muted-foreground">
-          {metric.enabled ? formatNumber(metric.limit) : "关闭"}
+          {metric.enforced ? formatNumber(metric.limit) : "仅记录"}
         </span>
       </div>
       <div
@@ -1079,114 +1083,521 @@ function QuotaUsageCell({ metric }: { metric: QuotaMetric }) {
   );
 }
 
-function QuotaEditor({
+function ModelGroupUsageCell({
+  group,
+}: {
+  group: QuotaUserModelGroupItem | undefined;
+}) {
+  if (!group) {
+    return <span className="text-muted-foreground text-xs">-</span>;
+  }
+
+  const percent = metricPercent(group.requests);
+  const colors =
+    quotaProgressColors[
+      quotaProgressTone(
+        group.requests.enforced,
+        group.requests.used,
+        group.requests.limit,
+      )
+    ];
+
+  return (
+    <div className="min-w-40 py-1 text-xs">
+      {group.requests.enforced ? (
+        <>
+          <div className="flex items-center justify-between gap-3 whitespace-nowrap">
+            <span className="font-medium tabular-nums">
+              {formatNumber(group.requests.used)} /{" "}
+              {formatNumber(group.requests.limit)} 次
+            </span>
+            <span className="text-muted-foreground tabular-nums">
+              {formatNumber(group.token_observation.used)} Token
+            </span>
+          </div>
+          <div
+            className={`mt-2 h-1.5 overflow-hidden rounded-full ${colors.track}`}
+            role="progressbar"
+            aria-label={`${group.name}请求额度使用进度`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+          >
+            <div
+              className={`h-full rounded-full transition-[width] ${colors.indicator}`}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center gap-2 whitespace-nowrap">
+          <span className="text-muted-foreground tabular-nums">
+            {formatNumber(group.token_observation.used)} Token
+          </span>
+          <span className="text-border" aria-hidden="true">
+            ·
+          </span>
+          <span className="font-medium tabular-nums">
+            {formatNumber(group.requests.used)} 次
+          </span>
+        </div>
+      )}
+      {group.source === "temporary_override" ? (
+        <div className="mt-1.5">
+          <Badge
+            variant="outline"
+            className="h-5 border-amber-200 bg-amber-50 px-1.5 text-[10px] text-amber-700"
+          >
+            临时调额
+          </Badge>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function QuotaUserRow({
+  item,
+  modelScopes,
+  quotaIsCurrent,
+  onAdjust,
+}: {
+  item: QuotaUser;
+  modelScopes: QuotaScope[];
+  quotaIsCurrent: boolean;
+  onAdjust: (user: QuotaUser) => void;
+}) {
+  return (
+    <tr className="border-b align-middle last:border-0">
+      <td className="py-4 pr-4 font-medium">{item.email}</td>
+      <td className="px-4">{item.role}</td>
+      {modelScopes.map((scope) => (
+        <td key={scope.id} className="px-4">
+          <ModelGroupUsageCell
+            group={item.model_groups.items.find(
+              (group) => group.scope_id === scope.id,
+            )}
+          />
+        </td>
+      ))}
+      <td className="px-5">
+        {item.image_generation?.images ? (
+          <QuotaUsageCell metric={item.image_generation.images} />
+        ) : (
+          "-"
+        )}
+      </td>
+      <td className="px-5">{statusBadge(item.status)}</td>
+      <td className="pl-4">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!quotaIsCurrent}
+          onClick={() => onAdjust(item)}
+        >
+          {quotaIsCurrent ? "调整" : "历史只读"}
+        </Button>
+      </td>
+    </tr>
+  );
+}
+
+function UserQuotaItemEditor({
+  userId,
+  item,
+}: {
+  userId: string;
+  item: UserQuotaItem;
+}) {
+  const metric = item.requests ?? item.images;
+  const isModelScope = item.scope.resource_type === "model";
+  const overrideQuota = useOverrideUserCurrentPeriod();
+  const restoreQuota = useRestoreUserCurrentPeriod();
+  const [enforced, setEnforced] = useState(metric?.enforced ?? false);
+  const [limit, setLimit] = useState<number | null>(metric?.limit ?? null);
+  const [reason, setReason] = useState("");
+
+  useEffect(() => {
+    setEnforced(metric?.enforced ?? false);
+    setLimit(metric?.limit ?? null);
+  }, [metric?.enforced, metric?.limit]);
+
+  const save = async () => {
+    await overrideQuota.mutateAsync({
+      userId,
+      scopeId: item.scope.id,
+      payload: {
+        requests:
+          item.scope.resource_type === "model" ? { enforced, limit } : null,
+        images:
+          item.scope.resource_type === "image_generation"
+            ? { enforced, limit }
+            : null,
+        reason: reason || undefined,
+      },
+    });
+    toast.success(`${item.scope.name}当前周期额度已调整`);
+  };
+
+  return (
+    <div className="rounded-lg border p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium">
+            {item.scope.name}
+            {item.source === "temporary_override" ? (
+              <Badge
+                variant="outline"
+                className="border-amber-200 bg-amber-50 text-amber-700"
+              >
+                临时调额
+              </Badge>
+            ) : null}
+          </div>
+          <div className="text-muted-foreground mt-1 text-xs">
+            {item.period_type === "weekly" ? "自然周" : "自然月"} ·{" "}
+            {item.period.label}
+          </div>
+        </div>
+        <label className="flex shrink-0 items-center gap-2 text-xs">
+          <span className="text-muted-foreground">
+            {isModelScope ? "请求拦截" : "生图拦截"}
+          </span>
+          <Switch checked={enforced} onCheckedChange={setEnforced} />
+        </label>
+      </div>
+
+      <div
+        className={`bg-muted/40 mt-4 grid overflow-hidden rounded-md ${isModelScope ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
+      >
+        <div className="px-4 py-3">
+          <div className="text-muted-foreground text-[11px]">
+            {isModelScope ? "已用请求" : "已用生图"}
+          </div>
+          <div className="mt-1 text-xl font-semibold tabular-nums">
+            {formatExactNumber(metric?.used ?? 0)}
+            <span className="text-muted-foreground ml-1 text-xs font-normal">
+              次
+            </span>
+          </div>
+        </div>
+        {isModelScope ? (
+          <div className="border-t px-4 py-3 sm:border-t-0 sm:border-l">
+            <div className="text-muted-foreground text-[11px]">Token 观测</div>
+            <div className="mt-1 text-xl font-semibold tabular-nums">
+              {formatNumber(item.token_observation?.used ?? 0)}
+              <span className="text-muted-foreground ml-1 text-xs font-normal">
+                Token
+              </span>
+            </div>
+          </div>
+        ) : null}
+        <div className="border-t px-4 py-3 sm:border-t-0 sm:border-l">
+          <div className="text-muted-foreground text-[11px]">当前上限</div>
+          <div className="mt-1 text-xl font-semibold tabular-nums">
+            {metric?.enforced && metric.limit != null
+              ? formatExactNumber(metric.limit)
+              : "不拦截"}
+            {metric?.enforced && metric.limit != null ? (
+              <span className="text-muted-foreground ml-1 text-xs font-normal">
+                次
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 border-t pt-3">
+        <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+          <label className="text-muted-foreground text-xs">
+            额度上限
+            <Input
+              className="mt-1"
+              type="number"
+              min={0}
+              disabled={!enforced}
+              value={limit ?? ""}
+              placeholder="不限额"
+              onChange={(event) =>
+                setLimit(
+                  event.target.value === "" ? null : Number(event.target.value),
+                )
+              }
+            />
+          </label>
+          <label className="text-muted-foreground text-xs">
+            调额原因
+            <Input
+              className="mt-1"
+              value={reason}
+              placeholder="可选"
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <Button
+            className="self-end"
+            size="sm"
+            onClick={() => void save()}
+            disabled={overrideQuota.isPending}
+          >
+            保存本周期
+          </Button>
+        </div>
+      </div>
+      {item.source === "temporary_override" ? (
+        <Button
+          className="mt-2"
+          size="sm"
+          variant="ghost"
+          onClick={() =>
+            void restoreQuota
+              .mutateAsync({ userId, scopeId: item.scope.id })
+              .then(() => toast.success("已恢复模型组默认额度"))
+          }
+          disabled={restoreQuota.isPending}
+        >
+          <RotateCcw className="mr-1 size-3.5" />
+          恢复默认
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function QuotaUserEditor({
   user,
-  period,
-  periodStart,
+  at,
   onOpenChange,
 }: {
   user: QuotaUser | null;
-  period: QuotaPeriod;
-  periodStart?: string;
+  at?: string;
   onOpenChange: (open: boolean) => void;
 }) {
-  const updateQuota = useUpdateQuotaUser();
-  const [draft, setDraft] = useState<QuotaUser | null>(user);
+  const detail = useQuotaUserDetail(user?.user_id ?? null, at);
+  return (
+    <Sheet open={!!user} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+        <SheetHeader>
+          <SheetTitle>用户当前周期额度</SheetTitle>
+          <SheetDescription>
+            {user?.email ?? ""} · 临时调额仅在当前周/月有效
+          </SheetDescription>
+        </SheetHeader>
+        <div className="space-y-3 px-4 pb-6">
+          {detail.isLoading ? (
+            <div className="text-muted-foreground py-8 text-center text-sm">
+              正在加载额度…
+            </div>
+          ) : null}
+          {detail.data?.items.map((item) => (
+            <UserQuotaItemEditor
+              key={item.scope.id}
+              userId={detail.data.user.user_id}
+              item={item}
+            />
+          ))}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function QuotaScopeEditor({
+  scope,
+  open,
+  onOpenChange,
+}: {
+  scope: QuotaScope | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const saveScope = useSaveQuotaScope();
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [resourceType, setResourceType] = useState<
+    "model" | "image_generation"
+  >("model");
+  const [exact, setExact] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [periodType, setPeriodType] = useState<"weekly" | "monthly">("weekly");
+  const [enforced, setEnforced] = useState(false);
+  const [limit, setLimit] = useState<number | null>(null);
+  const [enabled, setEnabled] = useState(true);
 
   useEffect(() => {
-    setDraft(user);
-  }, [user]);
+    setCode(scope?.code ?? "");
+    setName(scope?.name ?? "");
+    setResourceType(scope?.resource_type ?? "model");
+    setExact((scope?.match_rules.exact ?? []).join(", "));
+    setPrefix((scope?.match_rules.prefix ?? []).join(", "));
+    setPeriodType(scope?.default_policy.period_type ?? "weekly");
+    const policy =
+      scope?.default_policy.requests ?? scope?.default_policy.images ?? null;
+    setEnforced(policy?.enforced ?? false);
+    setLimit(policy?.limit ?? null);
+    setEnabled(scope?.enabled ?? true);
+  }, [scope, open]);
 
-  const current = draft ?? user;
-
-  const setMetric = (
-    key: "model_tokens" | "model_requests" | "image_generations",
-    patch: Partial<QuotaMetric>,
-  ) => {
-    if (!current) return;
-    setDraft({ ...current, [key]: { ...current[key], ...patch } });
-  };
+  const splitRules = (value: string) =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
 
   const save = async () => {
-    if (!current) return;
-    await updateQuota.mutateAsync({
-      userId: current.user_id,
-      payload: {
-        period,
-        period_start: period === "custom" ? periodStart : undefined,
-        model_tokens: {
-          enabled: current.model_tokens.enabled,
-          limit: current.model_tokens.limit,
-        },
-        model_requests: {
-          enabled: current.model_requests.enabled,
-          limit: current.model_requests.limit,
-        },
-        image_generations: {
-          enabled: current.image_generations.enabled,
-          limit: current.image_generations.limit,
-        },
+    const isImage = resourceType === "image_generation";
+    const payload: QuotaScopePayload = {
+      ...(scope ? {} : { code, resource_type: resourceType }),
+      name,
+      match_rules: isImage
+        ? { exact: [], prefix: [] }
+        : { exact: splitRules(exact), prefix: splitRules(prefix) },
+      default_policy: {
+        period_type: periodType,
+        requests: isImage ? null : { enforced, limit },
+        images: isImage ? { enforced, limit } : null,
       },
-    });
-    toast.success("额度已保存");
+      enabled,
+    };
+    await saveScope.mutateAsync({ scopeId: scope?.id, payload });
+    toast.success(scope ? "额度范围已更新" : "额度范围已创建");
     onOpenChange(false);
   };
 
   return (
-    <Sheet open={!!user} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full sm:max-w-md">
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
         <SheetHeader>
-          <SheetTitle>调整额度</SheetTitle>
-          <SheetDescription>{current?.email ?? ""}</SheetDescription>
+          <SheetTitle>{scope ? "编辑额度范围" : "新增额度范围"}</SheetTitle>
+          <SheetDescription>
+            资源匹配与所有用户默认额度在同一处维护
+          </SheetDescription>
         </SheetHeader>
-        {current && (
-          <div className="space-y-4 px-4">
-            {(
-              [
-                ["model_tokens", "模型 Token"],
-                ["model_requests", "模型请求"],
-                ["image_generations", "生图次数"],
-              ] as const
-            ).map(([key, label]) => (
-              <div key={key} className="rounded-lg border p-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium">{label}</div>
-                  <Switch
-                    checked={current[key].enabled}
-                    onCheckedChange={(enabled) => setMetric(key, { enabled })}
-                  />
-                </div>
-                <Input
-                  className="mt-3"
-                  type="number"
-                  min={0}
-                  disabled={!current[key].enabled}
-                  value={current[key].limit ?? ""}
-                  placeholder="不限额"
-                  onChange={(event) =>
-                    setMetric(key, {
-                      limit:
-                        event.target.value === ""
-                          ? null
-                          : Number(event.target.value),
-                    })
+        <div className="space-y-4 px-4 pb-6">
+          {!scope ? (
+            <label className="block text-sm">
+              资源类型
+              <select
+                className="bg-background mt-1 h-9 w-full rounded-md border px-3"
+                value={resourceType}
+                onChange={(event) => {
+                  const value = event.target.value as
+                    | "model"
+                    | "image_generation";
+                  setResourceType(value);
+                  if (value === "image_generation") {
+                    setCode("image_generation");
+                    setName((current) => current || "生图资源");
+                  } else if (code === "image_generation") {
+                    setCode("");
                   }
+                }}
+              >
+                <option value="model">模型组</option>
+                <option value="image_generation">生图资源</option>
+              </select>
+            </label>
+          ) : null}
+          {resourceType === "model" ? (
+            <>
+              <label className="block text-sm">
+                稳定标识
+                <Input
+                  className="mt-1"
+                  value={code}
+                  disabled={Boolean(scope)}
+                  placeholder="claude_advanced"
+                  onChange={(event) => setCode(event.target.value)}
                 />
-                <div className="text-muted-foreground mt-2 text-xs">
-                  已用 {formatNumber(current[key].used)}，剩余{" "}
-                  {formatNumber(current[key].remaining)}
-                </div>
-              </div>
-            ))}
-            <Button
-              className="w-full"
-              onClick={() => void save()}
-              disabled={updateQuota.isPending}
-            >
-              保存
-            </Button>
+              </label>
+              <label className="block text-sm">
+                精确模型（models[].model，逗号分隔）
+                <Input
+                  className="mt-1"
+                  value={exact}
+                  onChange={(event) => setExact(event.target.value)}
+                />
+              </label>
+              <label className="block text-sm">
+                模型前缀（逗号分隔）
+                <Input
+                  className="mt-1"
+                  value={prefix}
+                  onChange={(event) => setPrefix(event.target.value)}
+                />
+              </label>
+            </>
+          ) : null}
+          <label className="block text-sm">
+            显示名称
+            <Input
+              className="mt-1"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-sm">
+              统计周期
+              <select
+                className="bg-background mt-1 h-9 w-full rounded-md border px-3"
+                value={periodType}
+                onChange={(event) =>
+                  setPeriodType(event.target.value as "weekly" | "monthly")
+                }
+              >
+                <option value="weekly">自然周</option>
+                <option value="monthly">自然月</option>
+              </select>
+            </label>
+            <label className="block text-sm">
+              每用户默认上限
+              <Input
+                className="mt-1"
+                type="number"
+                min={0}
+                disabled={!enforced}
+                value={limit ?? ""}
+                placeholder="不限额"
+                onChange={(event) =>
+                  setLimit(
+                    event.target.value === ""
+                      ? null
+                      : Number(event.target.value),
+                  )
+                }
+              />
+            </label>
           </div>
-        )}
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div>
+              <div className="text-sm font-medium">
+                {resourceType === "image_generation"
+                  ? "按生图次数拦截"
+                  : "按模型请求次数拦截"}
+              </div>
+              <div className="text-muted-foreground text-xs">
+                {resourceType === "image_generation"
+                  ? "派发到供应商后即累计，供应商报错也保留"
+                  : "Token 只累计观测，不参与拦截"}
+              </div>
+            </div>
+            <Switch checked={enforced} onCheckedChange={setEnforced} />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <span className="text-sm font-medium">
+              启用{resourceType === "image_generation" ? "生图额度" : "模型组"}
+            </span>
+            <Switch checked={enabled} onCheckedChange={setEnabled} />
+          </div>
+          <Button
+            className="w-full"
+            onClick={() => void save()}
+            disabled={saveScope.isPending || !name || (!scope && !code)}
+          >
+            保存
+          </Button>
+        </div>
       </SheetContent>
     </Sheet>
   );
@@ -1197,21 +1608,26 @@ export function AdminDashboard() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState("overview");
   const [range, setRange] = useState<UsageRange>("month");
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
   const [usageStart, setUsageStart] = useState(today);
   const [usageEnd, setUsageEnd] = useState(today);
-  const [quotaPeriod, setQuotaPeriod] = useState<QuotaPeriod>("this_month");
-  const [quotaMonth, setQuotaMonth] = useState(() =>
-    new Date().toISOString().slice(0, 7),
-  );
+  const [quotaAt, setQuotaAt] = useState(today);
+  const [quotaSection, setQuotaSection] = useState("scopes");
   const [quotaStatus, setQuotaStatus] = useState<QuotaStatus>("all");
   const [keyword, setKeyword] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const [quotaPage, setQuotaPage] = useState(1);
   const [quotaPageSize, setQuotaPageSize] = useState(15);
   const [selectedUser, setSelectedUser] = useState<QuotaUser | null>(null);
+  const [scopeEditorOpen, setScopeEditorOpen] = useState(false);
+  const [selectedScope, setSelectedScope] = useState<QuotaScope | null>(null);
+  const quotaIsCurrent = quotaAt === today;
 
-  const customMonthStart = `${quotaMonth}-01`;
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedKeyword(keyword), 300);
     return () => window.clearTimeout(timer);
@@ -1219,20 +1635,20 @@ export function AdminDashboard() {
 
   useEffect(() => {
     setQuotaPage(1);
-  }, [debouncedKeyword, quotaPeriod, quotaStatus, quotaMonth]);
+  }, [debouncedKeyword, quotaStatus, quotaAt]);
 
   const usage = useAdminUsage(
     range,
     range === "custom" ? { start: usageStart, end: usageEnd } : undefined,
   );
   const quotas = useQuotaUsers({
-    period: quotaPeriod,
-    period_start: quotaPeriod === "custom" ? customMonthStart : undefined,
+    at: quotaAt,
     status: quotaStatus,
     keyword: debouncedKeyword,
     page: quotaPage,
     page_size: quotaPageSize,
   });
+  const quotaScopes = useQuotaScopes(true);
 
   const refreshAll = () => {
     if (tab === "overview") {
@@ -1243,7 +1659,7 @@ export function AdminDashboard() {
         usage.models.refetch(),
       ]);
     } else if (tab === "quota") {
-      void quotas.refetch();
+      void Promise.all([quotas.refetch(), quotaScopes.refetch()]);
     } else {
       void queryClient.invalidateQueries({
         queryKey: ["admin", "session-traces"],
@@ -1253,14 +1669,13 @@ export function AdminDashboard() {
 
   const subtitle = useMemo(() => {
     if (tab === "quota") {
-      const period = quotas.data?.period;
-      return period ? `额度周期 · ${period.label} · 月度` : "额度周期";
+      return `额度范围 · 参考日期 ${quotas.data?.reference_at ?? quotaAt}`;
     }
     if (tab === "trace")
       return "会话追踪 · 用户概览近 30 天 · 全部运行记录按创建时间倒序";
     const period = usage.summary.data?.period;
     return period ? `${period.label} · UTC+08:00` : "统计概览";
-  }, [quotas.data?.period, tab, usage.summary.data?.period]);
+  }, [quotaAt, quotas.data?.reference_at, tab, usage.summary.data?.period]);
 
   if (user?.system_role !== "admin") {
     return (
@@ -1277,6 +1692,9 @@ export function AdminDashboard() {
     images: [],
   };
   const models = usage.models.data?.items ?? [];
+  const enabledModelQuotaScopes = (quotaScopes.data?.items ?? []).filter(
+    (scope) => scope.enabled && scope.resource_type === "model",
+  );
   const usageError =
     usage.summary.isError ||
     usage.trends.isError ||
@@ -1332,28 +1750,15 @@ export function AdminDashboard() {
                 )}
               </>
             ) : tab === "quota" ? (
-              <>
-                <div className="bg-background flex rounded-md border p-1">
-                  {quotaPeriods.map(([key, label]) => (
-                    <Button
-                      key={key}
-                      variant={quotaPeriod === key ? "secondary" : "ghost"}
-                      size="sm"
-                      onClick={() => setQuotaPeriod(key)}
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-                {quotaPeriod === "custom" && (
-                  <Input
-                    className="w-36"
-                    type="month"
-                    value={quotaMonth}
-                    onChange={(event) => setQuotaMonth(event.target.value)}
-                  />
-                )}
-              </>
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-muted-foreground">参考日期</span>
+                <Input
+                  className="w-40"
+                  type="date"
+                  value={quotaAt}
+                  onChange={(event) => setQuotaAt(event.target.value)}
+                />
+              </label>
             ) : null}
             <Button variant="outline" size="sm" onClick={refreshAll}>
               <RefreshCw className="size-4" />
@@ -1457,133 +1862,243 @@ export function AdminDashboard() {
           </TabsContent>
 
           <TabsContent value="quota" className="mt-5">
-            <section className="bg-background rounded-lg border p-4 shadow-xs">
-              {quotas.isError && (
-                <div className="border-destructive/40 bg-destructive/5 text-destructive mb-4 rounded-md border px-4 py-3 text-sm">
-                  额度数据加载失败，请稍后重试
-                </div>
-              )}
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <h2 className="font-medium">用户额度</h2>
-                  <p className="text-muted-foreground text-sm">
-                    Token/请求超额后拦截下一次 run；生图超额后后续生图失败
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <div className="relative">
-                    <Search className="text-muted-foreground absolute top-2.5 left-2.5 size-4" />
-                    <Input
-                      className="w-64 pl-8"
-                      placeholder="搜索用户邮箱"
-                      value={keyword}
-                      onChange={(event) => setKeyword(event.target.value)}
-                    />
-                  </div>
-                  <div className="flex rounded-md border p-1">
-                    {quotaFilters.map(([key, label]) => (
-                      <Button
-                        key={key}
-                        size="sm"
-                        variant={quotaStatus === key ? "secondary" : "ghost"}
-                        onClick={() => setQuotaStatus(key)}
-                      >
-                        {label}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full min-w-[1100px] text-sm">
-                  <thead className="text-muted-foreground border-b text-left">
-                    <tr>
-                      <th className="py-2 pr-4">用户</th>
-                      <th className="px-4">角色</th>
-                      <th className="px-5">模型 Token</th>
-                      <th className="px-5">模型请求</th>
-                      <th className="px-5 pr-8">生图次数</th>
-                      <th className="px-8">状态</th>
-                      <th className="pl-4">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(quotas.data?.items ?? []).map((item) => (
-                      <tr key={item.user_id} className="border-b last:border-0">
-                        <td className="py-4 pr-4 font-medium">{item.email}</td>
-                        <td className="px-4">{item.role}</td>
-                        <td className="px-5">
-                          <QuotaUsageCell metric={item.model_tokens} />
-                        </td>
-                        <td className="px-5">
-                          <QuotaUsageCell metric={item.model_requests} />
-                        </td>
-                        <td className="px-5 pr-8">
-                          <QuotaUsageCell metric={item.image_generations} />
-                        </td>
-                        <td className="px-8">{statusBadge(item.status)}</td>
-                        <td className="pl-4">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setSelectedUser(item)}
-                          >
-                            调整
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {!quotas.isLoading && !quotas.data?.items.length && (
-                  <div className="text-muted-foreground py-10 text-center text-sm">
-                    当前筛选条件下暂无用户
-                  </div>
-                )}
-              </div>
-              <div className="text-muted-foreground mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm">
-                <span>共 {quotas.data?.total ?? 0} 位用户</span>
-                <div className="flex items-center gap-2">
-                  <select
-                    className="bg-background h-8 rounded-md border px-2"
-                    aria-label="每页用户数量"
-                    value={quotaPageSize}
-                    onChange={(event) => {
-                      setQuotaPageSize(Number(event.target.value));
-                      setQuotaPage(1);
+            <Tabs value={quotaSection} onValueChange={setQuotaSection}>
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <TabsList>
+                  <TabsTrigger value="scopes">额度范围</TabsTrigger>
+                  <TabsTrigger value="users">用户额度</TabsTrigger>
+                </TabsList>
+                {quotaSection === "scopes" ? (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setSelectedScope(null);
+                      setScopeEditorOpen(true);
                     }}
                   >
-                    {[15, 30, 50].map((size) => (
-                      <option key={size} value={size}>
-                        每页 {size} 条
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={quotaPage <= 1}
-                    onClick={() =>
-                      setQuotaPage((page) => Math.max(1, page - 1))
-                    }
-                  >
-                    上一页
+                    <Plus className="mr-1 size-4" />
+                    新增额度范围
                   </Button>
-                  <span className="text-sm">第 {quotaPage} 页</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={
-                      quotaPage * quotaPageSize >= (quotas.data?.total ?? 0)
-                    }
-                    onClick={() => setQuotaPage((page) => page + 1)}
-                  >
-                    下一页
-                  </Button>
-                </div>
+                ) : null}
               </div>
-            </section>
+
+              <TabsContent value="scopes" className="mt-0 space-y-4">
+                {(quotaScopes.data?.unmatched_models.length ?? 0) > 0 ? (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    有 {quotaScopes.data?.unmatched_models.length}{" "}
+                    个模型尚未归组：
+                    {quotaScopes.data?.unmatched_models
+                      .map((model) => model.model)
+                      .join("、")}
+                  </div>
+                ) : null}
+                {(quotaScopes.data?.configuration_warnings.length ?? 0) > 0 ? (
+                  <div className="border-destructive/40 bg-destructive/5 text-destructive rounded-lg border px-4 py-3 text-sm">
+                    配置中存在重复的 models[].model，请先合并重复模型配置。
+                  </div>
+                ) : null}
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {(quotaScopes.data?.items ?? []).map((scope) => {
+                    const policy =
+                      scope.default_policy.requests ??
+                      scope.default_policy.images;
+                    return (
+                      <article
+                        key={scope.id}
+                        className="bg-background rounded-lg border p-4 shadow-xs"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3 className="font-medium">{scope.name}</h3>
+                              <Badge variant="outline">{scope.code}</Badge>
+                              {!scope.enabled ? (
+                                <Badge variant="secondary">已停用</Badge>
+                              ) : null}
+                            </div>
+                            <p className="text-muted-foreground mt-2 text-sm">
+                              {scope.resource_type === "model"
+                                ? `${scope.matched_models.length} 个已配置模型`
+                                : "所有生图与图片编辑调用"}
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setSelectedScope(scope);
+                              setScopeEditorOpen(true);
+                            }}
+                          >
+                            <Pencil className="mr-1 size-3.5" />
+                            编辑
+                          </Button>
+                        </div>
+                        <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+                          <div className="bg-muted/50 rounded-md p-3">
+                            <div className="text-muted-foreground text-xs">
+                              周期
+                            </div>
+                            <div className="mt-1 font-medium">
+                              {scope.default_policy.period_type === "weekly"
+                                ? "自然周"
+                                : "自然月"}
+                            </div>
+                          </div>
+                          <div className="bg-muted/50 rounded-md p-3">
+                            <div className="text-muted-foreground text-xs">
+                              拦截
+                            </div>
+                            <div className="mt-1 font-medium">
+                              {policy?.enforced ? "开启" : "仅记录"}
+                            </div>
+                          </div>
+                          <div className="bg-muted/50 rounded-md p-3">
+                            <div className="text-muted-foreground text-xs">
+                              每用户上限
+                            </div>
+                            <div className="mt-1 font-medium">
+                              {formatNumber(policy?.limit)}
+                            </div>
+                          </div>
+                        </div>
+                        {scope.resource_type === "model" ? (
+                          <div className="text-muted-foreground mt-3 text-xs">
+                            精确：{scope.match_rules.exact.join("、") || "无"} ·
+                            前缀：
+                            {scope.match_rules.prefix.join("、") || "无"}
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="users" className="mt-0">
+                <section className="bg-background rounded-lg border p-4 shadow-xs">
+                  {quotas.isError ? (
+                    <div className="border-destructive/40 bg-destructive/5 text-destructive mb-4 rounded-md border px-4 py-3 text-sm">
+                      额度数据加载失败，请稍后重试
+                    </div>
+                  ) : null}
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <h2 className="font-medium">用户额度</h2>
+                      <p className="text-muted-foreground text-sm">
+                        所有用户默认继承模型组配置；仅记录范围不拦截，用户临时调额单独标记
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <div className="relative">
+                        <Search className="text-muted-foreground absolute top-2.5 left-2.5 size-4" />
+                        <Input
+                          className="w-64 pl-8"
+                          placeholder="搜索用户邮箱"
+                          value={keyword}
+                          onChange={(event) => setKeyword(event.target.value)}
+                        />
+                      </div>
+                      <div className="flex rounded-md border p-1">
+                        {quotaFilters.map(([key, label]) => (
+                          <Button
+                            key={key}
+                            size="sm"
+                            variant={
+                              quotaStatus === key ? "secondary" : "ghost"
+                            }
+                            onClick={() => setQuotaStatus(key)}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 overflow-x-auto">
+                    <table
+                      className="w-full text-sm"
+                      style={{
+                        minWidth: `${Math.max(940, 620 + enabledModelQuotaScopes.length * 190)}px`,
+                      }}
+                    >
+                      <thead className="text-muted-foreground border-b text-left">
+                        <tr>
+                          <th className="py-2 pr-4">用户</th>
+                          <th className="px-4">角色</th>
+                          {enabledModelQuotaScopes.map((scope) => (
+                            <th key={scope.id} className="px-4">
+                              {scope.name}
+                            </th>
+                          ))}
+                          <th className="px-5">生图次数</th>
+                          <th className="px-5">状态</th>
+                          <th className="pl-4">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(quotas.data?.items ?? []).map((item) => (
+                          <QuotaUserRow
+                            key={item.user_id}
+                            item={item}
+                            modelScopes={enabledModelQuotaScopes}
+                            quotaIsCurrent={quotaIsCurrent}
+                            onAdjust={setSelectedUser}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                    {!quotas.isLoading && !quotas.data?.items.length ? (
+                      <div className="text-muted-foreground py-10 text-center text-sm">
+                        当前筛选条件下暂无用户
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="text-muted-foreground mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm">
+                    <span>共 {quotas.data?.total ?? 0} 位用户</span>
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="bg-background h-8 rounded-md border px-2"
+                        aria-label="每页用户数量"
+                        value={quotaPageSize}
+                        onChange={(event) => {
+                          setQuotaPageSize(Number(event.target.value));
+                          setQuotaPage(1);
+                        }}
+                      >
+                        {[15, 30, 50].map((size) => (
+                          <option key={size} value={size}>
+                            每页 {size} 条
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={quotaPage <= 1}
+                        onClick={() =>
+                          setQuotaPage((page) => Math.max(1, page - 1))
+                        }
+                      >
+                        上一页
+                      </Button>
+                      <span className="text-sm">第 {quotaPage} 页</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          quotaPage * quotaPageSize >= (quotas.data?.total ?? 0)
+                        }
+                        onClick={() => setQuotaPage((page) => page + 1)}
+                      >
+                        下一页
+                      </Button>
+                    </div>
+                  </div>
+                </section>
+              </TabsContent>
+            </Tabs>
           </TabsContent>
 
           <TabsContent value="trace" className="mt-5">
@@ -1591,11 +2106,18 @@ export function AdminDashboard() {
           </TabsContent>
         </Tabs>
       </div>
-      <QuotaEditor
+      <QuotaUserEditor
         user={selectedUser}
-        period={quotaPeriod}
-        periodStart={customMonthStart}
+        at={quotaAt}
         onOpenChange={(open) => !open && setSelectedUser(null)}
+      />
+      <QuotaScopeEditor
+        scope={selectedScope}
+        open={scopeEditorOpen}
+        onOpenChange={(open) => {
+          setScopeEditorOpen(open);
+          if (!open) setSelectedScope(null);
+        }}
       />
     </div>
   );

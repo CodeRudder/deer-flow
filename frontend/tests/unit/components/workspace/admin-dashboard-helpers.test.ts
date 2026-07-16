@@ -4,6 +4,7 @@ import {
   buildDonutSegments,
   buildTrendCoordinates,
   placeFloatingTooltip,
+  prioritizeQuotaModelGroups,
   quotaProgressTone,
   smoothTrendPath,
 } from "@/components/workspace/admin/admin-dashboard-helpers";
@@ -34,6 +35,34 @@ describe("quotaProgressTone", () => {
     expect(quotaProgressTone(true, 799, 1000)).toBe("normal");
     expect(quotaProgressTone(true, 800, 1000)).toBe("warning");
     expect(quotaProgressTone(true, 1000, 1000)).toBe("exceeded");
+  });
+});
+
+describe("prioritizeQuotaModelGroups", () => {
+  it("puts exceeded, warning, and temporary overrides first", () => {
+    const groups = [
+      { scope_id: "unlimited", status: "unlimited", source: "scope_default" },
+      { scope_id: "override", status: "normal", source: "temporary_override" },
+      { scope_id: "warning", status: "warning", source: "scope_default" },
+      { scope_id: "exceeded", status: "exceeded", source: "scope_default" },
+      { scope_id: "normal", status: "normal", source: "scope_default" },
+    ] as const;
+
+    expect(
+      prioritizeQuotaModelGroups(groups).map((group) => group.scope_id),
+    ).toEqual(["exceeded", "warning", "override", "normal", "unlimited"]);
+  });
+
+  it("does not mutate groups with the same priority", () => {
+    const groups = [
+      { scope_id: "first", status: "normal", source: "scope_default" },
+      { scope_id: "second", status: "normal", source: "scope_default" },
+    ] as const;
+
+    expect(
+      prioritizeQuotaModelGroups(groups).map((group) => group.scope_id),
+    ).toEqual(["first", "second"]);
+    expect(groups.map((group) => group.scope_id)).toEqual(["first", "second"]);
   });
 });
 

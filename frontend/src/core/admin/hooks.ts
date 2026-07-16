@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createQuotaScope,
+  loadQuotaScopes,
+  loadQuotaUserDetail,
   loadQuotaUsers,
+  loadUserQuotaPeriods,
   loadTraceEvents,
   loadTraceRuns,
   loadTraceUserOverview,
@@ -10,12 +14,14 @@ import {
   loadUsageSummary,
   loadUsageTrends,
   loadUsageUsers,
-  updateQuotaUser,
+  overrideUserCurrentPeriod,
+  restoreUserCurrentPeriod,
+  updateQuotaScope,
 } from "./api";
 import type {
-  QuotaPeriod,
+  QuotaOverridePayload,
+  QuotaScopePayload,
   QuotaStatus,
-  QuotaUpdatePayload,
   UsageRange,
 } from "./types";
 
@@ -49,8 +55,7 @@ export function useAdminUsage(
 }
 
 export function useQuotaUsers(params: {
-  period: QuotaPeriod;
-  period_start?: string;
+  at?: string;
   status: QuotaStatus;
   keyword?: string;
   page?: number;
@@ -67,19 +72,85 @@ export function useQuotaUsers(params: {
   });
 }
 
-export function useUpdateQuotaUser() {
+export function useQuotaScopes(includeDisabled = true) {
+  return useQuery({
+    queryKey: ["admin", "quotas", "scopes", includeDisabled],
+    queryFn: () => loadQuotaScopes({ include_disabled: includeDisabled }),
+  });
+}
+
+export function useQuotaUserDetail(userId: string | null, at?: string) {
+  return useQuery({
+    queryKey: ["admin", "quotas", "users", userId, "detail", at],
+    queryFn: () => loadQuotaUserDetail(userId!, at),
+    enabled: Boolean(userId),
+  });
+}
+
+export function useSaveQuotaScope() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      scopeId,
+      payload,
+    }: {
+      scopeId?: string;
+      payload: QuotaScopePayload;
+    }) =>
+      scopeId ? updateQuotaScope(scopeId, payload) : createQuotaScope(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "quotas"] });
+    },
+  });
+}
+
+export function useOverrideUserCurrentPeriod() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
       userId,
+      scopeId,
       payload,
     }: {
       userId: string;
-      payload: QuotaUpdatePayload;
-    }) => updateQuotaUser(userId, payload),
+      scopeId: string;
+      payload: QuotaOverridePayload;
+    }) => overrideUserCurrentPeriod(userId, scopeId, payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["admin", "quotas"] });
     },
+  });
+}
+
+export function useRestoreUserCurrentPeriod() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, scopeId }: { userId: string; scopeId: string }) =>
+      restoreUserCurrentPeriod(userId, scopeId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "quotas"] });
+    },
+  });
+}
+
+export function useUserQuotaPeriods(
+  userId: string | null,
+  scopeId: string | null,
+  params?: { start?: string; end?: string; limit?: number; cursor?: string },
+) {
+  return useQuery({
+    queryKey: [
+      "admin",
+      "quotas",
+      "users",
+      userId,
+      "scopes",
+      scopeId,
+      "periods",
+      params,
+    ],
+    queryFn: () => loadUserQuotaPeriods(userId!, scopeId!, params),
+    enabled: Boolean(userId && scopeId),
   });
 }
 

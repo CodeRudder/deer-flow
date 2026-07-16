@@ -10,12 +10,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from deerflow.persistence.quota.model import UserQuotaPeriodRow
 from deerflow.persistence.run.model import RunRow
 from deerflow.runtime.runs.store.base import RunStore
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, resolve_user_id
@@ -247,15 +245,7 @@ class RunRepository(RunStore):
             row = await session.get(RunRow, run_id)
             if row is None:
                 return False
-            period_start = await self._lock_quota_period(session, row.user_id)
             await session.refresh(row)
-            await self._apply_model_quota_delta(
-                session,
-                row,
-                total_tokens=total_tokens,
-                llm_call_count=llm_call_count,
-                period_start=period_start,
-            )
             row.status = status
             for key, value in {
                 "total_input_tokens": total_input_tokens,
@@ -303,17 +293,9 @@ class RunRepository(RunStore):
             row = await session.get(RunRow, run_id)
             if row is None or row.status != "running":
                 return
-            period_start = await self._lock_quota_period(session, row.user_id)
             await session.refresh(row)
             if row.status != "running":
                 return
-            await self._apply_model_quota_delta(
-                session,
-                row,
-                total_tokens=total_tokens,
-                llm_call_count=llm_call_count,
-                period_start=period_start,
-            )
             optional_counters = {
                 "total_input_tokens": total_input_tokens,
                 "total_output_tokens": total_output_tokens,
@@ -336,57 +318,6 @@ class RunRepository(RunStore):
                 row.first_human_message = first_human_message[:2000]
             row.updated_at = datetime.now(UTC)
             await session.commit()
-
-    @staticmethod
-    def _current_period_start() -> datetime:
-        local_now = datetime.now(ZoneInfo("Asia/Shanghai"))
-        return datetime(local_now.year, local_now.month, 1, tzinfo=local_now.tzinfo).astimezone(UTC)
-
-    async def _lock_quota_period(self, session: AsyncSession, user_id: str | None) -> datetime | None:
-        if user_id is None:
-            return None
-        period_start = self._current_period_start()
-        # The no-op update serializes progress/completion writers on the same
-        # user-period row in both SQLite and Postgres before deltas are read.
-        await session.execute(
-            update(UserQuotaPeriodRow)
-            .where(
-                UserQuotaPeriodRow.user_id == user_id,
-                UserQuotaPeriodRow.period == "monthly",
-                UserQuotaPeriodRow.period_start == period_start,
-            )
-            .values(updated_at=UserQuotaPeriodRow.updated_at)
-        )
-        return period_start
-
-    async def _apply_model_quota_delta(
-        self,
-        session: AsyncSession,
-        row: RunRow,
-        *,
-        total_tokens: int | None,
-        llm_call_count: int | None,
-        period_start: datetime | None,
-    ) -> None:
-        if row.user_id is None or period_start is None:
-            return
-        token_delta = max(0, int(total_tokens or 0) - int(row.total_tokens or 0)) if total_tokens is not None else 0
-        request_delta = max(0, int(llm_call_count or 0) - int(row.llm_call_count or 0)) if llm_call_count is not None else 0
-        if token_delta == 0 and request_delta == 0:
-            return
-        await session.execute(
-            update(UserQuotaPeriodRow)
-            .where(
-                UserQuotaPeriodRow.user_id == row.user_id,
-                UserQuotaPeriodRow.period == "monthly",
-                UserQuotaPeriodRow.period_start == period_start,
-            )
-            .values(
-                model_tokens_used=UserQuotaPeriodRow.model_tokens_used + token_delta,
-                model_requests_used=UserQuotaPeriodRow.model_requests_used + request_delta,
-                updated_at=datetime.now(UTC),
-            )
-        )
 
     async def aggregate_tokens_by_thread(self, thread_id: str, *, include_active: bool = False) -> dict[str, Any]:
         """Aggregate token usage for a thread.

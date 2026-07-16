@@ -1,5 +1,4 @@
 export type UsageRange = "day" | "week" | "month" | "custom";
-export type QuotaPeriod = "this_month" | "last_month" | "custom";
 export type QuotaStatus =
   | "all"
   | "normal"
@@ -86,10 +85,80 @@ export interface UsageModels {
 }
 
 export interface QuotaMetric {
-  enabled: boolean;
+  enforced: boolean;
   used: number;
   limit: number | null;
   remaining: number | null;
+  ratio: number | null;
+  status: Exclude<QuotaStatus, "all">;
+}
+
+export interface QuotaScopePolicy {
+  period_type: "weekly" | "monthly";
+  requests: { enforced: boolean; limit: number | null } | null;
+  images: { enforced: boolean; limit: number | null } | null;
+  policy_version: number;
+}
+
+export interface QuotaScope {
+  id: string;
+  code: string;
+  name: string;
+  resource_type: "model" | "image_generation";
+  match_rules: { exact: string[]; prefix: string[] };
+  matched_models: Array<{
+    name: string;
+    display_name: string;
+    model: string;
+  }>;
+  enabled: boolean;
+  is_system: boolean;
+  default_policy: QuotaScopePolicy;
+  current_period_user_count: number;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+export interface QuotaScopesResponse {
+  items: QuotaScope[];
+  unmatched_models: Array<{
+    name: string;
+    display_name: string;
+    model: string;
+  }>;
+  configuration_warnings: Array<{
+    code: string;
+    model?: string;
+  }>;
+}
+
+export interface UserQuotaItem {
+  usage_period_id: string | null;
+  source: "scope_default" | "temporary_override";
+  scope: Pick<
+    QuotaScope,
+    "id" | "code" | "name" | "resource_type" | "is_system"
+  >;
+  period_type: "weekly" | "monthly";
+  period: {
+    period_type: "weekly" | "monthly";
+    label: string;
+    period_start: string;
+    period_end: string;
+    timezone: string;
+  };
+  token_observation: { used: number } | null;
+  requests: QuotaMetric | null;
+  images: QuotaMetric | null;
+  scope_policy_version: number;
+  temporary_override: {
+    overridden_at: string | null;
+    overridden_by: string | null;
+    reason: string | null;
+  } | null;
+  status: Exclude<QuotaStatus, "all">;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface QuotaUser {
@@ -97,10 +166,25 @@ export interface QuotaUser {
   email: string;
   role: string;
   status: Exclude<QuotaStatus, "all">;
-  period: PeriodInfo;
-  model_tokens: QuotaMetric;
-  model_requests: QuotaMetric;
-  image_generations: QuotaMetric;
+  image_generation: UserQuotaItem | null;
+  model_groups: {
+    enabled: number;
+    warning: number;
+    exceeded: number;
+    overridden: number;
+    items: QuotaUserModelGroupItem[];
+  };
+}
+
+export interface QuotaUserModelGroupItem {
+  scope_id: string;
+  name: string;
+  period_type: "weekly" | "monthly";
+  period: UserQuotaItem["period"];
+  source: "scope_default" | "temporary_override";
+  status: Exclude<QuotaStatus, "all">;
+  requests: QuotaMetric;
+  token_observation: { used: number };
 }
 
 export interface QuotaUsersResponse {
@@ -108,15 +192,42 @@ export interface QuotaUsersResponse {
   total: number;
   page: number;
   page_size: number;
-  period: PeriodInfo;
+  reference_at: string;
+  timezone: string;
 }
 
-export interface QuotaUpdatePayload {
-  period: QuotaPeriod;
-  period_start?: string;
-  model_tokens?: { enabled?: boolean; limit?: number | null };
-  model_requests?: { enabled?: boolean; limit?: number | null };
-  image_generations?: { enabled?: boolean; limit?: number | null };
+export interface QuotaUserDetail {
+  user: { user_id: string; email: string; role: string };
+  reference_at: string;
+  timezone: string;
+  status: Exclude<QuotaStatus, "all">;
+  items: UserQuotaItem[];
+}
+
+export interface QuotaPeriodsResponse {
+  user_id: string;
+  scope: Pick<QuotaScope, "id" | "code" | "name">;
+  items: UserQuotaItem[];
+  next_cursor: string | null;
+}
+
+export interface QuotaScopePayload {
+  code?: string;
+  name: string;
+  resource_type?: "model" | "image_generation";
+  match_rules: { exact: string[]; prefix: string[] };
+  default_policy: {
+    period_type: "weekly" | "monthly";
+    requests: { enforced: boolean; limit: number | null } | null;
+    images: { enforced: boolean; limit: number | null } | null;
+  };
+  enabled: boolean;
+}
+
+export interface QuotaOverridePayload {
+  requests?: { enforced: boolean; limit: number | null } | null;
+  images?: { enforced: boolean; limit: number | null } | null;
+  reason?: string;
 }
 
 export interface TraceUserOption {

@@ -707,6 +707,31 @@ class TestAsyncExecutionPath:
         assert result.completed_at is not None
 
     @pytest.mark.anyio
+    async def test_aexecute_propagates_quota_bridge_to_child_runtime_context(self, classes, base_config, mock_agent, msg):
+        SubagentExecutor = classes["SubagentExecutor"]
+        bridge = object()
+        captured_context = None
+
+        async def stream(*_args, **kwargs):
+            nonlocal captured_context
+            captured_context = kwargs.get("context")
+            yield {"messages": [msg.ai("done", "msg-quota")]}
+
+        mock_agent.astream = stream
+        executor = SubagentExecutor(
+            config=base_config,
+            tools=[],
+            thread_id="test-thread",
+            quota_runtime_bridge=bridge,
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            await executor._aexecute("Do something")
+
+        assert captured_context["__quota_runtime_bridge"] is bridge
+        assert captured_context["__quota_enforcement_required"] is True
+
+    @pytest.mark.anyio
     async def test_aexecute_collects_ai_messages(self, classes, base_config, mock_agent, msg):
         """Test that AI messages are collected during streaming."""
         SubagentExecutor = classes["SubagentExecutor"]

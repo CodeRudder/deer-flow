@@ -303,6 +303,17 @@ def build_middlewares(
     resolved_app_config = app_config or get_app_config()
     middlewares = build_lead_runtime_middlewares(app_config=resolved_app_config, lazy_init=True)
 
+    # Keep quota enforcement inside LLMErrorHandlingMiddleware so every real
+    # provider retry reserves and counts independently.
+    if model_name and (quota_model_config := resolved_app_config.get_model_config(model_name)) is not None:
+        from deerflow.agents.middlewares.quota_model_middleware import QuotaModelMiddleware
+
+        middlewares.append(
+            QuotaModelMiddleware(
+                model_id=quota_model_config.model,
+            )
+        )
+
     # Persist the main conversation to user-scoped conversation.jsonl for TUI,
     # thread-tasks, and session detail tooling. This complements the official
     # event/run stores; it does not replace them.

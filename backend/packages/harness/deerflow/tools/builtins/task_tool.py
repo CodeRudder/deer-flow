@@ -516,6 +516,7 @@ async def task_tool(
     oauth_provider = parent_context.get("oauth_provider")
     oauth_id = parent_context.get("oauth_id")
     run_id = parent_context.get("run_id")
+    quota_runtime_bridge = parent_context.get("__quota_runtime_bridge")
 
     parent_available_skills = metadata.get("available_skills")
     if parent_available_skills is not None:
@@ -560,6 +561,7 @@ async def task_tool(
         "oauth_provider": oauth_provider,
         "oauth_id": oauth_id,
         "run_id": run_id,
+        "quota_runtime_bridge": quota_runtime_bridge,
     }
     if resolved_app_config is not None:
         executor_kwargs["app_config"] = resolved_app_config
@@ -835,6 +837,7 @@ async def _action_resume(
     oauth_provider = parent_context.get("oauth_provider")
     oauth_id = parent_context.get("oauth_id")
     run_id = parent_context.get("run_id")
+    quota_runtime_bridge = parent_context.get("__quota_runtime_bridge")
     raw_resume_capabilities = info.get("capabilities")
     task_capabilities = _normalize_task_capabilities(raw_resume_capabilities if isinstance(raw_resume_capabilities, list) and raw_resume_capabilities else capabilities)
     capability_context = TaskCapabilityContext(image_generation=image_generation)
@@ -886,6 +889,7 @@ async def _action_resume(
         "oauth_provider": oauth_provider,
         "oauth_id": oauth_id,
         "run_id": run_id,
+        "quota_runtime_bridge": quota_runtime_bridge,
     }
     if resolved_app_config is not None:
         executor_kwargs["app_config"] = resolved_app_config

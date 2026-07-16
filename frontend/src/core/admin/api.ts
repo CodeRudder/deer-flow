@@ -2,11 +2,15 @@ import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 
 import type {
-  QuotaPeriod,
+  QuotaOverridePayload,
+  QuotaPeriodsResponse,
+  QuotaScope,
+  QuotaScopePayload,
+  QuotaScopesResponse,
   QuotaStatus,
-  QuotaUpdatePayload,
-  QuotaUser,
+  QuotaUserDetail,
   QuotaUsersResponse,
+  UserQuotaItem,
   SessionMetric,
   TraceEventsResponse,
   TraceRunsResponse,
@@ -22,7 +26,7 @@ import type {
 
 function adminUrl(
   path: string,
-  params?: Record<string, string | number | undefined>,
+  params?: Record<string, string | number | boolean | undefined>,
 ): string {
   const search = new URLSearchParams();
   Object.entries(params ?? {}).forEach(([key, value]) => {
@@ -103,8 +107,7 @@ export function loadUsageModels(params: {
 }
 
 export function loadQuotaUsers(params: {
-  period: QuotaPeriod;
-  period_start?: string;
+  at?: string;
   status: QuotaStatus;
   keyword?: string;
   page?: number;
@@ -115,16 +118,89 @@ export function loadQuotaUsers(params: {
   );
 }
 
-export function updateQuotaUser(userId: string, payload: QuotaUpdatePayload) {
+export function loadQuotaScopes(params?: {
+  resource_type?: "model" | "image_generation";
+  include_disabled?: boolean;
+  keyword?: string;
+}) {
+  return fetch(adminUrl("/api/admin/quotas/scopes", params)).then((response) =>
+    readOrThrow<QuotaScopesResponse>(response, "Failed to load quota scopes"),
+  );
+}
+
+export function createQuotaScope(payload: QuotaScopePayload) {
+  return fetch(adminUrl("/api/admin/quotas/scopes"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((response) =>
+    readOrThrow<QuotaScope>(response, "Failed to create quota scope"),
+  );
+}
+
+export function updateQuotaScope(scopeId: string, payload: QuotaScopePayload) {
   return fetch(
-    adminUrl(`/api/admin/quotas/users/${encodeURIComponent(userId)}`),
+    adminUrl(`/api/admin/quotas/scopes/${encodeURIComponent(scopeId)}`),
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
   ).then((response) =>
-    readOrThrow<QuotaUser>(response, "Failed to update quota"),
+    readOrThrow<QuotaScope>(response, "Failed to update quota scope"),
+  );
+}
+
+export function loadQuotaUserDetail(userId: string, at?: string) {
+  return fetch(
+    adminUrl(`/api/admin/quotas/users/${encodeURIComponent(userId)}`, { at }),
+  ).then((response) =>
+    readOrThrow<QuotaUserDetail>(response, "Failed to load user quota"),
+  );
+}
+
+export function overrideUserCurrentPeriod(
+  userId: string,
+  scopeId: string,
+  payload: QuotaOverridePayload,
+) {
+  return fetch(
+    adminUrl(
+      `/api/admin/quotas/users/${encodeURIComponent(userId)}/scopes/${encodeURIComponent(scopeId)}/current-period`,
+    ),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  ).then((response) =>
+    readOrThrow<UserQuotaItem>(response, "Failed to update quota"),
+  );
+}
+
+export function restoreUserCurrentPeriod(userId: string, scopeId: string) {
+  return fetch(
+    adminUrl(
+      `/api/admin/quotas/users/${encodeURIComponent(userId)}/scopes/${encodeURIComponent(scopeId)}/current-period/override`,
+    ),
+    { method: "DELETE" },
+  ).then((response) =>
+    readOrThrow<UserQuotaItem>(response, "Failed to restore quota"),
+  );
+}
+
+export function loadUserQuotaPeriods(
+  userId: string,
+  scopeId: string,
+  params?: { start?: string; end?: string; limit?: number; cursor?: string },
+) {
+  return fetch(
+    adminUrl(
+      `/api/admin/quotas/users/${encodeURIComponent(userId)}/scopes/${encodeURIComponent(scopeId)}/periods`,
+      params,
+    ),
+  ).then((response) =>
+    readOrThrow<QuotaPeriodsResponse>(response, "Failed to load quota history"),
   );
 }
 

@@ -263,6 +263,15 @@ def build_subagent_runtime_middlewares(
         model_name = app_config.models[0].name
 
     model_config = app_config.get_model_config(model_name) if model_name else None
+    if model_config is not None:
+        from deerflow.agents.middlewares.quota_model_middleware import QuotaModelMiddleware
+
+        middlewares.append(
+            QuotaModelMiddleware(
+                model_id=model_config.model,
+            )
+        )
+
     from deerflow.config.vision_model_config import has_configured_vision_model
 
     if not has_configured_vision_model(app_config) and model_config is not None and model_config.supports_vision:

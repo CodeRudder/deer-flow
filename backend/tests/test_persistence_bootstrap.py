@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from alembic import command as alembic_command
 from sqlalchemy.ext.asyncio import create_async_engine
 
 # Pre-import models so Base.metadata is populated before bootstrap reads it.
@@ -47,7 +48,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "company_20260709_quota_control"
+HEAD = "company_20260715_group_quotas"
 BASELINE = "0001_baseline"
 
 
@@ -137,7 +138,8 @@ async def test_empty_branch_creates_all_and_stamps_head(tmp_path: Path) -> None:
             "channel_credentials",
             "channel_conversations",
             "channel_oauth_states",
-            "user_quota_periods",
+            "quota_scopes",
+            "user_quota_usage_periods",
             "alembic_version",
         }:
             assert required in tables, f"missing table: {required}"
@@ -468,9 +470,68 @@ async def test_admin_quota_schema_exists_after_legacy_upgrade(tmp_path: Path) ->
 
         await bootstrap_schema(engine, backend="sqlite")
 
-        assert "user_quota_periods" in await _table_names(engine)
+        tables = await _table_names(engine)
+        assert "quota_scopes" in tables
+        assert "user_quota_usage_periods" in tables
+        assert "user_quota_periods" in tables
         assert "image_generation_count" in await _runs_columns(engine)
         assert await _alembic_version(engine) == HEAD
+    finally:
+        await engine.dispose()
+
+
+@asyncio_test
+async def test_model_group_quota_migration_keeps_legacy_table_untouched(tmp_path: Path) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        cfg = _get_alembic_config(engine)
+        await asyncio.to_thread(_upgrade, cfg, "company_20260709_quota_control")
+        async with engine.begin() as conn:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO user_quota_periods ("
+                    "id, user_id, period, period_start, period_end, "
+                    "model_tokens_limit, model_tokens_used, model_tokens_enabled, "
+                    "model_requests_limit, model_requests_used, model_requests_enabled, "
+                    "image_generations_limit, image_generations_used, image_generations_enabled, "
+                    "created_at, updated_at, updated_by"
+                    ") VALUES ("
+                    "'old', 'user-1', 'monthly', '2026-06-30 16:00:00', '2026-07-31 16:00:00', "
+                    "100, 40, 1, 10, 2, 1, 60, 12, 1, "
+                    "'2026-07-01 00:00:00', '2026-07-15 00:00:00', 'admin-1'"
+                    ")"
+                )
+            )
+
+        await asyncio.to_thread(_upgrade, cfg, "head")
+
+        async with engine.connect() as conn:
+            legacy = (await conn.execute(sa.text("SELECT image_generations_limit, image_generations_used FROM user_quota_periods WHERE user_id = 'user-1'"))).mappings().one()
+            new_scope_count = (await conn.execute(sa.text("SELECT count(*) FROM quota_scopes"))).scalar_one()
+            new_usage_count = (await conn.execute(sa.text("SELECT count(*) FROM user_quota_usage_periods"))).scalar_one()
+        assert legacy["image_generations_limit"] == 60
+        assert legacy["image_generations_used"] == 12
+        assert new_scope_count == 0
+        assert new_usage_count == 0
+        assert "user_quota_periods" in await _table_names(engine)
+    finally:
+        await engine.dispose()
+
+
+@asyncio_test
+async def test_model_group_quota_downgrade_restores_legacy_schema_for_fresh_database(tmp_path: Path) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        await bootstrap_schema(engine, backend="sqlite")
+        assert "user_quota_periods" not in await _table_names(engine)
+
+        cfg = _get_alembic_config(engine)
+        await asyncio.to_thread(alembic_command.downgrade, cfg, "company_20260709_quota_control")
+
+        tables = await _table_names(engine)
+        assert "user_quota_periods" in tables
+        assert "quota_scopes" not in tables
+        assert "user_quota_usage_periods" not in tables
     finally:
         await engine.dispose()
 
@@ -498,11 +559,10 @@ def _reflect_columns_sync(sync_conn) -> dict[str, dict[str, dict]]:
     insp = sa.inspect(sync_conn)
     out: dict[str, dict[str, dict]] = {}
     for table in insp.get_table_names():
-        # ``alembic_version`` is alembic's own bookkeeping table, not part of
-        # our schema -- one path creates it (upgrade) and the other doesn't
-        # (create_all), so comparing it would produce a guaranteed false
-        # positive every run.
-        if table == "alembic_version":
+        # ``alembic_version`` is Alembic bookkeeping. ``user_quota_periods``
+        # is intentionally retained only on upgraded databases as archival
+        # data, while fresh databases contain only the replacement tables.
+        if table in {"alembic_version", "user_quota_periods"}:
             continue
         out[table] = {c["name"]: c for c in insp.get_columns(table)}
     return out

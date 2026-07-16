@@ -624,11 +624,18 @@ def test_bash_background_rejects_image_generation_before_dispatch(monkeypatch, c
     ],
 )
 async def test_async_bash_quota_rejection_skips_image_dispatch(monkeypatch, command: str) -> None:
-    async def consume(count: int):
-        assert count == 1
-        return {"allowed": False, "message": "本月生图额度已用尽", "exceeded_quota": "image_generations"}
+    class Bridge:
+        async def reserve_image_generations(self, count: int):
+            assert count == 1
+            return {"allowed": False, "message": "本月生图额度已用尽", "metric": "image_generations"}
 
-    runtime = SimpleNamespace(state={}, context={"__quota_image_generation_consume": consume})
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
+        },
+    )
 
     async def initialized(_runtime):
         return SimpleNamespace()
@@ -645,24 +652,27 @@ async def test_async_bash_quota_rejection_skips_image_dispatch(monkeypatch, comm
         command,
     )
 
-    assert "image_generations" in result
+    assert "本月生图额度已用尽" in result
 
 
 @pytest.mark.asyncio
 async def test_async_bash_releases_image_reservation_when_dispatch_does_not_start(monkeypatch) -> None:
-    released: list[int] = []
+    reservation = object()
+    released: list[object] = []
 
-    async def consume(count: int):
-        return {"allowed": True}
+    class Bridge:
+        async def reserve_image_generations(self, count: int):
+            assert count == 1
+            return {"allowed": True, "reservation": reservation}
 
-    async def release(count: int):
-        released.append(count)
+        async def release_image_generations(self, value: object):
+            released.append(value)
 
     runtime = SimpleNamespace(
         state={},
         context={
-            "__quota_image_generation_consume": consume,
-            "__quota_image_generation_release": release,
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
         },
     )
 
@@ -678,7 +688,101 @@ async def test_async_bash_releases_image_reservation_when_dispatch_does_not_star
         "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
     )
 
-    assert released == [1]
+    assert released == [reservation]
+
+
+@pytest.mark.asyncio
+async def test_async_bash_uses_subagent_quota_bridge_and_releases_exact_reservation(monkeypatch) -> None:
+    reservation = object()
+    released: list[object] = []
+
+    class Bridge:
+        async def reserve_image_generations(self, count: int):
+            assert count == 1
+            return {"allowed": True, "reservation": reservation, "used": 1}
+
+        async def release_image_generations(self, value: object):
+            released.append(value)
+
+    runtime = SimpleNamespace(
+        state={},
+        context={"__quota_runtime_bridge": Bridge()},
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr("deerflow.sandbox.tools._execute_bash_tool", lambda *_args: ("Error: invalid path", False))
+
+    await _bash_tool_async(
+        runtime,
+        "generate image",
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+    )
+
+    assert released == [reservation]
+
+
+@pytest.mark.asyncio
+async def test_async_bash_keeps_bridge_reservation_after_image_dispatch(monkeypatch) -> None:
+    reservation = object()
+    released: list[object] = []
+
+    class Bridge:
+        async def reserve_image_generations(self, count: int):
+            return {"allowed": True, "reservation": reservation, "used": count}
+
+        async def release_image_generations(self, value: object):
+            released.append(value)
+
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
+        },
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr("deerflow.sandbox.tools._execute_bash_tool", lambda *_args: ("Exit Code: 1", True))
+
+    result = await _bash_tool_async(
+        runtime,
+        "generate image",
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+    )
+
+    assert result == "Exit Code: 1"
+    assert released == []
+
+
+@pytest.mark.asyncio
+async def test_async_bash_fails_closed_without_required_quota_bridge(monkeypatch) -> None:
+    runtime = SimpleNamespace(
+        state={},
+        context={"__quota_enforcement_required": True},
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("missing required bridge must block image dispatch"),
+    )
+
+    result = await _bash_tool_async(
+        runtime,
+        "generate image",
+        "python /mnt/skills/public/image-generation/scripts/generate.py --prompt x",
+    )
+
+    assert "quota service is unavailable" in result
 
 
 @pytest.mark.parametrize(

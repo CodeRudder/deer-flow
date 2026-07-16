@@ -207,11 +207,6 @@ async def run_agent(
             from deerflow.runtime.journal import RunJournal
 
             async def _report_progress(snapshot: dict) -> None:
-                prepare_quota_period = runtime_ctx.get("__quota_period_prepare")
-                if callable(prepare_quota_period):
-                    result = prepare_quota_period()
-                    if inspect.isawaitable(result):
-                        await result
                 await run_manager.update_run_progress(run_id, **snapshot)
 
             journal = RunJournal(

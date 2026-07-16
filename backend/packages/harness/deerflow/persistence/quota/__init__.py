@@ -1,3 +1,3 @@
-from deerflow.persistence.quota.model import UserQuotaPeriodRow
+from deerflow.persistence.quota.model import QuotaScopeRow, UserQuotaUsagePeriodRow
 
-__all__ = ["UserQuotaPeriodRow"]
+__all__ = ["QuotaScopeRow", "UserQuotaUsagePeriodRow"]

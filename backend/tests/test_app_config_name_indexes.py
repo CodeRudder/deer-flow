@@ -64,6 +64,21 @@ def test_get_config_first_match_wins_on_duplicate_names():
     assert cfg.get_model_config("dup").model == "first"
 
 
+def test_duplicate_provider_model_identifiers_warn_without_blocking(caplog):
+    cfg = AppConfig.model_validate(
+        {
+            "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
+            "models": [
+                {"name": "primary", "use": "pkg:A", "model": "provider-model"},
+                {"name": "fallback", "use": "pkg:B", "model": "provider-model"},
+            ],
+        }
+    )
+
+    assert len(cfg.models) == 2
+    assert "Duplicate models[].model identifier" in caplog.text
+
+
 def test_duplicate_vision_model_names_are_rejected():
     with pytest.raises(ValueError, match="Duplicate vision model name"):
         _build(vision_model_names=["dup", "dup"])
@@ -87,14 +102,3 @@ def test_empty_config_lookups_return_none():
     assert cfg.get_vision_model_config("anything") is None
     assert cfg.get_tool_config("anything") is None
     assert cfg.get_tool_group_config("anything") is None
-
-
-def test_quota_control_requires_persistent_database():
-    with pytest.raises(ValueError, match="quota_control.enabled requires database.backend"):
-        AppConfig.model_validate(
-            {
-                "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
-                "database": {"backend": "memory"},
-                "quota_control": {"enabled": True},
-            }
-        )

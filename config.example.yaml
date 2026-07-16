@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 19
+config_version: 20
 
 # ============================================================================
 # Logging
@@ -51,30 +51,6 @@ platform_auth:
 # and shows usage metadata in the workspace UI when providers return it.
 token_usage:
   enabled: true
-
-# ============================================================================
-# Admin Quota Control — Monthly user quotas
-# ============================================================================
-# When enabled, DeerFlow checks the current user's monthly quota before creating
-# the next run. Running tasks are allowed to finish. Image generation/editing quota
-# is checked before each billable image skill command. Each defaults.*.enabled value
-# is both a system-level enforcement gate and the default copied to new user periods;
-# disabling a dimension skips enforcement but keeps usage tracking. Requires
-# database.backend to be sqlite or postgres; startup fails in memory mode.
-quota_control:
-  enabled: true
-  period: monthly
-  enforce_on_run_create: true
-  defaults:
-    model_tokens:
-      enabled: false
-      limit_value: 50000000
-    model_requests:
-      enabled: false
-      limit_value: 500
-    image_generations:
-      enabled: true
-      limit_value: 60
 
 # ============================================================================
 # Token Budget — Per-run token limits
