@@ -857,12 +857,14 @@ function UserRankingChart({
   title,
   users,
   color,
+  labelTone,
   format,
   isLoading,
 }: {
   title: string;
   users: UsageUserRank[];
   color: string;
+  labelTone: string;
   format: (value: number) => string;
   isLoading: boolean;
 }) {
@@ -946,15 +948,28 @@ function UserRankingChart({
                 onPointerEnter={(event) => positionTooltip(event, user.rank)}
                 onPointerMove={(event) => positionTooltip(event, user.rank)}
               >
-                <div className="flex h-[260px] items-end justify-center">
-                  <div
-                    className={`w-10 rounded-t-sm transition-[height] duration-300 ${color}`}
-                    style={{
-                      height: `${user.value ? Math.max(3, (user.value / maximum) * 100) : 0}%`,
-                    }}
-                    role="img"
-                    aria-label={`第 ${user.rank} 名，${user.email}，${title} ${format(user.value)}`}
-                  />
+                <div className="relative h-[260px]">
+                  {(() => {
+                    const height = user.value
+                      ? Math.max(3, (user.value / maximum) * 88)
+                      : 0;
+                    return (
+                      <>
+                        <span
+                          className={`absolute left-1/2 z-10 -translate-x-1/2 rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold whitespace-nowrap tabular-nums shadow-xs transition-[bottom,filter] duration-300 ${labelTone} ${activeRank === user.rank ? "brightness-95 dark:brightness-110" : ""}`}
+                          style={{ bottom: `calc(${height}% + 6px)` }}
+                        >
+                          {format(user.value)}
+                        </span>
+                        <div
+                          className={`absolute bottom-0 left-1/2 w-10 -translate-x-1/2 rounded-t-sm transition-[height,filter] duration-300 ${color} ${activeRank === user.rank ? "brightness-95 dark:brightness-110" : ""}`}
+                          style={{ height: `${height}%` }}
+                          role="img"
+                          aria-label={`第 ${user.rank} 名，${user.email}，${title} ${format(user.value)}`}
+                        />
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className="mt-3 truncate text-center text-xs font-medium">
                   {user.email}
@@ -1031,6 +1046,7 @@ function UserUsagePanel({
           title="Token"
           users={rankings.tokens}
           color="bg-amber-500 dark:bg-amber-400"
+          labelTone="border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
           format={formatNumber}
           isLoading={isLoading}
         />
@@ -1038,6 +1054,7 @@ function UserUsagePanel({
           title="模型请求"
           users={rankings.requests}
           color="bg-emerald-600 dark:bg-emerald-400"
+          labelTone="border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
           format={formatExactNumber}
           isLoading={isLoading}
         />
@@ -1045,6 +1062,7 @@ function UserUsagePanel({
           title="生图"
           users={rankings.images}
           color="bg-blue-600 dark:bg-blue-400"
+          labelTone="border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200"
           format={formatExactNumber}
           isLoading={isLoading}
         />
