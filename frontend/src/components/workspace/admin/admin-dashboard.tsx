@@ -74,6 +74,7 @@ import {
   type TrendPoint,
 } from "./admin-dashboard-helpers";
 import { SessionTracePanel } from "./session-trace-panel";
+import { UserManagementPanel } from "./user-management-panel";
 
 const ranges: Array<[UsageRange, string]> = [
   ["day", "天"],
@@ -1660,10 +1661,12 @@ export function AdminDashboard() {
       ]);
     } else if (tab === "quota") {
       void Promise.all([quotas.refetch(), quotaScopes.refetch()]);
-    } else {
+    } else if (tab === "trace") {
       void queryClient.invalidateQueries({
         queryKey: ["admin", "session-traces"],
       });
+    } else {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
     }
   };
 
@@ -1673,6 +1676,7 @@ export function AdminDashboard() {
     }
     if (tab === "trace")
       return "会话追踪 · 用户概览近 30 天 · 全部运行记录按创建时间倒序";
+    if (tab === "users") return "用户管理 · 默认展示可用账号";
     const period = usage.summary.data?.period;
     return period ? `${period.label} · UTC+08:00` : "统计概览";
   }, [quotaAt, quotas.data?.reference_at, tab, usage.summary.data?.period]);
@@ -1774,6 +1778,7 @@ export function AdminDashboard() {
             <TabsTrigger value="overview">统计概览</TabsTrigger>
             <TabsTrigger value="quota">额度管控</TabsTrigger>
             <TabsTrigger value="trace">会话追踪</TabsTrigger>
+            <TabsTrigger value="users">用户管理</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="mt-5 space-y-5">
@@ -2103,6 +2108,10 @@ export function AdminDashboard() {
 
           <TabsContent value="trace" className="mt-5">
             <SessionTracePanel />
+          </TabsContent>
+
+          <TabsContent value="users" className="mt-5">
+            <UserManagementPanel />
           </TabsContent>
         </Tabs>
       </div>

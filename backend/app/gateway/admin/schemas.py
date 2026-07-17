@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+
+from app.gateway.auth.models import AccountStatus, ApprovalEmailStatus
+
+
+class UserStatusFilter(StrEnum):
+    """Account-status filter values accepted by the admin user list."""
+
+    ACTIVE = AccountStatus.ACTIVE.value
+    PENDING = AccountStatus.PENDING.value
+    DISABLED = AccountStatus.DISABLED.value
+    ALL = "all"
 
 
 class PeriodInfo(BaseModel):
@@ -101,6 +114,41 @@ class QuotaScopesResponse(BaseModel):
     items: list[dict[str, Any]]
     unmatched_models: list[dict[str, str]]
     configuration_warnings: list[dict[str, Any]]
+
+
+class UserManagementSummaryResponse(BaseModel):
+    registration_approval_enabled: bool
+    total: int
+    active: int
+    pending: int
+    disabled: int
+
+
+class UserManagementItem(BaseModel):
+    id: str
+    email: str
+    role: Literal["admin", "user"]
+    source: Literal["local", "oidc", "platform"]
+    source_provider: str | None
+    created_at: datetime
+    account_status: AccountStatus
+    registration_requested_at: datetime | None
+    registration_approved_at: datetime | None
+    registration_approved_by: str | None
+    approval_email_status: ApprovalEmailStatus | None
+    approval_email_last_attempt_at: datetime | None
+    allowed_actions: list[Literal["edit", "approve", "disable", "enable", "retry_approval_email"]]
+
+
+class UserManagementListResponse(BaseModel):
+    items: list[UserManagementItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class UserEmailUpdateRequest(BaseModel):
+    email: EmailStr
 
 
 class TraceUserOption(BaseModel):

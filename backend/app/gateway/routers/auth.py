@@ -7,6 +7,7 @@ import re
 import secrets
 import time
 import urllib.parse
+from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -18,9 +19,11 @@ from app.gateway.auth import (
     UserResponse,
     create_access_token,
 )
+from app.gateway.auth.account_status import account_status_error_detail, ensure_account_active
 from app.gateway.auth.config import get_auth_config
 from app.gateway.auth.email_domain import enforce_email_domain_allowed
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
+from app.gateway.auth.models import AccountStatus
 from app.gateway.auth.oidc import OIDCError, OIDCService
 from app.gateway.auth.oidc_state import (
     OIDCStatePayload,
@@ -51,6 +54,13 @@ class LoginResponse(BaseModel):
 
     expires_in: int  # seconds
     needs_setup: bool = False
+
+
+class RegistrationPendingResponse(BaseModel):
+    """Response returned when registration requires administrator approval."""
+
+    status: AccountStatus = AccountStatus.PENDING
+    message: str = "申请已提交，请联系管理员审核。"
 
 
 # Top common-password blocklist. Drawn from the public SecLists "10k worst
@@ -312,6 +322,10 @@ async def login_local(
             detail=AuthErrorResponse(code=AuthErrorCode.INVALID_CREDENTIALS, message="Incorrect email or password").model_dump(),
         )
 
+    # A correct password is not a failed password attempt.  Check lifecycle
+    # state before clearing the rate-limit counter or issuing a session.
+    ensure_account_active(user)
+
     if config.auth.enforce_email_domain_on_login:
         enforce_email_domain_allowed(user.email, config.auth.allowed_email_domains)
 
@@ -325,7 +339,7 @@ async def login_local(
     )
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=None, status_code=status.HTTP_201_CREATED)
 async def register(request: Request, response: Response, body: RegisterRequest, config: AppConfig = Depends(get_config)):
     """Register a new user account (always 'user' role).
 
@@ -334,13 +348,45 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
     """
     enforce_email_domain_allowed(body.email, config.auth.allowed_email_domains)
 
-    try:
-        user = await get_local_provider().create_user(email=body.email, password=body.password, system_role="user")
-    except ValueError:
+    provider = get_local_provider()
+    local_registration = getattr(config.auth, "local_registration", None)
+    require_approval = bool(getattr(local_registration, "require_admin_approval", False))
+
+    # Pending re-submission is deliberately idempotent: do not rehash the
+    # password or move the original request timestamp.
+    existing = await provider.get_user_by_email(str(body.email))
+    if existing is not None:
+        if require_approval and existing.account_status == AccountStatus.PENDING:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return RegistrationPendingResponse()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=AuthErrorResponse(code=AuthErrorCode.EMAIL_ALREADY_EXISTS, message="Email already registered").model_dump(),
         )
+
+    try:
+        user = await provider.create_user(
+            email=body.email,
+            password=body.password,
+            system_role="user",
+            account_status=AccountStatus.PENDING if require_approval else AccountStatus.ACTIVE,
+            registration_requested_at=datetime.now(UTC) if require_approval else None,
+        )
+    except ValueError:
+        # A concurrent pending registration may have won the unique-email
+        # race. Re-read it to preserve the same idempotent 202 contract.
+        raced = await provider.get_user_by_email(str(body.email))
+        if require_approval and raced is not None and raced.account_status == AccountStatus.PENDING:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return RegistrationPendingResponse()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=AuthErrorResponse(code=AuthErrorCode.EMAIL_ALREADY_EXISTS, message="Email already registered").model_dump(),
+        )
+
+    if require_approval:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return RegistrationPendingResponse()
 
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request)
@@ -791,6 +837,14 @@ async def oauth_callback(
         return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
 
     user = result["user"]
+
+    status_detail = account_status_error_detail(user)
+    if status_detail is not None:
+        # Keep the existing OIDC UX: state/callback failures redirect to the
+        # frontend login page rather than exposing a JSON error from the GET
+        # callback. No session cookie is issued for non-active accounts.
+        redirect = _build_error_redirect(oidc_config.frontend_base_url, status_detail["code"])
+        return RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
 
     # ── Issue DeerFlow session ───────────────────────────────────────
     token = create_access_token(str(user.id), token_version=user.token_version)

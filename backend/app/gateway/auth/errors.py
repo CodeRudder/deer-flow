@@ -22,6 +22,15 @@ class AuthErrorCode(StrEnum):
     PROVIDER_NOT_FOUND = "provider_not_found"
     NOT_AUTHENTICATED = "not_authenticated"
     SYSTEM_ALREADY_INITIALIZED = "system_already_initialized"
+    REGISTRATION_PENDING = "registration_pending"
+    ACCOUNT_DISABLED = "account_disabled"
+    INVALID_ACCOUNT_STATUS_TRANSITION = "invalid_account_status_transition"
+    ADMIN_STATUS_CHANGE_NOT_ALLOWED = "admin_status_change_not_allowed"
+    ADMIN_PROFILE_EDIT_NOT_ALLOWED = "admin_profile_edit_not_allowed"
+    EXTERNAL_IDENTITY_EMAIL_NOT_EDITABLE = "external_identity_email_not_editable"
+    APPROVAL_EMAIL_NOT_RETRYABLE = "approval_email_not_retryable"
+    APPROVAL_EMAIL_IN_PROGRESS = "approval_email_in_progress"
+    USER_MANAGEMENT_UNAVAILABLE = "user_management_unavailable"
 
 
 class TokenError(StrEnum):

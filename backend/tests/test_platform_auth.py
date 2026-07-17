@@ -185,6 +185,39 @@ def test_auth_middleware_accepts_platform_header_and_stamps_state(rsa_keys):
     assert res.json() == {"user_id": str(user.id)}
 
 
+@pytest.mark.parametrize(
+    ("account_status", "error_code"),
+    [("pending", "registration_pending"), ("disabled", "account_disabled")],
+)
+def test_auth_middleware_rejects_non_active_platform_user(rsa_keys, account_status, error_code):
+    private_pem, public_pem = rsa_keys
+    config = AppConfig(
+        sandbox=SandboxConfig(use="test"),
+        platform_auth=PlatformAuthConfig(enabled=True, public_key=public_pem),
+    )
+    user = User(email="user@example.com", password_hash="hash", account_status=account_status)
+
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.get("/api/protected")
+    async def protected():
+        return {"ok": True}
+
+    with (
+        patch("app.gateway.auth_middleware.get_config", return_value=config),
+        patch("app.gateway.auth_middleware.get_platform_provider") as provider_factory,
+    ):
+        provider_factory.return_value.get_or_create_user_from_claims = AsyncMock(return_value=user)
+        res = TestClient(app).get(
+            "/api/protected",
+            headers={"JLC-WEB-API-AccessToken": _token(private_pem)},
+        )
+
+    assert res.status_code == 403
+    assert res.json()["detail"]["code"] == error_code
+
+
 def test_app_config_loads_platform_auth_from_yaml_env(tmp_path, monkeypatch, rsa_keys):
     _, public_pem = rsa_keys
     config_path = tmp_path / "config.yaml"

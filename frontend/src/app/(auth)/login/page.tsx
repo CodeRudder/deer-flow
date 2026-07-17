@@ -15,7 +15,10 @@ import {
   fetchSetupStatus,
   type SetupStatusResponse,
 } from "@/core/auth/setup";
-import { parseAuthError } from "@/core/auth/types";
+import {
+  parseAuthError,
+  registrationPendingResponseSchema,
+} from "@/core/auth/types";
 import { useI18n } from "@/core/i18n/hooks";
 
 /**
@@ -82,6 +85,7 @@ export default function LoginPage() {
   // "incorrect email or password" (deliberately, to avoid account enumeration).
   // Nudge the user toward the SSO buttons without confirming the account exists.
   const [showSsoHint, setShowSsoHint] = useState(false);
+  const [registrationPending, setRegistrationPending] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Get next parameter for validated redirect
@@ -177,7 +181,12 @@ export default function LoginPage() {
       if (!res.ok) {
         const data = await res.json();
         const authError = parseAuthError(data);
-        setError(authError.message);
+        const localizedMessage =
+          authError.code === "registration_pending" ||
+          authError.code === "account_disabled"
+            ? t.login.errors[authError.code]
+            : authError.message;
+        setError(localizedMessage);
         // A wrong password may mean this is an SSO-only account. Other failures,
         // such as a blocked email domain, should keep their own actionable message.
         setShowSsoHint(
@@ -187,6 +196,19 @@ export default function LoginPage() {
             providerCount: ssoProviders.length,
           }),
         );
+        return;
+      }
+
+      if (!isLogin && res.status === 202) {
+        const pending = registrationPendingResponseSchema.safeParse(
+          await res.json(),
+        );
+        if (!pending.success) {
+          setError(t.login.authFailed);
+          return;
+        }
+        setPassword("");
+        setRegistrationPending(true);
         return;
       }
 
@@ -234,47 +256,75 @@ export default function LoginPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-2">
-          <div className="flex flex-col space-y-1">
-            <label htmlFor="email" className="text-sm font-medium">
-              {t.login.email}
-            </label>
-            <Input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t.login.emailPlaceholder}
-              required
-            />
+        {registrationPending ? (
+          <div className="border-border bg-background/70 space-y-4 rounded-xl border p-5 text-center shadow-sm">
+            <div className="mx-auto grid size-10 place-items-center rounded-full bg-emerald-100 text-xl text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+              ✓
+            </div>
+            <div>
+              <h2 className="font-medium">
+                {t.login.registrationPendingTitle}
+              </h2>
+              <p className="text-muted-foreground mt-2 text-sm">
+                {t.login.registrationPendingDescription}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setRegistrationPending(false);
+                setIsLogin(true);
+                setError("");
+              }}
+            >
+              {t.login.registrationPendingBackToLogin}
+            </Button>
           </div>
-          <div className="flex flex-col space-y-1">
-            <label htmlFor="password" className="text-sm font-medium">
-              {t.login.password}
-            </label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t.login.passwordPlaceholder}
-              required
-              minLength={isLogin ? 6 : 8}
-            />
-          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-2">
+            <div className="flex flex-col space-y-1">
+              <label htmlFor="email" className="text-sm font-medium">
+                {t.login.email}
+              </label>
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={t.login.emailPlaceholder}
+                required
+              />
+            </div>
+            <div className="flex flex-col space-y-1">
+              <label htmlFor="password" className="text-sm font-medium">
+                {t.login.password}
+              </label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t.login.passwordPlaceholder}
+                required
+                minLength={isLogin ? 6 : 8}
+              />
+            </div>
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+            {error && <p className="text-sm text-red-500">{error}</p>}
 
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading
-              ? t.login.pleaseWait
-              : isLogin
-                ? t.login.signIn
-                : t.login.createAccount}
-          </Button>
-        </form>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading
+                ? t.login.pleaseWait
+                : isLogin
+                  ? t.login.signIn
+                  : t.login.createAccount}
+            </Button>
+          </form>
+        )}
 
-        {ssoProviders.length > 0 && (
+        {!registrationPending && ssoProviders.length > 0 && (
           <div className="space-y-2">
             {isLogin && (
               <div className="relative my-4">
@@ -310,7 +360,7 @@ export default function LoginPage() {
           </div>
         )}
 
-        {regularSignupAllowed && (
+        {!registrationPending && regularSignupAllowed && (
           <div className="text-center text-sm">
             <button
               type="button"

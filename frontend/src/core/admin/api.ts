@@ -2,6 +2,9 @@ import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 
 import type {
+  AdminUser,
+  AdminUsersResponse,
+  AdminUserSummary,
   QuotaOverridePayload,
   QuotaPeriodsResponse,
   QuotaScope,
@@ -22,6 +25,7 @@ import type {
   UsageSummary,
   UsageTrends,
   UsageUsers,
+  UserStatusFilter,
 } from "./types";
 
 function adminUrl(
@@ -61,6 +65,76 @@ export function loadUsageSummary(params: {
 }) {
   return fetch(adminUrl("/api/admin/usage/summary", params)).then((response) =>
     readOrThrow<UsageSummary>(response, "Failed to load usage summary"),
+  );
+}
+
+export function loadAdminUserSummary() {
+  return fetch(adminUrl("/api/admin/users/summary")).then((response) =>
+    readOrThrow<AdminUserSummary>(
+      response,
+      "Failed to load user management summary",
+    ),
+  );
+}
+
+export function loadAdminUsers(params: {
+  status: UserStatusFilter;
+  keyword?: string;
+  page?: number;
+  page_size?: number;
+}) {
+  return fetch(adminUrl("/api/admin/users", params)).then((response) =>
+    readOrThrow<AdminUsersResponse>(response, "Failed to load users"),
+  );
+}
+
+function runAdminUserAction(
+  userId: string,
+  action: "approve" | "disable" | "enable",
+) {
+  return fetch(
+    adminUrl(
+      `/api/admin/users/${encodeURIComponent(userId)}/${encodeURIComponent(action)}`,
+    ),
+    { method: "POST" },
+  ).then((response) =>
+    readOrThrow<AdminUser>(response, `Failed to ${action} user`),
+  );
+}
+
+export function approveAdminUser(userId: string) {
+  return runAdminUserAction(userId, "approve");
+}
+
+export function disableAdminUser(userId: string) {
+  return runAdminUserAction(userId, "disable");
+}
+
+export function enableAdminUser(userId: string) {
+  return runAdminUserAction(userId, "enable");
+}
+
+export function retryAdminUserApprovalEmail(userId: string) {
+  return fetch(
+    adminUrl(
+      `/api/admin/users/${encodeURIComponent(userId)}/approval-email/retry`,
+    ),
+    { method: "POST" },
+  ).then((response) =>
+    readOrThrow<AdminUser>(response, "Failed to resend approval email"),
+  );
+}
+
+export function updateAdminUserEmail(userId: string, email: string) {
+  return fetch(
+    adminUrl(`/api/admin/users/${encodeURIComponent(userId)}/email`),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+  ).then((response) =>
+    readOrThrow<AdminUser>(response, "Failed to update user email"),
   );
 }
 

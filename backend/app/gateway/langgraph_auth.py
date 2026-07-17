@@ -18,6 +18,7 @@ import secrets
 
 from langgraph_sdk import Auth
 
+from app.gateway.auth.account_status import ensure_account_active
 from app.gateway.auth.errors import TokenError
 from app.gateway.auth.jwt import decode_token
 from app.gateway.auth_disabled import AUTH_DISABLED_USER_ID, is_auth_disabled
@@ -98,6 +99,14 @@ async def authenticate(request):
             status_code=401,
             detail="Token revoked (password changed)",
         )
+
+    try:
+        ensure_account_active(user)
+    except Exception as exc:
+        # Convert Gateway's structured HTTPException to LangGraph's type.
+        detail = getattr(exc, "detail", "Account is not active")
+        status_code = getattr(exc, "status_code", 403)
+        raise Auth.exceptions.HTTPException(status_code=status_code, detail=detail) from exc
 
     return payload.sub
 

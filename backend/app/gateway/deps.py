@@ -361,6 +361,12 @@ async def get_current_user_from_request(request: Request):
         AUTH_SOURCE_AUTH_DISABLED,
         AUTH_SOURCE_INTERNAL,
     }:
+        # AuthMiddleware has already validated the persisted user before
+        # stamping this state. Keep the fast path, but preserve the same
+        # lifecycle assertion for alternative middleware compositions.
+        from app.gateway.auth.account_status import ensure_account_active
+
+        ensure_account_active(state_user)
         return state_user
 
     from app.gateway.auth import decode_token
@@ -395,6 +401,9 @@ async def get_current_user_from_request(request: Request):
             detail=AuthErrorResponse(code=AuthErrorCode.TOKEN_INVALID, message="Token revoked (password changed)").model_dump(),
         )
 
+    from app.gateway.auth.account_status import ensure_account_active
+
+    ensure_account_active(user)
     return user
 
 

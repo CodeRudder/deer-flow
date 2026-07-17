@@ -40,8 +40,15 @@ def _req(cookies=None, method="GET", headers=None):
     return SimpleNamespace(cookies=cookies or {}, method=method, headers=headers or {})
 
 
-def _user(user_id=None, token_version=0):
-    return User(email="test@example.com", password_hash="fakehash", system_role="user", id=user_id or uuid4(), token_version=token_version)
+def _user(user_id=None, token_version=0, account_status="active"):
+    return User(
+        email="test@example.com",
+        password_hash="fakehash",
+        system_role="user",
+        id=user_id or uuid4(),
+        token_version=token_version,
+        account_status=account_status,
+    )
 
 
 def _mock_provider(user=None):
@@ -115,6 +122,22 @@ def test_valid_token_matching_version():
     with patch("app.gateway.langgraph_auth.get_local_provider", return_value=_mock_provider(user)):
         result = asyncio.run(authenticate(_req({"access_token": token})))
     assert result == str(user.id)
+
+
+@pytest.mark.parametrize(
+    ("account_status", "error_code"),
+    [("pending", "registration_pending"), ("disabled", "account_disabled")],
+)
+def test_non_active_account_is_rejected(account_status, error_code):
+    user = _user(account_status=account_status)
+    token = create_access_token(str(user.id), token_version=0)
+
+    with patch("app.gateway.langgraph_auth.get_local_provider", return_value=_mock_provider(user)):
+        with pytest.raises(Auth.exceptions.HTTPException) as exc:
+            asyncio.run(authenticate(_req({"access_token": token})))
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == error_code
 
 
 # ── @auth.authenticate edge cases ────────────────────────────────────────

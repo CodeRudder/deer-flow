@@ -17,6 +17,7 @@ from sqlalchemy import Boolean, DateTime, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
+from deerflow.persistence.user.status import AccountStatus
 
 
 class UserRow(Base):
@@ -38,6 +39,20 @@ class UserRow(Base):
         default=lambda: datetime.now(UTC),
     )
 
+    # Current account access state plus the one-time registration approval
+    # metadata. Existing and non-local users default to active.
+    account_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=AccountStatus.ACTIVE.value,
+        server_default=text(f"'{AccountStatus.ACTIVE.value}'"),
+    )
+    registration_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    registration_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    registration_approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approval_email_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    approval_email_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # OAuth linkage (optional). A partial unique index enforces one
     # account per (provider, oauth_id) pair, leaving NULL/NULL rows
     # unconstrained so plain password accounts can coexist.
@@ -55,5 +70,12 @@ class UserRow(Base):
             "oauth_id",
             unique=True,
             sqlite_where=text("oauth_provider IS NOT NULL AND oauth_id IS NOT NULL"),
+        ),
+        Index("idx_users_account_status_created", "account_status", "created_at", "id"),
+        Index(
+            "idx_users_pending_queue",
+            "account_status",
+            "registration_requested_at",
+            "id",
         ),
     )

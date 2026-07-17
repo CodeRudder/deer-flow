@@ -48,7 +48,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "company_20260715_group_quotas"
+HEAD = "company_20260716_user_mgmt"
 BASELINE = "0001_baseline"
 
 

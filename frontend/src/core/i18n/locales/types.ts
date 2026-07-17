@@ -481,6 +481,9 @@ export interface Translations {
     pleaseWait: string;
     signIn: string;
     createAccount: string;
+    registrationPendingTitle: string;
+    registrationPendingDescription: string;
+    registrationPendingBackToLogin: string;
     createAdminAccount: string;
     adminSetupRequiredTitle: string;
     adminSetupRequiredDescription: string;
@@ -498,6 +501,8 @@ export interface Translations {
       sso_cancelled: string;
       sso_account_exists: string;
       sso_not_allowed: string;
+      registration_pending: string;
+      account_disabled: string;
     };
   };
 }

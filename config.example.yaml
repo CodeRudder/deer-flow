@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 20
+config_version: 22
 
 # ============================================================================
 # Logging
@@ -1697,6 +1697,26 @@ auth:
   allowed_email_domains:
     - sz-jlc.com
   enforce_email_domain_on_login: false
+
+  # Public local registrations remain immediately active by default. To require
+  # administrator approval, enable both switches below and provide the SMTP
+  # environment variables. Approval notifications use implicit TLS (SMTP SSL)
+  # on port 465 and run after the account status transaction commits. Tencent
+  # Exmail's recommended SMTP endpoint is shown as the default example.
+  local_registration:
+    require_admin_approval: false
+    approval_email:
+      enabled: false
+      # login_url: https://deerflow.example.com/login
+      # from_name: DeerFlow
+      # from_address: $SMTP_FROM
+      # smtp:
+      #   host: smtp.exmail.qq.com
+      #   port: 465
+      #   security: ssl
+      #   username: $SMTP_USERNAME
+      #   password: $SMTP_PASSWORD
+      #   timeout_seconds: 10
 
 # Enable SSO login via any OIDC-compatible provider (Keycloak, Google, Azure AD, Okta, etc.).
 # When enabled, the login page will show SSO buttons alongside the standard email/password form.

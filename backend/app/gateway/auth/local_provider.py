@@ -1,8 +1,9 @@
 """Local email/password authentication provider."""
 
 import logging
+from datetime import datetime
 
-from app.gateway.auth.models import User
+from app.gateway.auth.models import AccountStatus, User
 from app.gateway.auth.password import hash_password_async, needs_rehash, verify_password_async
 from app.gateway.auth.providers import AuthProvider
 from app.gateway.auth.repositories.base import UserRepository
@@ -62,7 +63,16 @@ class LocalAuthProvider(AuthProvider):
         """Get user by ID."""
         return await self._repo.get_user_by_id(user_id)
 
-    async def create_user(self, email: str, password: str | None = None, system_role: str = "user", needs_setup: bool = False) -> User:
+    async def create_user(
+        self,
+        email: str,
+        password: str | None = None,
+        system_role: str = "user",
+        needs_setup: bool = False,
+        *,
+        account_status: AccountStatus = AccountStatus.ACTIVE,
+        registration_requested_at: datetime | None = None,
+    ) -> User:
         """Create a new local user.
 
         Args:
@@ -80,6 +90,8 @@ class LocalAuthProvider(AuthProvider):
             password_hash=password_hash,
             system_role=system_role,
             needs_setup=needs_setup,
+            account_status=account_status,
+            registration_requested_at=registration_requested_at,
         )
         return await self._repo.create_user(user)
 
@@ -128,5 +140,6 @@ class LocalAuthProvider(AuthProvider):
             needs_setup=False,
             oauth_provider=oauth_provider,
             oauth_id=oauth_id,
+            account_status=AccountStatus.ACTIVE,
         )
         return await self._repo.create_user(user)

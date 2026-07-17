@@ -1,5 +1,7 @@
 import { beforeEach, expect, test, rs } from "@rstest/core";
 
+import { ACCOUNT_STATUS } from "@/core/auth/user-status";
+
 const fetchWithAuth = rs.fn();
 
 rs.mock("@/core/api/fetcher", () => ({
@@ -36,6 +38,57 @@ test("custom usage range sends start and end query parameters", async () => {
   expect(url.searchParams.get("start")).toBe("2026-07-01");
   expect(url.searchParams.get("end")).toBe("2026-07-08");
   expect(url.searchParams.has("from")).toBe(false);
+});
+
+test("user management list sends status, search, and pagination", async () => {
+  const { loadAdminUsers } = await import("@/core/admin/api");
+
+  await loadAdminUsers({
+    status: ACCOUNT_STATUS.PENDING,
+    keyword: "user/1@example.com",
+    page: 2,
+    page_size: 20,
+  });
+
+  const url = new URL(
+    fetchWithAuth.mock.calls[0]![0] as string,
+    "http://localhost:2026",
+  );
+  expect(url.pathname).toBe("/api/admin/users");
+  expect(url.searchParams.get("status")).toBe("pending");
+  expect(url.searchParams.get("keyword")).toBe("user/1@example.com");
+  expect(url.searchParams.get("page")).toBe("2");
+  expect(url.searchParams.get("page_size")).toBe("20");
+});
+
+test("user management mutations encode IDs and use explicit action routes", async () => {
+  const {
+    approveAdminUser,
+    disableAdminUser,
+    enableAdminUser,
+    retryAdminUserApprovalEmail,
+    updateAdminUserEmail,
+  } = await import("@/core/admin/api");
+
+  await approveAdminUser("user/1");
+  await disableAdminUser("user/1");
+  await enableAdminUser("user/1");
+  await retryAdminUserApprovalEmail("user/1");
+  await updateAdminUserEmail("user/1", "new@example.com");
+
+  const calls = fetchWithAuth.mock.calls as Array<[string, RequestInit]>;
+  expect(calls[0]![0]).toContain("/users/user%2F1/approve");
+  expect(calls[1]![0]).toContain("/users/user%2F1/disable");
+  expect(calls[2]![0]).toContain("/users/user%2F1/enable");
+  expect(calls[3]![0]).toContain("/users/user%2F1/approval-email/retry");
+  expect(calls.slice(0, 4).every(([, init]) => init.method === "POST")).toBe(
+    true,
+  );
+  expect(calls[4]![0]).toContain("/users/user%2F1/email");
+  expect(calls[4]![1].method).toBe("PUT");
+  expect(JSON.parse(calls[4]![1].body as string)).toEqual({
+    email: "new@example.com",
+  });
 });
 
 test("user usage requests all three rankings with one limit", async () => {

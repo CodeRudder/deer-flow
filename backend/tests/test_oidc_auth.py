@@ -53,6 +53,31 @@ async def test_oidc_existing_local_account_blocks_sso_login_even_when_unverified
     local_provider.update_user.assert_not_called()
 
 
+@pytest.mark.parametrize("account_status", ["pending", "disabled"])
+@pytest.mark.asyncio
+async def test_oidc_existing_identity_preserves_non_active_status(account_status):
+    existing = User(
+        email="user@example.com",
+        password_hash=None,
+        oauth_provider="keycloak",
+        oauth_id="oidc-subject",
+        account_status=account_status,
+    )
+    local_provider = AsyncMock()
+    local_provider.get_user_by_oauth.return_value = existing
+
+    result = await get_or_provision_oidc_user(
+        provider_id="keycloak",
+        provider_config=_provider_config(),
+        identity=_identity(),
+        local_provider=local_provider,
+    )
+
+    assert result == {"user": existing, "created": False}
+    assert result["user"].account_status == account_status
+    local_provider.create_oauth_user.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_oidc_existing_local_account_blocks_sso_login_even_when_verified():
     local_user = User(email="user@example.com", password_hash="hash")

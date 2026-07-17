@@ -16,6 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
+from app.gateway.auth.account_status import ensure_account_active
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.auth.platform_jwt import PlatformTokenError, parse_platform_user_claims
 from app.gateway.auth_disabled import (
@@ -133,6 +134,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             try:
                 claims = parse_platform_user_claims(platform_token, platform_config)
                 user = await get_platform_provider().get_or_create_user_from_claims(claims)
+                ensure_account_active(user)
             except PlatformTokenError as exc:
                 return JSONResponse(
                     status_code=401,
@@ -153,6 +155,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         ).model_dump()
                     },
                 )
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         elif is_auth_disabled():
             user = get_auth_disabled_user()
             auth_source = AUTH_SOURCE_AUTH_DISABLED

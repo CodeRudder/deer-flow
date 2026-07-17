@@ -360,6 +360,27 @@ def test_protected_path_with_junk_cookie_rejected(client):
     assert res.status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("account_status", "error_code"),
+    [("pending", "registration_pending"), ("disabled", "account_disabled")],
+)
+def test_session_user_non_active_status_is_rejected(client, monkeypatch, account_status, error_code):
+    from app.gateway.auth.models import User
+
+    user = User(email="status@example.com", password_hash="hash", account_status=account_status)
+
+    async def fake_current_user(request):
+        from app.gateway.auth.account_status import ensure_account_active
+
+        ensure_account_active(user)
+
+    monkeypatch.setattr("app.gateway.deps.get_current_user_from_request", fake_current_user)
+    res = client.get("/api/models", cookies={"access_token": "valid-session"})
+
+    assert res.status_code == 403
+    assert res.json()["detail"]["code"] == error_code
+
+
 def test_protected_post_no_cookie_returns_401(client):
     res = client.post("/api/threads/abc/runs/stream")
     assert res.status_code == 401

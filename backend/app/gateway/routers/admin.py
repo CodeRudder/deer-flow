@@ -23,10 +23,17 @@ from app.gateway.admin.schemas import (
     UsageSummaryResponse,
     UsageTrendsResponse,
     UsageUsersResponse,
+    UserEmailUpdateRequest,
+    UserManagementItem,
+    UserManagementListResponse,
+    UserManagementSummaryResponse,
+    UserStatusFilter,
 )
 from app.gateway.admin.session_trace_service import SessionTraceNotFoundError, SessionTraceService
 from app.gateway.admin.usage_service import AdminUsageService
-from app.gateway.deps import get_config, get_run_event_store, require_admin_user
+from app.gateway.admin.user_management_service import UserManagementError, UserManagementService
+from app.gateway.auth.models import AccountStatus
+from app.gateway.deps import get_config, get_current_user_from_request, get_run_event_store, get_user_repository, require_admin_user
 from deerflow.persistence.engine import get_session_factory
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -114,6 +121,18 @@ def _usage_service() -> AdminUsageService:
     return AdminUsageService(sf)
 
 
+def _user_management_service() -> UserManagementService:
+    try:
+        return UserManagementService(get_user_repository(), get_config())
+    except (RuntimeError, HTTPException) as exc:
+        if isinstance(exc, HTTPException) and exc.status_code != 503:
+            raise
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "user_management_unavailable", "message": "User management is unavailable"},
+        ) from exc
+
+
 def _trace_service(request: Request) -> SessionTraceService:
     sf = get_session_factory()
     if sf is None:
@@ -123,6 +142,91 @@ def _trace_service(request: Request) -> SessionTraceService:
 
 async def _require_admin(request: Request) -> None:
     await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
+
+
+def _raise_user_management_error(exc: UserManagementError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+
+
+async def _admin_id(request: Request) -> str:
+    await _require_admin(request)
+    user = getattr(request.state, "user", None)
+    if user is None:
+        user = await get_current_user_from_request(request)
+    return str(user.id)
+
+
+@router.get("/users/summary", response_model=UserManagementSummaryResponse)
+async def user_management_summary(request: Request) -> dict[str, Any]:
+    await _require_admin(request)
+    return await _user_management_service().summary()
+
+
+@router.get("/users", response_model=UserManagementListResponse)
+async def list_managed_users(
+    request: Request,
+    status: UserStatusFilter = Query(default=UserStatusFilter.ACTIVE),
+    keyword: str | None = Query(default=None, max_length=320),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    await _require_admin(request)
+    account_status = None if status is UserStatusFilter.ALL else AccountStatus(status.value)
+    return await _user_management_service().list_users(
+        status=account_status,
+        keyword=keyword,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/users/{user_id}/approve", response_model=UserManagementItem)
+async def approve_managed_user(user_id: str, request: Request) -> dict[str, Any]:
+    admin_id = await _admin_id(request)
+    try:
+        return await _user_management_service().approve(user_id, admin_id=admin_id)
+    except UserManagementError as exc:
+        _raise_user_management_error(exc)
+
+
+@router.post("/users/{user_id}/disable", response_model=UserManagementItem)
+async def disable_managed_user(user_id: str, request: Request) -> dict[str, Any]:
+    await _require_admin(request)
+    try:
+        return await _user_management_service().disable(user_id)
+    except UserManagementError as exc:
+        _raise_user_management_error(exc)
+
+
+@router.post("/users/{user_id}/enable", response_model=UserManagementItem)
+async def enable_managed_user(user_id: str, request: Request) -> dict[str, Any]:
+    await _require_admin(request)
+    try:
+        return await _user_management_service().enable(user_id)
+    except UserManagementError as exc:
+        _raise_user_management_error(exc)
+
+
+@router.post("/users/{user_id}/approval-email/retry", response_model=UserManagementItem)
+async def retry_managed_user_approval_email(user_id: str, request: Request) -> dict[str, Any]:
+    await _require_admin(request)
+    try:
+        return await _user_management_service().retry_approval_email(user_id)
+    except UserManagementError as exc:
+        _raise_user_management_error(exc)
+
+
+@router.put("/users/{user_id}/email", response_model=UserManagementItem)
+async def update_managed_user_email(
+    user_id: str,
+    body: UserEmailUpdateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    await _require_admin(request)
+    try:
+        return await _user_management_service().update_email(user_id, str(body.email))
+    except UserManagementError as exc:
+        _raise_user_management_error(exc)
 
 
 @router.get("/session-traces/users", response_model=TraceUsersResponse)

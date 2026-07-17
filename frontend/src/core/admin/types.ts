@@ -1,4 +1,60 @@
+import type {
+  AccountStatus,
+  ApprovalEmailStatus,
+} from "@/core/auth/user-status";
+
+export {
+  ACCOUNT_STATUS,
+  APPROVAL_EMAIL_STATUS,
+  USER_STATUS_FILTER,
+} from "@/core/auth/user-status";
+export type {
+  AccountStatus,
+  ApprovalEmailStatus,
+  UserStatusFilter,
+} from "@/core/auth/user-status";
+
 export type UsageRange = "day" | "week" | "month" | "custom";
+export type UserRole = "admin" | "user";
+export type UserSource = "local" | "oidc" | "platform";
+export type AdminUserAction =
+  | "edit"
+  | "approve"
+  | "disable"
+  | "enable"
+  | "retry_approval_email";
+
+export interface AdminUserSummary {
+  registration_approval_enabled: boolean;
+  total: number;
+  active: number;
+  pending: number;
+  disabled: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  source: UserSource;
+  source_provider: string | null;
+  created_at: string;
+  account_status: AccountStatus;
+  registration_requested_at: string | null;
+  registration_approved_at: string | null;
+  registration_approved_by: string | null;
+  approval_email_status: ApprovalEmailStatus | null;
+  approval_email_last_attempt_at: string | null;
+  allowed_actions: AdminUserAction[];
+}
+
+export interface AdminUsersResponse {
+  items: AdminUser[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export type QuotaStatus =
   | "all"
   | "normal"

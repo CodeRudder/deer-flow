@@ -555,6 +555,10 @@ export const zhCN: Translations = {
     pleaseWait: "请稍候...",
     signIn: "登录",
     createAccount: "创建账号",
+    registrationPendingTitle: "申请已提交",
+    registrationPendingDescription:
+      "请联系管理员审核。审核通过后，我们会向你的企业邮箱发送通知。",
+    registrationPendingBackToLogin: "返回登录",
     createAdminAccount: "创建管理员账号",
     adminSetupRequiredTitle: "需要先完成管理员初始化",
     adminSetupRequiredDescription:
@@ -574,6 +578,8 @@ export const zhCN: Translations = {
       sso_account_exists:
         "该邮箱对应的账号已存在。请使用密码登录或联系管理员。",
       sso_not_allowed: "你的账号不允许使用 SSO 登录。请联系管理员。",
+      registration_pending: "注册申请正在等待管理员审批，请耐心等待。",
+      account_disabled: "账号已被禁用，请联系管理员。",
     },
   },
 };

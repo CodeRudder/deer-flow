@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  approveAdminUser,
   createQuotaScope,
+  disableAdminUser,
+  enableAdminUser,
+  loadAdminUsers,
+  loadAdminUserSummary,
   loadQuotaScopes,
   loadQuotaUserDetail,
   loadQuotaUsers,
@@ -15,15 +20,84 @@ import {
   loadUsageTrends,
   loadUsageUsers,
   overrideUserCurrentPeriod,
+  retryAdminUserApprovalEmail,
   restoreUserCurrentPeriod,
+  updateAdminUserEmail,
   updateQuotaScope,
 } from "./api";
 import type {
+  AdminUser,
   QuotaOverridePayload,
   QuotaScopePayload,
   QuotaStatus,
   UsageRange,
+  UserStatusFilter,
 } from "./types";
+
+const ADMIN_USERS_QUERY_KEY = ["admin", "users"] as const;
+
+export function useAdminUserManagement(params: {
+  status: UserStatusFilter;
+  keyword?: string;
+  page?: number;
+  page_size?: number;
+}) {
+  const normalized = {
+    ...params,
+    page: params.page ?? 1,
+    page_size: params.page_size ?? 20,
+  };
+  const summary = useQuery({
+    queryKey: [...ADMIN_USERS_QUERY_KEY, "summary"],
+    queryFn: loadAdminUserSummary,
+  });
+  const users = useQuery({
+    queryKey: [...ADMIN_USERS_QUERY_KEY, "list", normalized],
+    queryFn: () => loadAdminUsers(normalized),
+  });
+  return { summary, users };
+}
+
+function useAdminUserMutation<TVariables>(
+  mutationFn: (variables: TVariables) => Promise<AdminUser>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ADMIN_USERS_QUERY_KEY });
+    },
+  });
+}
+
+export function useAdminUserStatusAction() {
+  return useAdminUserMutation(
+    ({
+      userId,
+      action,
+    }: {
+      userId: string;
+      action: "approve" | "disable" | "enable";
+    }) => {
+      if (action === "approve") return approveAdminUser(userId);
+      if (action === "disable") return disableAdminUser(userId);
+      return enableAdminUser(userId);
+    },
+  );
+}
+
+export function useRetryAdminUserApprovalEmail() {
+  return useAdminUserMutation((userId: string) =>
+    retryAdminUserApprovalEmail(userId),
+  );
+}
+
+export function useUpdateAdminUserEmail() {
+  return useAdminUserMutation(
+    ({ userId, email }: { userId: string; email: string }) =>
+      updateAdminUserEmail(userId, email),
+  );
+}
 
 export function useAdminUsage(
   range: UsageRange,

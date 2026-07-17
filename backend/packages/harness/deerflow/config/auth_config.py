@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+_EMAIL_LOCAL_PART_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
 
 
 def _normalize_email_domain(domain: str) -> str:
@@ -94,6 +97,89 @@ class OIDCAuthConfig(BaseModel):
     )
 
 
+class SMTPConfig(BaseModel):
+    """Implicit-TLS SMTP connection settings for registration notifications."""
+
+    host: str = Field(description="SMTP server hostname")
+    port: int = Field(default=465, ge=1, le=65535)
+    security: Literal["ssl"] = "ssl"
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    timeout_seconds: int = Field(default=10, ge=1, le=30)
+
+    @field_validator("host", "username")
+    @classmethod
+    def _validate_nonempty_connection_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "\r" in normalized or "\n" in normalized:
+            raise ValueError("SMTP host and username must be non-empty single-line values")
+        return normalized
+
+
+class ApprovalEmailConfig(BaseModel):
+    """Email notification settings used after an administrator approves a user."""
+
+    enabled: bool = False
+    login_url: str | None = None
+    from_name: str = "DeerFlow"
+    from_address: str | None = None
+    smtp: SMTPConfig | None = None
+
+    @field_validator("from_name")
+    @classmethod
+    def _validate_from_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "\r" in value or "\n" in value:
+            raise ValueError("approval email from_name must be a non-empty single-line value")
+        return normalized
+
+    @field_validator("from_address")
+    @classmethod
+    def _validate_from_address(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = value.strip()
+        if "\r" in candidate or "\n" in candidate or candidate.count("@") != 1:
+            raise ValueError("approval email from_address must be a valid email address")
+        local_part, domain = candidate.rsplit("@", 1)
+        if not local_part or len(local_part) > 64 or local_part.startswith(".") or local_part.endswith(".") or ".." in local_part or _EMAIL_LOCAL_PART_RE.fullmatch(local_part) is None:
+            raise ValueError("approval email from_address must be a valid email address")
+        try:
+            normalized_domain = _normalize_email_domain(domain)
+        except ValueError as exc:
+            raise ValueError("approval email from_address must be a valid email address") from exc
+        return f"{local_part}@{normalized_domain}"
+
+    @field_validator("login_url")
+    @classmethod
+    def _validate_login_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if "\r" in normalized or "\n" in normalized:
+            raise ValueError("approval email login_url must be a single-line value")
+        return normalized or None
+
+    @model_validator(mode="after")
+    def _require_delivery_settings_when_enabled(self) -> ApprovalEmailConfig:
+        if self.enabled and (self.from_address is None or self.smtp is None):
+            raise ValueError("enabled approval_email requires from_address and smtp settings")
+        return self
+
+
+class LocalRegistrationConfig(BaseModel):
+    """Local email/password registration workflow settings."""
+
+    require_admin_approval: bool = False
+    approval_email: ApprovalEmailConfig = Field(default_factory=ApprovalEmailConfig)
+
+    @model_validator(mode="after")
+    def _require_email_when_approval_enabled(self) -> LocalRegistrationConfig:
+        if self.require_admin_approval and not self.approval_email.enabled:
+            raise ValueError("require_admin_approval requires approval_email.enabled=true")
+        return self
+
+
 class AuthAppConfig(BaseModel):
     """Authentication configuration section for the DeerFlow app config."""
 
@@ -104,6 +190,10 @@ class AuthAppConfig(BaseModel):
     enforce_email_domain_on_login: bool = Field(
         default=False,
         description="Enforce allowed_email_domains after successful local email/password authentication",
+    )
+    local_registration: LocalRegistrationConfig = Field(
+        default_factory=LocalRegistrationConfig,
+        description="Local registration approval and notification settings",
     )
     oidc: OIDCAuthConfig = Field(default_factory=OIDCAuthConfig, description="OIDC SSO authentication settings")
 

@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+import {
+  ACCOUNT_STATUS,
+  ACCOUNT_STATUS_VALUES,
+  type AccountStatus,
+} from "./user-status";
+
 // ── User schema (single source of truth) ──────────────────────────
 
 export const userSchema = z.object({
@@ -8,11 +14,28 @@ export const userSchema = z.object({
   system_role: z.enum(["admin", "user"]),
   needs_setup: z.boolean().optional().default(false),
   oauth_provider: z.string().nullable().optional().default(null),
+  account_status: z
+    .enum(ACCOUNT_STATUS_VALUES)
+    .optional()
+    .default(ACCOUNT_STATUS.ACTIVE),
 });
 
-export type User = Omit<z.infer<typeof userSchema>, "oauth_provider"> & {
+export type User = Omit<
+  z.infer<typeof userSchema>,
+  "oauth_provider" | "account_status"
+> & {
   oauth_provider?: string | null;
+  account_status?: AccountStatus;
 };
+
+export const registrationPendingResponseSchema = z.object({
+  status: z.literal(ACCOUNT_STATUS.PENDING),
+  message: z.string(),
+});
+
+export type RegistrationPendingResponse = z.infer<
+  typeof registrationPendingResponseSchema
+>;
 
 // ── SSR auth result (tagged union) ────────────────────────────────
 
@@ -44,6 +67,8 @@ const AUTH_ERROR_CODES = [
   "provider_not_found",
   "not_authenticated",
   "system_already_initialized",
+  "registration_pending",
+  "account_disabled",
 ] as const;
 
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];

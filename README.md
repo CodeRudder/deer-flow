@@ -126,9 +126,15 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
      allowed_email_domains:
        - sz-jlc.com
      enforce_email_domain_on_login: false
+     local_registration:
+       require_admin_approval: false
+       approval_email:
+         enabled: false
    ```
 
    Registration and any `new_email` submitted to the password-change endpoint always enforce `allowed_email_domains`. Setting `enforce_email_domain_on_login: true` also checks the persisted account email after a local password has been verified and before a new session is issued. The policy does not change first-admin creation, OIDC/SSO provisioning, or platform-JWT provisioning, but every account that later uses the local password-login endpoint is subject to the login switch, including administrators. Verify at least one administrator has an allowed email before enabling it.
+
+   The admin dashboard also includes **User Management**. It lists active, pending, and disabled users; administrators can approve local registrations, disable or restore normal users, retry a failed approval notification, and edit a normal local account's email. Administrator profiles remain read-only. Email edits invalidate that account's existing sessions. Account and approval-email lifecycle values are centrally defined string enums while their database and API values remain unchanged. To place new public local registrations into the pending state, set `auth.local_registration.require_admin_approval: true` and enable the SMTP SSL block shown in `config.example.yaml`; the default remains immediate registration for backward compatibility. Approval mail uses implicit TLS on port 465 (`smtp.exmail.qq.com` in the Tencent Exmail example); IMAP and POP are not involved.
 
    <details>
    <summary>Manual model configuration examples</summary>

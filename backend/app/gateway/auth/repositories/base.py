@@ -1,8 +1,9 @@
 """User repository interface for abstracting database operations."""
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
-from app.gateway.auth.models import User
+from app.gateway.auth.models import AccountStatus, User, UserMutationResult, UserPage, UserStatusSummary
 
 
 class UserNotFoundError(LookupError):
@@ -59,6 +60,59 @@ class UserRepository(ABC):
         Returns:
             User if found, None otherwise
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_summary(self) -> UserStatusSummary:
+        """Return total and per-account-status user counts."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_users(
+        self,
+        *,
+        status: AccountStatus | None,
+        keyword: str | None,
+        page: int,
+        page_size: int,
+    ) -> UserPage:
+        """Return a filtered, ordered page of users."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def approve_user(self, user_id: str, *, admin_id: str, now: datetime) -> UserMutationResult:
+        """Atomically transition a normal user from pending to active."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def disable_user(self, user_id: str) -> UserMutationResult:
+        """Atomically disable an active normal user and revoke sessions."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def enable_user(self, user_id: str) -> UserMutationResult:
+        """Atomically restore a disabled normal user."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def claim_approval_email(
+        self,
+        user_id: str,
+        *,
+        attempted_at: datetime,
+        stale_before: datetime,
+    ) -> UserMutationResult:
+        """Try to claim the approval-notification send for one request."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def finish_approval_email(self, user_id: str, *, success: bool) -> UserMutationResult:
+        """Finish a claimed approval-notification send."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_local_email(self, user_id: str, email: str) -> UserMutationResult:
+        """Atomically update a local account email and revoke its sessions."""
         raise NotImplementedError
 
     @abstractmethod

@@ -577,6 +577,10 @@ export const enUS: Translations = {
     pleaseWait: "Please wait...",
     signIn: "Sign In",
     createAccount: "Create Account",
+    registrationPendingTitle: "Application submitted",
+    registrationPendingDescription:
+      "Contact your administrator for approval. We will notify your company email after approval.",
+    registrationPendingBackToLogin: "Back to sign in",
     createAdminAccount: "Create admin account",
     adminSetupRequiredTitle: "Administrator setup is required",
     adminSetupRequiredDescription:
@@ -598,6 +602,10 @@ export const enUS: Translations = {
         "An account with this email already exists. Please sign in with your password or contact your administrator.",
       sso_not_allowed:
         "SSO login is not allowed for your account. Contact your administrator.",
+      registration_pending:
+        "Your registration is awaiting administrator approval.",
+      account_disabled:
+        "Your account has been disabled. Contact your administrator.",
     },
   },
 };
