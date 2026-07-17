@@ -21,7 +21,7 @@ from app.gateway.auth import (
 )
 from app.gateway.auth.account_status import account_status_error_detail, ensure_account_active
 from app.gateway.auth.config import get_auth_config
-from app.gateway.auth.email_domain import enforce_email_domain_allowed
+from app.gateway.auth.email_domain import LOGIN_EMAIL_DOMAIN_ERROR_MESSAGE, enforce_email_domain_allowed
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.auth.models import AccountStatus
 from app.gateway.auth.oidc import OIDCError, OIDCService
@@ -327,7 +327,11 @@ async def login_local(
     ensure_account_active(user)
 
     if config.auth.enforce_email_domain_on_login:
-        enforce_email_domain_allowed(user.email, config.auth.allowed_email_domains)
+        enforce_email_domain_allowed(
+            user.email,
+            config.auth.allowed_email_domains,
+            message=LOGIN_EMAIL_DOMAIN_ERROR_MESSAGE,
+        )
 
     _record_login_success(client_ip)
     token = create_access_token(str(user.id), token_version=user.token_version)

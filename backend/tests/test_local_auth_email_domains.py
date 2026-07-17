@@ -145,7 +145,7 @@ def test_login_reads_switch_on_each_request_and_rejects_without_session(client, 
 
     assert denied.status_code == 403
     assert denied.json()["detail"]["code"] == "email_domain_not_allowed"
-    assert denied.json()["detail"]["message"] == "请使用公司邮箱注册"
+    assert denied.json()["detail"]["message"] == "当前账号邮箱不符合平台要求，请联系管理员修改邮箱后继续使用。"
     assert "access_token" not in denied.cookies
     assert "access_token" not in denied.json()
 
@@ -178,6 +178,7 @@ def test_login_domain_rejection_does_not_reset_password_failures(client, auth_co
     correct_password = _login(client, email)
     assert correct_password.status_code == 403
     assert correct_password.json()["detail"]["code"] == "email_domain_not_allowed"
+    assert correct_password.json()["detail"]["message"] == "当前账号邮箱不符合平台要求，请联系管理员修改邮箱后继续使用。"
     assert sum(failures for failures, _ in _login_attempts.values()) == 1
     assert "access_token" not in correct_password.cookies
 
