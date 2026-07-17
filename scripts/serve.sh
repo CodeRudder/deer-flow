@@ -297,11 +297,7 @@ fi
 if $DEV_MODE; then
     FRONTEND_CMD="pnpm run dev"
 else
-    if ! PYTHON_BIN="$(_pick_python)"; then
-        echo "Python is required to generate BETTER_AUTH_SECRET."
-        exit 1
-    fi
-    FRONTEND_CMD="env BETTER_AUTH_SECRET=$($PYTHON_BIN -c 'import secrets; print(secrets.token_hex(16))') pnpm run preview"
+    FRONTEND_CMD="pnpm run start"
 fi
 
 # Runtime path defaults. Local `make dev` launches Gateway from `backend/`,
