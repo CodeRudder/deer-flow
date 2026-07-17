@@ -551,7 +551,7 @@ export function ModelDistribution({
                   <button
                     key={model.model}
                     type="button"
-                    className={`focus-visible:ring-ring grid min-h-9 w-full grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none ${
+                    className={`focus-visible:ring-ring grid min-h-10 w-full grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none ${
                       activeIndex === index ? "bg-accent" : "hover:bg-accent"
                     }`}
                     onFocus={() => setActiveIndex(index)}
@@ -565,10 +565,10 @@ export function ModelDistribution({
                           modelColors[index % modelColors.length],
                       }}
                     />
-                    <span className="truncate text-xs font-medium">
+                    <span className="truncate text-sm font-medium">
                       {model.model}
                     </span>
-                    <span className="text-muted-foreground text-xs tabular-nums">
+                    <span className="text-muted-foreground text-sm tabular-nums">
                       {segments[index]!.share.toFixed(1)}%
                     </span>
                   </button>
