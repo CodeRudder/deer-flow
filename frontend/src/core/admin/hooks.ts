@@ -45,7 +45,7 @@ export function useAdminUserManagement(params: {
   const normalized = {
     ...params,
     page: params.page ?? 1,
-    page_size: params.page_size ?? 20,
+    page_size: params.page_size ?? 15,
   };
   const summary = useQuery({
     queryKey: [...ADMIN_USERS_QUERY_KEY, "summary"],

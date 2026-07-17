@@ -42,15 +42,15 @@ async def test_user_management_routes_require_admin(app, monkeypatch):
 async def test_user_list_defaults_to_active_and_uses_server_pagination(app, monkeypatch):
     monkeypatch.setattr(admin_router, "require_admin_user", AsyncMock())
     service = MagicMock()
-    service.list_users = AsyncMock(return_value={"items": [], "total": 0, "page": 1, "page_size": 20})
+    service.list_users = AsyncMock(return_value={"items": [], "total": 0, "page": 1, "page_size": 15})
     monkeypatch.setattr(admin_router, "_user_management_service", lambda: service)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/admin/users")
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
-    service.list_users.assert_awaited_once_with(status="active", keyword=None, page=1, page_size=20)
+    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 15}
+    service.list_users.assert_awaited_once_with(status="active", keyword=None, page=1, page_size=15)
 
 
 @pytest.mark.asyncio

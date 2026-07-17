@@ -188,6 +188,36 @@ const quotaProgressColors = {
   },
 } as const;
 
+const quotaScopeIdentityColors = [
+  {
+    badge:
+      "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300",
+  },
+  {
+    badge:
+      "border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-800 dark:bg-teal-950/60 dark:text-teal-300",
+  },
+  {
+    badge:
+      "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950/60 dark:text-blue-300",
+  },
+  {
+    badge:
+      "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300",
+  },
+  {
+    badge:
+      "border-indigo-200 bg-indigo-50 text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300",
+  },
+] as const;
+
+function quotaScopeIdentityColor(index: number) {
+  return (
+    quotaScopeIdentityColors[index % quotaScopeIdentityColors.length] ??
+    quotaScopeIdentityColors[0]
+  );
+}
+
 function formatExactNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(Math.round(value));
 }
@@ -1921,10 +1951,11 @@ export function AdminDashboard() {
                   </div>
                 ) : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  {(quotaScopes.data?.items ?? []).map((scope) => {
+                  {(quotaScopes.data?.items ?? []).map((scope, scopeIndex) => {
                     const policy =
                       scope.default_policy.requests ??
                       scope.default_policy.images;
+                    const identityColor = quotaScopeIdentityColor(scopeIndex);
                     return (
                       <article
                         key={scope.id}
@@ -1934,7 +1965,12 @@ export function AdminDashboard() {
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <h3 className="font-medium">{scope.name}</h3>
-                              <Badge variant="outline">{scope.code}</Badge>
+                              <Badge
+                                variant="outline"
+                                className={identityColor.badge}
+                              >
+                                {scope.code}
+                              </Badge>
                               {!scope.enabled ? (
                                 <Badge variant="secondary">已停用</Badge>
                               ) : null}

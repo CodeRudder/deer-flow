@@ -168,7 +168,7 @@ async def list_managed_users(
     status: UserStatusFilter = Query(default=UserStatusFilter.ACTIVE),
     keyword: str | None = Query(default=None, max_length=320),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    page_size: int = Query(default=15, ge=1, le=100),
 ) -> dict[str, Any]:
     await _require_admin(request)
     account_status = None if status is UserStatusFilter.ALL else AccountStatus(status.value)

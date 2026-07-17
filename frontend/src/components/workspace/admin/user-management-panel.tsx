@@ -217,7 +217,7 @@ export function UserManagementPanel() {
   const [keyword, setKeyword] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(15);
   const [candidate, setCandidate] = useState<{
     user: AdminUser;
     action: StatusAction;
@@ -590,7 +590,7 @@ export function UserManagementPanel() {
                 setPage(1);
               }}
             >
-              {[20, 50, 100].map((size) => (
+              {[15, 50, 100].map((size) => (
                 <option key={size} value={size}>
                   每页 {size} 条
                 </option>
