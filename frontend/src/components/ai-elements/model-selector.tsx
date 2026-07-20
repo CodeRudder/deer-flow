@@ -1,3 +1,8 @@
+"use client";
+
+import { SparklesIcon } from "lucide-react";
+import { type ComponentProps, type ReactNode, useState } from "react";
+
 import {
   Command,
   CommandDialog,
@@ -16,8 +21,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { getModelLogoPath } from "@/core/models/logo";
 import { cn } from "@/lib/utils";
-import type { ComponentProps, ReactNode } from "react";
 
 export type ModelSelectorProps = ComponentProps<typeof Dialog>;
 
@@ -172,17 +177,42 @@ export type ModelSelectorLogoProps = Omit<
 export const ModelSelectorLogo = ({
   provider,
   className,
+  onError,
   ...props
-}: ModelSelectorLogoProps) => (
-  <img
-    {...props}
-    alt={`${provider} logo`}
-    className={cn("size-3 dark:invert", className)}
-    height={12}
-    src={`https://models.dev/logos/${provider}.svg`}
-    width={12}
-  />
-);
+}: ModelSelectorLogoProps) => {
+  const logoPath = getModelLogoPath(provider);
+  const [failedLogoPath, setFailedLogoPath] = useState<string | null>(null);
+
+  if (!logoPath || failedLogoPath === logoPath) {
+    return (
+      <span
+        aria-label={`${provider} logo`}
+        className={cn(
+          "inline-flex size-3 items-center justify-center text-[#f59e0b]",
+          className,
+        )}
+        role="img"
+      >
+        <SparklesIcon className="size-full" />
+      </span>
+    );
+  }
+
+  return (
+    <img
+      {...props}
+      alt={`${provider} logo`}
+      className={cn("size-3 dark:invert", className)}
+      height={12}
+      onError={(event) => {
+        setFailedLogoPath(logoPath);
+        onError?.(event);
+      }}
+      src={logoPath}
+      width={12}
+    />
+  );
+};
 
 export type ModelSelectorLogoGroupProps = ComponentProps<"div">;
 

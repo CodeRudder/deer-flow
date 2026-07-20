@@ -66,6 +66,7 @@ import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
+import { getModelLogoPath } from "@/core/models/logo";
 import type { Skill } from "@/core/skills";
 import { useSkills } from "@/core/skills/hooks";
 import { useSuggestionsConfig } from "@/core/suggestions/hooks";
@@ -252,16 +253,18 @@ function getModelLogoColor(provider: string): string {
 
 function ModelProviderLogo({ model }: { model: ModelLogoSource }) {
   const provider = getModelLogoProvider(model);
-  const logoStyle = provider
-    ? ({
-        "--model-logo-color": getModelLogoColor(provider),
-        "--model-logo-url": `url("https://models.dev/logos/${provider}.svg")`,
-      } as CSSProperties)
-    : undefined;
+  const logoPath = provider ? getModelLogoPath(provider) : undefined;
+  const logoStyle =
+    provider && logoPath
+      ? ({
+          "--model-logo-color": getModelLogoColor(provider),
+          "--model-logo-url": `url("${logoPath}")`,
+        } as CSSProperties)
+      : undefined;
 
   return (
     <span className="bg-background flex size-6 shrink-0 items-center justify-center rounded-md border">
-      {provider ? (
+      {logoStyle ? (
         <span
           aria-hidden
           className="size-4 bg-(--model-logo-color) [-webkit-mask:var(--model-logo-url)_center/contain_no-repeat] [mask:var(--model-logo-url)_center/contain_no-repeat]"
