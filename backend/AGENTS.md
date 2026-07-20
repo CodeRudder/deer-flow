@@ -97,6 +97,29 @@ make test-blocking-io   # Run strict Blockbuster runtime gate on tests/blocking_
 make lint               # Lint with ruff
 make format             # Format code with ruff
 make migrate-rev MSG="..."  # Autogenerate a new alembic revision (see Schema Migrations section)
+
+# One-time dev → prod incremental data migration (run from backend/)
+uv run python -m scripts.migrate_incremental_data --help
+```
+
+The incremental migration tool under `scripts/incremental_migration/` is a
+deliberately offline, operator-driven workflow. It uses PostgreSQL text COPY
+into a tool-owned staging schema, then type-aware source-wins SQL; it does not
+parse or restore `pg_dump` files. Thread files are manifest/hash checked and
+split between active and quarantined runtime archives. The target baseline must
+be frozen before source export, and `import`/`verify`/`rollback` mutate state
+only with explicit `--apply` and service-stop confirmations. Keep the migration
+state directory outside `DEER_FLOW_HOME`; never run it against a live writer.
+The target baseline also freezes the approved time window, source/target
+environment labels, PostgreSQL cluster/database identity, and target home. A
+verified package content digest is then bound to the operation before apply.
+
+Focused tests:
+
+```bash
+uv run pytest tests/test_incremental_migration.py tests/test_incremental_migration_cli.py -q
+# Optional disposable-PostgreSQL tests, enabled only with an explicit test DSN:
+DEER_FLOW_TEST_POSTGRES_DSN=... uv run pytest tests/test_incremental_migration_postgres.py -q
 ```
 
 The `detect-blocking-io` target parses `app/`, `packages/harness/deerflow/`,
