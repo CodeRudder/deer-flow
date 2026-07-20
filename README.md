@@ -560,13 +560,6 @@ Once a channel is connected, you can interact with DeerFlow directly from the ch
 
 > Messages without a command prefix are treated as regular chat — DeerFlow creates a thread and responds conversationally.
 
-#### One-time Incremental Migration
-
-For the approved `dev-deerflow` → prod cutover workflow, use the operator-driven
-PostgreSQL/file migration tool under `backend/scripts/incremental_migration/`.
-It requires a frozen target baseline, stopped writers, an explicit `--apply`,
-and a post-import verification before services are resumed. It is a one-time
-migration, not a continuous synchronization service.
 
 #### LangSmith Tracing
 
