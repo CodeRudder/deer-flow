@@ -696,6 +696,10 @@ Each task gets its own execution environment with a full filesystem view — ski
 
 With `AioSandboxProvider`, shell execution runs inside isolated containers. With `LocalSandboxProvider`, file tools still map to per-thread directories on the host, but host `bash` is disabled by default because it is not a secure isolation boundary. Re-enable host bash only for fully trusted local workflows.
 
+The lead agent and built-in `general-purpose`/`bash` sub-agents share protected-data prompt guidance. They must refuse, before using tools or delegation, requests to read or expose runtime environment-variable values, deployment credential files, secrets, or local source code for DeerFlow's backend and agent runtime; implementation questions must use public web sources. Normal access to `/mnt/user-data` and authorized `/mnt/skills` remains available, although secrets found there must not be disclosed.
+
+This protection is prompt guidance, not hard sandbox or path enforcement. Deployments that require a security boundary must also restrict sandbox and tool access.
+
 This is the difference between a chatbot with tool access and an agent with an actual execution environment.
 
 ```

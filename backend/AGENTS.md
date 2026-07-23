@@ -201,6 +201,8 @@ from deerflow.config import get_app_config
 - `is_plan_mode` - Enable TodoList middleware
 - `subagent_enabled` - Enable task delegation tool
 
+**Protected-data prompt policy**: The lead prompt and built-in `general-purpose`/`bash` subagent prompts repeat the same critical rule and refuse prohibited requests before any tool call or delegation. It forbids reading or exposing runtime environment-variable values, deployment `.env`/credential files, secrets, and local source code for DeerFlow's backend and agent runtime (including indirect paths). DeerFlow implementation questions use public web sources; `/mnt/user-data` and authorized `/mnt/skills` remain accessible, but secrets found there are still confidential. This is prompt guidance only, not hard sandbox or path enforcement.
+
 ### Middleware Chain
 
 Lead-agent middlewares are assembled in strict order across three functions: the shared base in `packages/harness/deerflow/agents/middlewares/tool_error_handling_middleware.py` (`_build_runtime_middlewares`, exposed via `build_lead_runtime_middlewares`), then the lead-only middlewares appended in `packages/harness/deerflow/agents/lead_agent/agent.py` (`build_middlewares`). Items marked *(optional)* are appended only when their config/runtime condition holds, so the live chain length varies.
