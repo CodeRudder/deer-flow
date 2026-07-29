@@ -1,11 +1,17 @@
+# Windows (Git Bash/MSYS): uvicorn's default loop bypasses the SelectorEventLoop
+# policy set by backend/sitecustomize.py and forces ProactorEventLoop, which hangs
+# psycopg async (postgres checkpointer + app DB pool) until PoolTimeout. --loop none
+# defers to the policy. No-op on Linux/macOS (keeps uvloop). Mirrors scripts/serve.sh.
+UVICORN_LOOP := $(shell uname -s 2>/dev/null | grep -qiE '^(MINGW|MSYS|CYGWIN)' && echo --loop none)
+
 install:
 	uv sync
 
 dev:
-	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload
+	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload $(UVICORN_LOOP)
 
 gateway:
-	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $(UVICORN_LOOP)
 
 test:
 	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run pytest tests/ -v

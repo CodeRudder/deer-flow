@@ -119,7 +119,12 @@ def main() -> int:
     import uvicorn
 
     print(f"[record-gw] model={model} out={out} port={port}", flush=True)
-    uvicorn.run("app.gateway.app:app", host="127.0.0.1", port=port, log_level="warning")
+    run_kwargs = {"host": "127.0.0.1", "port": port, "log_level": "warning"}
+    # Windows: --loop none defers to the Selector policy set by sitecustomize.py;
+    # the default loop forces ProactorEventLoop, which hangs psycopg async. See scripts/serve.sh.
+    if os.name == "nt":
+        run_kwargs["loop"] = "none"
+    uvicorn.run("app.gateway.app:app", **run_kwargs)
     return 0
 
 
