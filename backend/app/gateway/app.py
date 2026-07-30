@@ -33,7 +33,7 @@ from app.gateway.routers import (
     uploads,
 )
 from deerflow.config import app_config as deerflow_app_config
-from deerflow.config.app_config import apply_logging_level
+from deerflow.config.app_config import apply_logging_level, unify_uvicorn_logging
 
 AppConfig = deerflow_app_config.AppConfig
 get_app_config = deerflow_app_config.get_app_config
@@ -165,6 +165,11 @@ async def _migrate_orphaned_threads(store, admin_user_id: str) -> int:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
+
+    # uvicorn's dictConfig attaches AccessFormatter to uvicorn.access with
+    # propagate=False before this hook runs; strip it so access logs
+    # share the root handler (see unify_uvicorn_logging for details).
+    unify_uvicorn_logging()
 
     # Load config and check necessary environment variables at startup.
     # `startup_config` is a local snapshot used only for one-shot bootstrap

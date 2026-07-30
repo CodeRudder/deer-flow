@@ -49,7 +49,7 @@ STARTUP_ONLY_FIELDS: dict[str, str] = {
     "stream_bridge": ("make_stream_bridge() constructs the stream-bridge singleton once during startup."),
     "sandbox": ("get_sandbox_provider() caches the provider singleton (``_default_sandbox_provider``); a different ``sandbox.use`` class path only takes effect on next process start."),
     "log_level": (
-        "apply_logging_level() runs only during app.py startup; it sets the deerflow/app logger levels and may lower root handler thresholds so configured messages can propagate. A freshly reloaded AppConfig does not retrigger it."
+        "apply_logging_level() and unify_uvicorn_logging() run only during app.py startup; they set the deerflow/app logger levels, may lower root handler thresholds so configured messages can propagate, and reroute uvicorn.access through the root handler so the gateway prints a single unified format. A freshly reloaded AppConfig does not retrigger them."  # noqa: E501
     ),
     # Not part of the AppConfig Pydantic schema — channel credentials are
     # consumed directly by ``start_channel_service()`` once at lifespan
