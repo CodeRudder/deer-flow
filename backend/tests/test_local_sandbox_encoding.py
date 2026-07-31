@@ -161,6 +161,106 @@ def test_execute_command_does_not_set_msys_env_for_non_msys_posix_shell_on_windo
     assert calls[0][1]["env"] is None
 
 
+def test_execute_command_joins_bash_line_continuations_for_powershell(monkeypatch):
+    """PowerShell/cmd do not understand bash ``\\``+newline line continuations.
+
+    The agent emits multi-line commands using bash-style ``\\`` continuation
+    (e.g. the image-generation SKILL.md example). PowerShell parses ``\\`` as a
+    literal and ``--flag`` as its own operator, so the whole command breaks.
+    ``execute_command`` must join those continuations into a single line before
+    handing the command to a non-POSIX Windows shell.
+    """
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args[0], kwargs))
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(local_sandbox.os, "name", "nt")
+    monkeypatch.setattr(LocalSandbox, "_get_shell", staticmethod(lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"))
+    monkeypatch.setattr(local_sandbox.subprocess, "run", fake_run)
+
+    multi_line = "python /mnt/skills/public/image-generation/scripts/generate.py \\\n  --prompt-file /mnt/user-data/workspace/p.json \\\n  --output-file /mnt/user-data/outputs/o.png"
+    LocalSandbox("t").execute_command(multi_line)
+
+    sent_command = calls[0][0][3]
+    assert "\\\n" not in sent_command
+    assert "\\\r\n" not in sent_command
+    assert sent_command == "python /mnt/skills/public/image-generation/scripts/generate.py    --prompt-file /mnt/user-data/workspace/p.json    --output-file /mnt/user-data/outputs/o.png"
+
+
+def test_execute_command_preserves_continuations_for_posix_shell_on_windows(monkeypatch):
+    """POSIX shells (Git Bash/MSYS) understand ``\\`` continuation, so it must stay."""
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args[0], kwargs))
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(local_sandbox.os, "name", "nt")
+    monkeypatch.setattr(LocalSandbox, "_get_shell", staticmethod(lambda: r"C:\Program Files\Git\bin\sh.exe"))
+    monkeypatch.setattr(local_sandbox.subprocess, "run", fake_run)
+
+    multi_line = "echo hello \\\nworld"
+    LocalSandbox("t").execute_command(multi_line)
+
+    sent_command = calls[0][0][2]
+    assert "\\\n" in sent_command
+
+
+def test_execute_command_joins_bash_line_continuations_for_cmd(monkeypatch):
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args[0], kwargs))
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(local_sandbox.os, "name", "nt")
+    monkeypatch.setattr(LocalSandbox, "_get_shell", staticmethod(lambda: r"C:\Windows\System32\cmd.exe"))
+    monkeypatch.setattr(local_sandbox.subprocess, "run", fake_run)
+
+    LocalSandbox("t").execute_command("echo a \\\n  b \\\n  c")
+
+    sent_command = calls[0][0][2]
+    assert "\\\n" not in sent_command
+
+
+def test_execute_command_joins_bash_continuations_with_crlf(monkeypatch):
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args[0], kwargs))
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(local_sandbox.os, "name", "nt")
+    monkeypatch.setattr(LocalSandbox, "_get_shell", staticmethod(lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"))
+    monkeypatch.setattr(local_sandbox.subprocess, "run", fake_run)
+
+    LocalSandbox("t").execute_command("echo a \\\r\n  b")
+
+    sent_command = calls[0][0][3]
+    assert "\\\r\n" not in sent_command
+    assert "\\\n" not in sent_command
+
+
+def test_execute_command_does_not_touch_single_backslash_in_powershell(monkeypatch):
+    """A lone backslash that is NOT a line continuation (no trailing newline) must stay intact."""
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args[0], kwargs))
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(local_sandbox.os, "name", "nt")
+    monkeypatch.setattr(LocalSandbox, "_get_shell", staticmethod(lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"))
+    monkeypatch.setattr(local_sandbox.subprocess, "run", fake_run)
+
+    LocalSandbox("t").execute_command(r"Write-Output 'a\b'")
+
+    sent_command = calls[0][0][3]
+    assert sent_command == r"Write-Output 'a\b'"
+
+
 def test_execute_command_uses_cmd_command_mode_on_windows(monkeypatch):
     calls: list[tuple[object, dict]] = []
 
@@ -187,3 +287,9 @@ def test_execute_command_uses_cmd_command_mode_on_windows(monkeypatch):
             },
         )
     ]
+
+
+def test_resolve_paths_in_command_is_identity_without_mappings():
+    """No path mappings => no replacement => command returned unchanged."""
+    sandbox = LocalSandbox(id="empty", path_mappings=[])
+    assert sandbox._resolve_paths_in_command("python /mnt/skills/x.py") == "python /mnt/skills/x.py"

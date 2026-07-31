@@ -327,6 +327,22 @@ class LocalSandbox(Sandbox):
 
         raise RuntimeError("No suitable shell executable found. Tried /bin/zsh, /bin/bash, /bin/sh, and `sh` on PATH.")
 
+    @staticmethod
+    def _normalize_bash_continuations(command: str) -> str:
+        r"""Join bash-style ``\``+newline line continuations into a single line.
+
+        Agent-emitted commands (e.g. the image-generation SKILL.md example) use
+        bash ``\`` continuation to span multiple lines. POSIX shells honour
+        this, but Windows PowerShell/cmd treat ``\`` as a literal character and
+        choke on the resulting syntax (``--flag`` parsed as an operator, etc.).
+
+        Only a backslash immediately followed by a line break is a continuation
+        marker; a lone backslash inside a path/token (``D:\path``) is left alone.
+        The newline is replaced with a space so the joined tokens stay
+        separated, matching bash's own continuation semantics.
+        """
+        return re.sub(r"\\\r?\n", " ", command)
+
     def execute_command(self, command: str) -> str:
         # Resolve container paths in command before execution
         resolved_command = self._resolve_paths_in_command(command)
@@ -335,8 +351,12 @@ class LocalSandbox(Sandbox):
         if os.name == "nt":
             env = None
             if self._is_powershell(shell):
+                # PowerShell does not understand bash ``\`` line continuations;
+                # join them so multi-line agent commands parse correctly.
+                resolved_command = self._normalize_bash_continuations(resolved_command)
                 args = [shell, "-NoProfile", "-Command", resolved_command]
             elif self._is_cmd_shell(shell):
+                resolved_command = self._normalize_bash_continuations(resolved_command)
                 args = [shell, "/c", resolved_command]
             else:
                 args = [shell, "-c", resolved_command]
