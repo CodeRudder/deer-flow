@@ -66,9 +66,19 @@ def main() -> int:
 
     print(f"[replay-gw] config={cfg} fixture={args.fixture} cors={args.cors} port={args.port}", flush=True)
     run_kwargs = {"host": "127.0.0.1", "port": args.port, "log_level": "warning"}
-    # Windows: --loop none defers to the Selector policy set by sitecustomize.py;
-    # the default loop forces ProactorEventLoop, which hangs psycopg async. See scripts/serve.sh.
     if os.name == "nt":
+        # Windows: uvicorn 0.46+ forces ProactorEventLoop via loop_factory, which
+        # is incompatible with psycopg async. Set the Selector policy explicitly
+        # and pass loop="none" so uvicorn reuses it. Unlike the main gateway
+        # (serve.sh presets PYTHONPATH=.), this script runs via
+        # `uv run python scripts/run_replay_gateway.py`, so sitecustomize.py is NOT
+        # auto-imported at interpreter startup (sys.path[0] is scripts/, not
+        # backend/) and we cannot rely on it here. The hermetic config is
+        # SQLite-only so Proactor would be harmless today; this is defensive
+        # against a future postgres checkpointer.
+        import asyncio
+
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         run_kwargs["loop"] = "none"
     uvicorn.run(target, **run_kwargs)
     return 0
