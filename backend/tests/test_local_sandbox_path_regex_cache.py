@@ -6,8 +6,6 @@ the exact same rewriting behavior.
 import os
 from pathlib import Path
 
-import pytest
-
 from deerflow.sandbox.local.local_sandbox import LocalSandbox, PathMapping
 
 
@@ -32,7 +30,11 @@ def test_patterns_are_compiled_once_and_cached(tmp_path):
     assert sb._content_pattern is sb._content_pattern
     assert sb._reverse_output_patterns is sb._reverse_output_patterns
     # Two mappings -> two reverse-output patterns.
-    assert len(sb._reverse_output_patterns) == 2
+    # On Windows each mapping emits two separator variants (backslash root for
+    # command output + forward-slash root for agent-written content), so the
+    # list doubles there; POSIX roots have no backslashes and dedupe to one.
+    expected_per_mapping = 2 if os.name == "nt" else 1
+    assert len(sb._reverse_output_patterns) == 2 * expected_per_mapping
 
 
 def test_empty_mappings_yield_no_pattern(tmp_path):
@@ -64,7 +66,6 @@ def test_segment_boundary_not_matched_inside_longer_name(tmp_path):
     assert out == "ls /mnt/skills-extra/data"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="reverse-resolve pattern matching has a pre-existing Windows separator bug; tracked separately")
 def test_reverse_resolve_output_maps_local_back_to_container(tmp_path):
     sb = _make_sandbox(tmp_path)
     ws_local = str((tmp_path / "workspace").resolve())

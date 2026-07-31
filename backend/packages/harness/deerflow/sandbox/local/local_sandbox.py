@@ -112,8 +112,22 @@ class LocalSandbox(Sandbox):
 
     @cached_property
     def _reverse_output_patterns(self) -> list[re.Pattern[str]]:
-        """Compiled matchers for local paths in command output (longest local path first)."""
-        return [re.compile(re.escape(self._resolved_local_paths[m]) + r"(?:[/\\][^\s\"';&|<>()]*)?") for m in self._mappings_by_local_specificity]
+        """Compiled matchers for local paths in command output (longest local path first).
+
+        On Windows ``Path.resolve()`` yields backslash roots, but
+        ``_resolve_paths_in_content`` writes forward-slash roots into
+        agent-authored files. Compile both separator variants per mapping so
+        reverse resolution matches command output (backslash) and
+        agent-written content (forward slash) alike. POSIX roots contain no
+        backslashes, so the two variants dedupe to one and behavior is
+        unchanged there.
+        """
+        patterns: list[re.Pattern[str]] = []
+        for mapping in self._mappings_by_local_specificity:
+            root = self._resolved_local_paths[mapping]
+            for variant in {root, root.replace("\\", "/")}:
+                patterns.append(re.compile(re.escape(variant) + r"(?:[/\\][^\s\"';&|<>()]*)?"))
+        return patterns
 
     @cached_property
     def _resolved_local_paths(self) -> dict[PathMapping, str]:
@@ -217,13 +231,20 @@ class LocalSandbox(Sandbox):
         """
         normalized_path = path.replace("\\", "/")
         path_str = str(Path(normalized_path).resolve())
+        # Compare in forward-slash form on both sides. ``Path.resolve()`` yields
+        # backslash separators on Windows, and inputs (plus the prefixes written
+        # by ``_resolve_paths_in_content``) may carry forward slashes; a literal
+        # ``"/"`` join would silently miss every nested path on Windows. The
+        # no-match return keeps ``path_str``'s native separators so callers that
+        # compare against ``Path.resolve()`` output are unaffected.
+        path_str_fs = path_str.replace("\\", "/")
 
         # Try each mapping (longest local path first for more specific matches)
         for mapping in self._mappings_by_local_specificity:
-            local_path_resolved = self._resolved_local_paths[mapping]
-            if path_str == local_path_resolved or path_str.startswith(local_path_resolved + "/"):
+            local_path_fs = self._resolved_local_paths[mapping].replace("\\", "/")
+            if path_str_fs == local_path_fs or path_str_fs.startswith(local_path_fs + "/"):
                 # Replace the local path prefix with container path
-                relative = path_str[len(local_path_resolved) :].lstrip("/")
+                relative = path_str_fs[len(local_path_fs) :].lstrip("/")
                 resolved = f"{mapping.container_path}/{relative}" if relative else mapping.container_path
                 return resolved
 

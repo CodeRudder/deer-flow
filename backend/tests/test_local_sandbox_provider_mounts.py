@@ -84,7 +84,6 @@ class TestLocalSandboxPathResolution:
         resolved = sandbox._reverse_resolve_path(str(skills_dir))
         assert resolved == "/mnt/skills"
 
-    @pytest.mark.skipif(os.name == "nt", reason="_reverse_resolve_path uses / separator in comparison which breaks on Windows backslash paths")
     def test_reverse_resolve_path_nested(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -538,7 +537,6 @@ class TestMultipleMounts:
         resolved = sandbox._reverse_resolve_path(str(target))
         assert resolved == str(target.resolve())
 
-    @pytest.mark.skipif(os.name == "nt", reason="_reverse_resolve_paths_in_output uses _reverse_resolve_path which has separator bug on Windows")
     def test_reverse_resolve_paths_in_output_supports_backslash_separator(self, tmp_path):
         mount_dir = tmp_path / "mount"
         mount_dir.mkdir()
@@ -554,6 +552,32 @@ class TestMultipleMounts:
 
         assert "/mnt/data/file.txt" in masked
         assert str(mount_dir) not in masked
+
+    def test_reverse_resolve_paths_in_output_supports_forward_slash_separator(self, tmp_path):
+        """Forward-slash local roots must reverse-resolve too.
+
+        Regression guard for the write→read round-trip: ``_resolve_paths_in_content``
+        normalizes resolved paths to forward slashes, so on Windows the file on
+        disk carries a forward-slash local root that the backslash-only matcher
+        would miss. A fix that only touches ``_reverse_resolve_path``'s comparison
+        cannot pass this test — the reverse-output *pattern* itself must accept
+        forward-slash roots.
+        """
+        mount_dir = tmp_path / "mount"
+        mount_dir.mkdir()
+        sandbox = LocalSandbox(
+            "test",
+            [
+                PathMapping(container_path="/mnt/data", local_path=str(mount_dir)),
+            ],
+        )
+
+        mount_fs = str(mount_dir).replace("\\", "/")
+        output = f"Copied: {mount_fs}/nested/file.txt"
+        masked = sandbox._reverse_resolve_paths_in_output(output)
+
+        assert "/mnt/data/nested/file.txt" in masked
+        assert mount_fs not in masked
 
 
 class TestLocalSandboxProviderMounts:
@@ -714,7 +738,6 @@ class TestLocalSandboxProviderMounts:
         # Must not contain backslashes that could break escape sequences
         assert "\\" not in written.split("DATA_DIR = ")[1].split("\n")[0]
 
-    @pytest.mark.skipif(os.name == "nt", reason="_reverse_resolve_paths_in_output cannot match forward-slash paths written by _resolve_paths_in_content on Windows")
     def test_read_file_reverse_resolves_local_paths_in_agent_written_files(self, tmp_path):
         """read_file should convert local paths back to container paths in agent-written files."""
         data_dir = tmp_path / "data"
@@ -751,7 +774,6 @@ class TestLocalSandboxProviderMounts:
         # Content should be returned as-is, NOT reverse-resolved
         assert local_path in content
 
-    @pytest.mark.skipif(os.name == "nt", reason="_reverse_resolve_paths_in_output cannot match forward-slash paths written by _resolve_paths_in_content on Windows")
     def test_write_then_read_roundtrip(self, tmp_path):
         """Container paths survive a write → read roundtrip."""
         data_dir = tmp_path / "data"
