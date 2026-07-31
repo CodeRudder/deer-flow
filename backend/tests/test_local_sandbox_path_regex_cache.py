@@ -4,6 +4,7 @@ the exact same rewriting behavior.
 """
 
 import os
+import shlex
 from pathlib import Path
 
 from deerflow.sandbox.local.local_sandbox import LocalSandbox, PathMapping
@@ -57,6 +58,31 @@ def test_command_paths_resolved_to_local(tmp_path):
     assert out.replace("\\", "/") == f"cat {ws_local}/foo.txt".replace("\\", "/")
     # Calling again uses the cached pattern and produces the same result.
     assert sb._resolve_paths_in_command("cat /mnt/user-data/workspace/foo.txt") == out
+
+
+def test_command_paths_resolved_to_local_are_shell_safe_on_windows(tmp_path):
+    """Resolved command paths must be shell-safe (forward slashes) on Windows.
+
+    Custom-mount container paths are rewritten by ``_resolve_paths_in_command``
+    rather than ``replace_virtual_paths_in_command``, so the forward-slash
+    normalization must happen here too — otherwise an unquoted ``D:\\code\\x``
+    is flattened to ``D:codex`` by MSYS ``sh`` / ``shlex``. This mirrors what
+    ``_resolve_paths_in_content`` already does for file content.
+    """
+    mount = tmp_path / "data"
+    (mount / "sub").mkdir(parents=True)
+    sb = LocalSandbox(
+        id="test",
+        path_mappings=[PathMapping(container_path="/mnt/data", local_path=str(mount))],
+    )
+    resolved = sb._resolve_paths_in_command("cat /mnt/data/sub/file.txt")
+
+    # No backslashes anywhere: the path must survive POSIX shell tokenization.
+    assert "\\" not in resolved, resolved
+    # Concretely, shlex must keep the path as a single token instead of
+    # collapsing it to garbage.
+    expected_target = str(mount).replace("\\", "/") + "/sub/file.txt"
+    assert shlex.split(resolved) == ["cat", expected_target]
 
 
 def test_segment_boundary_not_matched_inside_longer_name(tmp_path):

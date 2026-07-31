@@ -278,11 +278,17 @@ class LocalSandbox(Sandbox):
         """
         Resolve container paths to local paths in a command string.
 
+        Resolved paths are normalized to forward slashes, matching
+        ``_resolve_paths_in_content``: backslash host paths (e.g. ``C:\\Users\\..``)
+        injected into a command string are later mangled by MSYS ``sh`` /
+        ``shlex``, which treat ``\\`` as a POSIX escape character. Forward
+        slashes are accepted by every downstream shell (sh, PowerShell, cmd).
+
         Args:
             command: Command string that may contain container paths
 
         Returns:
-            Command with container paths resolved to local paths
+            Command with container paths resolved to local paths (forward slashes)
         """
         pattern = self._command_pattern
         if pattern is None:
@@ -290,7 +296,10 @@ class LocalSandbox(Sandbox):
 
         def replace_match(match: re.Match) -> str:
             matched_path = match.group(0)
-            return self._resolve_path(matched_path)
+            resolved = self._resolve_path(matched_path)
+            # Normalize to forward slashes so Windows backslash paths don't
+            # break shell tokenization (same rationale as _resolve_paths_in_content).
+            return resolved.replace("\\", "/")
 
         return pattern.sub(replace_match, command)
 
