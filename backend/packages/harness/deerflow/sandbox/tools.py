@@ -1047,6 +1047,14 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
     """
     result = command
 
+    # On Windows, resolved host paths must use forward slashes. Backslash
+    # paths injected into a shell command string are later mangled by MSYS sh
+    # / Python shlex (which treat ``\`` as a POSIX escape char), producing
+    # garbage like "codedeer-flowskills..." from "D:\code\deer-flow\skills\...".
+    # Forward slashes are accepted by every downstream layer (Python,
+    # PowerShell, cmd, MSYS sh, shlex), so this normalization is safe.
+    normalize_for_shell = (lambda p: p.replace("\\", "/")) if os.name == "nt" else (lambda p: p)
+
     # Replace skills paths
     skills_container = _get_skills_container_path()
     skills_host = _get_skills_host_path()
@@ -1054,7 +1062,7 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
         skills_pattern = re.compile(rf"{re.escape(skills_container)}(/[^\s\"';&|<>()]*)?")
 
         def replace_skills_match(match: re.Match) -> str:
-            return _resolve_skills_path(match.group(0))
+            return normalize_for_shell(_resolve_skills_path(match.group(0)))
 
         result = skills_pattern.sub(replace_skills_match, result)
 
@@ -1065,7 +1073,7 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
         acp_pattern = re.compile(rf"{re.escape(_ACP_WORKSPACE_VIRTUAL_PATH)}(/[^\s\"';&|<>()]*)?")
 
         def replace_acp_match(match: re.Match, _tid: str | None = _thread_id) -> str:
-            return _resolve_acp_workspace_path(match.group(0), _tid)
+            return normalize_for_shell(_resolve_acp_workspace_path(match.group(0), _tid))
 
         result = acp_pattern.sub(replace_acp_match, result)
 
@@ -1076,7 +1084,7 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
         pattern = re.compile(rf"{re.escape(VIRTUAL_PATH_PREFIX)}(/[^\s\"';&|<>()]*)?")
 
         def replace_user_data_match(match: re.Match) -> str:
-            return replace_virtual_path(match.group(0), thread_data)
+            return normalize_for_shell(replace_virtual_path(match.group(0), thread_data))
 
         result = pattern.sub(replace_user_data_match, result)
 
