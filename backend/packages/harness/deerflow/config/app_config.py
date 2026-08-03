@@ -90,6 +90,25 @@ def apply_logging_level(name: str | None) -> None:
             handler.setLevel(level)
 
 
+def unify_uvicorn_logging() -> None:
+    """Re-route ``uvicorn`` / ``uvicorn.error`` / ``uvicorn.access`` through the root handler.
+
+    uvicorn's ``Config.__init__`` calls ``dictConfig(LOGGING_CONFIG)``
+    between module import and ``lifespan`` startup, attaching an
+    ``AccessFormatter`` to ``uvicorn.access`` with ``propagate=False``.
+    That makes the gateway print two formats: ``deerflow.*`` / ``app.*``
+    via root's ``%(asctime)s - %(name)s - %(levelname)s - %(message)s``,
+    and ``uvicorn.access`` via uvicorn's own formatter. Idempotent;
+    ``--reload`` child workers re-enter the lifespan to re-apply it.
+
+    Levels are intentionally left to :func:`apply_logging_level`.
+    """
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger_obj = logging.getLogger(name)
+        logger_obj.handlers.clear()
+        logger_obj.propagate = True
+
+
 class AppConfig(BaseModel):
     """Config for the DeerFlow application"""
 

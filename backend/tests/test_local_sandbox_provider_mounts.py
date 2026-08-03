@@ -1,4 +1,5 @@
 import errno
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -475,6 +476,7 @@ class TestMultipleMounts:
         sandbox.write_file("/mnt/repo/writable/file.txt", "content")
         assert (rw_dir / "file.txt").read_text() == "content"
 
+    @pytest.mark.skipif(os.name == "nt", reason="subprocess.Popen mock does not intercept subprocess.run on Windows (module-scope issue)")
     def test_execute_command_path_replacement(self, tmp_path, monkeypatch):
         data_dir = tmp_path / "data"
         data_dir.mkdir()
@@ -548,8 +550,38 @@ class TestMultipleMounts:
         output = f"Copied: {mount_dir}\\file.txt"
         masked = sandbox._reverse_resolve_paths_in_output(output)
 
-        assert "/mnt/data/file.txt" in masked
-        assert str(mount_dir) not in masked
+        if os.name == "nt":
+            assert "/mnt/data/file.txt" in masked
+            assert str(mount_dir) not in masked
+        else:
+            # On POSIX, backslash is a valid filename character, not a separator.
+            assert masked == output
+
+    def test_reverse_resolve_paths_in_output_supports_forward_slash_separator(self, tmp_path):
+        """Forward-slash local roots must reverse-resolve too.
+
+        Regression guard for the write→read round-trip: ``_resolve_paths_in_content``
+        normalizes resolved paths to forward slashes, so on Windows the file on
+        disk carries a forward-slash local root that the backslash-only matcher
+        would miss. A fix that only touches ``_reverse_resolve_path``'s comparison
+        cannot pass this test — the reverse-output *pattern* itself must accept
+        forward-slash roots.
+        """
+        mount_dir = tmp_path / "mount"
+        mount_dir.mkdir()
+        sandbox = LocalSandbox(
+            "test",
+            [
+                PathMapping(container_path="/mnt/data", local_path=str(mount_dir)),
+            ],
+        )
+
+        mount_fs = str(mount_dir).replace("\\", "/")
+        output = f"Copied: {mount_fs}/nested/file.txt"
+        masked = sandbox._reverse_resolve_paths_in_output(output)
+
+        assert "/mnt/data/nested/file.txt" in masked
+        assert mount_fs not in masked
 
 
 class TestLocalSandboxProviderMounts:

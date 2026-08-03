@@ -322,11 +322,18 @@ DEER_FLOW_HOME="$(cd "$DEER_FLOW_HOME" && pwd -P)"
 BACKEND_RUNTIME_HOME="$(cd "$BACKEND_RUNTIME_HOME" && pwd -P)"
 export DEER_FLOW_HOME
 
+# Windows: --loop none so uvicorn defers to the WindowsSelectorEventLoop policy
+# set by backend/sitecustomize.py (Proactor hangs psycopg async). No-op elsewhere.
+UVICORN_LOOP_FLAG=""
+if uname -s 2>/dev/null | grep -qiE '^(MINGW|MSYS|CYGWIN)'; then
+    UVICORN_LOOP_FLAG="--loop none"
+fi
+
 # Extra flags for uvicorn
 if $DEV_MODE && ! $DAEMON_MODE; then
-    GATEWAY_EXTRA_FLAGS="--reload --reload-include='*.yaml' --reload-include='.env' --reload-exclude='*.pyc' --reload-exclude='__pycache__' --reload-exclude='$REPO_ROOT/backend/sandbox' --reload-exclude='$DEER_FLOW_HOME' --reload-exclude='$BACKEND_RUNTIME_HOME'"
+    GATEWAY_EXTRA_FLAGS="$UVICORN_LOOP_FLAG --reload --reload-include='*.yaml' --reload-include='.env' --reload-exclude='*.pyc' --reload-exclude='__pycache__' --reload-exclude='$REPO_ROOT/backend/sandbox' --reload-exclude='$DEER_FLOW_HOME' --reload-exclude='$BACKEND_RUNTIME_HOME'"
 else
-    GATEWAY_EXTRA_FLAGS=""
+    GATEWAY_EXTRA_FLAGS="$UVICORN_LOOP_FLAG"
 fi
 
 # ── Stop existing services (skip if restart already did it) ──────────────────

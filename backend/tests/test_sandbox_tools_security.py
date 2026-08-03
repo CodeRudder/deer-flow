@@ -335,6 +335,44 @@ def test_replace_virtual_paths_in_command_replaces_both() -> None:
         assert "/tmp/deer-flow/threads/t1/user-data/workspace/out.txt" in result
 
 
+def test_replace_virtual_paths_in_command_emits_forward_slashes_on_windows() -> None:
+    """Regression: on Windows, replace_virtual_paths_in_command produced backslash
+    paths (``D:\\code\\...``). When injected into a shell command string and later
+    passed to MSYS sh or Python shlex (posix=True), every ``\\X`` is treated as a
+    POSIX escape sequence — the backslash is consumed and the path is crushed
+    into a garbage token like ``codedeer-flowskillspublic...generate.py``.
+
+    The fix normalizes resolved paths to forward slashes on Windows at the
+    command-injection layer (``replace_virtual_paths_in_command``). This test
+    verifies the end-to-end behavior: no backslashes in the resolved path.
+    """
+    with (
+        patch("deerflow.sandbox.tools._get_skills_container_path", return_value="/mnt/skills"),
+        patch("deerflow.sandbox.tools._get_skills_host_path", return_value=r"D:\code\deer-flow\skills"),
+        patch("deerflow.sandbox.tools.os.name", "nt"),
+    ):
+        cmd = "python /mnt/skills/public/image-generation/scripts/generate.py --help"
+        result = replace_virtual_paths_in_command(cmd, _THREAD_DATA)
+        assert "/mnt/skills" not in result
+        # The resolved skills path must use forward slashes only.
+        resolved_segment = "D:/code/deer-flow/skills/public/image-generation/scripts/generate.py"
+        assert resolved_segment in result, f"expected forward-slash path, got: {result!r}"
+        # And critically: no backslashes in the path segment.
+        assert "\\" not in result, f"backslash found in resolved command (would be crushed by shlex/sh): {result!r}"
+
+
+def test_replace_virtual_paths_in_command_preserves_posix_style_on_non_windows() -> None:
+    """On Linux/Mac the path style is preserved (no forced normalization)."""
+    with (
+        patch("deerflow.sandbox.tools._get_skills_container_path", return_value="/mnt/skills"),
+        patch("deerflow.sandbox.tools._get_skills_host_path", return_value="/home/user/skills"),
+        patch("deerflow.sandbox.tools.os.name", "posix"),
+    ):
+        cmd = "python /mnt/skills/public/image-generation/scripts/generate.py --help"
+        result = replace_virtual_paths_in_command(cmd, _THREAD_DATA)
+        assert "/home/user/skills/public/image-generation/scripts/generate.py" in result
+
+
 # ---------- validate_local_bash_command_paths ----------
 
 

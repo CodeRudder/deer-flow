@@ -1,11 +1,15 @@
+# Windows (Git Bash/MSYS): --loop none so uvicorn defers to the SelectorEventLoop
+# policy set by sitecustomize.py (Proactor hangs psycopg async). No-op elsewhere.
+UVICORN_LOOP := $(shell uname -s 2>/dev/null | grep -qiE '^(MINGW|MSYS|CYGWIN)' && echo --loop none)
+
 install:
 	uv sync
 
 dev:
-	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload
+	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload $(UVICORN_LOOP)
 
 gateway:
-	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $(UVICORN_LOOP)
 
 test:
 	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run pytest tests/ -v

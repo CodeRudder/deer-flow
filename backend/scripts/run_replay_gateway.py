@@ -65,7 +65,14 @@ def main() -> int:
         print("[replay-gw] test-only seed router mounted at /api/test-only/seed-runs", flush=True)
 
     print(f"[replay-gw] config={cfg} fixture={args.fixture} cors={args.cors} port={args.port}", flush=True)
-    uvicorn.run(target, host="127.0.0.1", port=args.port, log_level="warning")
+    run_kwargs = {"host": "127.0.0.1", "port": args.port, "log_level": "warning"}
+    if os.name == "nt":
+        # Windows: force Selector (uvicorn 0.46+ defaults to Proactor, breaks psycopg async); sitecustomize.py is not auto-loaded under `uv run`.
+        import asyncio
+
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        run_kwargs["loop"] = "none"
+    uvicorn.run(target, **run_kwargs)
     return 0
 
 

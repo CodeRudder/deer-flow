@@ -119,7 +119,14 @@ def main() -> int:
     import uvicorn
 
     print(f"[record-gw] model={model} out={out} port={port}", flush=True)
-    uvicorn.run("app.gateway.app:app", host="127.0.0.1", port=port, log_level="warning")
+    run_kwargs = {"host": "127.0.0.1", "port": port, "log_level": "warning"}
+    if os.name == "nt":
+        # Windows: force Selector (uvicorn 0.46+ defaults to Proactor, breaks psycopg async); sitecustomize.py is not auto-loaded under `uv run`.
+        import asyncio
+
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        run_kwargs["loop"] = "none"
+    uvicorn.run("app.gateway.app:app", **run_kwargs)
     return 0
 
 
