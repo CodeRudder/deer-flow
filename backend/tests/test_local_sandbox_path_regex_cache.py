@@ -143,11 +143,11 @@ def test_command_paths_preserve_literal_backslash_on_posix(tmp_path):
     Windows command-path fix introduced would silently rename that directory to
     ``mr2-mount/literal`` and redirect the command to a different path.
     """
+    sb = _make_sandbox(tmp_path)
     literal_dir = tmp_path / "skills" / "mr2-mount\\literal"
     literal_dir.mkdir(parents=True)
     target = literal_dir / "file.txt"
     target.write_text("ok")
-    sb = _make_sandbox(tmp_path)
 
     cmd = "cat /mnt/skills/mr2-mount\\literal/file.txt"
     resolved_cmd = sb._resolve_paths_in_command(cmd)
@@ -161,9 +161,9 @@ def test_command_paths_preserve_literal_backslash_on_posix(tmp_path):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX allows literal '\\' in filenames; only reproducible off-Windows")
 def test_content_paths_preserve_literal_backslash_on_posix(tmp_path):
     """Mirror of the command-path test for ``_resolve_paths_in_content``."""
+    sb = _make_sandbox(tmp_path)
     literal_dir = tmp_path / "skills" / "mr2-mount\\literal"
     literal_dir.mkdir(parents=True)
-    sb = _make_sandbox(tmp_path)
 
     content = 'open("/mnt/skills/mr2-mount\\literal/file.txt")'
     resolved_content = sb._resolve_paths_in_content(content)
@@ -179,8 +179,8 @@ def test_reverse_resolve_preserves_literal_backslash_on_posix(tmp_path):
     ``/mnt/skills/mr2-mount\\literal`` (not ``mr2-mount/literal``), so the
     round-trip stays reversible and list_dir/grep/glob don't surface phantom paths.
     """
-    (tmp_path / "skills" / "mr2-mount\\literal").mkdir(parents=True)
     sb = _make_sandbox(tmp_path)
+    (tmp_path / "skills" / "mr2-mount\\literal").mkdir(parents=True)
 
     skills_local = str((tmp_path / "skills").resolve())
     out = sb._reverse_resolve_path(f"{skills_local}/mr2-mount\\literal")

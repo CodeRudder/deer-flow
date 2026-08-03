@@ -550,8 +550,12 @@ class TestMultipleMounts:
         output = f"Copied: {mount_dir}\\file.txt"
         masked = sandbox._reverse_resolve_paths_in_output(output)
 
-        assert "/mnt/data/file.txt" in masked
-        assert str(mount_dir) not in masked
+        if os.name == "nt":
+            assert "/mnt/data/file.txt" in masked
+            assert str(mount_dir) not in masked
+        else:
+            # On POSIX, backslash is a valid filename character, not a separator.
+            assert masked == output
 
     def test_reverse_resolve_paths_in_output_supports_forward_slash_separator(self, tmp_path):
         """Forward-slash local roots must reverse-resolve too.
