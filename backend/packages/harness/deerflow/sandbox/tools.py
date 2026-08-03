@@ -1047,12 +1047,8 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
     """
     result = command
 
-    # On Windows, resolved host paths must use forward slashes. Backslash
-    # paths injected into a shell command string are later mangled by MSYS sh
-    # / Python shlex (which treat ``\`` as a POSIX escape char), producing
-    # garbage like "codedeer-flowskills..." from "D:\code\deer-flow\skills\...".
-    # Forward slashes are accepted by every downstream layer (Python,
-    # PowerShell, cmd, MSYS sh, shlex), so this normalization is safe.
+    # Windows-only: MSYS sh / shlex treat ``\`` as an escape char, so flatten
+    # resolved backslash paths to forward slashes (POSIX filenames keep ``\``).
     normalize_for_shell = (lambda p: p.replace("\\", "/")) if os.name == "nt" else (lambda p: p)
 
     # Replace skills paths

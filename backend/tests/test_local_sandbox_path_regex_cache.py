@@ -7,6 +7,8 @@ import os
 import shlex
 from pathlib import Path
 
+import pytest
+
 from deerflow.sandbox.local.local_sandbox import LocalSandbox, PathMapping
 
 
@@ -130,3 +132,56 @@ def test_read_only_mount_detected(tmp_path):
     ws_local = str((tmp_path / "workspace").resolve())
     assert sb._is_read_only_path(f"{skills_local}/a.md") is True
     assert sb._is_read_only_path(f"{ws_local}/a.txt") is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX allows literal '\\' in filenames; only reproducible off-Windows")
+def test_command_paths_preserve_literal_backslash_on_posix(tmp_path):
+    """On POSIX, a literal ``\\`` in a resolved path must NOT be rewritten to ``/``.
+
+    POSIX filesystems allow ``\\`` in filenames (e.g. a directory named
+    ``mr2-mount\\literal``). The unconditional ``replace('\\\\', '/')`` that the
+    Windows command-path fix introduced would silently rename that directory to
+    ``mr2-mount/literal`` and redirect the command to a different path.
+    """
+    literal_dir = tmp_path / "skills" / "mr2-mount\\literal"
+    literal_dir.mkdir(parents=True)
+    target = literal_dir / "file.txt"
+    target.write_text("ok")
+    sb = _make_sandbox(tmp_path)
+
+    cmd = "cat /mnt/skills/mr2-mount\\literal/file.txt"
+    resolved_cmd = sb._resolve_paths_in_command(cmd)
+
+    # The literal backslash in the directory name must survive resolution.
+    assert "mr2-mount\\literal" in resolved_cmd, resolved_cmd
+    # And the resolved path token must still point at the original directory.
+    assert str(target.resolve()) in resolved_cmd, resolved_cmd
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX allows literal '\\' in filenames; only reproducible off-Windows")
+def test_content_paths_preserve_literal_backslash_on_posix(tmp_path):
+    """Mirror of the command-path test for ``_resolve_paths_in_content``."""
+    literal_dir = tmp_path / "skills" / "mr2-mount\\literal"
+    literal_dir.mkdir(parents=True)
+    sb = _make_sandbox(tmp_path)
+
+    content = 'open("/mnt/skills/mr2-mount\\literal/file.txt")'
+    resolved_content = sb._resolve_paths_in_content(content)
+
+    assert "mr2-mount\\literal" in resolved_content, resolved_content
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX allows literal '\\' in filenames; only reproducible off-Windows")
+def test_reverse_resolve_preserves_literal_backslash_on_posix(tmp_path):
+    """Reverse resolution must keep a literal ``\\`` in a local path on POSIX.
+
+    A directory named ``mr2-mount\\literal`` on the host must map back to
+    ``/mnt/skills/mr2-mount\\literal`` (not ``mr2-mount/literal``), so the
+    round-trip stays reversible and list_dir/grep/glob don't surface phantom paths.
+    """
+    (tmp_path / "skills" / "mr2-mount\\literal").mkdir(parents=True)
+    sb = _make_sandbox(tmp_path)
+
+    skills_local = str((tmp_path / "skills").resolve())
+    out = sb._reverse_resolve_path(f"{skills_local}/mr2-mount\\literal")
+    assert out == "/mnt/skills/mr2-mount\\literal", out

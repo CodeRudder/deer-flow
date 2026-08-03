@@ -229,19 +229,16 @@ class LocalSandbox(Sandbox):
         Returns:
             Container path if mapping exists, otherwise original path
         """
-        normalized_path = path.replace("\\", "/")
+        # Forward-slash comparison, Windows-only: there ``\`` is always a separator,
+        # but on POSIX it's a valid filename char and must be preserved.
+        to_fs = (lambda p: p.replace("\\", "/")) if os.name == "nt" else (lambda p: p)
+        normalized_path = to_fs(path)
         path_str = str(Path(normalized_path).resolve())
-        # Compare in forward-slash form on both sides. ``Path.resolve()`` yields
-        # backslash separators on Windows, and inputs (plus the prefixes written
-        # by ``_resolve_paths_in_content``) may carry forward slashes; a literal
-        # ``"/"`` join would silently miss every nested path on Windows. The
-        # no-match return keeps ``path_str``'s native separators so callers that
-        # compare against ``Path.resolve()`` output are unaffected.
-        path_str_fs = path_str.replace("\\", "/")
+        path_str_fs = to_fs(path_str)
 
         # Try each mapping (longest local path first for more specific matches)
         for mapping in self._mappings_by_local_specificity:
-            local_path_fs = self._resolved_local_paths[mapping].replace("\\", "/")
+            local_path_fs = to_fs(self._resolved_local_paths[mapping])
             if path_str_fs == local_path_fs or path_str_fs.startswith(local_path_fs + "/"):
                 # Replace the local path prefix with container path
                 relative = path_str_fs[len(local_path_fs) :].lstrip("/")
@@ -278,17 +275,19 @@ class LocalSandbox(Sandbox):
         """
         Resolve container paths to local paths in a command string.
 
-        Resolved paths are normalized to forward slashes, matching
-        ``_resolve_paths_in_content``: backslash host paths (e.g. ``C:\\Users\\..``)
-        injected into a command string are later mangled by MSYS ``sh`` /
-        ``shlex``, which treat ``\\`` as a POSIX escape character. Forward
-        slashes are accepted by every downstream shell (sh, PowerShell, cmd).
+        On Windows, resolved paths are normalized to forward slashes: backslash
+        host paths (e.g. ``C:\\Users\\..``) injected into a command string are
+        later mangled by MSYS ``sh`` / ``shlex``, which treat ``\\`` as a POSIX
+        escape character. Forward slashes are accepted by every downstream shell
+        (sh, PowerShell, cmd). On POSIX, paths are returned unchanged because
+        ``\\`` is a valid filename character there.
 
         Args:
             command: Command string that may contain container paths
 
         Returns:
-            Command with container paths resolved to local paths (forward slashes)
+            Command with container paths resolved to local paths
+            (forward slashes on Windows, native separators on POSIX)
         """
         pattern = self._command_pattern
         if pattern is None:
@@ -297,9 +296,8 @@ class LocalSandbox(Sandbox):
         def replace_match(match: re.Match) -> str:
             matched_path = match.group(0)
             resolved = self._resolve_path(matched_path)
-            # Normalize to forward slashes so Windows backslash paths don't
-            # break shell tokenization (same rationale as _resolve_paths_in_content).
-            return resolved.replace("\\", "/")
+            # Windows-only: flatten backslash paths so MSYS sh / shlex don't treat ``\`` as an escape char.
+            return resolved.replace("\\", "/") if os.name == "nt" else resolved
 
         return pattern.sub(replace_match, command)
 
@@ -308,15 +306,17 @@ class LocalSandbox(Sandbox):
 
         Unlike ``_resolve_paths_in_command`` which uses shell-aware boundary
         characters, this method treats the content as plain text and resolves
-        every occurrence of a container path prefix.  Resolved paths are
-        normalized to forward slashes to avoid backslash-escape issues on
-        Windows hosts (e.g. ``C:\\Users\\..`` breaking Python string literals).
+        every occurrence of a container path prefix.  On Windows, resolved paths
+        are normalized to forward slashes to avoid backslash-escape issues
+        (e.g. ``C:\\Users\\..`` breaking Python string literals); on POSIX paths
+        are returned unchanged because ``\\`` is a valid filename character.
 
         Args:
             content: File content that may contain container paths.
 
         Returns:
-            Content with container paths resolved to local paths (forward slashes).
+            Content with container paths resolved to local paths
+            (forward slashes on Windows, native separators on POSIX).
         """
         pattern = self._content_pattern
         if pattern is None:
@@ -325,9 +325,8 @@ class LocalSandbox(Sandbox):
         def replace_match(match: re.Match) -> str:
             matched_path = match.group(0)
             resolved = self._resolve_path(matched_path)
-            # Normalize to forward slashes so that Windows backslash paths
-            # don't create invalid escape sequences in source files.
-            return resolved.replace("\\", "/")
+            # Windows-only: flatten backslash paths to avoid invalid escape sequences in written content.
+            return resolved.replace("\\", "/") if os.name == "nt" else resolved
 
         return pattern.sub(replace_match, content)
 
