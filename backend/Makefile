@@ -1,7 +1,5 @@
-# Windows (Git Bash/MSYS): uvicorn's default loop bypasses the SelectorEventLoop
-# policy set by backend/sitecustomize.py and forces ProactorEventLoop, which hangs
-# psycopg async (postgres checkpointer + app DB pool) until PoolTimeout. --loop none
-# defers to the policy. No-op on Linux/macOS (keeps uvloop). Mirrors scripts/serve.sh.
+# Windows (Git Bash/MSYS): --loop none so uvicorn defers to the SelectorEventLoop
+# policy set by sitecustomize.py (Proactor hangs psycopg async). No-op elsewhere.
 UVICORN_LOOP := $(shell uname -s 2>/dev/null | grep -qiE '^(MINGW|MSYS|CYGWIN)' && echo --loop none)
 
 install:

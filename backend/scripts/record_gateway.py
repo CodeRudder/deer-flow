@@ -121,15 +121,7 @@ def main() -> int:
     print(f"[record-gw] model={model} out={out} port={port}", flush=True)
     run_kwargs = {"host": "127.0.0.1", "port": port, "log_level": "warning"}
     if os.name == "nt":
-        # Windows: uvicorn 0.46+ forces ProactorEventLoop via loop_factory, which
-        # is incompatible with psycopg async. Set the Selector policy explicitly
-        # and pass loop="none" so uvicorn reuses it. Unlike the main gateway
-        # (serve.sh presets PYTHONPATH=.), this script runs via
-        # `uv run python scripts/record_gateway.py`, so sitecustomize.py is NOT
-        # auto-imported at interpreter startup (sys.path[0] is scripts/, not
-        # backend/) and we cannot rely on it here. The hermetic config is
-        # SQLite-only so Proactor would be harmless today; this is defensive
-        # against a future postgres checkpointer.
+        # Windows: force Selector (uvicorn 0.46+ defaults to Proactor, breaks psycopg async); sitecustomize.py is not auto-loaded under `uv run`.
         import asyncio
 
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

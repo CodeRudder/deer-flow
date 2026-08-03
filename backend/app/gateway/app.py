@@ -166,9 +166,7 @@ async def _migrate_orphaned_threads(store, admin_user_id: str) -> int:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
 
-    # uvicorn's dictConfig attaches AccessFormatter to uvicorn.access with
-    # propagate=False before this hook runs; strip it so access logs
-    # share the root handler (see unify_uvicorn_logging for details).
+    # uvicorn.access carries propagate=False + its own formatter; route it through root (see unify_uvicorn_logging).
     unify_uvicorn_logging()
 
     # Load config and check necessary environment variables at startup.

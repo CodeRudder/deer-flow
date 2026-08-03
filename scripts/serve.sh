@@ -322,10 +322,8 @@ DEER_FLOW_HOME="$(cd "$DEER_FLOW_HOME" && pwd -P)"
 BACKEND_RUNTIME_HOME="$(cd "$BACKEND_RUNTIME_HOME" && pwd -P)"
 export DEER_FLOW_HOME
 
-# On Windows, uvicorn 0.46+ forces ProactorEventLoop via loop_factory, which is
-# incompatible with psycopg async (langgraph postgres checkpointer + app DB pool
-# hang until PoolTimeout). --loop none makes uvicorn defer to the event-loop
-# policy, which backend/sitecustomize.py already sets to WindowsSelectorEventLoop.
+# Windows: --loop none so uvicorn defers to the WindowsSelectorEventLoop policy
+# set by backend/sitecustomize.py (Proactor hangs psycopg async). No-op elsewhere.
 UVICORN_LOOP_FLAG=""
 if uname -s 2>/dev/null | grep -qiE '^(MINGW|MSYS|CYGWIN)'; then
     UVICORN_LOOP_FLAG="--loop none"
