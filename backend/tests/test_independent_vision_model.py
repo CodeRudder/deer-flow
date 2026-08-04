@@ -147,9 +147,7 @@ def test_subagent_middlewares_keep_legacy_view_image_middleware_without_independ
 
 
 def test_get_vision_model_config_uses_is_default_when_unselected() -> None:
-    config = _app_config(
-        vision_models=[_vision_model("vision-a"), _vision_model("vision-b", is_default=True)]
-    )
+    config = _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-b", is_default=True)])
 
     assert get_vision_model_config(config).name == "vision-b"
 
@@ -172,8 +170,29 @@ def test_get_vision_model_config_falls_back_to_first_without_is_default() -> Non
 
 
 def test_get_vision_model_config_name_overrides_is_default() -> None:
-    config = _app_config(
-        vision_models=[_vision_model("vision-a"), _vision_model("vision-b", is_default=True)]
-    )
+    config = _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-b", is_default=True)])
 
     assert get_vision_model_config(config, "vision-a").name == "vision-a"
+
+
+def test_vision_model_api_style_defaults_to_anthropic() -> None:
+    config = _app_config(vision_models=[_vision_model()])
+
+    assert config.vision.models[0].api_style == "anthropic"
+
+
+def test_vision_model_accepts_openai_api_style() -> None:
+    model = VisionModelConfig(
+        name="gpt-vision",
+        model="gpt-5.5",
+        base_url="https://vision.example.test/openai/v1/chat/completions",
+        api_key="test-key",
+        api_style="openai",
+    )
+
+    config = _app_config(vision_models=[model])
+
+    assert config.vision.models[0].api_style == "openai"
+    # stream stays False (default) so the streaming-reject validator passes;
+    # the openai branch forces stream internally at request time.
+    assert config.vision.models[0].stream is False

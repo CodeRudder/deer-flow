@@ -204,3 +204,94 @@ async def test_understand_image_base64_normalizes_missing_content_list(monkeypat
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/no-list.png",
         )
+
+
+def _openai_vision_config() -> VisionModelConfig:
+    return VisionModelConfig(
+        name="gpt-vision",
+        model="gpt-5.5",
+        base_url="https://vision.example.test/openai/v1/chat/completions",
+        api_key="test-key",
+        api_style="openai",
+    )
+
+
+def test_build_openai_payload_uses_image_url_and_forces_stream() -> None:
+    payload = _vision_client(_openai_vision_config())._build_openai_payload(
+        image_base64="BASE64",
+        mime_type="image/png",
+    )
+
+    assert payload["stream"] is True
+    messages = payload["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == VisionConfig().system_prompt
+    user_content = messages[1]["content"]
+    assert user_content[0] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,BASE64"},
+    }
+    assert user_content[1] == {"type": "text", "text": VisionConfig().prompt}
+
+
+def test_extract_openai_text_aggregates_sse_deltas() -> None:
+    body = 'data: {"choices":[{"delta":{"content":"A "}}]}\n\ndata: {"choices":[{"delta":{"content":"red "}}]}\n\ndata: {"choices":[{"delta":{"content":"square."}}]}\n\ndata: [DONE]\n\n'
+
+    text = _vision_client(_openai_vision_config())._extract_openai_text(body)
+
+    assert text == "A red square."
+
+
+def test_extract_openai_text_falls_back_to_non_stream_json() -> None:
+    body = json.dumps({"choices": [{"message": {"content": "A blue circle."}}]})
+
+    text = _vision_client(_openai_vision_config())._extract_openai_text(body)
+
+    assert text == "A blue circle."
+
+
+def test_extract_openai_text_raises_when_no_text() -> None:
+    with pytest.raises(vision_module.VisionUnderstandingError, match="no text"):
+        _vision_client(_openai_vision_config())._extract_openai_text("data: [DONE]\n\n")
+
+
+@pytest.mark.asyncio
+async def test_understand_image_base64_openai_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    original_client = httpx.AsyncClient
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.read().decode())
+        sse = 'data: {"choices":[{"delta":{"content":"A "}}]}\n\ndata: {"choices":[{"delta":{"content":"small "}}]}\n\ndata: {"choices":[{"delta":{"content":"red square."}}]}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, text=sse)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+
+    result = await _vision_client(_openai_vision_config()).understand_image_base64(
+        image_base64="BASE64",
+        mime_type="image/png",
+        image_path="/mnt/user-data/uploads/red.png",
+    )
+
+    assert result == "A small red square."
+    assert captured["url"] == "https://vision.example.test/openai/v1/chat/completions"
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["messages"][1]["content"][0]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
+async def test_understand_image_base64_openai_normalizes_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"detail": "boom"})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+
+    with pytest.raises(vision_module.VisionUnderstandingError):
+        await _vision_client(_openai_vision_config()).understand_image_base64(
+            image_base64="BASE64",
+            mime_type="image/png",
+            image_path="/mnt/user-data/uploads/broken.png",
+        )
