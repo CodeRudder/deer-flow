@@ -30,6 +30,7 @@ class VisionModelResponse(BaseModel):
     name: str = Field(..., description="Unique identifier for the vision model")
     model: str = Field(..., description="Actual provider model identifier")
     display_name: str | None = Field(None, description="Human-readable name")
+    is_default: bool = Field(default=False, description="Whether this is the default vision model when none is selected")
 
 
 class ModelsListResponse(BaseModel):
@@ -105,6 +106,7 @@ async def list_models(config: AppConfig = Depends(get_config)) -> ModelsListResp
             name=model.name,
             model=model.model,
             display_name=model.display_name,
+            is_default=model.is_default,
         )
         for model in config.vision.models
     ]

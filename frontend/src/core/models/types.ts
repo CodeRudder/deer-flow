@@ -17,6 +17,7 @@ export interface VisionModel {
   name: string;
   model: string;
   display_name?: string | null;
+  is_default?: boolean;
 }
 
 export interface ModelsResponse {

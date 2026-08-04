@@ -93,7 +93,7 @@ def test_config_example_exposes_local_email_domain_fields_as_real_yaml():
     example_path = Path(__file__).resolve().parents[2] / "config.example.yaml"
     raw_config = yaml.safe_load(example_path.read_text(encoding="utf-8"))
 
-    assert raw_config["config_version"] == 23
+    assert raw_config["config_version"] == 24
     assert raw_config["auth"]["allowed_email_domains"] == ["sz-jlc.com"]
     assert raw_config["auth"]["enforce_email_domain_on_login"] is False
     assert raw_config["auth"]["local_registration"] == {

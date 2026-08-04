@@ -8,7 +8,7 @@ from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddlewar
 from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
-from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
+from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig, get_vision_model_config
 from deerflow.tools.tools import get_available_tools
 
 
@@ -23,12 +23,13 @@ def _model(name: str = "text-model", *, supports_vision: bool = False) -> ModelC
     )
 
 
-def _vision_model(name: str = "company-vision") -> VisionModelConfig:
+def _vision_model(name: str = "company-vision", *, is_default: bool = False) -> VisionModelConfig:
     return VisionModelConfig(
         name=name,
         model="kimi-k2.6",
         base_url="https://vision.example.test/api/v1/messages",
         api_key="test-key",
+        is_default=is_default,
     )
 
 
@@ -143,3 +144,36 @@ def test_subagent_middlewares_keep_legacy_view_image_middleware_without_independ
     middlewares = build_subagent_runtime_middlewares(app_config=config, model_name="text-model")
 
     assert any(isinstance(middleware, ViewImageMiddleware) for middleware in middlewares)
+
+
+def test_get_vision_model_config_uses_is_default_when_unselected() -> None:
+    config = _app_config(
+        vision_models=[_vision_model("vision-a"), _vision_model("vision-b", is_default=True)]
+    )
+
+    assert get_vision_model_config(config).name == "vision-b"
+
+
+def test_get_vision_model_config_is_default_first_one_wins() -> None:
+    config = _app_config(
+        vision_models=[
+            _vision_model("vision-a", is_default=True),
+            _vision_model("vision-b", is_default=True),
+        ]
+    )
+
+    assert get_vision_model_config(config).name == "vision-a"
+
+
+def test_get_vision_model_config_falls_back_to_first_without_is_default() -> None:
+    config = _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-b")])
+
+    assert get_vision_model_config(config).name == "vision-a"
+
+
+def test_get_vision_model_config_name_overrides_is_default() -> None:
+    config = _app_config(
+        vision_models=[_vision_model("vision-a"), _vision_model("vision-b", is_default=True)]
+    )
+
+    assert get_vision_model_config(config, "vision-a").name == "vision-a"

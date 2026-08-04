@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 23
+config_version: 24
 
 # ============================================================================
 # Logging
@@ -569,6 +569,8 @@ models:
 # the selected vision endpoint and returns the text understanding to the main
 # model. `system_prompt` and `prompt` are shared by all configured vision
 # models; each model entry only describes endpoint/model-call differences.
+# Set `is_default: true` on one entry to mark the default vision model when
+# none is selected; if multiple set it, the first wins, else the first entry.
 vision:
   # system_prompt: |
   #     你是一个专业的多模态视觉理解模型。
@@ -580,6 +582,7 @@ vision:
   # models:
   #   - name: company-vision
   #     display_name: 公司视觉理解模型
+  #     is_default: true   # 默认视觉模型；配置多个 is_default 时取第一个
   #     model: kimi-k2.6
   #     base_url: https://claude.jlcops.com/api/v1/messages
   #     api_key: $COMPANY_VISION_API_KEY

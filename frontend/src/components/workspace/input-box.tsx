@@ -415,6 +415,7 @@ export function InputBox({
     }
     return (
       visionModels.find((m) => m.name === context.vision_model_name) ??
+      visionModels.find((m) => m.is_default) ??
       visionModels[0]
     );
   }, [context.vision_model_name, visionModels]);
