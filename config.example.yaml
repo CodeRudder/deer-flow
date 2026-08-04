@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 22
+config_version: 23
 
 # ============================================================================
 # Logging
@@ -887,6 +887,9 @@ tool_output:
 
 suggestions:
   enabled: true
+  # Model for follow-up suggestions; null = first configured model (models[0]).
+  # Decouples from the per-thread chat model so a streaming reasoning model won't break it.
+  model_name: null
 
 
 # ============================================================================
