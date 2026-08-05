@@ -584,8 +584,8 @@ vision:
   #     display_name: 公司视觉理解模型
   #     is_default: true   # 默认视觉模型；配置多个 is_default 时取第一个
   #     model: kimi-k2.6
-  #     base_url: https://claude.jlcops.com/api/v1/messages   # 须与 api_style 匹配
-  #     api_style: anthropic   # anthropic(默认, /v1/messages) 或 openai(/v1/chat/completions)
+  #     base_url: https://claude.jlcops.com/api/v1/messages   # 须与 protocol 匹配
+  #     protocol: anthropic   # anthropic(默认, /v1/messages) 或 openai(/v1/chat/completions)
   #     api_key: $COMPANY_VISION_API_KEY
   #     max_tokens: 10240
   #     stream: false          # true 走流式(SSE)

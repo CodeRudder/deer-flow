@@ -213,7 +213,7 @@ def _openai_vision_config(stream: bool = True) -> VisionModelConfig:
         model="gpt-5.5",
         base_url="https://vision.example.test/openai/v1/chat/completions",
         api_key="test-key",
-        api_style="openai",
+        protocol="openai",
         stream=stream,
     )
 

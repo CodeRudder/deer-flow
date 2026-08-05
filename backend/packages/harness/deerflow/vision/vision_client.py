@@ -169,7 +169,7 @@ class VisionClient:
         image_path: str,
     ) -> str:
         """Call the configured vision endpoint and return text image understanding."""
-        is_openai = self.model_config.api_style == "openai"
+        is_openai = self.model_config.protocol == "openai"
         payload = self._build_openai_payload(image_base64=image_base64, mime_type=mime_type) if is_openai else self._build_payload(image_base64=image_base64, mime_type=mime_type)
         headers = self._build_headers()
         try:

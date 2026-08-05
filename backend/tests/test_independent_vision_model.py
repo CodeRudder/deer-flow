@@ -176,23 +176,23 @@ def test_get_vision_model_config_name_overrides_is_default() -> None:
     assert get_vision_model_config(config, "vision-a").name == "vision-a"
 
 
-def test_vision_model_api_style_defaults_to_anthropic() -> None:
+def test_vision_model_protocol_defaults_to_anthropic() -> None:
     config = _app_config(vision_models=[_vision_model()])
 
-    assert config.vision.models[0].api_style == "anthropic"
+    assert config.vision.models[0].protocol == "anthropic"
 
 
-def test_vision_model_accepts_openai_api_style() -> None:
+def test_vision_model_accepts_openai_protocol() -> None:
     model = VisionModelConfig(
         name="gpt-vision",
         model="gpt-5.5",
         base_url="https://vision.example.test/openai/v1/chat/completions",
         api_key="test-key",
-        api_style="openai",
+        protocol="openai",
     )
 
     config = _app_config(vision_models=[model])
 
-    assert config.vision.models[0].api_style == "openai"
-    # stream keeps its own default; api_style does not override it.
+    assert config.vision.models[0].protocol == "openai"
+    # stream keeps its own default; protocol does not override it.
     assert config.vision.models[0].stream is False

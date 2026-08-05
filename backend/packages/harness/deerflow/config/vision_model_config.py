@@ -13,8 +13,8 @@ class VisionModelConfig(BaseModel):
     display_name: str | None = Field(default=None, description="Human-readable name for display")
     is_default: bool = Field(default=False, description="Default vision model when none is selected; first match wins if multiple are set.")
     model: str = Field(..., description="Provider model name")
-    base_url: str = Field(..., description="Endpoint URL; must match api_style (anthropic → /v1/messages, openai → /v1/chat/completions)")
-    api_style: Literal["anthropic", "openai"] = Field(
+    base_url: str = Field(..., description="Endpoint URL; must match protocol (anthropic → /v1/messages, openai → /v1/chat/completions)")
+    protocol: Literal["anthropic", "openai"] = Field(
         default="anthropic",
         description="Request/response protocol. 'anthropic': Messages API (default). 'openai': Chat Completions. Both honor the stream field (SSE when true).",
     )
