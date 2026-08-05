@@ -873,6 +873,7 @@ class DeerFlowClient:
                     "name": model.name,
                     "model": getattr(model, "model", None),
                     "display_name": getattr(model, "display_name", None),
+                    "is_default": getattr(model, "is_default", False),
                 }
                 for model in vision_models
             ],

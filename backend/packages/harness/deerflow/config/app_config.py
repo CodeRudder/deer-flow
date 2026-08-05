@@ -480,8 +480,6 @@ class AppConfig(BaseModel):
             if model.name in names:
                 raise ValueError(f"Duplicate vision model name under `vision.models`: {model.name!r}.")
             names.add(model.name)
-            if model.stream:
-                raise ValueError(f"`vision.models[{index}].stream` must be false; streaming vision responses are not supported.")
         return self
 
     def get_model_config(self, name: str) -> ModelConfig | None:

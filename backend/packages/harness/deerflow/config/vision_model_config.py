@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,8 +11,13 @@ class VisionModelConfig(BaseModel):
 
     name: str = Field(..., description="Unique name for the vision model")
     display_name: str | None = Field(default=None, description="Human-readable name for display")
+    is_default: bool = Field(default=False, description="Default vision model when none is selected; first match wins if multiple are set.")
     model: str = Field(..., description="Provider model name")
-    base_url: str = Field(..., description="Anthropic-compatible messages endpoint URL")
+    base_url: str = Field(..., description="Endpoint URL; must match protocol (anthropic → /v1/messages, openai → /v1/chat/completions)")
+    protocol: Literal["anthropic", "openai"] = Field(
+        default="anthropic",
+        description="Request/response protocol. 'anthropic': Messages API (default). 'openai': Chat Completions. Both honor the stream field (SSE when true).",
+    )
     api_key: str | None = Field(default=None, description="API key for the vision endpoint")
     max_tokens: int = Field(default=10240, description="Maximum output tokens for image understanding")
     stream: bool = Field(default=False, description="Whether to request streaming responses")
@@ -46,4 +51,4 @@ def get_vision_model_config(config: Any, name: str | None = None) -> VisionModel
         if callable(getter):
             return getter(name)
         return next((model for model in config.vision.models if model.name == name), None)
-    return config.vision.models[0]
+    return next((model for model in config.vision.models if model.is_default), None) or config.vision.models[0]

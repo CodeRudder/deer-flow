@@ -74,7 +74,7 @@ def test_generate_suggestions_strips_inline_think_block(monkeypatch):
     fake_model.ainvoke = AsyncMock(return_value=MagicMock(content=content))
     monkeypatch.setattr(suggestions, "create_chat_model", lambda **kwargs: fake_model)
 
-    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))))
 
     assert result.suggestions == ["深度学习和机器学习的区别？", "常用框架有哪些？", "需要什么数学基础？"]
 
@@ -103,7 +103,7 @@ def test_generate_suggestions_parses_and_limits(monkeypatch):
 
     # Bypass the require_permission decorator (which needs request +
     # thread_store) — these tests cover the parsing logic.
-    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))))
 
     assert result.suggestions == ["Q1", "Q2", "Q3"]
     fake_model.ainvoke.assert_awaited_once()
@@ -125,7 +125,7 @@ def test_generate_suggestions_parses_list_block_content(monkeypatch):
 
     # Bypass the require_permission decorator (which needs request +
     # thread_store) — these tests cover the parsing logic.
-    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))))
 
     assert result.suggestions == ["Q1", "Q2"]
     fake_model.ainvoke.assert_awaited_once()
@@ -147,7 +147,7 @@ def test_generate_suggestions_parses_output_text_block_content(monkeypatch):
 
     # Bypass the require_permission decorator (which needs request +
     # thread_store) — these tests cover the parsing logic.
-    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))))
 
     assert result.suggestions == ["Q1", "Q2"]
     fake_model.ainvoke.assert_awaited_once()
@@ -166,7 +166,7 @@ def test_generate_suggestions_returns_empty_on_model_error(monkeypatch):
 
     # Bypass the require_permission decorator (which needs request +
     # thread_store) — these tests cover the parsing logic.
-    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))))
 
     assert result.suggestions == []
 
@@ -182,7 +182,7 @@ def test_generate_suggestions_returns_empty_when_disabled(monkeypatch):
         model_name=None,
     )
 
-    mock_config = SimpleNamespace(suggestions=SimpleNamespace(enabled=False))
+    mock_config = SimpleNamespace(suggestions=SimpleNamespace(enabled=False, model_name=None))
 
     fake_model = MagicMock()
     fake_model.ainvoke = AsyncMock(side_effect=RuntimeError("Model should not be called."))
@@ -198,11 +198,68 @@ def test_get_suggestions_config():
     """Ensure the GET /config endpoint correctly returns the boolean state."""
 
     # Test when enabled
-    mock_config_true = SimpleNamespace(suggestions=SimpleNamespace(enabled=True))
+    mock_config_true = SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))
     result_true = asyncio.run(suggestions.get_suggestions_config(config=mock_config_true))
     assert result_true.enabled is True
 
     # Test when disabled
-    mock_config_false = SimpleNamespace(suggestions=SimpleNamespace(enabled=False))
+    mock_config_false = SimpleNamespace(suggestions=SimpleNamespace(enabled=False, model_name=None))
     result_false = asyncio.run(suggestions.get_suggestions_config(config=mock_config_false))
     assert result_false.enabled is False
+
+
+def test_generate_suggestions_uses_config_model_not_body_model(monkeypatch):
+    """Suggestions must use config.suggestions.model_name, not the request body's model_name.
+
+    Decouples suggestions from the per-thread chat model: picking a streaming-only reasoning
+    model (e.g. gpt-5.6-luna) for chat must not break the non-streaming suggestion call.
+    """
+    req = suggestions.SuggestionsRequest(
+        messages=[
+            suggestions.SuggestionMessage(role="user", content="Hi"),
+            suggestions.SuggestionMessage(role="assistant", content="Hello"),
+        ],
+        n=3,
+        model_name="body-model-should-be-ignored",
+    )
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        fake_model = MagicMock()
+        fake_model.ainvoke = AsyncMock(return_value=MagicMock(content='["Q1", "Q2", "Q3"]'))
+        return fake_model
+
+    monkeypatch.setattr(suggestions, "create_chat_model", fake_create)
+    cfg = SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name="configured-model"))
+
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=cfg))
+
+    assert result.suggestions == ["Q1", "Q2", "Q3"]
+    assert captured["name"] == "configured-model"
+
+
+def test_generate_suggestions_null_model_name_falls_back_to_default(monkeypatch):
+    """When suggestions.model_name is null, create_chat_model is called with name=None (→ models[0])."""
+    req = suggestions.SuggestionsRequest(
+        messages=[
+            suggestions.SuggestionMessage(role="user", content="Hi"),
+            suggestions.SuggestionMessage(role="assistant", content="Hello"),
+        ],
+        n=3,
+        model_name=None,
+    )
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        fake_model = MagicMock()
+        fake_model.ainvoke = AsyncMock(return_value=MagicMock(content='["Q1"]'))
+        return fake_model
+
+    monkeypatch.setattr(suggestions, "create_chat_model", fake_create)
+    cfg = SimpleNamespace(suggestions=SimpleNamespace(enabled=True, model_name=None))
+
+    asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=cfg))
+
+    assert captured["name"] is None
