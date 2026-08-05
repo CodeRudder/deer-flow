@@ -80,12 +80,37 @@ class VisionClient:
             raise VisionUnderstandingError("Vision model response has no text content")
         return "\n\n".join(text_parts)
 
+    def _extract_anthropic_text(self, body: str) -> str:
+        parts: list[str] = []
+        for raw in body.splitlines():
+            line = raw.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:") :].strip()
+            if not data:
+                continue
+            try:
+                event = json.loads(data)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(event, dict) or event.get("type") != "content_block_delta":
+                continue
+            delta = event.get("delta") or {}
+            if delta.get("type") != "text_delta":
+                continue
+            text = delta.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        if not parts:
+            raise VisionUnderstandingError("Vision model (anthropic, stream) response had no text content")
+        return "".join(parts)
+
     def _build_openai_payload(self, *, image_base64: str, mime_type: str) -> dict[str, Any]:
         data_url = f"data:{mime_type};base64,{image_base64}"
         return {
             "model": self.model_config.model,
             "max_tokens": self.model_config.max_tokens,
-            "stream": True,
+            "stream": self.model_config.stream,
             "messages": [
                 {"role": "system", "content": self.vision_config.system_prompt},
                 {
@@ -110,6 +135,8 @@ class VisionClient:
             try:
                 chunk = json.loads(data)
             except (ValueError, TypeError):
+                continue
+            if not isinstance(chunk, dict):
                 continue
             choices = chunk.get("choices") or []
             if not choices:
@@ -151,6 +178,8 @@ class VisionClient:
                 response.raise_for_status()
                 if is_openai:
                     return self._extract_openai_text(response.text)
+                if self.model_config.stream:
+                    return self._extract_anthropic_text(response.text)
                 return self._extract_text_content(response.json())
         except VisionUnderstandingError:
             logger.exception("Vision understanding returned unusable response: model=%s image_path=%s", self.model_config.name, image_path)

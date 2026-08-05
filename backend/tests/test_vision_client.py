@@ -9,12 +9,13 @@ from deerflow.config.vision_model_config import VisionConfig, VisionModelConfig
 from deerflow.vision import vision_client as vision_module
 
 
-def _vision_config() -> VisionModelConfig:
+def _vision_config(stream: bool = False) -> VisionModelConfig:
     return VisionModelConfig(
         name="company-vision",
         model="kimi-k2.6",
         base_url="https://vision.example.test/api/v1/messages",
         api_key="test-key",
+        stream=stream,
     )
 
 
@@ -206,18 +207,19 @@ async def test_understand_image_base64_normalizes_missing_content_list(monkeypat
         )
 
 
-def _openai_vision_config() -> VisionModelConfig:
+def _openai_vision_config(stream: bool = True) -> VisionModelConfig:
     return VisionModelConfig(
         name="gpt-vision",
         model="gpt-5.5",
         base_url="https://vision.example.test/openai/v1/chat/completions",
         api_key="test-key",
         api_style="openai",
+        stream=stream,
     )
 
 
-def test_build_openai_payload_uses_image_url_and_forces_stream() -> None:
-    payload = _vision_client(_openai_vision_config())._build_openai_payload(
+def test_build_openai_payload_uses_image_url_and_honors_stream() -> None:
+    payload = _vision_client(_openai_vision_config(stream=True))._build_openai_payload(
         image_base64="BASE64",
         mime_type="image/png",
     )
@@ -232,6 +234,24 @@ def test_build_openai_payload_uses_image_url_and_forces_stream() -> None:
         "image_url": {"url": "data:image/png;base64,BASE64"},
     }
     assert user_content[1] == {"type": "text", "text": VisionConfig().prompt}
+
+
+def test_build_openai_payload_honors_stream_false() -> None:
+    payload = _vision_client(_openai_vision_config(stream=False))._build_openai_payload(
+        image_base64="BASE64",
+        mime_type="image/png",
+    )
+
+    assert payload["stream"] is False
+
+
+def test_build_payload_honors_stream_true() -> None:
+    payload = _vision_client(_vision_config(stream=True))._build_payload(
+        image_base64="BASE64",
+        mime_type="image/png",
+    )
+
+    assert payload["stream"] is True
 
 
 def test_extract_openai_text_aggregates_sse_deltas() -> None:
@@ -295,3 +315,68 @@ async def test_understand_image_base64_openai_normalizes_http_error(monkeypatch:
             mime_type="image/png",
             image_path="/mnt/user-data/uploads/broken.png",
         )
+
+
+def test_extract_anthropic_text_aggregates_content_block_deltas() -> None:
+    body = (
+        'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\n'
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"图片"}}\n\n'
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"是红色。"}}\n\n'
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    )
+
+    text = _vision_client(_vision_config(stream=True))._extract_anthropic_text(body)
+
+    assert text == "图片是红色。"
+
+
+def test_extract_anthropic_text_ignores_thinking_delta() -> None:
+    body = 'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hidden"}}\n\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"可见内容"}}\n\n'
+
+    text = _vision_client(_vision_config(stream=True))._extract_anthropic_text(body)
+
+    assert text == "可见内容"
+    assert "hidden" not in text
+
+
+def test_extract_anthropic_text_raises_when_no_text() -> None:
+    with pytest.raises(vision_module.VisionUnderstandingError, match="no text"):
+        _vision_client(_vision_config(stream=True))._extract_anthropic_text('data: {"type":"message_stop"}\n\n')
+
+
+@pytest.mark.asyncio
+async def test_understand_image_base64_anthropic_stream_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    original_client = httpx.AsyncClient
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.read().decode())
+        sse = 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"一面"}}\n\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"红旗。"}}\n\ndata: {"type":"message_stop"}\n\n'
+        return httpx.Response(200, text=sse)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout: original_client(transport=httpx.MockTransport(_handler), timeout=timeout))
+
+    result = await _vision_client(_vision_config(stream=True)).understand_image_base64(
+        image_base64="BASE64",
+        mime_type="image/png",
+        image_path="/mnt/user-data/uploads/flag.png",
+    )
+
+    assert result == "一面红旗。"
+    assert captured["payload"]["stream"] is True
+
+
+def test_extract_anthropic_text_ignores_non_object_data_lines() -> None:
+    body = 'data: "ping"\ndata: [1, 2]\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"正文"}}\n\n'
+
+    text = _vision_client(_vision_config(stream=True))._extract_anthropic_text(body)
+
+    assert text == "正文"
+
+
+def test_extract_openai_text_ignores_non_object_data_lines() -> None:
+    body = 'data: "ping"\ndata: [1, 2]\ndata: {"choices":[{"delta":{"content":"正文"}}]}\n\ndata: [DONE]\n\n'
+
+    text = _vision_client(_openai_vision_config())._extract_openai_text(body)
+
+    assert text == "正文"

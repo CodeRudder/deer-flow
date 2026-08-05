@@ -64,18 +64,19 @@ def test_app_config_rejects_duplicate_vision_model_names() -> None:
         _app_config(vision_models=[_vision_model("vision-a"), _vision_model("vision-a")])
 
 
-def test_app_config_rejects_streaming_vision_model() -> None:
-    with pytest.raises(ValueError, match="vision\\.models\\[0\\]\\.stream"):
-        _app_config(
-            vision_models=[
-                VisionModelConfig(
-                    name="company-vision",
-                    model="kimi-k2.6",
-                    base_url="https://vision.example.test/api/v1/messages",
-                    stream=True,
-                )
-            ]
-        )
+def test_app_config_allows_streaming_vision_model() -> None:
+    config = _app_config(
+        vision_models=[
+            VisionModelConfig(
+                name="company-vision",
+                model="kimi-k2.6",
+                base_url="https://vision.example.test/api/v1/messages",
+                stream=True,
+            )
+        ]
+    )
+
+    assert config.vision.models[0].stream is True
 
 
 def test_get_available_tools_exposes_view_image_for_independent_vision_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,6 +194,5 @@ def test_vision_model_accepts_openai_api_style() -> None:
     config = _app_config(vision_models=[model])
 
     assert config.vision.models[0].api_style == "openai"
-    # stream stays False (default) so the streaming-reject validator passes;
-    # the openai branch forces stream internally at request time.
+    # stream keeps its own default; api_style does not override it.
     assert config.vision.models[0].stream is False

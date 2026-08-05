@@ -16,7 +16,7 @@ class VisionModelConfig(BaseModel):
     base_url: str = Field(..., description="Endpoint URL; must match api_style (anthropic → /v1/messages, openai → /v1/chat/completions)")
     api_style: Literal["anthropic", "openai"] = Field(
         default="anthropic",
-        description="Request/response protocol. 'anthropic': Messages API (default). 'openai': Chat Completions, forces stream + SSE; ignores the stream field.",
+        description="Request/response protocol. 'anthropic': Messages API (default). 'openai': Chat Completions. Both honor the stream field (SSE when true).",
     )
     api_key: str | None = Field(default=None, description="API key for the vision endpoint")
     max_tokens: int = Field(default=10240, description="Maximum output tokens for image understanding")
