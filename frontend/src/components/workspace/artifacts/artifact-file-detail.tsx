@@ -348,6 +348,13 @@ export function ArtifactFileDetail({
           viewMode === "preview" &&
           (language === "markdown" || language === "html") && (
             <ArtifactFilePreview
+              // Streamdown caches parsed output while mounted; remount presented markdown on
+              // content change so an agent rewrite is picked up (drafts/HTML rebuild already).
+              key={
+                isWriteFile || language !== "markdown"
+                  ? undefined
+                  : visibleContent
+              }
               content={visibleContent}
               language={language ?? "text"}
               scrollKey={filepathFromProps}
