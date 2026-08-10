@@ -1132,6 +1132,17 @@ export function useThreadStream({
           queryKey: threadTokenUsageQueryKey(threadIdRef.current),
         });
       }
+      // End of run: refresh artifacts of the just-finished thread that are
+      // currently being previewed; mark same-thread cached-but-closed ones
+      // stale so they refetch on next open. Other threads are untouched.
+      const finishedThreadId = threadIdRef.current;
+      if (finishedThreadId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["artifact"],
+          predicate: (query) => query.queryKey[2] === finishedThreadId,
+          refetchType: "active",
+        });
+      }
     },
   });
 
