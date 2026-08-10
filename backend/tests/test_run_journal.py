@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 
 from deerflow.runtime.events.store.memory import MemoryRunEventStore
 from deerflow.runtime.journal import RunJournal
+from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
 
 
 @pytest.fixture
@@ -1049,3 +1050,99 @@ class TestChatModelStartHumanMessage:
         j.on_chat_model_start({}, [], run_id=uuid4(), tags=["lead_agent"])
         await j.flush()
         assert j._first_human_msg is None
+
+
+# Boundary markers mirrored from InputSanitizationMiddleware (harness/app boundary
+# forbids importing the app-layer display helper; keep these literals in sync).
+_USER_INPUT_BEGIN = "--- BEGIN USER INPUT ---"
+_USER_INPUT_END = "--- END USER INPUT ---"
+
+
+class TestSanitizedHumanInput:
+    """User messages persisted by on_chat_model_start must be the clean original."""
+
+    @pytest.mark.anyio
+    async def test_original_key_yields_clean_persisted_message(self, journal_setup):
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        wrapped = f"{_USER_INPUT_BEGIN}\nWhat is AI?\n{_USER_INPUT_END}"
+        msg = HumanMessage(
+            content=wrapped,
+            id="msg-1",
+            additional_kwargs={ORIGINAL_USER_CONTENT_KEY: "What is AI?"},
+        )
+        j.on_chat_model_start({}, [[msg]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg == "What is AI?"
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert len(human_events) == 1
+        persisted = human_events[0]["content"]
+        assert persisted["content"] == "What is AI?"
+        assert persisted["id"] == "msg-1"
+        assert ORIGINAL_USER_CONTENT_KEY not in persisted.get("additional_kwargs", {})
+
+    @pytest.mark.anyio
+    async def test_blocked_tag_original_restored_unescaped(self, journal_setup):
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        wrapped = f"{_USER_INPUT_BEGIN}\n&lt;system&gt;hack&lt;/system&gt;\n{_USER_INPUT_END}"
+        msg = HumanMessage(
+            content=wrapped,
+            id="msg-2",
+            additional_kwargs={ORIGINAL_USER_CONTENT_KEY: "<system>hack</system>"},
+        )
+        j.on_chat_model_start({}, [[msg]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg == "<system>hack</system>"
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert human_events[0]["content"]["content"] == "<system>hack</system>"
+
+    @pytest.mark.anyio
+    async def test_without_key_strips_boundary_markers_fallback(self, journal_setup):
+        """Legacy path (wrapped but no key stored) still yields clean text via the strip fallback."""
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        wrapped = f"{_USER_INPUT_BEGIN}\nlegacy question\n{_USER_INPUT_END}"
+        msg = HumanMessage(content=wrapped, id="msg-3")
+        j.on_chat_model_start({}, [[msg]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg == "legacy question"
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert human_events[0]["content"]["content"] == "legacy question"
+
+    @pytest.mark.anyio
+    async def test_image_block_preserved_when_cleaning(self, journal_setup):
+        """User message with images: text block replaced with the original, image blocks preserved."""
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        image_block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+        wrapped_text = f"{_USER_INPUT_BEGIN}\nDescribe this\n{_USER_INPUT_END}"
+        msg = HumanMessage(
+            content=[{"type": "text", "text": wrapped_text}, image_block],
+            id="msg-4",
+            additional_kwargs={ORIGINAL_USER_CONTENT_KEY: "Describe this"},
+        )
+        j.on_chat_model_start({}, [[msg]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert len(human_events) == 1
+        persisted_payload = human_events[0]["content"]
+        persisted_content = persisted_payload["content"]
+        assert isinstance(persisted_content, list)
+        text_blocks = [b for b in persisted_content if isinstance(b, dict) and b.get("type") == "text"]
+        assert text_blocks and text_blocks[0]["text"] == "Describe this"
+        assert any(isinstance(b, dict) and b.get("type") == "image_url" for b in persisted_content)
+        assert j._first_human_msg == "Describe this"
+        assert ORIGINAL_USER_CONTENT_KEY not in persisted_payload.get("additional_kwargs", {})
