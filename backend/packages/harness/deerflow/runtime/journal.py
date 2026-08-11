@@ -29,12 +29,66 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from deerflow.utils.messages import message_to_text
+from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text, message_to_text
 
 if TYPE_CHECKING:
     from deerflow.runtime.events.store.base import RunEventStore
 
 logger = logging.getLogger(__name__)
+
+# Boundary markers injected by InputSanitizationMiddleware. Mirrored here (the
+# harness layer cannot import the app-layer display helper) and stripped as a
+# best-effort fallback for messages that lack ORIGINAL_USER_CONTENT_KEY.
+_USER_INPUT_BEGIN = "--- BEGIN USER INPUT ---"
+_USER_INPUT_END = "--- END USER INPUT ---"
+
+
+def _strip_user_input_markers(text: str) -> str:
+    """Strip sanitization boundary wrappers when strictly present (fallback)."""
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if stripped.startswith(_USER_INPUT_BEGIN) and stripped.endswith(_USER_INPUT_END):
+        return stripped[len(_USER_INPUT_BEGIN) : -len(_USER_INPUT_END)].strip()
+    return text
+
+
+def _replace_text_in_content(content: Any, clean_text: str) -> Any:
+    """Replace the text portion of message content with cleaned text.
+
+    Non-text blocks (e.g. images) are preserved: for list content only the
+    first text block is rewritten; for string content the whole string is
+    replaced.
+    """
+    if isinstance(content, str):
+        return clean_text
+    if isinstance(content, list):
+        result: list = []
+        text_replaced = False
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and not text_replaced:
+                result.append({"type": "text", "text": clean_text})
+                text_replaced = True
+            else:
+                result.append(block)
+        return result
+    return content
+
+
+def _sanitize_human_input_message(message: HumanMessage) -> tuple[HumanMessage, str]:
+    """Return ``(clean_message, clean_text)`` for a captured user input.
+
+    Prefers the pre-sanitization original stored under ORIGINAL_USER_CONTENT_KEY;
+    otherwise falls back to stripping boundary markers off the wrapped text.
+    The internal key is popped from the persisted copy so it never leaks into
+    chat history.
+    """
+    clean_text = get_original_user_content_text(message.content, message.additional_kwargs)
+    clean_text = _strip_user_input_markers(clean_text)
+    clean_content = _replace_text_in_content(message.content, clean_text)
+    clean_additional_kwargs = {k: v for k, v in (message.additional_kwargs or {}).items() if k != ORIGINAL_USER_CONTENT_KEY}
+    clean_message = message.model_copy(update={"content": clean_content, "additional_kwargs": clean_additional_kwargs})
+    return clean_message, clean_text
 
 
 class RunJournal(BaseCallbackHandler):
@@ -253,14 +307,15 @@ class RunJournal(BaseCallbackHandler):
             for batch in reversed(messages):
                 for m in reversed(batch):
                     if isinstance(m, HumanMessage) and m.name != "summary" and m.additional_kwargs.get("hide_from_ui") is not True:
-                        self.set_first_human_message(m.text)
+                        clean_msg, clean_text = _sanitize_human_input_message(m)
+                        self.set_first_human_message(clean_text)
                         self._put(
                             event_type="llm.human.input",
                             category="message",
-                            content=m.model_dump(),
+                            content=clean_msg.model_dump(),
                             metadata={"caller": caller},
                         )
-                        self._record_message_summary(m, caller=caller)
+                        self._record_message_summary(clean_msg, caller=caller)
                         break
                 if self._first_human_msg:
                     break

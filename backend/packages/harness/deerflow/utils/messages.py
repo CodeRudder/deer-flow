@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+# Pre-rewrite user text; writers stash it here via setdefault (earliest wins), readers use
+# get_original_user_content_text so rewritten forms (boundary markers) are never persisted.
 ORIGINAL_USER_CONTENT_KEY = "original_user_content"
 
 
