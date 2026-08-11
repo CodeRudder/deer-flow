@@ -1962,7 +1962,9 @@ function useThreadHistoryV2(
     messages: runEventRowsToMessages(rows),
     loading,
     appendMessages,
-    hasMore,
+    // A brand-new thread has no history to page through; mirror the legacy
+    // `hasThreadId` guard so the load-more indicator stays hidden.
+    hasMore: hasMore && Boolean(threadId),
     loadMore: loadMessages,
   };
 }
