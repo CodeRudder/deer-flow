@@ -31,6 +31,7 @@ from app.gateway.routers import (
     thread_runs,
     threads,
     uploads,
+    video_generation,
 )
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level, unify_uvicorn_logging
@@ -384,6 +385,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
                 "description": "Query selectable image generation providers exposed by the image-generation skill",
             },
             {
+                "name": "video-generation",
+                "description": "Query selectable video generation providers exposed by the video-generation skill",
+            },
+            {
                 "name": "artifacts",
                 "description": "Access and download thread artifacts and generated files",
             },
@@ -463,6 +468,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Image Generation API is mounted at /api/image-generation
     app.include_router(image_generation.router)
+
+    # Video Generation API is mounted at /api/video-generation
+    app.include_router(video_generation.router)
 
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)

@@ -513,6 +513,8 @@ def test_context_merges_into_configurable():
         "max_concurrent_subagents": 5,
         "image_generation_provider": "qwen_image",
         "image_generation_model": "qwen-image-2.0-pro",
+        "video_generation_provider": "minimax_h3",
+        "video_generation_model": "MiniMax-H3",
         "thread_id": "should-be-ignored",
     }
 
@@ -527,6 +529,8 @@ def test_context_merges_into_configurable():
         "max_concurrent_subagents",
         "image_generation_provider",
         "image_generation_model",
+        "video_generation_provider",
+        "video_generation_model",
     }
     configurable = config.setdefault("configurable", {})
     for key in _CONTEXT_CONFIGURABLE_KEYS:
@@ -543,6 +547,8 @@ def test_context_merges_into_configurable():
     assert config["configurable"]["mode"] == "ultra"
     assert config["configurable"]["image_generation_provider"] == "qwen_image"
     assert config["configurable"]["image_generation_model"] == "qwen-image-2.0-pro"
+    assert config["configurable"]["video_generation_provider"] == "minimax_h3"
+    assert config["configurable"]["video_generation_model"] == "MiniMax-H3"
     # thread_id from context should NOT override the one from build_run_config
     assert config["configurable"]["thread_id"] == "thread-1"
     # Non-allowlisted keys should not appear
@@ -608,6 +614,8 @@ def test_context_does_not_override_existing_configurable():
         "max_concurrent_subagents",
         "image_generation_provider",
         "image_generation_model",
+        "video_generation_provider",
+        "video_generation_model",
     }
     configurable = config.setdefault("configurable", {})
     for key in _CONTEXT_CONFIGURABLE_KEYS:

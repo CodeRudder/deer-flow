@@ -1,0 +1,152 @@
+"""Async three-step video-generation template shared by all providers.
+
+Every provider is "create task -> poll until terminal -> fetch video URL ->
+download". Differences live in four hooks: auth, create payload/parse, poll +
+status normalization, and video-URL extraction (H3 V2 takes it directly; the
+legacy MiniMax V1 needs an extra files/retrieve step; Gemini reads a nested
+operation response). `BaseVideoProvider.generate` owns the loop; adapters only
+implement the differences.
+"""
+
+import base64
+import os
+import time
+
+import requests
+
+# Normalized task states. Adapters translate their own vendor status strings
+# into one of these so the poll loop stays provider-agnostic.
+STATUS_SUCCEEDED = "succeeded"
+STATUS_FAILED = "failed"
+STATUS_PENDING = "pending"
+
+_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+
+
+def guess_mime(image_path: str) -> str:
+    return _MIME_BY_EXT.get(os.path.splitext(image_path)[1].lower(), "image/jpeg")
+
+
+def to_data_url(image_path: str) -> str:
+    """base64 data URL for a local image; public URLs should be passed through."""
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:{guess_mime(image_path)};base64,{b64}"
+
+
+def image_ref(image: str) -> str:
+    """Public URL is sent as-is (preferred for large media); local path -> data URL."""
+    if image.startswith(("http://", "https://")):
+        return image
+    return to_data_url(image)
+
+
+def ensure_output_dir(output_file: str) -> None:
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+
+def warn_ignored(provider: str, params: dict, supported: set[str]) -> None:
+    """Surface params a provider does not honor instead of silently dropping them (AC-11)."""
+    ignored = [k for k, v in params.items() if v is not None and k not in supported]
+    if ignored:
+        print(
+            f"Warning: provider={provider} ignores unsupported params: {', '.join(sorted(ignored))}"
+        )
+
+
+class BaseVideoProvider:
+    """Async three-step template. Subclasses set `name` and override the hooks."""
+
+    name = "base"
+    # Params this adapter honors; the rest trigger warn_ignored.
+    supported_params: set[str] = set()
+    # Poll cadence — adapters override (H3 recommends 10s; Gemini/V1 used 3s).
+    poll_interval = 10
+    poll_max_attempts = 120
+
+    def __init__(self, model: str | None = None):
+        self.model = model
+
+    # --- hooks: subclasses implement the differences ---
+
+    def api_key(self) -> str | None:
+        """Return the provider credential from the environment, or None if unset."""
+        raise NotImplementedError
+
+    def auth_headers(self) -> dict:
+        """Auth header(s). Bearer for the three mainline providers; Gemini overrides."""
+        return {"Authorization": f"Bearer {self.api_key()}"}
+
+    def create_task(
+        self, prompt_text: str, reference_images: list[str], params: dict
+    ) -> str:
+        """Create the async task; return an opaque handle (task_id or operation name).
+
+        Adapters decide how to use reference_images: H3/V1 take the first as the
+        first frame; Gemini passes all as reference assets.
+        """
+        raise NotImplementedError
+
+    def poll_once(self, handle: str) -> tuple[str, dict]:
+        """Poll once; return (normalized_status, raw_result)."""
+        raise NotImplementedError
+
+    def extract_video_url(self, handle: str, result: dict) -> str:
+        """Pull the downloadable video URL out of a succeeded poll result."""
+        raise NotImplementedError
+
+    def download(self, url: str, output_file: str) -> None:
+        """Default: plain GET. Gemini overrides to attach its auth header."""
+        resp = requests.get(url, timeout=300)
+        resp.raise_for_status()
+        ensure_output_dir(output_file)
+        with open(output_file, "wb") as f:
+            f.write(resp.content)
+
+    # --- template: owns the create -> poll -> extract -> download loop ---
+
+    def generate(
+        self,
+        prompt_text: str,
+        reference_images: list[str],
+        output_file: str,
+        params: dict,
+        max_attempts: int | None = None,
+        interval: int | None = None,
+    ) -> str:
+        if not self.api_key():
+            return f"{self.name} credential is not set"
+
+        max_attempts = (
+            max_attempts if max_attempts is not None else self.poll_max_attempts
+        )
+        interval = interval if interval is not None else self.poll_interval
+        warn_ignored(self.name, params, self.supported_params)
+
+        handle = self.create_task(prompt_text, reference_images, params)
+        print(f"[create] provider={self.name} handle={handle}")
+
+        for attempt in range(max_attempts):
+            status, result = self.poll_once(handle)
+            if status == STATUS_SUCCEEDED:
+                url = self.extract_video_url(handle, result)
+                print(f"[poll] succeeded after {attempt + 1} polls")
+                self.download(url, output_file)
+                return f"The video has been generated successfully to {output_file}"
+            if status == STATUS_FAILED:
+                raise Exception(f"provider={self.name} task {handle} failed: {result}")
+            print(f"[poll] attempt {attempt + 1}: status=pending")
+            time.sleep(interval)
+        raise Exception(
+            f"provider={self.name} task {handle} timed out after {max_attempts} polls"
+        )

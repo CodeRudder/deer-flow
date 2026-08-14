@@ -140,6 +140,8 @@ _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
         "max_concurrent_subagents",
         "image_generation_provider",
         "image_generation_model",
+        "video_generation_provider",
+        "video_generation_model",
         "agent_name",
         "is_bootstrap",
     }

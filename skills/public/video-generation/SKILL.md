@@ -51,9 +51,13 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 Parameters:
 
 - `--prompt-file`: Absolute path to JSON prompt file (required)
-- `--reference-images`: Absolute paths to reference image (optional)
-- `--output-file`: Absolute path to output image file (required)
-- `--aspect-ratio`: Aspect ratio of the generated image (optional, default: 16:9)
+- `--reference-images`: Absolute paths to reference image (optional); the first image is used as the first frame where supported
+- `--output-file`: Absolute path to output video file (required)
+- `--aspect-ratio`: Aspect ratio of the generated video (optional; applies to T2V, e.g. 16:9)
+- `--provider`: Video provider (optional): `minimax_h3`, `gemini`, or `minimax_v1`
+- `--model`: Provider model name (optional)
+- `--resolution`: Output resolution where supported (optional), e.g. `768P` or `2K` for MiniMax H3
+- `--duration`: Video length in seconds where supported (optional), e.g. 4-15 for MiniMax H3
 
 [!NOTE]
 Do NOT read the python file, instead just call it with the parameters.
@@ -138,14 +142,23 @@ After generation:
 - Reference image enhance generation quality significantly
 - Iterative refinement is normal for optimal results
 
-## Providers (Gemini / MiniMax)
+## Providers
 
-Auto-selected by environment variables (CLI unchanged):
+Provider is resolved in this order: `--provider` CLI flag > `VIDEO_GENERATION_PROVIDER`
+env > first provider in `config.yaml` `video_generation.providers[]` > credential
+fallback (`GEMINI_API_KEY` → `gemini`, else `MINIMAX_VIDEO_API_KEY` → `minimax_h3`,
+else shared `MINIMAX_API_KEY` → `minimax_v1`).
 
-- `GEMINI_API_KEY` set → Gemini Veo (default, unchanged).
-- Only `MINIMAX_API_KEY` set → MiniMax video (`/v1/video_generation`, async 3-step poll/download).
-- Force with `VIDEO_GENERATION_PROVIDER=gemini|minimax`.
+- `minimax_h3` — MiniMax H3 via the V2 API (recommended). 768P/2K, 4-15s, native
+  stereo audio. T2V honors `--aspect-ratio`; for I2V the first reference image is
+  sent as the first frame and the ratio follows that image. Env:
+  `MINIMAX_VIDEO_API_KEY` (preferred) or the shared `MINIMAX_API_KEY`; optional
+  `MINIMAX_API_HOST` (default `https://api.minimaxi.com`).
+- `gemini` — Google Veo (`x-goog-api-key` auth); reference images are passed as
+  asset images. Env: `GEMINI_API_KEY`.
+- `minimax_v1` — legacy Hailuo V1 (compatibility only). The old provider name
+  `minimax` is an alias for it, so `VIDEO_GENERATION_PROVIDER=minimax` keeps the
+  old behavior. Env: same credential resolution as `minimax_h3`; optional
+  `MINIMAX_VIDEO_MODEL` (default `MiniMax-Hailuo-2.3`).
 
-MiniMax overrides: `MINIMAX_API_HOST` (default `https://api.minimaxi.com`),
-`MINIMAX_VIDEO_MODEL` (default `MiniMax-Hailuo-2.3`). The first reference image is used
-as MiniMax `first_frame_image`. MiniMax ignores `--aspect-ratio` (it uses resolution/duration).
+Params a provider does not support print a warning instead of being dropped silently.
