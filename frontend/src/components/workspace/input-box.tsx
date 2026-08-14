@@ -96,6 +96,7 @@ import { ImageGenerationSelector } from "./image-generation-selector";
 import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
 import { Tooltip } from "./tooltip";
+import { VideoGenerationSelector } from "./video-generation-selector";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
 type ModelSelectorCategory = "chat" | "vision";
@@ -304,6 +305,8 @@ export function InputBox({
     reasoning_effort?: "minimal" | "low" | "medium" | "high";
     image_generation_provider?: string;
     image_generation_model?: string;
+    video_generation_provider?: string;
+    video_generation_model?: string;
   };
   extraHeader?: React.ReactNode;
   /**
@@ -323,6 +326,8 @@ export function InputBox({
       reasoning_effort?: "minimal" | "low" | "medium" | "high";
       image_generation_provider?: string;
       image_generation_model?: string;
+      video_generation_provider?: string;
+      video_generation_model?: string;
     },
   ) => void;
   onFollowupsVisibilityChange?: (visible: boolean) => void;
@@ -532,6 +537,19 @@ export function InputBox({
     (selection: {
       image_generation_provider?: string;
       image_generation_model?: string;
+    }) => {
+      onContextChange?.({
+        ...context,
+        ...selection,
+      });
+    },
+    [context, onContextChange],
+  );
+
+  const handleVideoGenerationSelectionChange = useCallback(
+    (selection: {
+      video_generation_provider?: string;
+      video_generation_model?: string;
     }) => {
       onContextChange?.({
         ...context,
@@ -1250,6 +1268,13 @@ export function InputBox({
                 image_generation_model: context.image_generation_model,
               }}
               onSelectionChange={handleImageGenerationSelectionChange}
+            />
+            <VideoGenerationSelector
+              selection={{
+                video_generation_provider: context.video_generation_provider,
+                video_generation_model: context.video_generation_model,
+              }}
+              onSelectionChange={handleVideoGenerationSelectionChange}
             />
             {supportReasoningEffort && context.mode !== "flash" && (
               <PromptInputActionMenu>

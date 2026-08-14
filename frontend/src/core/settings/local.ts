@@ -16,6 +16,8 @@ export const DEFAULT_LOCAL_SETTINGS: LocalSettings = {
     reasoning_effort: undefined,
     image_generation_provider: undefined,
     image_generation_model: undefined,
+    video_generation_provider: undefined,
+    video_generation_model: undefined,
   },
 };
 

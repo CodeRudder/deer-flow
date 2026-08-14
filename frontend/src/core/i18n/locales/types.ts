@@ -83,6 +83,12 @@ export interface Translations {
     imageGenerationNotConfigured: string;
     imageGenerationSkillDisabled: string;
     imageGenerationLoadFailed: string;
+    videoGeneration: string;
+    videoGenerationDefault: string;
+    videoGenerationDefaultDescription: string;
+    videoGenerationNotConfigured: string;
+    videoGenerationSkillDisabled: string;
+    videoGenerationLoadFailed: string;
     chatModel: string;
     visionModel: string;
     defaultVisionModel: string;

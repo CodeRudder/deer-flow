@@ -20,6 +20,8 @@ export interface AgentThreadContext extends Record<string, unknown> {
   agent_name?: string;
   image_generation_provider?: string;
   image_generation_model?: string;
+  video_generation_provider?: string;
+  video_generation_model?: string;
 }
 
 export interface AgentThread extends Thread<AgentThreadState> {
