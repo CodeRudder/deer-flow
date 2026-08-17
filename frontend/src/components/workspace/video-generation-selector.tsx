@@ -23,7 +23,6 @@ import { useVideoGenerationProviders } from "@/core/video-generation";
 import { cn } from "@/lib/utils";
 
 type VideoGenerationSelection = {
-  video_generation_provider?: string;
   video_generation_model?: string;
 };
 
@@ -54,15 +53,11 @@ export function VideoGenerationSelector({
   const selectedModel = useMemo(
     () =>
       entries.find(
-        (entry) =>
-          entry.provider.name === selection.video_generation_provider &&
-          entry.model.name === selection.video_generation_model,
+        (entry) => entry.model.name === selection.video_generation_model,
       ),
-    [entries, selection.video_generation_provider, selection.video_generation_model],
+    [entries, selection.video_generation_model],
   );
-  const hasSelection = Boolean(
-    selection.video_generation_provider && selection.video_generation_model,
-  );
+  const hasSelection = Boolean(selection.video_generation_model);
   const isUnavailable = data?.skill_enabled === false;
   const triggerLabel =
     selectedModel?.model.display_name ?? t.inputBox.videoGenerationDefault;
@@ -98,7 +93,6 @@ export function VideoGenerationSelector({
             )}
             onSelect={() =>
               onSelectionChange({
-                video_generation_provider: undefined,
                 video_generation_model: undefined,
               })
             }
@@ -133,7 +127,6 @@ export function VideoGenerationSelector({
             !isUnavailable &&
             entries.map(({ provider, model, configured }) => {
               const isSelected =
-                selection.video_generation_provider === provider.name &&
                 selection.video_generation_model === model.name;
 
               const item = (
@@ -147,7 +140,6 @@ export function VideoGenerationSelector({
                   )}
                   onSelect={() =>
                     onSelectionChange({
-                      video_generation_provider: provider.name,
                       video_generation_model: model.name,
                     })
                   }

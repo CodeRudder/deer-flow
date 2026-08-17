@@ -79,42 +79,66 @@ def test_registry_has_expected_providers():
     assert set(PROVIDERS) == {"minimax_h3", "gemini", "minimax_v1"}
 
 
+_H3_CONFIG = {
+    "providers": [
+        {"name": "minimax_h3", "models": [{"name": "MiniMax-H3"}]},
+        {"name": "gemini", "models": [{"name": "veo-3"}]},
+    ]
+}
+
+
+def test_model_name_routes_to_its_provider():
+    # The model name is the routing key: provider is reverse-looked-up from config.
+    assert vid._resolve_target(_H3_CONFIG, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
+    assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
+
+
+def test_model_not_declared_in_config_rejected():
+    with pytest.raises(ValueError, match="is not declared in config.yaml"):
+        vid._resolve_target(_H3_CONFIG, None, "no-such-model")
+
+
+def test_model_without_config_falls_back_to_credential(monkeypatch):
+    # No config block: nothing to reverse-look-up, so the credential decides and
+    # the model is passed through untouched.
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
+    assert vid._resolve_target({}, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
+
+
 def test_explicit_provider_wins_and_minimax_aliases_to_v1():
     # Legacy "minimax" must keep routing to V1, not the new H3 (billing/behavior differ).
-    assert vid._resolve_provider({}, "minimax") == "minimax_v1"
-    assert vid._resolve_provider({}, "google") == "gemini"
-    assert vid._resolve_provider({}, "minimax_h3") == "minimax_h3"
+    assert vid._resolve_target({}, "minimax", None)[0] == "minimax_v1"
+    assert vid._resolve_target({}, "google", None)[0] == "gemini"
+    assert vid._resolve_target({}, "minimax_h3", None)[0] == "minimax_h3"
+
+
+def test_explicit_provider_overrides_model_lookup():
+    # Escape hatch: --provider skips the reverse lookup entirely.
+    assert vid._resolve_target(_H3_CONFIG, "gemini", "MiniMax-H3") == ("gemini", "MiniMax-H3")
 
 
 def test_env_var_selects_provider(monkeypatch):
     monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "minimax_h3")
-    assert vid._resolve_provider({}, None) == "minimax_h3"
+    assert vid._resolve_target({}, None, None)[0] == "minimax_h3"
 
 
 def test_config_first_provider_and_model():
-    cfg = {
-        "providers": [
-            {"name": "minimax_h3", "models": [{"name": "MiniMax-H3"}]},
-            {"name": "gemini"},
-        ]
-    }
-    assert vid._resolve_provider(cfg, None) == "minimax_h3"
-    assert vid._resolve_model(cfg, "minimax_h3", None) == "MiniMax-H3"
+    assert vid._resolve_target(_H3_CONFIG, None, None) == ("minimax_h3", "MiniMax-H3")
 
 
 def test_credential_fallback_prefers_gemini_then_v1(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
-    assert vid._resolve_provider({}, None) == "gemini"
+    assert vid._resolve_target({}, None, None)[0] == "gemini"
     monkeypatch.delenv("GEMINI_API_KEY")
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
-    assert vid._resolve_provider({}, None) == "minimax_v1"
+    assert vid._resolve_target({}, None, None)[0] == "minimax_v1"
 
 
 def test_credential_fallback_dedicated_key_prefers_h3(monkeypatch):
     # A video-dedicated key implies H3; it also wins over the shared key.
     monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
     monkeypatch.setenv("MINIMAX_API_KEY", "shared")
-    assert vid._resolve_provider({}, None) == "minimax_h3"
+    assert vid._resolve_target({}, None, None)[0] == "minimax_h3"
 
 
 def test_minimax_video_key_prefers_dedicated_over_shared(monkeypatch):
@@ -132,18 +156,18 @@ def test_minimax_video_key_prefers_dedicated_over_shared(monkeypatch):
 
 def test_no_credential_no_config_raises():
     with pytest.raises(ValueError, match="No video provider"):
-        vid._resolve_provider({}, None)
+        vid._resolve_target({}, None, None)
 
 
 def test_provider_not_in_enabled_list_rejected():
     cfg = {"providers": [{"name": "minimax_h3"}]}
     with pytest.raises(ValueError, match="not enabled"):
-        vid._resolve_provider(cfg, "minimax_v1")
+        vid._resolve_target(cfg, "minimax_v1", None)
 
 
 def test_unknown_provider_rejected():
     with pytest.raises(ValueError, match="Unknown video generation provider"):
-        vid._resolve_provider({}, "nonexistent")
+        vid._resolve_target({}, "nonexistent", None)
 
 
 # --- prompt handling (AC-8) ---

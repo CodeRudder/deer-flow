@@ -233,14 +233,10 @@ def _append_image_generation_preference(prompt: str, image_generation: ImageGene
         return prompt
 
     command_args = []
-    if image_generation.provider:
-        command_args.append(f"--provider {image_generation.provider}")
     if image_generation.model:
         command_args.append(f"--model {image_generation.model}")
 
     details = []
-    if image_generation.provider:
-        details.append(f"- Provider: `{image_generation.provider}`")
     if image_generation.model:
         details.append(f"- Model: `{image_generation.model}`")
 
@@ -301,7 +297,6 @@ def _image_generation_preference_from_runtime(runtime: Any) -> ImageGenerationPr
 
     return ImageGenerationPreference.from_mapping(
         {
-            "image_generation_provider": _runtime_value(runtime, "image_generation_provider") or metadata.get("image_generation_provider"),
             "image_generation_model": _runtime_value(runtime, "image_generation_model") or metadata.get("image_generation_model"),
         }
     )

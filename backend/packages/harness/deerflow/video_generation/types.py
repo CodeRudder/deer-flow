@@ -7,7 +7,9 @@ from typing import Any
 
 @dataclass(frozen=True)
 class VideoGenerationPreference:
-    provider: str | None = None
+    """Runtime video generation preference. Only the model is carried: the
+    provider is derived from the model name via config.yaml inside the skill."""
+
     model: str | None = None
 
     @classmethod
@@ -15,21 +17,12 @@ class VideoGenerationPreference:
         if not values:
             return cls()
 
-        provider = values.get("video_generation_provider")
         model = values.get("video_generation_model")
-        return cls(
-            provider=provider if isinstance(provider, str) and provider else None,
-            model=model if isinstance(model, str) and model else None,
-        )
+        return cls(model=model if isinstance(model, str) and model else None)
 
     @property
     def is_empty(self) -> bool:
-        return not self.provider and not self.model
+        return not self.model
 
     def as_configurable(self) -> dict[str, str]:
-        values: dict[str, str] = {}
-        if self.provider:
-            values["video_generation_provider"] = self.provider
-        if self.model:
-            values["video_generation_model"] = self.model
-        return values
+        return {"video_generation_model": self.model} if self.model else {}

@@ -12,9 +12,6 @@ import {
 import {
   DropdownMenuGroup,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
@@ -26,7 +23,6 @@ import { useImageGenerationProviders } from "@/core/image-generation";
 import { cn } from "@/lib/utils";
 
 type ImageGenerationSelection = {
-  image_generation_provider?: string;
   image_generation_model?: string;
 };
 
@@ -40,19 +36,33 @@ export function ImageGenerationSelector({
   const { t } = useI18n();
   const { data, providers, isLoading, error } = useImageGenerationProviders();
 
-  const selectedProvider = useMemo(
+  // Flatten provider -> models into a single-level list of selectable entries,
+  // so the menu shows each model directly with no submenu. Provider is display
+  // metadata only (grouping source, configured status); the selection sent
+  // outwards carries the model name alone.
+  const entries = useMemo(
     () =>
-      providers.find(
-        (provider) => provider.name === selection.image_generation_provider,
+      providers.flatMap((provider) =>
+        provider.models.map((model) => ({
+          provider,
+          model,
+          configured: provider.configured,
+        })),
       ),
-    [providers, selection.image_generation_provider],
+    [providers],
   );
-  const hasSelection = Boolean(
-    selection.image_generation_provider && selection.image_generation_model,
+
+  const selectedModel = useMemo(
+    () =>
+      entries.find(
+        (entry) => entry.model.name === selection.image_generation_model,
+      ),
+    [entries, selection.image_generation_model],
   );
+  const hasSelection = Boolean(selection.image_generation_model);
   const isUnavailable = data?.skill_enabled === false;
   const triggerLabel =
-    selectedProvider?.display_name ?? t.inputBox.imageGenerationDefault;
+    selectedModel?.model.display_name ?? t.inputBox.imageGenerationDefault;
 
   return (
     <PromptInputActionMenu>
@@ -85,7 +95,6 @@ export function ImageGenerationSelector({
             )}
             onSelect={() =>
               onSelectionChange({
-                image_generation_provider: undefined,
                 image_generation_model: undefined,
               })
             }
@@ -118,87 +127,53 @@ export function ImageGenerationSelector({
           {!isLoading &&
             !error &&
             !isUnavailable &&
-            providers.map((provider) => {
-              const providerSelected =
-                selection.image_generation_provider === provider.name;
+            entries.map(({ provider, model, configured }) => {
+              const isSelected =
+                selection.image_generation_model === model.name;
 
-              return (
-                <DropdownMenuSub key={provider.name}>
-                  <DropdownMenuSubTrigger
-                    className={cn(
-                      "h-9",
-                      providerSelected
-                        ? "text-accent-foreground"
-                        : "text-muted-foreground/75",
-                    )}
-                  >
-                    <span className="min-w-0 truncate font-medium">
-                      {provider.display_name}
+              const item = (
+                <PromptInputActionMenuItem
+                  disabled={!configured}
+                  className={cn(
+                    "h-9",
+                    isSelected
+                      ? "text-accent-foreground"
+                      : "text-muted-foreground/75",
+                  )}
+                  onSelect={() =>
+                    onSelectionChange({
+                      image_generation_model: model.name,
+                    })
+                  }
+                >
+                  <span className="min-w-0 truncate font-medium">
+                    {model.display_name}
+                  </span>
+                  {!configured ? (
+                    <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
+                      {t.inputBox.imageGenerationNotConfigured}
                     </span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56">
-                    {!provider.configured ? (
-                      <PromptInputActionMenuItem
-                        disabled
-                        className="h-9 text-muted-foreground/70"
-                      >
-                        <span className="min-w-0 truncate">
-                          {t.inputBox.imageGenerationNotConfigured}
-                        </span>
-                      </PromptInputActionMenuItem>
-                    ) : (
-                      provider.models.map((model) => {
-                        const isSelected =
-                          selection.image_generation_provider ===
-                            provider.name &&
-                          selection.image_generation_model === model.name;
+                  ) : isSelected ? (
+                    <CheckIcon className="ml-auto size-4" />
+                  ) : (
+                    <div className="ml-auto size-4" />
+                  )}
+                </PromptInputActionMenuItem>
+              );
 
-                        const item = (
-                          <PromptInputActionMenuItem
-                            className={cn(
-                              "h-9 pl-4",
-                              isSelected
-                                ? "text-accent-foreground"
-                                : "text-muted-foreground/75",
-                            )}
-                            onSelect={() =>
-                              onSelectionChange({
-                                image_generation_provider: provider.name,
-                                image_generation_model: model.name,
-                              })
-                            }
-                          >
-                            <span className="min-w-0 truncate font-medium">
-                              {model.display_name}
-                            </span>
-                            {isSelected ? (
-                              <CheckIcon className="ml-auto size-4" />
-                            ) : (
-                              <div className="ml-auto size-4" />
-                            )}
-                          </PromptInputActionMenuItem>
-                        );
-
-                        return model.description ? (
-                          <Tooltip key={`${provider.name}:${model.name}`}>
-                            <TooltipTrigger asChild>{item}</TooltipTrigger>
-                            <TooltipContent
-                              side="right"
-                              align="start"
-                              className="max-w-72 leading-relaxed whitespace-normal"
-                            >
-                              {model.description}
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : (
-                          <div key={`${provider.name}:${model.name}`}>
-                            {item}
-                          </div>
-                        );
-                      })
-                    )}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
+              return model.description ? (
+                <Tooltip key={`${provider.name}:${model.name}`}>
+                  <TooltipTrigger asChild>{item}</TooltipTrigger>
+                  <TooltipContent
+                    side="right"
+                    align="start"
+                    className="max-w-72 leading-relaxed whitespace-normal"
+                  >
+                    {model.description}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <div key={`${provider.name}:${model.name}`}>{item}</div>
               );
             })}
         </DropdownMenuGroup>

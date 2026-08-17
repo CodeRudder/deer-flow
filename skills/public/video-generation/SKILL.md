@@ -1,6 +1,6 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Turns a natural-language idea (plus an optional first-frame image) into a short video.
+description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness, ≤5). Read SKILL.md before generating to pick the mode, prompt methodology, and output settings.
 ---
 
 # Video Generation Skill
@@ -161,8 +161,11 @@ Parameters:
 - `--output-file`: Absolute path to the output `.mp4` (required).
 - `--aspect-ratio`: T2V only, e.g. `16:9`. Ignored whenever an image is passed
   (the image fixes the aspect ratio).
-- `--provider`: `minimax_h3` (default/recommended), `gemini`, or `minimax_v1`.
-- `--model`: Provider model name.
+- `--model`: Model name, e.g. `MiniMax-H3`. This is the routing key — the provider
+  that owns the model is looked up from `config.yaml`, so normally this is the only
+  one you pass.
+- `--provider`: Escape hatch (`minimax_h3`, `gemini`, `minimax_v1`) for debugging or
+  for a model not declared in `config.yaml`; skips the model lookup.
 - `--resolution`: `768P` (cheaper, default) or `2K` for MiniMax H3.
 - `--duration`: Seconds, 4–15 for MiniMax H3. Default 4.
 
@@ -288,23 +291,32 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 ### Example D — reference (Ref2VA, MiniMax H3)
 
-User uploaded two photos of the same character and said "make him wave hello."
-The photos are a *likeness to imitate*, not frames of the video:
+User uploaded a **face photo** (`face.jpg`) and a separate **outfit photo**
+(`outfit.jpg`) and said "make a video of this person wearing this outfit, waving
+hello." The images are a *likeness to imitate*, not frames of the video. There
+is no per-image label, so reference each one by its **position** in
+`--reference-images` using plain language — pass them in the order your prompt
+names them:
 
 ```
-The referenced young man waves hello at the camera with a warm smile, standing
-in a bright modern studio. Natural soft lighting, medium shot, gentle handheld
-feel. Keep his face and hairstyle consistent with the reference images.
+A young man with the face from the first reference image, wearing the outfit
+from the second reference image, waves hello at the camera with a warm smile in
+a bright modern studio. Natural soft lighting, medium shot, gentle handheld
+feel. Keep his facial features and the outfit consistent with the references.
 ```
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/wave.txt \
-  --reference-images /mnt/user-data/uploads/ref1.jpg /mnt/user-data/uploads/ref2.jpg \
+  --reference-images /mnt/user-data/uploads/face.jpg /mnt/user-data/uploads/outfit.jpg \
   --image-role reference \
   --output-file /mnt/user-data/outputs/wave.mp4 \
   --resolution 768P --duration 4
 ```
+
+The order is load-bearing: `face.jpg` is passed first because the prompt says
+"the first reference image" for the face. Confirm the order with the user when
+it isn't obvious.
 
 ## Provider constraints
 
@@ -354,10 +366,16 @@ This skill does NOT edit an existing video — there is no video-editing capabil
 
 ## Providers
 
-Provider is resolved in this order: `--provider` CLI flag > `VIDEO_GENERATION_PROVIDER`
-env > first provider in `config.yaml` `video_generation.providers[]` > credential
-fallback (`GEMINI_API_KEY` → `gemini`, else `MINIMAX_VIDEO_API_KEY` → `minimax_h3`,
-else shared `MINIMAX_API_KEY` → `minimax_v1`).
+The model name is the routing key: `--model` (or `VIDEO_GENERATION_MODEL`) is
+reverse-looked-up in `config.yaml` `video_generation.providers[].models[]` to find
+its owning provider. A model that config declares under no provider is an error
+rather than a guess.
+
+`--provider` (or `VIDEO_GENERATION_PROVIDER`) is an escape hatch that skips that
+lookup. With neither a model nor a provider, resolution falls back to the first
+provider in `video_generation.providers[]`, then to the credential fallback
+(`GEMINI_API_KEY` → `gemini`, else `MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else
+shared `MINIMAX_API_KEY` → `minimax_v1`).
 
 - `minimax_h3` — MiniMax H3 via the V2 API (recommended). 768P/2K, 4-15s, native
   stereo audio. T2V honors `--aspect-ratio`; for I2V the first reference image is

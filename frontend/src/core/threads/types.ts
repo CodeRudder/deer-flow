@@ -18,9 +18,7 @@ export interface AgentThreadContext extends Record<string, unknown> {
   subagent_enabled: boolean;
   reasoning_effort?: "minimal" | "low" | "medium" | "high";
   agent_name?: string;
-  image_generation_provider?: string;
   image_generation_model?: string;
-  video_generation_provider?: string;
   video_generation_model?: string;
 }
 

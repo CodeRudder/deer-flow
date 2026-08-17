@@ -82,28 +82,83 @@ def _provider_config(config: dict, provider: str) -> dict:
     return {}
 
 
-def _first_model(provider_config: dict) -> str | None:
+def _model_names(provider_config: dict) -> list[str]:
     models = provider_config.get("models")
     if not isinstance(models, list):
-        return None
+        return []
+    names: list[str] = []
     for model_config in models:
         if isinstance(model_config, str) and model_config:
-            return model_config
+            names.append(model_config)
+            continue
         if not isinstance(model_config, dict):
             continue
         model = model_config.get("name") or model_config.get("model")
         if isinstance(model, str) and model:
-            return model
+            names.append(model)
+    return names
+
+
+def _first_model(provider_config: dict) -> str | None:
+    return next(iter(_model_names(provider_config)), None)
+
+
+def _provider_for_model(config: dict, model: str) -> str | None:
+    """Which provider declares this model. Model names are unique across
+    providers, so the first match wins."""
+    for provider_config in _provider_configs(config):
+        if model in _model_names(provider_config):
+            name = provider_config.get("name")
+            if isinstance(name, str) and name:
+                return name
     return None
 
 
-def _resolve_model(config: dict, provider: str, model: str | None) -> str | None:
-    if model:
-        return model
-    env_model = os.getenv("VIDEO_GENERATION_MODEL")
-    if env_model:
-        return env_model
-    return _first_model(_provider_config(config, provider))
+def _all_model_names(config: dict) -> list[str]:
+    return [name for provider_config in _provider_configs(config) for name in _model_names(provider_config)]
+
+
+def _resolve_target(config: dict, provider: str | None, model: str | None) -> tuple[str, str | None]:
+    """Resolve (provider, model). The model name is the routing key: the provider
+    is reverse-looked-up from config.yaml, so callers only pass --model.
+    --provider stays as an escape hatch for debugging and for models that are not
+    declared in config.yaml."""
+    requested_model = model or os.getenv("VIDEO_GENERATION_MODEL")
+    selected = provider or os.getenv("VIDEO_GENERATION_PROVIDER")
+
+    if not selected and requested_model:
+        selected = _provider_for_model(config, requested_model)
+        # Declared providers but no owner for this model = misconfiguration, not a
+        # reason to guess a provider.
+        if not selected and _provider_configs(config):
+            declared = ", ".join(_all_model_names(config)) or "(none)"
+            raise ValueError(
+                f"Video generation model '{requested_model}' is not declared in config.yaml "
+                f"video_generation.providers[].models[]. Declared models: {declared}"
+            )
+
+    if not selected:
+        selected = _first_configured_provider(config) or _credential_fallback()
+    if not selected:
+        raise ValueError(
+            "No video provider resolved. Set GEMINI_API_KEY or MINIMAX_VIDEO_API_KEY "
+            "(or the shared MINIMAX_API_KEY), declare video_generation.providers[] in "
+            "config.yaml, or pass --model/--provider."
+        )
+
+    selected = selected.strip().lower()
+    selected = _PROVIDER_ALIASES.get(selected, selected)
+
+    configured = _configured_provider_names(config)
+    if configured and selected not in configured:
+        raise ValueError(
+            f"Video generation provider '{selected}' is not enabled in config.yaml. "
+            f"Enabled providers: {', '.join(configured)}"
+        )
+    if selected not in PROVIDERS:
+        raise ValueError(f"Unknown video generation provider: {selected}. Supported: {', '.join(sorted(PROVIDERS))}")
+
+    return selected, requested_model or _first_model(_provider_config(config, selected))
 
 
 def _credential_fallback() -> str | None:
@@ -135,35 +190,6 @@ def _read_prompt(prompt_file: str) -> str:
     return prompt_text
 
 
-def _resolve_provider(config: dict, provider: str | None) -> str:
-    selected = (
-        provider
-        or os.getenv("VIDEO_GENERATION_PROVIDER")
-        or _first_configured_provider(config)
-        or _credential_fallback()
-    )
-    if not selected:
-        raise ValueError(
-            "No video provider resolved. Set GEMINI_API_KEY or MINIMAX_VIDEO_API_KEY "
-            "(or the shared MINIMAX_API_KEY), declare video_generation.providers[] in "
-            "config.yaml, or pass --provider."
-        )
-    selected = selected.strip().lower()
-    selected = _PROVIDER_ALIASES.get(selected, selected)
-
-    configured = _configured_provider_names(config)
-    if configured and selected not in configured:
-        raise ValueError(
-            f"Video generation provider '{selected}' is not enabled in config.yaml. "
-            f"Enabled providers: {', '.join(configured)}"
-        )
-    if selected not in PROVIDERS:
-        raise ValueError(
-            f"Unknown video generation provider: {selected}. Supported: {', '.join(sorted(PROVIDERS))}"
-        )
-    return selected
-
-
 def generate_video(
     prompt_file: str,
     reference_images: list[str],
@@ -176,7 +202,7 @@ def generate_video(
     image_role: str | None = None,
 ) -> str:
     config = _load_video_generation_config()
-    selected_provider = _resolve_provider(config, provider)
+    selected_provider, selected_model = _resolve_target(config, provider, model)
 
     prompt_text = _read_prompt(prompt_file)
 
@@ -190,9 +216,7 @@ def generate_video(
     }
     params = {k: v for k, v in params.items() if v is not None}
 
-    adapter = PROVIDERS[selected_provider](
-        model=_resolve_model(config, selected_provider, model)
-    )
+    adapter = PROVIDERS[selected_provider](model=selected_model)
     return adapter.generate(prompt_text, reference_images, output_file, params)
 
 

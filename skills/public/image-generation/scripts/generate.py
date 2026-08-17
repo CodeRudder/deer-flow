@@ -76,28 +76,73 @@ def _provider_config(config: dict, provider: str) -> dict:
     return {}
 
 
-def _first_model(provider_config: dict) -> str | None:
+def _model_names(provider_config: dict) -> list[str]:
     models = provider_config.get("models")
     if not isinstance(models, list):
-        return None
+        return []
+    names: list[str] = []
     for model_config in models:
         if isinstance(model_config, str) and model_config:
-            return model_config
+            names.append(model_config)
+            continue
         if not isinstance(model_config, dict):
             continue
         model = model_config.get("name") or model_config.get("model")
         if isinstance(model, str) and model:
-            return model
+            names.append(model)
+    return names
+
+
+def _first_model(provider_config: dict) -> str | None:
+    return next(iter(_model_names(provider_config)), None)
+
+
+def _provider_for_model(config: dict, model: str) -> str | None:
+    """Which provider declares this model. Model names are unique across
+    providers, so the first match wins."""
+    for provider_config in _provider_configs(config):
+        if model in _model_names(provider_config):
+            name = provider_config.get("name")
+            if isinstance(name, str) and name:
+                return name
     return None
 
 
-def _resolve_model(config: dict, provider: str, model: str | None) -> str | None:
-    if model:
-        return model
-    env_model = os.getenv("IMAGE_GENERATION_MODEL")
-    if env_model:
-        return env_model
-    return _first_model(_provider_config(config, provider))
+def _all_model_names(config: dict) -> list[str]:
+    return [name for provider_config in _provider_configs(config) for name in _model_names(provider_config)]
+
+
+def _resolve_target(config: dict, provider: str | None, model: str | None) -> tuple[str, str | None]:
+    """Resolve (provider, model). The model name is the routing key: the provider
+    is reverse-looked-up from config.yaml, so callers only pass --model.
+    --provider stays as an escape hatch for debugging and for models that are not
+    declared in config.yaml."""
+    requested_model = model or os.getenv("IMAGE_GENERATION_MODEL")
+    selected = provider or os.getenv("IMAGE_GENERATION_PROVIDER")
+
+    if not selected and requested_model:
+        selected = _provider_for_model(config, requested_model)
+        # Declared providers but no owner for this model = misconfiguration, not a
+        # reason to guess a provider.
+        if not selected and _provider_configs(config):
+            declared = ", ".join(_all_model_names(config)) or "(none)"
+            raise ValueError(
+                f"Image generation model '{requested_model}' is not declared in config.yaml "
+                f"image_generation.providers[].models[]. Declared models: {declared}"
+            )
+
+    # Keep this fallback in sync with harness/deerflow/image_generation/registry.py.
+    selected = selected or _first_configured_provider(config) or "qwen_image"
+
+    configured_provider_names = _configured_provider_names(config)
+    if configured_provider_names and selected not in configured_provider_names:
+        supported = ", ".join(configured_provider_names)
+        raise ValueError(f"Image generation provider '{selected}' is not enabled in config.yaml. Enabled providers: {supported}")
+    if selected not in PROVIDERS:
+        supported = ", ".join(sorted(PROVIDERS))
+        raise ValueError(f"Unknown image generation provider: {selected}. Supported: {supported}")
+
+    return selected, requested_model or _first_model(_provider_config(config, selected))
 
 
 def validate_image(image_path: str) -> bool:
@@ -177,23 +222,7 @@ def generate_image(
         )
 
     image_generation_config = _load_image_generation_config()
-    selected_provider = (
-        provider
-        or os.getenv("IMAGE_GENERATION_PROVIDER")
-        or _first_configured_provider(image_generation_config)
-        # Keep this fallback in sync with harness/deerflow/image_generation/registry.py.
-        or "qwen_image"
-    )
-    configured_provider_names = _configured_provider_names(image_generation_config)
-    if configured_provider_names and selected_provider not in configured_provider_names:
-        supported = ", ".join(configured_provider_names)
-        raise ValueError(
-            f"Image generation provider '{selected_provider}' is not enabled in config.yaml. "
-            f"Enabled providers: {supported}"
-        )
-    if selected_provider not in PROVIDERS:
-        supported = ", ".join(sorted(PROVIDERS))
-        raise ValueError(f"Unknown image generation provider: {selected_provider}. Supported: {supported}")
+    selected_provider, selected_model = _resolve_target(image_generation_config, provider, model)
 
     valid_reference_images = []
     for ref_img in reference_images:
@@ -215,7 +244,7 @@ def generate_image(
         reference_images=valid_reference_images,
         output_file=output_file,
         aspect_ratio=aspect_ratio,
-        model=_resolve_model(image_generation_config, selected_provider, model),
+        model=selected_model,
         negative_prompt=negative_prompt or prompt_negative,
         prompt_extend=_coerce_optional_bool(
             prompt_extend

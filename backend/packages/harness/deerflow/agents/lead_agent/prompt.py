@@ -192,14 +192,10 @@ def _build_image_generation_runtime_section(image_generation: ImageGenerationPre
         "--prompt-file <prompt-json>",
         "--output-file <output-image>",
     ]
-    if image_generation.provider:
-        command_parts.append(f"--provider {image_generation.provider}")
     if image_generation.model:
         command_parts.append(f"--model {image_generation.model}")
 
     selected = []
-    if image_generation.provider:
-        selected.append(f"- Provider: `{image_generation.provider}`")
     if image_generation.model:
         selected.append(f"- Model: `{image_generation.model}`")
 
@@ -210,10 +206,10 @@ The user selected an image generation preference for the current run:
 
 This selection is only a preference for image generation tasks. It does not mean the user is asking for an image.
 - If the current user request is normal chat, answer normally and do not use the image-generation skill.
-- Use the built-in image-generation skill only when creating a new image from text or using references as loose inspiration, and pass the selected provider/model explicitly.
+- Use the built-in image-generation skill only when creating a new image from text or using references as loose inspiration, and pass the selected model explicitly.
 - If an uploaded or previously generated image is the source whose structure, geometry, layout, identity, or composition must be preserved or transformed, use the image-editing skill instead.
   This includes requests to generate a realistic product/photo from a design drawing, sketch, blueprint, or CAD-style image, even when the user says "generate" or "create".
-- The current run preference supersedes older provider/model choices mentioned in conversation history.
+- The current run preference supersedes older model choices mentioned in conversation history.
 - When executing the skill, include these arguments in the command:
   `{" ".join(command_parts)}`
 """
@@ -228,14 +224,10 @@ def _build_video_generation_runtime_section(video_generation: VideoGenerationPre
         "--prompt-file <prompt-json>",
         "--output-file <output-video>",
     ]
-    if video_generation.provider:
-        command_parts.append(f"--provider {video_generation.provider}")
     if video_generation.model:
         command_parts.append(f"--model {video_generation.model}")
 
     selected = []
-    if video_generation.provider:
-        selected.append(f"- Provider: `{video_generation.provider}`")
     if video_generation.model:
         selected.append(f"- Model: `{video_generation.model}`")
 
@@ -246,9 +238,9 @@ The user selected a video generation preference for the current run:
 
 This selection is only a preference for video generation tasks. It does not mean the user is asking for a video.
 - If the current user request is normal chat, answer normally and do not use the video-generation skill.
-- Use the built-in video-generation skill only when creating a new video, and pass the selected provider/model explicitly.
+- Use the built-in video-generation skill only when creating a new video, and pass the selected model explicitly.
 - For image-to-video (I2V) requests, pass the first frame image via `--reference-images`.
-- The current run preference supersedes older provider/model choices mentioned in conversation history.
+- The current run preference supersedes older model choices mentioned in conversation history.
 - When executing the skill, include these arguments in the command:
   `{" ".join(command_parts)}`
 """
