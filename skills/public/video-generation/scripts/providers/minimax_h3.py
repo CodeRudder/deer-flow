@@ -25,7 +25,7 @@ DEFAULT_MODEL = "MiniMax-H3"
 
 class MiniMaxH3Provider(BaseVideoProvider):
     name = "minimax_h3"
-    supported_params = {"resolution", "duration", "ratio"}
+    supported_params = {"resolution", "duration", "ratio", "image_role"}
 
     def api_key(self) -> str | None:
         # Video-dedicated key preferred; falls back to the shared MINIMAX_API_KEY
@@ -35,28 +35,68 @@ class MiniMaxH3Provider(BaseVideoProvider):
     def _host(self) -> str:
         return os.getenv("MINIMAX_API_HOST", DEFAULT_HOST).rstrip("/")
 
+    def _build_content(
+        self, prompt_text: str, reference_images: list[str], image_role: str
+    ) -> tuple[list[dict], bool]:
+        """Build the V2 content[] array for the requested mode.
+
+        Returns (content, send_ratio). Per the official H3 examples, only pure
+        text-to-video sends `ratio`; every mode that carries an image (first/
+        last frame or reference) omits it — the image determines the aspect
+        ratio, and sending `ratio` on those paths errors.
+        """
+        content: list[dict] = [{"type": "text", "text": prompt_text}]
+        images = reference_images or []
+
+        def image_item(path: str, role: str) -> dict:
+            return {
+                "type": "image_url",
+                "image_url": {"url": image_ref(path)},
+                "role": role,
+            }
+
+        if not images:
+            return content, True  # T2V — the only mode that sends ratio
+
+        if image_role == "reference":
+            # Ref2VA: identity/style transfer (not a frame). Capped at 5 as a cost
+            # guardrail — the API accepts 9, but images from the 6th on are billed.
+            if len(images) > 5:
+                raise ValueError(
+                    "provider=minimax_h3 reference mode accepts at most 5 images "
+                    "(cost guardrail: images from the 6th on are billed)"
+                )
+            for path in images:
+                content.append(image_item(path, "reference_image"))
+        elif image_role == "last_frame":
+            content.append(image_item(images[0], "last_frame"))
+        elif image_role == "first_last":
+            # First image = opening frame; second (if given) = closing frame.
+            content.append(image_item(images[0], "first_frame"))
+            if len(images) > 1:
+                content.append(image_item(images[1], "last_frame"))
+        else:
+            # Default: first_frame (I2V).
+            content.append(image_item(images[0], "first_frame"))
+
+        return content, False
+
     def create_task(
         self, prompt_text: str, reference_images: list[str], params: dict
     ) -> str:
-        first_frame = reference_images[0] if reference_images else None
-        content: list[dict] = [{"type": "text", "text": prompt_text}]
-        if first_frame:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": image_ref(first_frame)},
-                    "role": "first_frame",
-                }
-            )
+        image_role = params.get("image_role") or "first_frame"
+        content, send_ratio = self._build_content(
+            prompt_text, reference_images, image_role
+        )
         body: dict = {
             "model": self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL),
             "content": content,
             "resolution": params.get("resolution") or "768P",
             "duration": params.get("duration") or 4,
         }
-        # T2V requires a non-adaptive ratio; I2V ratio is fixed by the first frame,
-        # so it is omitted (sending it errors on the I2V path).
-        if not first_frame:
+        # Only pure T2V takes a `ratio`; any image-bearing mode lets the image
+        # fix the aspect ratio (sending `ratio` there errors).
+        if send_ratio:
             body["ratio"] = params.get("ratio") or "16:9"
 
         resp = requests.post(

@@ -254,6 +254,74 @@ def test_h3_public_url_first_frame_passthrough(monkeypatch):
     assert captured["json"]["content"][1]["image_url"]["url"] == "https://cdn/x.png"
 
 
+def _capture_post(monkeypatch):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        captured["json"] = json
+        return FakeResp({"task_id": "T1"})
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", fake_post)
+    return captured
+
+
+def test_h3_last_frame_role(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "end here",
+        ["https://cdn/end.png"],
+        {"image_role": "last_frame", "ratio": "16:9"},
+    )
+    assert "ratio" not in captured["json"]  # image-bearing mode omits ratio
+    frame = captured["json"]["content"][1]
+    assert frame["role"] == "last_frame"
+    assert frame["image_url"]["url"] == "https://cdn/end.png"
+
+
+def test_h3_first_last_frame_role(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "grow up",
+        ["https://cdn/a.png", "https://cdn/b.png"],
+        {"image_role": "first_last"},
+    )
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None, "first_frame", "last_frame"]
+    assert "ratio" not in captured["json"]
+
+
+def test_h3_first_last_with_single_image_is_first_frame_only(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "x", ["https://cdn/a.png"], {"image_role": "first_last"}
+    )
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None, "first_frame"]
+
+
+def test_h3_reference_role_multi_image_omits_ratio(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "dance like the refs",
+        ["https://cdn/1.png", "https://cdn/2.png", "https://cdn/3.png"],
+        {"image_role": "reference", "ratio": "16:9"},
+    )
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None, "reference_image", "reference_image", "reference_image"]
+    assert "ratio" not in captured["json"]
+
+
+def test_h3_reference_role_rejects_more_than_five_images(monkeypatch):
+    _capture_post(monkeypatch)
+    with pytest.raises(ValueError, match="at most 5 images"):
+        _h3().PROVIDER(model=None).create_task(
+            "x",
+            [f"https://cdn/{i}.png" for i in range(6)],
+            {"image_role": "reference"},
+        )
+
+
 def test_h3_full_flow_downloads_video(monkeypatch, tmp_path):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
 

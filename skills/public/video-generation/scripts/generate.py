@@ -173,6 +173,7 @@ def generate_video(
     model: str | None = None,
     resolution: str | None = None,
     duration: int | None = None,
+    image_role: str | None = None,
 ) -> str:
     config = _load_video_generation_config()
     selected_provider = _resolve_provider(config, provider)
@@ -185,6 +186,7 @@ def generate_video(
         "resolution": resolution,
         "duration": duration,
         "ratio": aspect_ratio,
+        "image_role": image_role,
     }
     params = {k: v for k, v in params.items() if v is not None}
 
@@ -234,6 +236,17 @@ if __name__ == "__main__":
         default=None,
         help="Video duration in seconds (provider-specific)",
     )
+    parser.add_argument(
+        "--image-role",
+        default=None,
+        choices=["first_frame", "last_frame", "first_last", "reference"],
+        help=(
+            "How to use --reference-images (MiniMax H3): first_frame (default, I2V), "
+            "last_frame, first_last (first + optional last frame), or reference "
+            "(up to 5 identity/style reference images). Frame roles and reference "
+            "are mutually exclusive."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -247,6 +260,7 @@ if __name__ == "__main__":
                 args.model,
                 args.resolution,
                 args.duration,
+                args.image_role,
             )
         )
     except Exception as e:
