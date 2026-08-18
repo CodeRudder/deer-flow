@@ -190,3 +190,26 @@ def test_registry_treats_resolved_api_key_value_as_configured(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.providers[0].configured is True
+
+
+def test_registry_builtin_providers_use_fallback_key_chain(monkeypatch):
+    # P2-11: the builtin path must honor fallback_api_key_envs, matching the
+    # config-path and skill-side credential resolution.
+    monkeypatch.setattr(
+        registry,
+        "get_extensions_config",
+        lambda: ExtensionsConfig(skills={}),
+    )
+    monkeypatch.setattr(
+        registry,
+        "get_app_config",
+        lambda: SimpleNamespace(model_extra={}),
+    )
+    monkeypatch.delenv("MINIMAX_VIDEO_API_KEY", raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "shared-key")
+
+    response = registry.get_video_generation_providers()
+    providers = {provider.name: provider for provider in response.providers}
+
+    assert providers["minimax_h3"].configured is True
+    assert providers["gemini"].configured is False

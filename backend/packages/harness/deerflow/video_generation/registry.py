@@ -172,7 +172,7 @@ def _builtin_providers() -> list[VideoGenerationProvider]:
         VideoGenerationProvider(
             name=definition.name,
             display_name=definition.display_name,
-            configured=bool(os.getenv(definition.api_key_env)),
+            configured=bool(os.getenv(definition.api_key_env) or any(os.getenv(env_name) for env_name in definition.fallback_api_key_envs)),
             models=list(definition.models),
         )
         for definition in _PROVIDERS

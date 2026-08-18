@@ -26,6 +26,7 @@ DEFAULT_MODEL = "MiniMax-H3"
 class MiniMaxH3Provider(BaseVideoProvider):
     name = "minimax_h3"
     supported_params = {"resolution", "duration", "ratio", "image_role"}
+    default_model = DEFAULT_MODEL
 
     def api_key(self) -> str | None:
         # Video-dedicated key preferred; falls back to the shared MINIMAX_API_KEY

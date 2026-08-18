@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from providers import PROVIDERS
+from providers import MODEL_PROVIDERS, PROVIDERS
 
 try:
     import yaml
@@ -140,7 +140,7 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
             )
 
     if not selected:
-        selected = _first_configured_provider(config) or _credential_fallback()
+        selected = _first_configured_provider(config) or _credential_fallback(requested_model)
     if not selected:
         raise ValueError(
             "No video provider resolved. Set GEMINI_API_KEY or MINIMAX_VIDEO_API_KEY "
@@ -166,10 +166,13 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     return selected, requested_model or _first_model(_provider_config(config, selected))
 
 
-def _credential_fallback() -> str | None:
-    """No config/override: pick by available credential. Gemini keeps the old
-    default; a dedicated video key implies H3; the shared key keeps old behavior
-    (legacy minimax_v1)."""
+def _credential_fallback(requested_model: str | None) -> str | None:
+    """No config/override: pick by available credential. A known model routes to
+    its owning provider (never a cross-provider pairing); otherwise credential
+    priority decides — Gemini keeps the old default; a dedicated video key
+    implies H3; the shared key keeps old behavior (legacy minimax_v1)."""
+    if requested_model and MODEL_PROVIDERS.get(requested_model):
+        return MODEL_PROVIDERS[requested_model]
     if os.getenv("GEMINI_API_KEY"):
         return "gemini"
     if os.getenv("MINIMAX_VIDEO_API_KEY"):

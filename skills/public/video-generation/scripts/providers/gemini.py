@@ -1,4 +1,4 @@
-"""Gemini Veo adapter — migrated from generate.py:145-184, behavior preserved.
+"""Gemini Veo adapter — migrated from generate.py:145-184.
 
 Gemini is the odd one out: auth is x-goog-api-key (not Bearer), the video URL
 download also needs that header, polling is operation-based (done flag, no
@@ -20,7 +20,11 @@ API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 class GeminiVideoProvider(BaseVideoProvider):
     name = "gemini"
     supported_params: set[str] = set()  # Gemini T2V/I2V here take no extra params
+    default_model = DEFAULT_MODEL
     poll_interval = 3
+    # Baseline polled uncapped; the sandbox kills a run at 600s anyway. Cap at
+    # 3s x 200 = 600s so we never give up earlier than the environment forces.
+    poll_max_attempts = 200
 
     def api_key(self) -> str | None:
         return os.getenv("GEMINI_API_KEY")

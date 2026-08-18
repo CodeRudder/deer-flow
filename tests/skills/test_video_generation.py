@@ -139,6 +139,18 @@ def test_explicit_model_beats_env_provider(monkeypatch):
     assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
 
 
+def test_model_without_config_routes_to_its_provider_not_credential(monkeypatch):
+    # P0-2: no config block + frontend-picked model — the model's owning provider
+    # wins over credential priority, even with a foreign credential present.
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
+    assert vid._resolve_target({}, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
+    monkeypatch.delenv("MINIMAX_VIDEO_API_KEY")
+    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.setenv("MINIMAX_API_KEY", "shared")
+    assert vid._resolve_target({}, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
+
+
 def test_config_first_provider_and_model():
     assert vid._resolve_target(_H3_CONFIG, None, None) == ("minimax_h3", "MiniMax-H3")
 
@@ -583,3 +595,25 @@ def test_gemini_full_flow_attaches_key_on_download(monkeypatch, tmp_path):
     assert out.read_bytes() == b"VEOVIDEO"
     assert download_headers == {"x-goog-api-key": "g"}
     assert "successfully" in msg.lower()
+
+
+def test_poll_timeout_raises_with_handle(monkeypatch, tmp_path):
+    # P2-5: timeout must raise (stderr + exit 1 upstream) and keep the task
+    # handle in the message so a paid in-flight task stays recoverable.
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: FakeResp({"name": "operations/op9"})
+    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp({"done": False}))
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(Exception, match=r"op9 timed out after"):
+        vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="gemini")
+
+
+def test_gemini_poll_window_not_shorter_than_sandbox_kill():
+    # P2-5: the sandbox kills a run at 600s; the poll window must not give up first.
+    import providers.gemini as gemini
+
+    p = gemini.PROVIDER
+    assert p.poll_interval * p.poll_max_attempts >= 600
