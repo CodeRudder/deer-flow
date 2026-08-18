@@ -103,8 +103,6 @@ export const zhCN: Translations = {
     imageGenerationLoadFailed: "图片生成模型加载失败",
     videoGeneration: "视频生成模型",
     videoGenerationDefault: "默认",
-    videoGenerationDefaultDescription:
-      "不指定视频生成模型，由后端配置和技能默认策略决定",
     videoGenerationNotConfigured: "未配置 API Key",
     videoGenerationSkillDisabled: "video-generation 技能未启用",
     videoGenerationLoadFailed: "视频生成模型加载失败",

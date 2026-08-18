@@ -1230,8 +1230,9 @@ video_generation:
   # Providers shown by GET /api/video-generation/providers.
   # The first provider and its first model are treated as the default order.
   # If this section is removed, the skill falls back by available credential:
-  # gemini if GEMINI_API_KEY; minimax_h3 if MINIMAX_VIDEO_API_KEY;
-  # legacy minimax_v1 if only the shared MINIMAX_API_KEY is set.
+  # a known model name routes to its owning provider; otherwise gemini if
+  # GEMINI_API_KEY, minimax_h3 if MINIMAX_VIDEO_API_KEY, or legacy minimax_v1
+  # when only the shared MINIMAX_API_KEY is set.
   # `api_key` can reference an environment variable; secret values are never returned.
   providers:
     - name: minimax_h3
@@ -1239,8 +1240,7 @@ video_generation:
       # Video-dedicated key preferred; falls back to the shared MINIMAX_API_KEY
       # (also used by music/podcast skills) when unset.
       api_key: $MINIMAX_VIDEO_API_KEY
-      # 国内站 https://api.minimaxi.com；国际站 https://api.minimax.io（经 MINIMAX_API_HOST 覆盖）
-      base_url: https://api.minimaxi.com
+      # API host 只读环境变量 MINIMAX_API_HOST（默认国内站 https://api.minimaxi.com；国际站 https://api.minimax.io）
       models:
         - name: MiniMax-H3
           display_name: MiniMax H3

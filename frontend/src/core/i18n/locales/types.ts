@@ -85,7 +85,6 @@ export interface Translations {
     imageGenerationLoadFailed: string;
     videoGeneration: string;
     videoGenerationDefault: string;
-    videoGenerationDefaultDescription: string;
     videoGenerationNotConfigured: string;
     videoGenerationSkillDisabled: string;
     videoGenerationLoadFailed: string;

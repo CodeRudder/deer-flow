@@ -105,8 +105,6 @@ export const enUS: Translations = {
     imageGenerationLoadFailed: "Failed to load image generation models",
     videoGeneration: "Video generation model",
     videoGenerationDefault: "Default",
-    videoGenerationDefaultDescription:
-      "Do not pin a video model; use backend configuration and skill defaults",
     videoGenerationNotConfigured: "API key not configured",
     videoGenerationSkillDisabled: "video-generation skill is disabled",
     videoGenerationLoadFailed: "Failed to load video generation models",
