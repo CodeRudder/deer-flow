@@ -446,10 +446,12 @@ def test_image_role_rejected_on_providers_without_support(monkeypatch, tmp_path)
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
+    ref = tmp_path / "f.jpg"
+    ref.write_bytes(b"\xff\xd8img")
     with pytest.raises(ValueError, match="does not support --image-role"):
         vid.generate_video(
             str(pf),
-            [],
+            [str(ref)],
             str(tmp_path / "v.mp4"),
             provider="minimax_v1",
             image_role="reference",
@@ -463,6 +465,33 @@ def test_missing_credential_raises_naming_env_vars(tmp_path):
     pf.write_text("x", encoding="utf-8")
     with pytest.raises(Exception, match="MINIMAX_VIDEO_API_KEY"):
         vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="minimax_h3")
+
+
+def test_image_role_without_images_rejected(monkeypatch, tmp_path):
+    # P2-2: --image-role with no reference images must not silently degrade to T2V.
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="requires --reference-images"):
+        vid.generate_video(
+            str(pf),
+            [],
+            str(tmp_path / "v.mp4"),
+            provider="minimax_h3",
+            image_role="first_frame",
+        )
+
+
+def test_h3_duration_and_resolution_validated():
+    # P2-4: out-of-range values must raise instead of being sent as-is or
+    # silently replaced by defaults (0 -> 4, "" -> 768P).
+    p = _h3().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="duration must be 4-15"):
+        p.create_task("x", [], {"duration": 0})
+    with pytest.raises(ValueError, match="duration must be 4-15"):
+        p.create_task("x", [], {"duration": 100})
+    with pytest.raises(ValueError, match="unsupported resolution"):
+        p.create_task("x", [], {"resolution": "4K"})
 
 
 def test_missing_credential_without_env_names_omits_hint():

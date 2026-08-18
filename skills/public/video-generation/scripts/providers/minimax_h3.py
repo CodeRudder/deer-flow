@@ -90,16 +90,22 @@ class MiniMaxH3Provider(BaseVideoProvider):
         content, send_ratio = self._build_content(
             prompt_text, reference_images, image_role
         )
+        duration = params.get("duration")
+        if duration is not None and not (4 <= duration <= 15):
+            raise ValueError(f"duration must be 4-15 seconds, got {duration}")
+        resolution = params.get("resolution")
+        if resolution is not None and resolution not in ("768P", "2K"):
+            raise ValueError(f"unsupported resolution {resolution!r}; expected 768P or 2K")
         body: dict = {
             "model": self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL),
             "content": content,
-            "resolution": params.get("resolution") or "768P",
-            "duration": params.get("duration") or 4,
+            "resolution": resolution if resolution is not None else "768P",
+            "duration": duration if duration is not None else 4,
         }
         # Only pure T2V takes a `ratio`; any image-bearing mode lets the image
         # fix the aspect ratio (sending `ratio` there errors).
         if send_ratio:
-            body["ratio"] = params.get("ratio") or "16:9"
+            body["ratio"] = params.get("ratio") if params.get("ratio") is not None else "16:9"
 
         resp = requests.post(
             f"{self._host()}/v2/video_generation",

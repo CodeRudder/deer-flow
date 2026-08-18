@@ -223,6 +223,10 @@ def generate_video(
         "image_role": image_role,
     }
     params = {k: v for k, v in params.items() if v is not None}
+    if params.get("image_role") and not reference_images:
+        raise ValueError(
+            "--image-role requires --reference-images; drop --image-role for pure text-to-video"
+        )
 
     adapter = PROVIDERS[selected_provider](model=selected_model)
     if "image_role" in params and "image_role" not in adapter.supported_params:
