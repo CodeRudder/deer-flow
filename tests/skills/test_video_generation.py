@@ -122,6 +122,23 @@ def test_env_var_selects_provider(monkeypatch):
     assert vid._resolve_target({}, None, None)[0] == "minimax_h3"
 
 
+def test_alias_enabled_check_accepts_legacy_config_names():
+    # P0-3: config.yaml may declare the legacy "minimax"/"google" provider names;
+    # the enabled check must compare after alias normalization.
+    cfg = {"providers": [{"name": "minimax", "models": ["MiniMax-Hailuo-2.3"]}]}
+    assert vid._resolve_target(cfg, "minimax", None)[0] == "minimax_v1"
+    assert vid._resolve_target(cfg, None, "MiniMax-Hailuo-2.3") == (
+        "minimax_v1",
+        "MiniMax-Hailuo-2.3",
+    )
+
+
+def test_explicit_model_beats_env_provider(monkeypatch):
+    # P0-4: VIDEO_GENERATION_PROVIDER must not preempt the --model reverse lookup.
+    monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "minimax_h3")
+    assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
+
+
 def test_config_first_provider_and_model():
     assert vid._resolve_target(_H3_CONFIG, None, None) == ("minimax_h3", "MiniMax-H3")
 

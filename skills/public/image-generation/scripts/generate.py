@@ -118,7 +118,9 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     --provider stays as an escape hatch for debugging and for models that are not
     declared in config.yaml."""
     requested_model = model or os.getenv("IMAGE_GENERATION_MODEL")
-    selected = provider or os.getenv("IMAGE_GENERATION_PROVIDER")
+    # Explicit --model wins over IMAGE_GENERATION_PROVIDER so its reverse lookup
+    # is never preempted by the env var (no cross-provider pairing).
+    selected = provider or (None if model else os.getenv("IMAGE_GENERATION_PROVIDER"))
 
     if not selected and requested_model:
         selected = _provider_for_model(config, requested_model)

@@ -124,7 +124,9 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     --provider stays as an escape hatch for debugging and for models that are not
     declared in config.yaml."""
     requested_model = model or os.getenv("VIDEO_GENERATION_MODEL")
-    selected = provider or os.getenv("VIDEO_GENERATION_PROVIDER")
+    # Explicit --model wins over VIDEO_GENERATION_PROVIDER so its reverse lookup
+    # is never preempted by the env var (no cross-provider pairing).
+    selected = provider or (None if model else os.getenv("VIDEO_GENERATION_PROVIDER"))
 
     if not selected and requested_model:
         selected = _provider_for_model(config, requested_model)
@@ -149,8 +151,11 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     selected = selected.strip().lower()
     selected = _PROVIDER_ALIASES.get(selected, selected)
 
+    # Compare after alias normalization on both sides: config.yaml may declare
+    # the legacy "minimax"/"google" names, which must stay acceptable aliases.
     configured = _configured_provider_names(config)
-    if configured and selected not in configured:
+    configured_keys = {_PROVIDER_ALIASES.get(name, name) for name in configured}
+    if configured_keys and selected not in configured_keys:
         raise ValueError(
             f"Video generation provider '{selected}' is not enabled in config.yaml. "
             f"Enabled providers: {', '.join(configured)}"
