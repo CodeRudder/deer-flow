@@ -222,6 +222,14 @@ def generate_video(
     params = {k: v for k, v in params.items() if v is not None}
 
     adapter = PROVIDERS[selected_provider](model=selected_model)
+    if "image_role" in params and "image_role" not in adapter.supported_params:
+        supporters = ", ".join(
+            sorted(n for n, c in PROVIDERS.items() if "image_role" in c.supported_params)
+        )
+        raise ValueError(
+            f"Video generation provider '{selected_provider}' does not support "
+            f"--image-role (supported: {supporters}). Switch provider or drop --image-role."
+        )
     return adapter.generate(prompt_text, reference_images, output_file, params)
 
 

@@ -428,6 +428,22 @@ def test_supported_params_do_not_warn(capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_image_role_rejected_on_providers_without_support(monkeypatch, tmp_path):
+    # P0-5: --image-role semantics differ per provider; unsupported must raise,
+    # not warn-and-continue with a silently changed meaning.
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not support --image-role"):
+        vid.generate_video(
+            str(pf),
+            [],
+            str(tmp_path / "v.mp4"),
+            provider="minimax_v1",
+            image_role="reference",
+        )
+
+
 # --- legacy MiniMax V1 migration: behavior not regressed (three-step) ---
 
 
