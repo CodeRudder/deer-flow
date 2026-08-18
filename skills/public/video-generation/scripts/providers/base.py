@@ -70,6 +70,8 @@ class BaseVideoProvider:
     name = "base"
     # Params this adapter honors; the rest trigger warn_ignored.
     supported_params: set[str] = set()
+    # Env vars accepted as credential; used by the missing-key error message.
+    api_key_envs: tuple[str, ...] = ()
     # Poll cadence — adapters override (H3 recommends 10s; Gemini/V1 used 3s).
     poll_interval = 10
     poll_max_attempts = 120
@@ -125,7 +127,12 @@ class BaseVideoProvider:
         interval: int | None = None,
     ) -> str:
         if not self.api_key():
-            return f"{self.name} credential is not set"
+            hint = (
+                f"; set one of: {', '.join(self.api_key_envs)}"
+                if self.api_key_envs
+                else ""
+            )
+            raise Exception(f"provider={self.name} credential is not set{hint}")
 
         max_attempts = (
             max_attempts if max_attempts is not None else self.poll_max_attempts

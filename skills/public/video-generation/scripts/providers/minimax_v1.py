@@ -36,6 +36,7 @@ class MiniMaxV1Provider(BaseVideoProvider):
         set()
     )  # V1 uses resolution/duration on the model side; aspect_ratio ignored
     default_model = DEFAULT_MODEL
+    api_key_envs = ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY")
     poll_interval = 3
 
     def api_key(self) -> str | None:

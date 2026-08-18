@@ -456,6 +456,29 @@ def test_image_role_rejected_on_providers_without_support(monkeypatch, tmp_path)
         )
 
 
+def test_missing_credential_raises_naming_env_vars(tmp_path):
+    # P0-1: missing credential must raise (stderr + exit 1 upstream) and name
+    # the env vars to set, not return a success-shaped stdout line with exit 0.
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(Exception, match="MINIMAX_VIDEO_API_KEY"):
+        vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="minimax_h3")
+
+
+def test_missing_credential_without_env_names_omits_hint():
+    # An adapter that forgot to declare api_key_envs must not print "set one of: ".
+    from providers.base import BaseVideoProvider
+
+    class NoEnvs(BaseVideoProvider):
+        name = "no_envs"
+
+        def api_key(self):
+            return None
+
+    with pytest.raises(Exception, match=r"provider=no_envs credential is not set$"):
+        NoEnvs().generate("x", [], "out.mp4", {})
+
+
 # --- legacy MiniMax V1 migration: behavior not regressed (three-step) ---
 
 

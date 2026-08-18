@@ -21,6 +21,7 @@ class GeminiVideoProvider(BaseVideoProvider):
     name = "gemini"
     supported_params: set[str] = set()  # Gemini T2V/I2V here take no extra params
     default_model = DEFAULT_MODEL
+    api_key_envs = ("GEMINI_API_KEY",)
     poll_interval = 3
     # Baseline polled uncapped; the sandbox kills a run at 600s anyway. Cap at
     # 3s x 200 = 600s so we never give up earlier than the environment forces.
