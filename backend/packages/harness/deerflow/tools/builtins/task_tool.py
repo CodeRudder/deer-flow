@@ -25,6 +25,7 @@ from deerflow.subagents.executor import (
 )
 from deerflow.subagents.session import SubagentSession
 from deerflow.tools.types import Runtime
+from deerflow.video_generation.types import VideoGenerationPreference
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TASK_CAPABILITY_IMAGE_GENERATION = "image_generation"
+TASK_CAPABILITY_VIDEO_GENERATION = "video_generation"
 
 # Cache subagent token usage by tool_call_id so TokenUsageMiddleware can
 # write it back to the triggering AIMessage's usage_metadata.
@@ -43,6 +45,7 @@ class TaskCapabilityContext:
     """Runtime preferences available to task capability injectors."""
 
     image_generation: ImageGenerationPreference
+    video_generation: VideoGenerationPreference
 
 
 def _token_usage_cache_enabled(app_config: "AppConfig | None") -> bool:
@@ -256,8 +259,37 @@ def _apply_image_generation_capability(prompt: str, context: TaskCapabilityConte
     return _append_image_generation_preference(prompt, context.image_generation)
 
 
+def _append_video_generation_preference(prompt: str, video_generation: VideoGenerationPreference | None) -> str:
+    if video_generation is None or video_generation.is_empty:
+        return prompt
+
+    command_args = []
+    if video_generation.model:
+        command_args.append(f"--model {video_generation.model}")
+
+    details = []
+    if video_generation.model:
+        details.append(f"- Model: `{video_generation.model}`")
+
+    preference = (
+        "<video_generation_runtime_preference>\n"
+        "The parent run selected the following video generation preference for the current run:\n"
+        f"{chr(10).join(details)}\n"
+        "This is only a preference. If this subtask is not a video generation task, ignore it and proceed normally.\n"
+        "If this subtask uses the video-generation skill, call generate.py with these explicit arguments:\n"
+        f"`{' '.join(command_args)}`\n"
+        "</video_generation_runtime_preference>"
+    )
+    return f"{prompt}\n\n{preference}"
+
+
+def _apply_video_generation_capability(prompt: str, context: TaskCapabilityContext) -> str:
+    return _append_video_generation_preference(prompt, context.video_generation)
+
+
 _TASK_CAPABILITY_INJECTORS = {
     TASK_CAPABILITY_IMAGE_GENERATION: _apply_image_generation_capability,
+    TASK_CAPABILITY_VIDEO_GENERATION: _apply_video_generation_capability,
 }
 
 
@@ -298,6 +330,21 @@ def _image_generation_preference_from_runtime(runtime: Any) -> ImageGenerationPr
     return ImageGenerationPreference.from_mapping(
         {
             "image_generation_model": _runtime_value(runtime, "image_generation_model") or metadata.get("image_generation_model"),
+        }
+    )
+
+
+def _video_generation_preference_from_runtime(runtime: Any) -> VideoGenerationPreference:
+    if runtime is None:
+        return VideoGenerationPreference()
+
+    metadata = runtime.config.get("metadata", {}) if getattr(runtime, "config", None) else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return VideoGenerationPreference.from_mapping(
+        {
+            "video_generation_model": _runtime_value(runtime, "video_generation_model") or metadata.get("video_generation_model"),
         }
     )
 
@@ -424,6 +471,7 @@ async def task_tool(
 
     Capabilities:
     - Use capabilities=["image_generation"] only for subtasks that create, edit, or generate images.
+    - Use capabilities=["video_generation"] only for subtasks that create or generate videos.
     - Leave capabilities empty for normal calculation, analysis, code, search, summarization, and file-operation subtasks.
 
     Args:
@@ -433,7 +481,7 @@ async def task_tool(
         max_turns: Optional maximum number of agent turns. Defaults to subagent's configured max.
         task_id: Target subtask ID for resume/cancel/query actions. Not needed for create.
         action: Action to perform: "create" (default), "resume", "cancel", or "query".
-        capabilities: Optional subtask capability keys. Use ["image_generation"] only when this subtask creates or edits images.
+        capabilities: Optional subtask capability keys. Use ["image_generation"] only when this subtask creates or edits images; use ["video_generation"] only when this subtask creates or edits videos.
     """
     if action == "cancel":
         return await _action_cancel(runtime, task_id)
@@ -474,6 +522,7 @@ async def task_tool(
     trace_id = None
     metadata: dict = {}
     image_generation = ImageGenerationPreference()
+    video_generation = VideoGenerationPreference()
 
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
@@ -490,9 +539,10 @@ async def task_tool(
         # Get or generate trace_id for distributed tracing
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
         image_generation = _image_generation_preference_from_runtime(runtime)
+        video_generation = _video_generation_preference_from_runtime(runtime)
 
     task_capabilities = _normalize_task_capabilities(capabilities)
-    capability_context = TaskCapabilityContext(image_generation=image_generation)
+    capability_context = TaskCapabilityContext(image_generation=image_generation, video_generation=video_generation)
     prompt = _apply_task_capabilities(prompt, capabilities=task_capabilities, context=capability_context)
 
     # Get user_id for tracing (uses standard resolution order)
@@ -552,6 +602,7 @@ async def task_tool(
         "user_id": user_id,
         "trace_id": trace_id,
         "image_generation": image_generation,
+        "video_generation": video_generation,
         "user_role": user_role,
         "oauth_provider": oauth_provider,
         "oauth_id": oauth_id,
@@ -826,6 +877,7 @@ async def _action_resume(
     trace_id = metadata.get("trace_id") if isinstance(metadata, dict) else None
     trace_id = trace_id or str(uuid.uuid4())[:8]
     image_generation = _image_generation_preference_from_runtime(runtime)
+    video_generation = _video_generation_preference_from_runtime(runtime)
     parent_context = runtime.context if runtime is not None else None
     parent_context = parent_context if isinstance(parent_context, dict) else {}
     user_role = parent_context.get("user_role")
@@ -835,7 +887,7 @@ async def _action_resume(
     quota_runtime_bridge = parent_context.get("__quota_runtime_bridge")
     raw_resume_capabilities = info.get("capabilities")
     task_capabilities = _normalize_task_capabilities(raw_resume_capabilities if isinstance(raw_resume_capabilities, list) and raw_resume_capabilities else capabilities)
-    capability_context = TaskCapabilityContext(image_generation=image_generation)
+    capability_context = TaskCapabilityContext(image_generation=image_generation, video_generation=video_generation)
 
     parent_available_skills = metadata.get("available_skills") if isinstance(metadata, dict) else None
     if parent_available_skills is not None:
@@ -880,6 +932,7 @@ async def _action_resume(
         "user_id": user_id,
         "trace_id": trace_id,
         "image_generation": image_generation,
+        "video_generation": video_generation,
         "user_role": user_role,
         "oauth_provider": oauth_provider,
         "oauth_id": oauth_id,

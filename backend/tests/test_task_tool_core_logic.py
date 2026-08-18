@@ -49,6 +49,12 @@ def _make_image_generation_runtime() -> SimpleNamespace:
     return runtime
 
 
+def _make_video_generation_runtime() -> SimpleNamespace:
+    runtime = _make_runtime()
+    runtime.context["video_generation_model"] = "MiniMax-H3"
+    return runtime
+
+
 def _make_subagent_config(name: str = "general-purpose") -> SubagentConfig:
     return SubagentConfig(
         name=name,
@@ -297,6 +303,57 @@ def test_task_tool_only_injects_image_generation_preference_for_declared_capabil
     assert "--model qwen-image-2.0-pro" in captured["prompt"]
     # The provider is derived from the model inside the skill and must not be passed.
     assert "--provider" not in captured["prompt"]
+
+
+def test_task_tool_only_injects_video_generation_preference_for_declared_capability(monkeypatch):
+    config = _make_subagent_config()
+    events = []
+    captured = {}
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            captured["prompt"] = prompt
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(
+        task_tool_module,
+        "get_background_task_result",
+        lambda _: _make_result(FakeSubagentStatus.COMPLETED, result="done"),
+    )
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", MagicMock(return_value=[]))
+
+    _run_task_tool(
+        runtime=_make_video_generation_runtime(),
+        description="计算求和",
+        prompt="请计算 1+2+...+50",
+        subagent_type="general-purpose",
+        tool_call_id="tc-no-video-capability",
+    )
+
+    assert "video_generation_runtime_preference" not in captured["prompt"]
+
+    _run_task_tool(
+        runtime=_make_video_generation_runtime(),
+        description="生成视频",
+        prompt="请生成一段产品展示视频",
+        subagent_type="general-purpose",
+        tool_call_id="tc-video-capability",
+        capabilities=["video_generation"],
+    )
+
+    assert "video_generation_runtime_preference" in captured["prompt"]
+    assert "--model MiniMax-H3" in captured["prompt"]
+    # The provider is derived from the model inside the skill and must not be passed.
+    assert "--provider" not in captured["prompt"]
+    assert captured["executor_kwargs"]["video_generation"].model == "MiniMax-H3"
 
 
 def test_task_tool_propagates_tool_groups_to_subagent(monkeypatch):
@@ -1370,7 +1427,7 @@ def test_task_capabilities_do_not_append_image_generation_by_default():
     result = task_tool_module._apply_task_capabilities(
         prompt,
         capabilities=[],
-        context=task_tool_module.TaskCapabilityContext(image_generation=preference),
+        context=task_tool_module.TaskCapabilityContext(image_generation=preference, video_generation=task_tool_module.VideoGenerationPreference()),
     )
 
     assert result == prompt
@@ -1384,12 +1441,43 @@ def test_task_capabilities_append_image_generation_when_declared():
     result = task_tool_module._apply_task_capabilities(
         prompt,
         capabilities=["image_generation"],
-        context=task_tool_module.TaskCapabilityContext(image_generation=preference),
+        context=task_tool_module.TaskCapabilityContext(image_generation=preference, video_generation=task_tool_module.VideoGenerationPreference()),
     )
 
     assert result != prompt
     assert "image_generation_runtime_preference" in result
     assert "--model qwen-image-2.0-pro" in result
+    # The provider is derived from the model inside the skill and must not be passed.
+    assert "--provider" not in result
+
+
+def test_task_capabilities_do_not_append_video_generation_by_default():
+    preference = task_tool_module.VideoGenerationPreference(model="MiniMax-H3")
+    prompt = "请计算 1+2+3+...+100 的总和是多少？请直接给出答案。"
+
+    result = task_tool_module._apply_task_capabilities(
+        prompt,
+        capabilities=[],
+        context=task_tool_module.TaskCapabilityContext(image_generation=task_tool_module.ImageGenerationPreference(), video_generation=preference),
+    )
+
+    assert result == prompt
+    assert "video_generation_runtime_preference" not in result
+
+
+def test_task_capabilities_append_video_generation_when_declared():
+    preference = task_tool_module.VideoGenerationPreference(model="MiniMax-H3")
+    prompt = "请生成一段产品展示视频。"
+
+    result = task_tool_module._apply_task_capabilities(
+        prompt,
+        capabilities=["video_generation"],
+        context=task_tool_module.TaskCapabilityContext(image_generation=task_tool_module.ImageGenerationPreference(), video_generation=preference),
+    )
+
+    assert result != prompt
+    assert "video_generation_runtime_preference" in result
+    assert "--model MiniMax-H3" in result
     # The provider is derived from the model inside the skill and must not be passed.
     assert "--provider" not in result
 
@@ -1401,7 +1489,7 @@ def test_task_capabilities_ignore_unknown_capabilities():
     result = task_tool_module._apply_task_capabilities(
         prompt,
         capabilities=["unknown"],
-        context=task_tool_module.TaskCapabilityContext(image_generation=preference),
+        context=task_tool_module.TaskCapabilityContext(image_generation=preference, video_generation=task_tool_module.VideoGenerationPreference()),
     )
 
     assert result == prompt
