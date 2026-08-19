@@ -42,6 +42,13 @@ def test_image_generation_preference_routes_source_image_transformations_to_imag
     assert "asks to create, edit, visualize" not in section
 
 
+def test_video_generation_preference_section_names_selected_model():
+    section = prompt_module._build_video_generation_runtime_section(prompt_module.VideoGenerationPreference(model="MiniMax-H3"))
+
+    assert "video-generation" in section
+    assert "MiniMax-H3" in section
+
+
 def test_build_custom_mounts_section_returns_empty_when_no_mounts(monkeypatch):
     config = SimpleNamespace(sandbox=SimpleNamespace(mounts=[]))
     monkeypatch.setattr("deerflow.config.get_app_config", lambda: config)
