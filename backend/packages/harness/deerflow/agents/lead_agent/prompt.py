@@ -239,7 +239,7 @@ The user selected a video generation preference for the current run:
 This selection is only a preference for video generation tasks. It does not mean the user is asking for a video.
 - If the current user request is normal chat, answer normally and do not use the video-generation skill.
 - Use the built-in video-generation skill only when creating a new video, and pass the selected model explicitly.
-- For image-to-video (I2V) requests, pass the first frame image via `--reference-images`.
+- For image-to-video (I2V) requests, pass the first frame image via `--reference-images` and pick the mode with `--image-role` (H3: `first_frame` / `last_frame` / `first_last` / `reference`; other providers reject the flag).
 - The current run preference supersedes older model choices mentioned in conversation history.
 - When executing the skill, include these arguments in the command:
   `{" ".join(command_parts)}`
