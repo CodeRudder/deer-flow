@@ -44,9 +44,8 @@ deer-flow/
 │   │           │   └── registry.py    # Agent registry
 │   │           ├── tools/builtins/    # Built-in tools (present_files, ask_clarification, view_image)
 │   │           ├── mcp/               # MCP integration (tools, cache, client)
-│   │           ├── models/            # Model factory with thinking/vision support
+│   │           ├── models/            # Model factory with thinking/vision support; video_generation/ hosts the video-generation provider registry
 │   │           ├── skills/            # Skills discovery, loading, parsing, built-in image workflows
-│   │           ├── video_generation/  # Video generation provider registry (GET /api/video-generation/providers)
 │   │           ├── config/            # Configuration system (app, model, sandbox, tool, etc.)
 │   │           ├── community/         # Community tools (search/fetch/scrape, image search, AIO sandbox)
 │   │           ├── reflection/        # Dynamic module loading (resolve_variable, resolve_class)
@@ -56,7 +55,7 @@ deer-flow/
 │   │   ├── gateway/           # FastAPI Gateway API
 │   │   │   ├── admin/         # Administrator usage dashboard and quota control
 │   │   │   ├── app.py         # FastAPI application
-│   │   │   └── routers/       # FastAPI route modules (models, mcp, memory, skills, uploads, threads, artifacts, agents, suggestions, channels, video_generation)
+│   │   │   └── routers/       # FastAPI route modules (models, mcp, memory, skills, uploads, threads, artifacts, agents, suggestions, channels)
 │   │   └── channels/          # IM platform integrations
 │   ├── tests/                 # Test suite
 │   └── docs/                  # Documentation

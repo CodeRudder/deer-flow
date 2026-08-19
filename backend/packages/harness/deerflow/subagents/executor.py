@@ -25,6 +25,7 @@ from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
 from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.models import create_chat_model
+from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
@@ -32,7 +33,6 @@ from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_nam
 from deerflow.subagents.session import SubagentSession
 from deerflow.subagents.token_collector import SubagentTokenCollector
 from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
-from deerflow.video_generation.types import VideoGenerationPreference
 
 if TYPE_CHECKING:
     # Imported lazily at runtime inside _build_initial_state: importing

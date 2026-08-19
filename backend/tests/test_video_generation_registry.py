@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from deerflow.config.extensions_config import ExtensionsConfig
-from deerflow.video_generation import registry
+from deerflow.models.video_generation import registry
 
 
 def test_registry_returns_disabled_response_when_skill_disabled(monkeypatch):
