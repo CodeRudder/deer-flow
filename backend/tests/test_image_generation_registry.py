@@ -128,6 +128,64 @@ def test_registry_reads_selectable_models_from_config_in_order(monkeypatch):
     assert response.providers[1].configured is False
 
 
+def test_registry_builtin_providers_use_fallback_key_chain(monkeypatch):
+    # The builtin path must honor fallback_api_key_envs, matching the config path
+    # and the skill-side credential fallback.
+    monkeypatch.setattr(
+        registry,
+        "get_extensions_config",
+        lambda: ExtensionsConfig(skills={}),
+    )
+    monkeypatch.setattr(
+        registry,
+        "get_app_config",
+        lambda: SimpleNamespace(model_extra={}),
+    )
+    monkeypatch.delenv("QWEN_IMAGE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "shared-key")
+
+    response = registry.get_image_generation_providers()
+    providers = {provider.name: provider for provider in response.providers}
+
+    assert providers["openai_image"].configured is True
+    assert providers["qwen_image"].configured is False
+
+
+def test_registry_empty_resolved_api_key_falls_back_to_shared_key(monkeypatch):
+    # An api_key resolved to "" (referenced $VAR missing at config load) retries
+    # the provider key chain, matching the skill-side runtime credential fallback.
+    monkeypatch.setattr(
+        registry,
+        "get_extensions_config",
+        lambda: ExtensionsConfig(skills={}),
+    )
+    monkeypatch.setattr(
+        registry,
+        "get_app_config",
+        lambda: SimpleNamespace(
+            model_extra={
+                "image_generation": {
+                    "providers": [
+                        {"name": "openai_image", "api_key": "", "models": ["gpt-image-2"]},
+                    ],
+                }
+            }
+        ),
+    )
+    monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "shared-key")
+
+    response = registry.get_image_generation_providers()
+
+    assert response.providers[0].configured is True
+
+    monkeypatch.delenv("OPENAI_API_KEY")
+    response = registry.get_image_generation_providers()
+
+    assert response.providers[0].configured is False
+
+
 def test_registry_treats_resolved_api_key_value_as_configured(monkeypatch):
     monkeypatch.setattr(
         registry,
