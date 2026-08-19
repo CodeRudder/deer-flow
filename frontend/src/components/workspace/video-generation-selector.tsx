@@ -131,18 +131,26 @@ export function VideoGenerationSelector({
 
               const item = (
                 <PromptInputActionMenuItem
-                  disabled={!configured}
+                  // Not `disabled`: Radix drops disabled items from roving focus and
+                  // data-disabled kills pointer events, leaving the description
+                  // tooltip unreachable. aria-disabled keeps hover/focus; onSelect blocks selection.
+                  aria-disabled={!configured || undefined}
                   className={cn(
                     "h-9",
+                    !configured && "opacity-50",
                     isSelected
                       ? "text-accent-foreground"
                       : "text-muted-foreground/75",
                   )}
-                  onSelect={() =>
+                  onSelect={(event) => {
+                    if (!configured) {
+                      event.preventDefault();
+                      return;
+                    }
                     onSelectionChange({
                       video_generation_model: model.name,
-                    })
-                  }
+                    });
+                  }}
                 >
                   <span className="min-w-0 truncate font-medium">
                     {model.display_name}
