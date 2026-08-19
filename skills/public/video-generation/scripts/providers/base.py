@@ -72,6 +72,9 @@ class BaseVideoProvider:
     supported_params: set[str] = set()
     # Env vars accepted as credential; used by the missing-key error message.
     api_key_envs: tuple[str, ...] = ()
+    # Every model this adapter serves, not just default_model. Feeds
+    # MODEL_PROVIDERS so credential fallback routes each model to its owner.
+    known_models: tuple[str, ...] = ()
     # Poll cadence — adapters override (H3 recommends 10s; Gemini/V1 used 3s).
     poll_interval = 10
     poll_max_attempts = 120

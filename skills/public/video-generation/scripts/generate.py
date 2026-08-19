@@ -171,8 +171,15 @@ def _credential_fallback(requested_model: str | None) -> str | None:
     its owning provider (never a cross-provider pairing); otherwise credential
     priority decides — Gemini keeps the old default; a dedicated video key
     implies H3; the shared key keeps old behavior (legacy minimax_v1)."""
-    if requested_model and MODEL_PROVIDERS.get(requested_model):
-        return MODEL_PROVIDERS[requested_model]
+    if requested_model:
+        owner = MODEL_PROVIDERS.get(requested_model)
+        if owner:
+            return owner
+        raise ValueError(
+            f"Video generation model '{requested_model}' is not a known model of any provider "
+            f"(known: {', '.join(sorted(MODEL_PROVIDERS))}). Declare it in config.yaml "
+            "video_generation.providers[].models[], or pass --provider explicitly."
+        )
     if os.getenv("GEMINI_API_KEY"):
         return "gemini"
     if os.getenv("MINIMAX_VIDEO_API_KEY"):
@@ -209,6 +216,13 @@ def generate_video(
     duration: int | None = None,
     image_role: str | None = None,
 ) -> str:
+    output_path = Path(output_file)
+    if output_path.exists():
+        raise FileExistsError(
+            f"Output file already exists and will not be overwritten: {output_file}. "
+            "Choose a unique output filename."
+        )
+
     config = _load_video_generation_config()
     selected_provider, selected_model = _resolve_target(config, provider, model)
 

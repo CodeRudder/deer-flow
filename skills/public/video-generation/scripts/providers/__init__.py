@@ -7,11 +7,12 @@ from . import gemini, minimax_h3, minimax_v1
 #   PROVIDERS[name](model=...).generate(...)
 PROVIDERS = {
     "minimax_h3": minimax_h3.PROVIDER,  # V2, recommended
-    "gemini": gemini.PROVIDER,  # preserved, not regressed
+    "gemini": gemini.PROVIDER,
     "minimax_v1": minimax_v1.PROVIDER,  # legacy Hailuo V1, compat only
 }
 
-# Default model -> provider name. Mirrors the harness builtin table; when
-# config.yaml has no video_generation section this is the model->provider
-# truth for credential-fallback routing.
-MODEL_PROVIDERS = {cls.default_model: name for name, cls in PROVIDERS.items()}
+# Model name -> provider name, covering every model an adapter serves (not just
+# its default). When config.yaml has no video_generation section this is the
+# model->provider truth for credential-fallback routing; an unknown model is
+# rejected there rather than paired with whichever credential happens to be set.
+MODEL_PROVIDERS = {model: name for name, cls in PROVIDERS.items() for model in (cls.known_models or (cls.default_model,))}

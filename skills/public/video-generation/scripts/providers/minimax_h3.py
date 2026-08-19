@@ -21,6 +21,8 @@ from .base import (
 
 DEFAULT_HOST = "https://api.minimaxi.com"  # 国内站；国际站 https://api.minimax.io
 DEFAULT_MODEL = "MiniMax-H3"
+# Keep in sync with the aspect-ratio row in SKILL.md's output-settings table.
+SUPPORTED_RATIOS = ("16:9", "9:16", "1:1", "4:3", "21:9")
 
 
 class MiniMaxH3Provider(BaseVideoProvider):
@@ -28,6 +30,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
     supported_params = {"resolution", "duration", "ratio", "image_role"}
     default_model = DEFAULT_MODEL
     api_key_envs = ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY")
+    known_models = (DEFAULT_MODEL,)
 
     def api_key(self) -> str | None:
         # Video-dedicated key preferred; falls back to the shared MINIMAX_API_KEY
@@ -86,7 +89,9 @@ class MiniMaxH3Provider(BaseVideoProvider):
     def create_task(
         self, prompt_text: str, reference_images: list[str], params: dict
     ) -> str:
-        image_role = params.get("image_role") or "first_frame"
+        image_role = params.get("image_role")
+        if image_role is None:
+            image_role = "first_frame"
         content, send_ratio = self._build_content(
             prompt_text, reference_images, image_role
         )
@@ -96,6 +101,9 @@ class MiniMaxH3Provider(BaseVideoProvider):
         resolution = params.get("resolution")
         if resolution is not None and resolution not in ("768P", "2K"):
             raise ValueError(f"unsupported resolution {resolution!r}; expected 768P or 2K")
+        ratio = params.get("ratio")
+        if ratio is not None and ratio not in SUPPORTED_RATIOS:
+            raise ValueError(f"unsupported aspect ratio {ratio!r}; expected one of {', '.join(SUPPORTED_RATIOS)}")
         body: dict = {
             "model": self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL),
             "content": content,

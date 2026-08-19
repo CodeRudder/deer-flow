@@ -494,6 +494,43 @@ def test_h3_duration_and_resolution_validated():
         p.create_task("x", [], {"resolution": "4K"})
 
 
+def test_h3_aspect_ratio_validated():
+    # P2-4 remainder: the ratio enum in SKILL.md's output-settings table was
+    # documented but never enforced.
+    p = _h3().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="unsupported aspect ratio"):
+        p.create_task("x", [], {"ratio": "3:2"})
+
+
+def test_output_file_is_not_overwritten(monkeypatch, tmp_path):
+    # Align with image-generation: a finished (paid) video must not be clobbered.
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    existing = tmp_path / "v.mp4"
+    existing.write_bytes(b"old")
+    with pytest.raises(FileExistsError, match="already exists"):
+        vid.generate_video(str(pf), [], str(existing), provider="minimax_h3")
+    assert existing.read_bytes() == b"old"
+
+
+def test_model_providers_covers_every_known_model():
+    # MODEL_PROVIDERS is the no-config routing truth; it must span known_models,
+    # not just each adapter's default_model.
+    for name, cls in vid.PROVIDERS.items():
+        for model in cls.known_models:
+            assert vid.MODEL_PROVIDERS[model] == name
+
+
+def test_unknown_model_without_config_rejected(monkeypatch):
+    # P0-2 nail: an unowned model must not be paired with whichever credential
+    # happens to be set. --provider stays the escape hatch.
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    with pytest.raises(ValueError, match="is not a known model"):
+        vid._resolve_target({}, None, "veo-9-unreleased")
+    assert vid._resolve_target({}, "gemini", "veo-9-unreleased") == ("gemini", "veo-9-unreleased")
+
+
 def test_missing_credential_without_env_names_omits_hint():
     # An adapter that forgot to declare api_key_envs must not print "set one of: ".
     from providers.base import BaseVideoProvider

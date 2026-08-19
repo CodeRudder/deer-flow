@@ -352,9 +352,10 @@ This skill does NOT edit an existing video — there is no video-editing capabil
 - **I2V is the most controllable iteration**: keep the same first-frame image and
   only adjust the motion/camera prose, so at least the opening frame stays stable.
   Pure T2V iteration is closer to re-rolling from scratch.
-- **Use a NEW output filename each time** (e.g. `cat-v2.mp4`). The script writes
-  the target path directly and **silently overwrites** an existing file — it does
-  not refuse or back up. Keep versions to compare.
+- **Use a NEW output filename each time** (e.g. `cat-v2.mp4`). The script
+  **refuses to overwrite** an existing file and errors out before calling the
+  provider, so a reused filename costs no quota — but it does waste a turn. Keep
+  versions to compare.
 - **Each run costs quota** (shares the image-generation usage counter), unlike
   editing text — so change the prompt deliberately rather than re-running blindly.
 
