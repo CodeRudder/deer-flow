@@ -689,3 +689,32 @@ image_generation:
     message = str(exc.value)
     assert "not enabled in config.yaml" in message
     assert "Enabled providers: qwen_image" in message
+
+
+def test_env_model_beats_env_provider(monkeypatch, tmp_path):
+    # The env pair must not cross-pair: IMAGE_GENERATION_MODEL resolves its owning
+    # provider via config; IMAGE_GENERATION_PROVIDER only fills in when no model is pinned.
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+image_generation:
+  providers:
+    - name: qwen_image
+      models:
+        - qwen-image-2.0-pro
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_file))
+    monkeypatch.setenv("IMAGE_GENERATION_PROVIDER", "openai_image")
+    monkeypatch.setenv("IMAGE_GENERATION_MODEL", "qwen-image-2.0-pro")
+    # Other test files (video skill tests) may have repointed the shared
+    # "providers" module name; give this routing test a self-contained PROVIDERS.
+    monkeypatch.setattr(generate_module, "PROVIDERS", {"qwen_image": object(), "openai_image": object()})
+
+    config = generate_module._load_image_generation_config()
+
+    assert generate_module._resolve_target(config, None, None) == (
+        "qwen_image",
+        "qwen-image-2.0-pro",
+    )

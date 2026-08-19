@@ -124,9 +124,10 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     --provider stays as an escape hatch for debugging and for models that are not
     declared in config.yaml."""
     requested_model = model or os.getenv("VIDEO_GENERATION_MODEL")
-    # Explicit --model wins over VIDEO_GENERATION_PROVIDER so its reverse lookup
-    # is never preempted by the env var (no cross-provider pairing).
-    selected = provider or (None if model else os.getenv("VIDEO_GENERATION_PROVIDER"))
+    # An explicit --model or VIDEO_GENERATION_MODEL resolves its owning provider;
+    # VIDEO_GENERATION_PROVIDER only fills in when no model is pinned, so the two
+    # env vars can never cross-pair a provider with a foreign model.
+    selected = provider or (None if requested_model else os.getenv("VIDEO_GENERATION_PROVIDER"))
 
     if not selected and requested_model:
         selected = _provider_for_model(config, requested_model)

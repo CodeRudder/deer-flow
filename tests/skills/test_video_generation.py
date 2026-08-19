@@ -139,6 +139,14 @@ def test_explicit_model_beats_env_provider(monkeypatch):
     assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
 
 
+def test_env_model_beats_env_provider(monkeypatch):
+    # The env pair must not cross-pair either: VIDEO_GENERATION_MODEL resolves its
+    # owning provider; VIDEO_GENERATION_PROVIDER only fills in when no model is pinned.
+    monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "minimax_v1")
+    monkeypatch.setenv("VIDEO_GENERATION_MODEL", "MiniMax-H3")
+    assert vid._resolve_target({}, None, None) == ("minimax_h3", "MiniMax-H3")
+
+
 
 def test_model_without_config_routes_to_its_provider_not_credential(monkeypatch):
     # P0-2: no config block + frontend-picked model — the model's owning provider
