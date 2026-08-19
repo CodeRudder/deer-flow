@@ -139,6 +139,7 @@ def test_explicit_model_beats_env_provider(monkeypatch):
     assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
 
 
+
 def test_model_without_config_routes_to_its_provider_not_credential(monkeypatch):
     # P0-2: no config block + frontend-picked model — the model's owning provider
     # wins over credential priority, even with a foreign credential present.
@@ -706,3 +707,26 @@ def test_gemini_poll_window_not_shorter_than_sandbox_kill():
 
     p = gemini.PROVIDER
     assert p.poll_interval * p.poll_max_attempts >= 600
+
+
+def test_v1_poll_window_not_shorter_than_sandbox_kill():
+    # Same contract as gemini: the sandbox kills a run at 600s; never give up first.
+    import providers.minimax_v1 as v1
+
+    p = v1.PROVIDER
+    assert p.poll_interval * p.poll_max_attempts >= 600
+
+
+def test_h3_extra_images_warned(capsys):
+    # P2-1: frame modes drop extra images — say so instead of failing silently.
+    p = _h3().PROVIDER(model=None)
+    urls = ["https://e/a.jpg", "https://e/b.jpg", "https://e/c.jpg"]
+
+    content, _ = p._build_content("x", urls, "first_frame")
+    assert len(content) == 2  # text + one frame
+    assert "ignoring 2 extra" in capsys.readouterr().out
+
+    content, _ = p._build_content("x", urls, "first_last")
+    assert len(content) == 3  # text + first + last
+    assert "ignoring 1 extra" in capsys.readouterr().out
+

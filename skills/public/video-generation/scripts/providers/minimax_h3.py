@@ -60,6 +60,15 @@ class MiniMaxH3Provider(BaseVideoProvider):
                 "role": role,
             }
 
+        def warn_extra(limit: int) -> None:
+            # Frame modes take a fixed number of images; extras are dropped, so say so
+            # instead of failing silently (reference mode raises instead — see below).
+            if len(images) > limit:
+                print(
+                    f"Warning: provider=minimax_h3 {image_role} mode uses only the first "
+                    f"{limit} image(s); ignoring {len(images) - limit} extra"
+                )
+
         if not images:
             return content, True  # T2V — the only mode that sends ratio
 
@@ -74,14 +83,17 @@ class MiniMaxH3Provider(BaseVideoProvider):
             for path in images:
                 content.append(image_item(path, "reference_image"))
         elif image_role == "last_frame":
+            warn_extra(1)
             content.append(image_item(images[0], "last_frame"))
         elif image_role == "first_last":
+            warn_extra(2)
             # First image = opening frame; second (if given) = closing frame.
             content.append(image_item(images[0], "first_frame"))
             if len(images) > 1:
                 content.append(image_item(images[1], "last_frame"))
         else:
             # Default: first_frame (I2V).
+            warn_extra(1)
             content.append(image_item(images[0], "first_frame"))
 
         return content, False

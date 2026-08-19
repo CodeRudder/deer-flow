@@ -39,6 +39,8 @@ class MiniMaxV1Provider(BaseVideoProvider):
     api_key_envs = ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY")
     known_models = (DEFAULT_MODEL,)
     poll_interval = 3
+    # 3s x 200 = 600s: never give up before the sandbox kills the run (same as gemini).
+    poll_max_attempts = 200
 
     def api_key(self) -> str | None:
         # Same resolution as minimax_h3: dedicated video key, else shared key.
