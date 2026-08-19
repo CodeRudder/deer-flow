@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -10,7 +11,7 @@ class ImageGenerationPreference:
     model: str | None = None
 
     @classmethod
-    def from_mapping(cls, values: Mapping[str, Any] | None) -> "ImageGenerationPreference":
+    def from_mapping(cls, values: Mapping[str, Any] | None) -> ImageGenerationPreference:
         if not values:
             return cls()
 
