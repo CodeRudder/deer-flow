@@ -1,6 +1,6 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness, ≤5). Read SKILL.md before generating to pick the mode, prompt methodology, and output settings.
+description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness, ≤5). Read SKILL.md before replying — including before any clarifying question — for the mode, prompt methodology, output settings, and the required question format when a request carries no picture content.
 ---
 
 # Video Generation Skill
@@ -21,6 +21,31 @@ video is generated from text alone (text-to-video).
   likeness to imitate (not a frame of the video) — at most 5 images.
 - Provider/model selectable via CLI; async create → poll → download is handled
   by the script.
+
+## Empty or vague request (clarify once, with a parameter list)
+
+"I want to generate a video" with no picture content is not generatable — there
+is nothing to write a prompt from, and every run costs quota, so do NOT invent
+content. Call `ask_clarification` (type `missing_info`) ONCE using the template
+below (translate to the user's language; all four parts must survive), then wait:
+
+> A one-sentence description is enough — subject + action + setting, e.g. "a
+> ginger cat stretching on a sunlit windowsill". Everything else has a default
+> (MiniMax H3: duration 4–15 s, default 4 · aspect ratio 16:9, T2V only ·
+> resolution 768P; gemini / minimax_v1 use their own model defaults) —
+> mention what you care about, skip the rest. You may upload images as first
+> frame / last frame / first+last, or as character/style reference (≤5).
+> No professional prompt needed — I will expand your one-liner into a full
+> cinematic prompt (camera, lighting, atmosphere, audio) before generating.
+
+`options`: text only · first-frame image · last-frame image · first + last
+frame · character/style reference · help me brainstorm an idea. Offer only modes
+the selected provider supports (gemini: multi-image reference; minimax_v1:
+first-frame only).
+
+Once the reply contains any subject + action (even a bare "a cat video"), that
+is sufficient: pick the mode, apply defaults to everything unspecified, state
+them in one line, and generate. Do not re-ask optional fields.
 
 ## Choosing the mode (read this first)
 
@@ -323,11 +348,11 @@ it isn't obvious.
 | Provider | Resolution | Duration | Aspect ratio | Image roles | Audio |
 |---|---|---|---|---|---|
 | `minimax_h3` | 768P / 2K | 4–15 s | T2V: `--aspect-ratio`; with any image: from image | first_frame / last_frame / first_last / reference (1–5) | Native 32 kHz stereo |
-| `gemini` | model default | model default | `--aspect-ratio` | reference asset(s) only | none |
+| `gemini` | model default | model default | model default (ignored) | reference asset(s) only | none |
 | `minimax_v1` | model default | model default | ignored | first frame only | none |
 
-Only MiniMax H3 supports `--image-role`; `gemini` and `minimax_v1` ignore it
-(with a warning) and use their own single-image behavior. Frame roles
+Only MiniMax H3 supports `--image-role`; passing it to `gemini` or `minimax_v1`
+is rejected with an error, so switch provider or drop the flag. Frame roles
 (first/last) and `reference` are mutually exclusive on H3. Reference mode takes
 at most 5 images (images from the 6th on are billed); reference video/audio
 is not supported by this skill. Unsupported params print a warning rather than
@@ -390,4 +415,5 @@ shared `MINIMAX_API_KEY` → `minimax_v1`).
   old behavior. Env: same credential resolution as `minimax_h3`; optional
   `MINIMAX_VIDEO_MODEL` (default `MiniMax-Hailuo-2.3`).
 
-Params a provider does not support print a warning instead of being dropped silently.
+Params a provider does not support print a warning instead of being dropped
+silently; `--image-role` is the exception and is rejected with an error.
