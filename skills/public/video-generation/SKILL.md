@@ -1,6 +1,6 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness, ≤5). Read SKILL.md before replying — including before any clarifying question — for the mode, prompt methodology, output settings, and the required question format when a request carries no picture content.
+description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness). Read SKILL.md before replying — including before any clarifying question — for the mode, prompt methodology, output settings, and the required question format when a request carries no picture content.
 ---
 
 # Video Generation Skill
@@ -18,7 +18,7 @@ video is generated from text alone (text-to-video).
 - Image-to-video (I2V): use one supplied image as the first frame, the last
   frame, or both (first + last).
 - Reference-to-video (Ref2VA, MiniMax H3): use images as a character/style
-  likeness to imitate (not a frame of the video) — at most 5 images.
+  likeness to imitate (not a frame of the video) — up to 9 images.
 - Provider/model selectable via CLI; async create → poll → download is handled
   by the script.
 
@@ -34,7 +34,7 @@ below (translate to the user's language; all four parts must survive), then wait
 > (MiniMax H3: duration 4–15 s, default 4 · aspect ratio 16:9, T2V only ·
 > resolution 768P; gemini / minimax_v1 use their own model defaults) —
 > mention what you care about, skip the rest. You may upload images as first
-> frame / last frame / first+last, or as character/style reference (≤5).
+> frame / last frame / first+last, or as character/style reference (up to 9).
 > No professional prompt needed — I will expand your one-liner into a full
 > cinematic prompt (camera, lighting, atmosphere, audio) before generating.
 
@@ -58,7 +58,7 @@ selected by `--image-role` plus the images you pass in `--reference-images`:
 | Text + one image to start from | **I2V (first frame)** | `first_frame` (default) | 1 |
 | Text + one image to END on | **last frame** | `last_frame` | 1 |
 | Text + a start image and an end image | **first + last frame** | `first_last` | 1–2 (first, then last) |
-| Text + image(s) of a character/style to imitate | **reference (Ref2VA)** | `reference` | 1–5 |
+| Text + image(s) of a character/style to imitate | **reference (Ref2VA)** | `reference` | 1–9 |
 
 **Frame vs. reference — the key distinction (they are mutually exclusive):**
 
@@ -112,7 +112,7 @@ label), so order matters — confirm it with the user when it isn't obvious:
 | `first_frame` | 1 | the single image is the opening frame |
 | `last_frame` | 1 | the single image is the closing frame |
 | `first_last` | 1–2 | **first image = opening frame, second = closing frame** — never swap |
-| `reference` | 1–5 | all treated as likeness references; capped at 5 (images from the 6th on are billed) |
+| `reference` | 1–9 | all treated as likeness references (upstream limit: 9) |
 
 Do not pass more images than a mode uses — a 3rd image to `first_last`, or a 2nd
 to `first_frame`/`last_frame`, is silently dropped, so send only what the mode
@@ -179,7 +179,7 @@ Parameters:
   JSON with a `"prompt"` field.
 - `--reference-images`: Absolute path(s) to image(s), space-separated. Omit for
   T2V. Meaning depends on `--image-role`: the first frame (default), the last
-  frame, first+last (two images), or reference images (at most 5).
+  frame, first+last (two images), or reference images (up to 9).
 - `--image-role` (MiniMax H3): `first_frame` (default), `last_frame`,
   `first_last`, or `reference`. Frame roles and `reference` are mutually
   exclusive. Omit for T2V or plain first-frame I2V.
@@ -347,14 +347,14 @@ it isn't obvious.
 
 | Provider | Resolution | Duration | Aspect ratio | Image roles | Audio |
 |---|---|---|---|---|---|
-| `minimax_h3` | 768P / 2K | 4–15 s | T2V: `--aspect-ratio`; with any image: from image | first_frame / last_frame / first_last / reference (1–5) | Native 32 kHz stereo |
+| `minimax_h3` | 768P / 2K | 4–15 s | T2V: `--aspect-ratio`; with any image: from image | first_frame / last_frame / first_last / reference (1–9) | Native 32 kHz stereo |
 | `gemini` | model default | model default | model default (ignored) | reference asset(s) only | none |
 | `minimax_v1` | model default | model default | ignored | first frame only | none |
 
 Only MiniMax H3 supports `--image-role`; passing it to `gemini` or `minimax_v1`
 is rejected with an error, so switch provider or drop the flag. Frame roles
 (first/last) and `reference` are mutually exclusive on H3. Reference mode takes
-at most 5 images (images from the 6th on are billed); reference video/audio
+up to 9 images (upstream limit); reference video/audio
 is not supported by this skill. Unsupported params print a warning rather than
 being dropped silently. Avoid named real people or trademarked characters.
 

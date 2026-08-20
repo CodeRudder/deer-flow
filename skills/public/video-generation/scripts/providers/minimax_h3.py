@@ -62,7 +62,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
 
         def warn_extra(limit: int) -> None:
             # Frame modes take a fixed number of images; extras are dropped, so say so
-            # instead of failing silently (reference mode raises instead — see below).
+            # instead of failing silently.
             if len(images) > limit:
                 print(
                     f"Warning: provider=minimax_h3 {image_role} mode uses only the first "
@@ -73,13 +73,8 @@ class MiniMaxH3Provider(BaseVideoProvider):
             return content, True  # T2V — the only mode that sends ratio
 
         if image_role == "reference":
-            # Ref2VA: identity/style transfer (not a frame). Capped at 5 as a cost
-            # guardrail — the API accepts 9, but images from the 6th on are billed.
-            if len(images) > 5:
-                raise ValueError(
-                    "provider=minimax_h3 reference mode accepts at most 5 images "
-                    "(cost guardrail: images from the 6th on are billed)"
-                )
+            # Ref2VA: identity/style transfer (not a frame). All images pass
+            # through; upstream accepts up to 9 and rejects the rest.
             for path in images:
                 content.append(image_item(path, "reference_image"))
         elif image_role == "last_frame":

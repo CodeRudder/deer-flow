@@ -374,14 +374,15 @@ def test_h3_reference_role_multi_image_omits_ratio(monkeypatch):
     assert "ratio" not in captured["json"]
 
 
-def test_h3_reference_role_rejects_more_than_five_images(monkeypatch):
-    _capture_post(monkeypatch)
-    with pytest.raises(ValueError, match="at most 5 images"):
-        _h3().PROVIDER(model=None).create_task(
-            "x",
-            [f"https://cdn/{i}.png" for i in range(6)],
-            {"image_role": "reference"},
-        )
+def test_h3_reference_role_passes_through_more_than_five_images(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "x",
+        [f"https://cdn/{i}.png" for i in range(6)],
+        {"image_role": "reference"},
+    )
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None] + ["reference_image"] * 6
 
 
 def test_h3_full_flow_downloads_video(monkeypatch, tmp_path):

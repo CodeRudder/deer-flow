@@ -302,7 +302,7 @@ if __name__ == "__main__":
         help=(
             "How to use --reference-images (MiniMax H3): first_frame (default, I2V), "
             "last_frame, first_last (first + optional last frame), or reference "
-            "(up to 5 identity/style reference images). Frame roles and reference "
+            "(up to 9 identity/style reference images). Frame roles and reference "
             "are mutually exclusive."
         ),
     )
