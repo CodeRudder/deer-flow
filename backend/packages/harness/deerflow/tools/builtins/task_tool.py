@@ -12,7 +12,7 @@ from langchain_core.callbacks import BaseCallbackManager
 from langgraph.config import get_stream_writer
 
 from deerflow.config import get_app_config
-from deerflow.image_generation.types import ImageGenerationPreference
+from deerflow.models.image_generation.types import ImageGenerationPreference
 from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed

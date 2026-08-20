@@ -45,8 +45,8 @@ from deerflow.agents.thread_state import ThreadState
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.vision_model_config import has_configured_vision_model
-from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.models import create_chat_model
+from deerflow.models.image_generation.types import ImageGenerationPreference
 from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill

@@ -44,7 +44,7 @@ deer-flow/
 │   │           │   └── registry.py    # Agent registry
 │   │           ├── tools/builtins/    # Built-in tools (present_files, ask_clarification, view_image)
 │   │           ├── mcp/               # MCP integration (tools, cache, client)
-│   │           ├── models/            # Model factory with thinking/vision support; video_generation/ hosts the video-generation provider registry
+│   │           ├── models/            # Model factory with thinking/vision support; video_generation/ and image_generation/ host the generation provider registries
 │   │           ├── skills/            # Skills discovery, loading, parsing, built-in image workflows
 │   │           ├── config/            # Configuration system (app, model, sandbox, tool, etc.)
 │   │           ├── community/         # Community tools (search/fetch/scrape, image search, AIO sandbox)

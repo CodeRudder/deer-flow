@@ -23,8 +23,8 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.agents.thread_state import SandboxState, ThreadDataState, ThreadState
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
-from deerflow.image_generation.types import ImageGenerationPreference
 from deerflow.models import create_chat_model
+from deerflow.models.image_generation.types import ImageGenerationPreference
 from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools

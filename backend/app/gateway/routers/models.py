@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 from app.gateway.deps import get_config
 from deerflow.config.app_config import AppConfig
+from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
 from deerflow.models.video_generation import VideoGenerationProvidersResponse, get_video_generation_providers
 
 router = APIRouter(prefix="/api", tags=["models"])
@@ -169,3 +170,14 @@ async def get_model(model_name: str, config: AppConfig = Depends(get_config)) ->
 )
 async def list_video_generation_providers() -> VideoGenerationProvidersResponse:
     return get_video_generation_providers()
+
+
+@router.get(
+    "/image-generation/providers",
+    response_model=ImageGenerationProvidersResponse,
+    tags=["image-generation"],
+    summary="List Image Generation Providers",
+    description="Retrieve image generation providers exposed by the built-in image-generation skill.",
+)
+async def list_image_generation_providers() -> ImageGenerationProvidersResponse:
+    return get_image_generation_providers()

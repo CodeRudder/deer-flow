@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from deerflow.config.agents_config import load_agent_soul
-from deerflow.image_generation.types import ImageGenerationPreference
+from deerflow.models.image_generation.types import ImageGenerationPreference
 from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.skills.storage import get_or_new_skill_storage
 from deerflow.skills.types import Skill, SkillCategory

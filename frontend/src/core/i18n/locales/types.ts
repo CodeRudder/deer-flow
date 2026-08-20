@@ -79,7 +79,6 @@ export interface Translations {
     ultraModeDescription: string;
     imageGeneration: string;
     imageGenerationDefault: string;
-    imageGenerationDefaultDescription: string;
     imageGenerationNotConfigured: string;
     imageGenerationSkillDisabled: string;
     imageGenerationLoadFailed: string;
