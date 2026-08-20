@@ -122,7 +122,14 @@ def _api_key_configured(provider_config: dict[str, Any], builtin: _ProviderDefin
             if os.getenv(api_key[1:]):
                 return True
             return bool(builtin and any(os.getenv(env_name) for env_name in builtin.fallback_api_key_envs))
-        return bool(api_key)
+        if api_key:
+            return True
+        # Empty value means the referenced `$VAR` resolved to nothing at config
+        # load; retry the provider key chain so this stays consistent with the
+        # skill-side credential fallback (dedicated key, else shared key).
+        if builtin:
+            return bool(os.getenv(builtin.api_key_env) or any(os.getenv(env_name) for env_name in builtin.fallback_api_key_envs))
+        return False
 
     if builtin:
         return bool(os.getenv(builtin.api_key_env) or any(os.getenv(env_name) for env_name in builtin.fallback_api_key_envs))
@@ -164,7 +171,7 @@ def _builtin_providers() -> list[ImageGenerationProvider]:
         ImageGenerationProvider(
             name=definition.name,
             display_name=definition.display_name,
-            configured=bool(os.getenv(definition.api_key_env)),
+            configured=bool(os.getenv(definition.api_key_env) or any(os.getenv(env_name) for env_name in definition.fallback_api_key_envs)),
             models=list(definition.models),
         )
         for definition in _PROVIDERS

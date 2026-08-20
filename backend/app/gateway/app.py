@@ -21,7 +21,6 @@ from app.gateway.routers import (
     channels,
     commands,
     feedback,
-    image_generation,
     mcp,
     memory,
     models,
@@ -460,9 +459,6 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Skills API is mounted at /api/skills
     app.include_router(skills.router)
-
-    # Image Generation API is mounted at /api/image-generation
-    app.include_router(image_generation.router)
 
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)
