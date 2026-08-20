@@ -25,6 +25,7 @@ from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
 from deerflow.models import create_chat_model
 from deerflow.models.image_generation.types import ImageGenerationPreference
+from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
@@ -304,6 +305,7 @@ class SubagentExecutor:
         user_id: str | None = None,
         trace_id: str | None = None,
         image_generation: ImageGenerationPreference | None = None,
+        video_generation: VideoGenerationPreference | None = None,
         session: SubagentSession | None = None,
         user_role: str | None = None,
         oauth_provider: str | None = None,
@@ -326,6 +328,7 @@ class SubagentExecutor:
             user_id: User bucket for filesystem and in-memory task isolation.
             trace_id: Trace ID from parent for distributed tracing.
             image_generation: Parent run image generation preference.
+            video_generation: Parent run video generation preference.
             session: Optional session for conversation persistence.
             user_role: Authenticated user's role, propagated so GuardrailMiddleware
                 on the subagent can apply role-aware policy to delegated calls.
@@ -350,6 +353,7 @@ class SubagentExecutor:
         self.thread_id = thread_id
         self.user_id = user_id or (session.user_id if session is not None else get_effective_user_id())
         self.image_generation = image_generation or ImageGenerationPreference()
+        self.video_generation = video_generation or VideoGenerationPreference()
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
         self.session = session
@@ -621,6 +625,9 @@ class SubagentExecutor:
             image_generation_values = self.image_generation.as_configurable()
             configurable.update(image_generation_values)
             context.update(image_generation_values)
+            video_generation_values = self.video_generation.as_configurable()
+            configurable.update(video_generation_values)
+            context.update(video_generation_values)
             if configurable:
                 run_config["configurable"] = configurable
             if self.app_config is not None:

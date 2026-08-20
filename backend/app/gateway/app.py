@@ -383,6 +383,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
                 "description": "Query selectable image generation providers exposed by the image-generation skill",
             },
             {
+                "name": "video-generation",
+                "description": "Query selectable video generation providers exposed by the video-generation skill",
+            },
+            {
                 "name": "artifacts",
                 "description": "Access and download thread artifacts and generated files",
             },

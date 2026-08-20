@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckIcon, ImageIcon } from "lucide-react";
+import { CheckIcon, VideoIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import {
@@ -19,27 +19,25 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useI18n } from "@/core/i18n/hooks";
-import { useImageGenerationProviders } from "@/core/image-generation";
+import { useVideoGenerationProviders } from "@/core/video-generation";
 import { cn } from "@/lib/utils";
 
-type ImageGenerationSelection = {
-  image_generation_model?: string;
+type VideoGenerationSelection = {
+  video_generation_model?: string;
 };
 
-export function ImageGenerationSelector({
+export function VideoGenerationSelector({
   selection,
   onSelectionChange,
 }: {
-  selection: ImageGenerationSelection;
-  onSelectionChange: (selection: ImageGenerationSelection) => void;
+  selection: VideoGenerationSelection;
+  onSelectionChange: (selection: VideoGenerationSelection) => void;
 }) {
   const { t } = useI18n();
-  const { data, providers, isLoading, error } = useImageGenerationProviders();
+  const { data, providers, isLoading, error } = useVideoGenerationProviders();
 
   // Flatten provider -> models into a single-level list of selectable entries,
-  // so the menu shows each model directly with no submenu. Provider is display
-  // metadata only (grouping source, configured status); the selection sent
-  // outwards carries the model name alone.
+  // so the menu shows each model (e.g. "MiniMax H3") directly with no submenu.
   const entries = useMemo(
     () =>
       providers.flatMap((provider) =>
@@ -55,24 +53,24 @@ export function ImageGenerationSelector({
   const selectedModel = useMemo(
     () =>
       entries.find(
-        (entry) => entry.model.name === selection.image_generation_model,
+        (entry) => entry.model.name === selection.video_generation_model,
       ),
-    [entries, selection.image_generation_model],
+    [entries, selection.video_generation_model],
   );
-  const hasSelection = Boolean(selection.image_generation_model);
+  const hasSelection = Boolean(selection.video_generation_model);
   const isUnavailable = data?.skill_enabled === false;
   const triggerLabel =
-    selectedModel?.model.display_name ?? t.inputBox.imageGenerationDefault;
+    selectedModel?.model.display_name ?? t.inputBox.videoGenerationDefault;
 
   return (
     <PromptInputActionMenu>
       <Tooltip>
         <TooltipTrigger asChild>
           <PromptInputActionMenuTrigger
-            aria-label={t.inputBox.imageGeneration}
+            aria-label={t.inputBox.videoGeneration}
             className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
           >
-            <ImageIcon
+            <VideoIcon
               className={cn("size-3", hasSelection && "text-[#2aa7c9]")}
             />
             {hasSelection && (
@@ -82,7 +80,7 @@ export function ImageGenerationSelector({
             )}
           </PromptInputActionMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent>{t.inputBox.imageGeneration}</TooltipContent>
+        <TooltipContent>{t.inputBox.videoGeneration}</TooltipContent>
       </Tooltip>
       <PromptInputActionMenuContent className="w-56">
         <DropdownMenuGroup>
@@ -95,12 +93,12 @@ export function ImageGenerationSelector({
             )}
             onSelect={() =>
               onSelectionChange({
-                image_generation_model: undefined,
+                video_generation_model: undefined,
               })
             }
           >
             <span className="min-w-0 truncate font-medium">
-              {t.inputBox.imageGenerationDefault}
+              {t.inputBox.videoGenerationDefault}
             </span>
             {!hasSelection ? (
               <CheckIcon className="ml-auto size-4" />
@@ -116,12 +114,12 @@ export function ImageGenerationSelector({
           )}
           {isUnavailable && (
             <PromptInputActionMenuItem disabled>
-              {t.inputBox.imageGenerationSkillDisabled}
+              {t.inputBox.videoGenerationSkillDisabled}
             </PromptInputActionMenuItem>
           )}
           {!isLoading && error && (
             <PromptInputActionMenuItem disabled>
-              {t.inputBox.imageGenerationLoadFailed}
+              {t.inputBox.videoGenerationLoadFailed}
             </PromptInputActionMenuItem>
           )}
           {!isLoading &&
@@ -129,7 +127,7 @@ export function ImageGenerationSelector({
             !isUnavailable &&
             entries.map(({ provider, model, configured }) => {
               const isSelected =
-                selection.image_generation_model === model.name;
+                selection.video_generation_model === model.name;
 
               const item = (
                 <PromptInputActionMenuItem
@@ -150,7 +148,7 @@ export function ImageGenerationSelector({
                       return;
                     }
                     onSelectionChange({
-                      image_generation_model: model.name,
+                      video_generation_model: model.name,
                     });
                   }}
                 >
@@ -159,7 +157,7 @@ export function ImageGenerationSelector({
                   </span>
                   {!configured ? (
                     <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
-                      {t.inputBox.imageGenerationNotConfigured}
+                      {t.inputBox.videoGenerationNotConfigured}
                     </span>
                   ) : isSelected ? (
                     <CheckIcon className="ml-auto size-4" />

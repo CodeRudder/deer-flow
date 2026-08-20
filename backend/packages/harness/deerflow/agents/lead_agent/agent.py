@@ -47,6 +47,7 @@ from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.vision_model_config import has_configured_vision_model
 from deerflow.models import create_chat_model
 from deerflow.models.image_generation.types import ImageGenerationPreference
+from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.tracing import build_tracing_callbacks
@@ -461,6 +462,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_name = validate_agent_name(cfg.get("agent_name"))
     image_generation = ImageGenerationPreference.from_mapping(cfg)
+    video_generation = VideoGenerationPreference.from_mapping(cfg)
 
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)
@@ -502,6 +504,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "is_plan_mode": is_plan_mode,
             "subagent_enabled": subagent_enabled,
             **image_generation.as_configurable(),
+            **video_generation.as_configurable(),
             "tool_groups": agent_config.tool_groups if agent_config else None,
             "available_skills": sorted(available_skills) if available_skills is not None else None,
         }
@@ -544,6 +547,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
                 max_concurrent_subagents=max_concurrent_subagents,
                 available_skills=set(_BOOTSTRAP_SKILL_NAMES),
                 image_generation=image_generation,
+                video_generation=video_generation,
                 app_config=resolved_app_config,
                 deferred_names=setup.deferred_names,
             ),
@@ -574,6 +578,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             agent_name=agent_name,
             available_skills=available_skills,
             image_generation=image_generation,
+            video_generation=video_generation,
             app_config=resolved_app_config,
             deferred_names=setup.deferred_names,
         ),

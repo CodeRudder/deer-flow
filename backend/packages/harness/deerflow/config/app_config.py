@@ -271,7 +271,8 @@ class AppConfig(BaseModel):
         # Check config version before processing
         cls._check_config_version(config_data, resolved_path)
 
-        cls._resolve_optional_image_generation_api_keys(config_data)
+        for section in ("image_generation", "video_generation"):
+            cls._resolve_optional_api_keys(config_data, section)
         config_data = cls.resolve_env_variables(config_data)
         cls._apply_database_defaults(config_data)
 
@@ -411,19 +412,19 @@ class AppConfig(BaseModel):
         return config
 
     @classmethod
-    def _resolve_optional_image_generation_api_keys(cls, config_data: dict[str, Any]) -> None:
-        """Resolve optional image-generation API key references without failing config load.
+    def _resolve_optional_api_keys(cls, config_data: dict[str, Any], section: str) -> None:
+        """Resolve optional provider API key references without failing config load.
 
-        Image generation providers are selectable in the UI even when their API
+        Providers in these sections are selectable in the UI even when their API
         keys are not configured; the providers endpoint reports that state with
         ``configured=false``. Keep that optional behavior while preserving the
         stricter global ``$VAR`` handling for required config fields.
         """
-        image_generation = config_data.get("image_generation")
-        if not isinstance(image_generation, dict):
+        block = config_data.get(section)
+        if not isinstance(block, dict):
             return
 
-        providers = image_generation.get("providers")
+        providers = block.get("providers")
         if not isinstance(providers, list):
             return
 

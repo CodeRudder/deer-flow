@@ -1,222 +1,327 @@
-import base64
+import json
 import os
-import time
+import sys
+from pathlib import Path
 
-import requests
+from providers import MODEL_PROVIDERS, PROVIDERS
 
-MINIMAX_DEFAULT_HOST = "https://api.minimaxi.com"
-
-
-def _resolve_provider(override_env: str, existing_provider: str, has_existing_creds: bool) -> str:
-    """Pick the provider: <SKILL>_PROVIDER override > existing creds > MiniMax fallback."""
-    override = os.getenv(override_env)
-    if override:
-        return override.strip().lower()
-    if has_existing_creds:
-        return existing_provider
-    if os.getenv("MINIMAX_API_KEY"):
-        return "minimax"
-    raise ValueError(
-        f"No credentials found. Set GEMINI_API_KEY for {existing_provider}, "
-        f"or MINIMAX_API_KEY for minimax (optionally force with {override_env})."
-    )
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 
-def _minimax_host() -> str:
-    return os.getenv("MINIMAX_API_HOST", MINIMAX_DEFAULT_HOST).rstrip("/")
+# Old provider strings -> registry keys. The legacy "minimax" branch was Hailuo
+# V1, so it must keep routing to minimax_v1 (not the new H3) to avoid silently
+# changing behavior/billing for callers relying on the old env var.
+_PROVIDER_ALIASES = {"minimax": "minimax_v1", "google": "gemini"}
 
 
-def _ensure_output_dir(output_file: str) -> None:
-    """Create the output file's parent directory so nested paths don't fail."""
-    output_dir = os.path.dirname(output_file)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+def _find_config_path() -> Path | None:
+    explicit_path = os.getenv("DEER_FLOW_CONFIG_PATH")
+    if explicit_path:
+        path = Path(explicit_path)
+        return path if path.exists() else None
+
+    candidates = [
+        Path.cwd() / "config.yaml",
+        Path.cwd().parent / "config.yaml",
+        Path(__file__).resolve().parents[4] / "config.yaml",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
 
 
-def _check_base_resp(payload: dict) -> None:
-    base = payload.get("base_resp") or {}
-    if base.get("status_code", 0) != 0:
-        raise Exception(f"MiniMax error {base.get('status_code')}: {base.get('status_msg')}")
+def _load_video_generation_config() -> dict:
+    if yaml is None:
+        return {}
 
+    config_path = _find_config_path()
+    if not config_path:
+        return {}
 
-def _guess_mime(image_path: str) -> str:
-    ext = os.path.splitext(image_path)[1].lower()
-    return {
-        ".png": "image/png",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-    }.get(ext, "image/jpeg")
-
-
-def _to_data_url(image_path: str) -> str:
-    with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-    return f"data:{_guess_mime(image_path)};base64,{b64}"
-
-
-def _poll_video_task(host: str, auth: str, task_id: str,
-                     max_attempts: int = 120, interval: int = 3) -> str:
-    for _ in range(max_attempts):
-        response = requests.get(
-            f"{host}/v1/query/video_generation",
-            headers={"Authorization": auth},
-            params={"task_id": task_id},
-            timeout=30,
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(
+            f"Warning: failed to load video_generation config from {config_path}: {e}"
         )
-        response.raise_for_status()
-        payload = response.json()
-        status = payload.get("status")
-        if status == "Success":
-            return payload["file_id"]
-        if status == "Fail":
-            base = payload.get("base_resp") or {}
-            raise Exception(
-                f"MiniMax video task {task_id} failed: "
-                f"{base.get('status_code')} {base.get('status_msg')}"
+        return {}
+
+    video_generation = config.get("video_generation", {})
+    return video_generation if isinstance(video_generation, dict) else {}
+
+
+def _provider_configs(config: dict) -> list[dict]:
+    providers = config.get("providers")
+    if not isinstance(providers, list):
+        return []
+    return [provider for provider in providers if isinstance(provider, dict)]
+
+
+def _configured_provider_names(config: dict) -> list[str]:
+    names: list[str] = []
+    for provider_config in _provider_configs(config):
+        provider = provider_config.get("name")
+        if isinstance(provider, str) and provider:
+            names.append(provider)
+    return names
+
+
+def _first_configured_provider(config: dict) -> str | None:
+    return next(iter(_configured_provider_names(config)), None)
+
+
+def _provider_config(config: dict, provider: str) -> dict:
+    for provider_config in _provider_configs(config):
+        if provider_config.get("name") == provider:
+            return provider_config
+    return {}
+
+
+def _model_names(provider_config: dict) -> list[str]:
+    models = provider_config.get("models")
+    if not isinstance(models, list):
+        return []
+    names: list[str] = []
+    for model_config in models:
+        if isinstance(model_config, str) and model_config:
+            names.append(model_config)
+            continue
+        if not isinstance(model_config, dict):
+            continue
+        model = model_config.get("name") or model_config.get("model")
+        if isinstance(model, str) and model:
+            names.append(model)
+    return names
+
+
+def _first_model(provider_config: dict) -> str | None:
+    return next(iter(_model_names(provider_config)), None)
+
+
+def _provider_for_model(config: dict, model: str) -> str | None:
+    """Which provider declares this model. Model names are unique across
+    providers, so the first match wins."""
+    for provider_config in _provider_configs(config):
+        if model in _model_names(provider_config):
+            name = provider_config.get("name")
+            if isinstance(name, str) and name:
+                return name
+    return None
+
+
+def _all_model_names(config: dict) -> list[str]:
+    return [name for provider_config in _provider_configs(config) for name in _model_names(provider_config)]
+
+
+def _resolve_target(config: dict, provider: str | None, model: str | None) -> tuple[str, str | None]:
+    """Resolve (provider, model). The model name is the routing key: the provider
+    is reverse-looked-up from config.yaml, so callers only pass --model.
+    --provider stays as an escape hatch for debugging and for models that are not
+    declared in config.yaml."""
+    requested_model = model or os.getenv("VIDEO_GENERATION_MODEL")
+    # An explicit --model or VIDEO_GENERATION_MODEL resolves its owning provider;
+    # VIDEO_GENERATION_PROVIDER only fills in when no model is pinned, so the two
+    # env vars can never cross-pair a provider with a foreign model.
+    selected = provider or (None if requested_model else os.getenv("VIDEO_GENERATION_PROVIDER"))
+
+    if not selected and requested_model:
+        selected = _provider_for_model(config, requested_model)
+        # Declared providers but no owner for this model = misconfiguration, not a
+        # reason to guess a provider.
+        if not selected and _provider_configs(config):
+            declared = ", ".join(_all_model_names(config)) or "(none)"
+            raise ValueError(
+                f"Video generation model '{requested_model}' is not declared in config.yaml "
+                f"video_generation.providers[].models[]. Declared models: {declared}"
             )
-        # Surface query-level errors (bad task_id, auth) that arrive as a non-zero
-        # base_resp without a terminal status, then keep polling.
-        _check_base_resp(payload)
-        time.sleep(interval)
-    raise Exception(f"MiniMax video task {task_id} timed out after {max_attempts} polls")
 
-
-def _retrieve_file_url(host: str, auth: str, file_id: str) -> str:
-    response = requests.get(
-        f"{host}/v1/files/retrieve",
-        headers={"Authorization": auth},
-        params={"file_id": file_id},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    _check_base_resp(payload)
-    return payload["file"]["download_url"]
-
-
-def _download(url: str, output_file: str) -> None:
-    response = requests.get(url, timeout=300)
-    response.raise_for_status()
-    _ensure_output_dir(output_file)
-    with open(output_file, "wb") as f:
-        f.write(response.content)
-
-
-def _generate_video_minimax(
-    prompt: str, reference_images: list[str], output_file: str
-) -> str:
-    api_key = os.getenv("MINIMAX_API_KEY")
-    if not api_key:
-        return "MINIMAX_API_KEY is not set"
-    host = _minimax_host()
-    auth = f"Bearer {api_key}"
-    body = {"model": os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-Hailuo-2.3"), "prompt": prompt}
-    if reference_images:
-        body["first_frame_image"] = _to_data_url(reference_images[0])
-    response = requests.post(
-        f"{host}/v1/video_generation",
-        headers={"Authorization": auth, "Content-Type": "application/json"},
-        json=body,
-        timeout=60,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    _check_base_resp(payload)
-    task_id = payload["task_id"]
-    file_id = _poll_video_task(host, auth, task_id)
-    download_url = _retrieve_file_url(host, auth, file_id)
-    _download(download_url, output_file)
-    return f"The video has been generated successfully to {output_file}"
-
-
-def download(url: str, output_file: str) -> None:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set")
-    response = requests.get(url, headers={"x-goog-api-key": api_key}, timeout=300)
-    response.raise_for_status()
-    _ensure_output_dir(output_file)
-    with open(output_file, "wb") as f:
-        f.write(response.content)
-
-
-def _generate_video_gemini(
-    prompt: str, reference_images: list[str], output_file: str
-) -> str:
-    reference_payload = []
-    request_json = {"instances": [{"prompt": prompt}]}
-    for reference_image in reference_images:
-        with open(reference_image, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("utf-8")
-        reference_payload.append(
-            {"image": {"mimeType": "image/jpeg", "bytesBase64Encoded": image_b64},
-             "referenceType": "asset"}
+    if not selected:
+        selected = _first_configured_provider(config) or _credential_fallback(requested_model)
+    if not selected:
+        raise ValueError(
+            "No video provider resolved. Set GEMINI_API_KEY or MINIMAX_VIDEO_API_KEY "
+            "(or the shared MINIMAX_API_KEY), declare video_generation.providers[] in "
+            "config.yaml, or pass --model/--provider."
         )
-    if reference_payload:
-        request_json["instances"][0]["referenceImages"] = reference_payload
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return "GEMINI_API_KEY is not set"
-    response = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
-        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-        json=request_json,
-        timeout=60,
-    )
-    response.raise_for_status()
-    data = response.json()
-    operation_name = data["name"]
-    while True:
-        response = requests.get(
-            f"https://generativelanguage.googleapis.com/v1beta/{operation_name}",
-            headers={"x-goog-api-key": api_key},
-            timeout=30,
+
+    selected = selected.strip().lower()
+    selected = _PROVIDER_ALIASES.get(selected, selected)
+
+    # Compare after alias normalization on both sides: config.yaml may declare
+    # the legacy "minimax"/"google" names, which must stay acceptable aliases.
+    configured = _configured_provider_names(config)
+    configured_keys = {_PROVIDER_ALIASES.get(name, name) for name in configured}
+    if configured_keys and selected not in configured_keys:
+        raise ValueError(
+            f"Video generation provider '{selected}' is not enabled in config.yaml. "
+            f"Enabled providers: {', '.join(configured)}"
         )
-        response.raise_for_status()
-        data = response.json()
-        if data.get("done", False):
-            sample = data["response"]["generateVideoResponse"]["generatedSamples"][0]
-            download(sample["video"]["uri"], output_file)
-            break
-        time.sleep(3)
-    return f"The video has been generated successfully to {output_file}"
+    if selected not in PROVIDERS:
+        raise ValueError(f"Unknown video generation provider: {selected}. Supported: {', '.join(sorted(PROVIDERS))}")
+
+    return selected, requested_model or _first_model(_provider_config(config, selected))
+
+
+def _credential_fallback(requested_model: str | None) -> str | None:
+    """No config/override: pick by available credential. A known model routes to
+    its owning provider (never a cross-provider pairing); otherwise credential
+    priority decides — Gemini keeps the old default; a dedicated video key
+    implies H3; the shared key keeps old behavior (legacy minimax_v1)."""
+    if requested_model:
+        owner = MODEL_PROVIDERS.get(requested_model)
+        if owner:
+            return owner
+        raise ValueError(
+            f"Video generation model '{requested_model}' is not a known model of any provider "
+            f"(known: {', '.join(sorted(MODEL_PROVIDERS))}). Declare it in config.yaml "
+            "video_generation.providers[].models[], or pass --provider explicitly."
+        )
+    if os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    if os.getenv("MINIMAX_VIDEO_API_KEY"):
+        return "minimax_h3"
+    if os.getenv("MINIMAX_API_KEY"):
+        return "minimax_v1"
+    return None
+
+
+def _read_prompt(prompt_file: str) -> str:
+    """Extract the natural-language prompt. If the file is JSON with a `prompt`
+    field, use that (the rest is IR); otherwise treat the whole file as prompt.
+    Never pass the raw JSON blob to the provider (AC-8)."""
+    prompt_text = Path(prompt_file).read_text(encoding="utf-8")
+    try:
+        prompt_json = json.loads(prompt_text)
+    except json.JSONDecodeError:
+        return prompt_text
+    if isinstance(prompt_json, dict):
+        prompt = prompt_json.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt
+    return prompt_text
 
 
 def generate_video(
     prompt_file: str,
     reference_images: list[str],
     output_file: str,
-    aspect_ratio: str = "16:9",
+    aspect_ratio: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    resolution: str | None = None,
+    duration: int | None = None,
+    image_role: str | None = None,
 ) -> str:
-    with open(prompt_file, "r", encoding="utf-8") as f:
-        prompt = f.read()
-    provider = _resolve_provider(
-        "VIDEO_GENERATION_PROVIDER", "gemini", bool(os.getenv("GEMINI_API_KEY"))
-    )
-    if provider == "minimax":
-        # MiniMax video uses resolution/duration, not aspect_ratio; aspect_ratio ignored.
-        return _generate_video_minimax(prompt, reference_images, output_file)
-    if provider in ("gemini", "google"):
-        return _generate_video_gemini(prompt, reference_images, output_file)
-    raise ValueError(f"Unknown video provider: {provider!r} (use 'gemini' or 'minimax')")
+    output_path = Path(output_file)
+    if output_path.exists():
+        raise FileExistsError(
+            f"Output file already exists and will not be overwritten: {output_file}. "
+            "Choose a unique output filename."
+        )
+
+    config = _load_video_generation_config()
+    selected_provider, selected_model = _resolve_target(config, provider, model)
+
+    prompt_text = _read_prompt(prompt_file)
+
+    # Pass through only explicitly-set params so providers apply their own
+    # defaults and unset values don't trigger spurious ignore warnings (AC-11).
+    params = {
+        "resolution": resolution,
+        "duration": duration,
+        "ratio": aspect_ratio,
+        "image_role": image_role,
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+    if params.get("image_role") and not reference_images:
+        raise ValueError(
+            "--image-role requires --reference-images; drop --image-role for pure text-to-video"
+        )
+
+    adapter = PROVIDERS[selected_provider](model=selected_model)
+    if "image_role" in params and "image_role" not in adapter.supported_params:
+        supporters = ", ".join(
+            sorted(n for n, c in PROVIDERS.items() if "image_role" in c.supported_params)
+        )
+        raise ValueError(
+            f"Video generation provider '{selected_provider}' does not support "
+            f"--image-role (supported: {supporters}). Switch provider or drop --image-role."
+        )
+    return adapter.generate(prompt_text, reference_images, output_file, params)
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Generate videos using Gemini or MiniMax API")
-    parser.add_argument("--prompt-file", required=True, help="Absolute path to JSON prompt file")
-    parser.add_argument("--reference-images", nargs="*", default=[],
-                        help="Absolute paths to reference images (space-separated)")
-    parser.add_argument("--output-file", required=True, help="Output path for generated video")
-    parser.add_argument("--aspect-ratio", required=False, default="16:9",
-                        help="Aspect ratio of the generated video (Gemini only)")
+    parser = argparse.ArgumentParser(
+        description="Generate videos using a configured provider"
+    )
+    parser.add_argument(
+        "--prompt-file", required=True, help="Absolute path to JSON prompt file"
+    )
+    parser.add_argument(
+        "--reference-images",
+        nargs="*",
+        default=[],
+        help="Absolute paths to reference images / first frame (space-separated)",
+    )
+    parser.add_argument(
+        "--output-file", required=True, help="Output path for generated video"
+    )
+    parser.add_argument(
+        "--aspect-ratio",
+        default=None,
+        help="Aspect ratio (T2V); ignored by some providers",
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help="Video provider, e.g. minimax_h3, gemini, minimax_v1",
+    )
+    parser.add_argument("--model", default=None, help="Provider model name")
+    parser.add_argument(
+        "--resolution",
+        default=None,
+        help="Output resolution, e.g. 768P or 2K (provider-specific)",
+    )
+    parser.add_argument(
+        "--duration",
+        type=int,
+        default=None,
+        help="Video duration in seconds (provider-specific)",
+    )
+    parser.add_argument(
+        "--image-role",
+        default=None,
+        choices=["first_frame", "last_frame", "first_last", "reference"],
+        help=(
+            "How to use --reference-images (MiniMax H3): first_frame (default, I2V), "
+            "last_frame, first_last (first + optional last frame), or reference "
+            "(up to 5 identity/style reference images). Frame roles and reference "
+            "are mutually exclusive."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        print(generate_video(args.prompt_file, args.reference_images,
-                             args.output_file, args.aspect_ratio))
+        print(
+            generate_video(
+                args.prompt_file,
+                args.reference_images,
+                args.output_file,
+                args.aspect_ratio,
+                args.provider,
+                args.model,
+                args.resolution,
+                args.duration,
+                args.image_role,
+            )
+        )
     except Exception as e:
-        print(f"Error while generating video: {e}")
+        print(f"Error while generating video: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)

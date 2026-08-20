@@ -75,10 +75,14 @@ independent image-understanding model exposed by `/api/models` as
 vision model is pinned, the backend falls back to the first configured
 `vision.models[]` entry.
 
-Image generation continues to use the existing workspace provider picker and
-`image_generation_provider/model` thread context. Image editing is backend-only
-in this iteration and is triggered through the `image-editing` skill, so there
-is no separate frontend selector yet.
+Image and video generation keep their workspace pickers, and both selectors are
+flat single-level menus showing model names directly (no provider submenu). Only
+`image_generation_model` / `video_generation_model` are sent as thread context —
+the provider is resolved from the model name by the backend. `/providers` still
+returns provider groups with `configured`, which the selectors use for labels
+and disabled states without transmitting the provider. Image editing is
+backend-only in this iteration and is triggered through the `image-editing`
+skill, so there is no separate frontend selector yet.
 
 ### Key Patterns
 

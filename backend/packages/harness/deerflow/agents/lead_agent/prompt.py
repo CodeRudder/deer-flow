@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from deerflow.config.agents_config import load_agent_soul
 from deerflow.models.image_generation.types import ImageGenerationPreference
+from deerflow.models.video_generation.types import VideoGenerationPreference
 from deerflow.skills.storage import get_or_new_skill_storage
 from deerflow.skills.types import Skill, SkillCategory
 from deerflow.subagents import get_available_subagent_names
@@ -191,14 +192,10 @@ def _build_image_generation_runtime_section(image_generation: ImageGenerationPre
         "--prompt-file <prompt-json>",
         "--output-file <output-image>",
     ]
-    if image_generation.provider:
-        command_parts.append(f"--provider {image_generation.provider}")
     if image_generation.model:
         command_parts.append(f"--model {image_generation.model}")
 
     selected = []
-    if image_generation.provider:
-        selected.append(f"- Provider: `{image_generation.provider}`")
     if image_generation.model:
         selected.append(f"- Model: `{image_generation.model}`")
 
@@ -209,10 +206,41 @@ The user selected an image generation preference for the current run:
 
 This selection is only a preference for image generation tasks. It does not mean the user is asking for an image.
 - If the current user request is normal chat, answer normally and do not use the image-generation skill.
-- Use the built-in image-generation skill only when creating a new image from text or using references as loose inspiration, and pass the selected provider/model explicitly.
+- Use the built-in image-generation skill only when creating a new image from text or using references as loose inspiration, and pass the selected model explicitly.
 - If an uploaded or previously generated image is the source whose structure, geometry, layout, identity, or composition must be preserved or transformed, use the image-editing skill instead.
   This includes requests to generate a realistic product/photo from a design drawing, sketch, blueprint, or CAD-style image, even when the user says "generate" or "create".
-- The current run preference supersedes older provider/model choices mentioned in conversation history.
+- The current run preference supersedes older model choices mentioned in conversation history.
+- When executing the skill, include these arguments in the command:
+  `{" ".join(command_parts)}`
+"""
+
+
+def _build_video_generation_runtime_section(video_generation: VideoGenerationPreference | None) -> str:
+    if video_generation is None or video_generation.is_empty:
+        return ""
+
+    command_parts = [
+        "python /mnt/skills/public/video-generation/scripts/generate.py",
+        "--prompt-file <prompt-json>",
+        "--output-file <output-video>",
+    ]
+    if video_generation.model:
+        command_parts.append(f"--model {video_generation.model}")
+
+    selected = []
+    if video_generation.model:
+        selected.append(f"- Model: `{video_generation.model}`")
+
+    return f"""
+## Runtime Video Generation Preference
+The user selected a video generation preference for the current run:
+{chr(10).join(selected)}
+
+This selection is only a preference for video generation tasks. It does not mean the user is asking for a video.
+- If the current user request is normal chat, answer normally and do not use the video-generation skill.
+- Use the built-in video-generation skill only when creating a new video, and pass the selected model explicitly.
+- For image-to-video (I2V) requests, pass the first frame image via `--reference-images` and pick the mode with `--image-role` (H3: `first_frame` / `last_frame` / `first_last` / `reference`; other providers reject the flag).
+- The current run preference supersedes older model choices mentioned in conversation history.
 - When executing the skill, include these arguments in the command:
   `{" ".join(command_parts)}`
 """
@@ -298,7 +326,8 @@ You are running with subagent capabilities enabled. Your role is to be a **task 
 **Subtask Capabilities:**
 - The `task` tool accepts `capabilities`, a list of explicit capability keys for the subtask.
 - Use `capabilities=["image_generation"]` only when that subtask must create, edit, or generate images with the image-generation skill.
-- Do not set `image_generation` for normal calculation, analysis, code, search, summarization, or file-operation subtasks.
+- Use `capabilities=["video_generation"]` only when that subtask must generate videos with the video-generation skill.
+- Do not set `image_generation` or `video_generation` for normal calculation, analysis, code, search, summarization, or file-operation subtasks.
 
 **Your Orchestration Strategy:**
 
@@ -841,6 +870,7 @@ def apply_prompt_template(
     agent_name: str | None = None,
     available_skills: set[str] | None = None,
     image_generation: ImageGenerationPreference | None = None,
+    video_generation: VideoGenerationPreference | None = None,
     app_config: AppConfig | None = None,
     deferred_names: frozenset[str] = frozenset(),
 ) -> str:
@@ -869,6 +899,7 @@ def apply_prompt_template(
     # Get skills section
     skills_section = get_skills_prompt_section(available_skills, app_config=app_config)
     image_generation_runtime_section = _build_image_generation_runtime_section(image_generation)
+    video_generation_runtime_section = _build_video_generation_runtime_section(video_generation)
 
     # Get deferred tools section (tool_search)
     deferred_tools_section = get_deferred_tools_prompt_section(deferred_names=deferred_names)
@@ -886,7 +917,7 @@ def apply_prompt_template(
         agent_name=agent_name or "DeerFlow 2.0",
         soul=get_agent_soul(agent_name),
         self_update_section=_build_self_update_section(agent_name),
-        skills_section="\n".join(section for section in (skills_section, image_generation_runtime_section) if section),
+        skills_section="\n".join(section for section in (skills_section, image_generation_runtime_section, video_generation_runtime_section) if section),
         deferred_tools_section=deferred_tools_section,
         subagent_section=subagent_section,
         subagent_reminder=subagent_reminder,

@@ -492,14 +492,13 @@ def test_apply_checkpoint_to_run_config_rejects_missing_checkpoint():
 
 
 def test_context_merges_into_configurable():
-    """Context values must be merged into config['configurable'] by start_run.
+    """Whitelisted ``body.context`` keys must be merged into config['configurable'].
 
-    Since start_run is async and requires many dependencies, we test the
-    merging logic directly by simulating what start_run does.
+    Drives the real ``merge_run_context_overrides`` so the production allowlist is
+    what gets asserted (a locally copied allowlist would never catch drift).
     """
-    from app.gateway.services import build_run_config
+    from app.gateway.services import build_run_config, merge_run_context_overrides
 
-    # Simulate the context merging logic from start_run
     config = build_run_config("thread-1", None, None)
 
     context = {
@@ -513,25 +512,12 @@ def test_context_merges_into_configurable():
         "max_concurrent_subagents": 5,
         "image_generation_provider": "qwen_image",
         "image_generation_model": "qwen-image-2.0-pro",
+        "video_generation_provider": "minimax_h3",
+        "video_generation_model": "MiniMax-H3",
         "thread_id": "should-be-ignored",
     }
 
-    _CONTEXT_CONFIGURABLE_KEYS = {
-        "model_name",
-        "vision_model_name",
-        "mode",
-        "thinking_enabled",
-        "reasoning_effort",
-        "is_plan_mode",
-        "subagent_enabled",
-        "max_concurrent_subagents",
-        "image_generation_provider",
-        "image_generation_model",
-    }
-    configurable = config.setdefault("configurable", {})
-    for key in _CONTEXT_CONFIGURABLE_KEYS:
-        if key in context:
-            configurable.setdefault(key, context[key])
+    merge_run_context_overrides(config, context)
 
     assert config["configurable"]["model_name"] == "deepseek-v3"
     assert config["configurable"]["vision_model_name"] == "doubao-vision"
@@ -541,12 +527,14 @@ def test_context_merges_into_configurable():
     assert config["configurable"]["max_concurrent_subagents"] == 5
     assert config["configurable"]["reasoning_effort"] == "high"
     assert config["configurable"]["mode"] == "ultra"
-    assert config["configurable"]["image_generation_provider"] == "qwen_image"
     assert config["configurable"]["image_generation_model"] == "qwen-image-2.0-pro"
+    assert config["configurable"]["video_generation_model"] == "MiniMax-H3"
+    # The provider is derived from the model name in config.yaml, so it is no
+    # longer part of the transport contract and must be dropped.
+    assert "image_generation_provider" not in config["configurable"]
+    assert "video_generation_provider" not in config["configurable"]
     # thread_id from context should NOT override the one from build_run_config
     assert config["configurable"]["thread_id"] == "thread-1"
-    # Non-allowlisted keys should not appear
-    assert "thread_id" not in {k for k in context if k in _CONTEXT_CONFIGURABLE_KEYS}
 
 
 def test_merge_run_context_overrides_propagates_to_runtime_context():
@@ -584,7 +572,7 @@ def test_merge_run_context_overrides_noop_for_empty_context():
 
 def test_context_does_not_override_existing_configurable():
     """Values already in config.configurable must NOT be overridden by context."""
-    from app.gateway.services import build_run_config
+    from app.gateway.services import build_run_config, merge_run_context_overrides
 
     config = build_run_config(
         "thread-1",
@@ -592,27 +580,14 @@ def test_context_does_not_override_existing_configurable():
         None,
     )
 
-    context = {
-        "model_name": "deepseek-v3",
-        "is_plan_mode": True,
-        "subagent_enabled": True,
-    }
-
-    _CONTEXT_CONFIGURABLE_KEYS = {
-        "model_name",
-        "mode",
-        "thinking_enabled",
-        "reasoning_effort",
-        "is_plan_mode",
-        "subagent_enabled",
-        "max_concurrent_subagents",
-        "image_generation_provider",
-        "image_generation_model",
-    }
-    configurable = config.setdefault("configurable", {})
-    for key in _CONTEXT_CONFIGURABLE_KEYS:
-        if key in context:
-            configurable.setdefault(key, context[key])
+    merge_run_context_overrides(
+        config,
+        {
+            "model_name": "deepseek-v3",
+            "is_plan_mode": True,
+            "subagent_enabled": True,
+        },
+    )
 
     # Existing values must NOT be overridden
     assert config["configurable"]["model_name"] == "gpt-4"

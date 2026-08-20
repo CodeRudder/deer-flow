@@ -626,7 +626,7 @@ Skills are what make DeerFlow do *almost anything*.
 
 A standard Agent Skill is a structured capability module — a Markdown file that defines a workflow, best practices, and references to supporting resources. DeerFlow ships with built-in skills for research, report generation, slide creation, web pages, image and video generation, and more. But the real power is extensibility: add your own skills, replace the built-in ones, or combine them into compound workflows.
 
-Image generation uses the existing workspace provider picker. Image editing is backend-only in this iteration and is triggered through the `image-editing` skill when an uploaded or previously generated image is the source to preserve or transform. This includes turning design drawings, sketches, blueprints, or CAD-style images into realistic product images, even when the request uses words such as "generate" or "create". Administrator usage and quota control currently count image generation and image editing together under the existing image-generation metric.
+Image and video generation use the workspace model pickers: each selector shows model names directly and sends only `image_generation_model` / `video_generation_model` as thread context, with the provider resolved from the model name by the backend. Image editing is backend-only in this iteration and is triggered through the `image-editing` skill when an uploaded or previously generated image is the source to preserve or transform. This includes turning design drawings, sketches, blueprints, or CAD-style images into realistic product images, even when the request uses words such as "generate" or "create". Administrator usage and quota control currently count image generation and image editing together under the existing image-generation metric.
 
 Skills are loaded progressively — only when the task needs them, not all at once. This keeps the context window lean and makes DeerFlow work well even with token-sensitive models.
 
@@ -645,7 +645,8 @@ Gateway-generated follow-up suggestions now normalize both plain-string model ou
 ├── report-generation/SKILL.md
 ├── slide-creation/SKILL.md
 ├── web-page/SKILL.md
-└── image-generation/SKILL.md
+├── image-generation/SKILL.md
+└── video-generation/SKILL.md
 
 /mnt/skills/custom
 └── your-custom-skill/SKILL.md      ← yours

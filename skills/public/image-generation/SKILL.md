@@ -90,8 +90,8 @@ Parameters:
 - `--reference-images`: Absolute paths to reference images (optional, space-separated)
 - `--output-file`: Absolute path to output image file (required)
 - `--aspect-ratio`: Aspect ratio of the generated image (optional, default: 16:9)
-- `--provider`: Image generation provider (optional; use `qwen_image` for Qwen-Image or `openai_image` for OpenAI-compatible image generation)
-- `--model`: Provider model name (optional)
+- `--model`: Model name, e.g. `qwen-image-2.0-pro` (optional). This is the routing key — the provider that owns the model is looked up from `config.yaml`, so normally this is the only one you pass.
+- `--provider`: Escape hatch (`qwen_image` or `openai_image`) for debugging or for a model not declared in `config.yaml`; skips the model lookup (optional)
 - `--negative-prompt`: Negative prompt for providers that support it (optional)
 - `--prompt-extend`: Whether the provider should extend the prompt, `true` or `false` (optional)
 - `--watermark`: Whether the provider should add a watermark, `true` or `false` (optional)
