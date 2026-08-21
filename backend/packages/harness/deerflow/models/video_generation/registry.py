@@ -52,7 +52,7 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
             VideoGenerationModel(
                 name="MiniMax-H3",
                 display_name="MiniMax H3",
-                description="V2 接口，768P/2K + 原生 32kHz 立体声，支持文生视频与首帧/尾帧/首尾帧/参考图生视频（参考图 ≤9 张）",
+                description="提供768P/2K+立体声的顶级视频生成能力(单次≤15s)，支持文生视频与首帧/尾帧/首尾帧/参考图生视频(参考图≤9张)",
             ),
         ),
     ),
