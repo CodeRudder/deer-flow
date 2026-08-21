@@ -193,7 +193,7 @@ export function loadQuotaUsers(params: {
 }
 
 export function loadQuotaScopes(params?: {
-  resource_type?: "model" | "image_generation";
+  resource_type?: "model" | "image_generation" | "video_generation";
   include_disabled?: boolean;
   keyword?: string;
 }) {

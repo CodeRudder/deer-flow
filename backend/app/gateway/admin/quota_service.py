@@ -19,7 +19,7 @@ from app.gateway.admin.periods import APP_TZ, PeriodWindow
 from deerflow.persistence.quota.model import QuotaScopeRow, UserQuotaUsagePeriodRow
 from deerflow.persistence.user.model import UserRow
 
-QuotaMetricName = Literal["model_requests", "image_generations"]
+QuotaMetricName = Literal["model_requests", "image_generations", "video_generations"]
 _SCOPE_CODE_PATTERN = re.compile(r"^[a-z0-9_]{2,64}$")
 _STATUS_ORDER = {"unlimited": 0, "normal": 1, "warning": 2, "exceeded": 3}
 
@@ -66,6 +66,16 @@ class ImageQuotaReservation:
 
 
 @dataclass(frozen=True)
+class VideoQuotaReservation:
+    reservation_id: str
+    user_id: str
+    matched_scope_id: str | None
+    usage_period_id: str | None
+    count: int
+    video_used: int
+
+
+@dataclass(frozen=True)
 class ModelScopeSnapshot:
     """Immutable model-scope policy captured for one Run."""
 
@@ -80,6 +90,8 @@ class ModelScopeSnapshot:
     policy_version: int
     image_enforced: bool = False
     image_limit: int | None = None
+    video_enforced: bool = False
+    video_limit: int | None = None
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -189,6 +201,16 @@ def _scope_status_rank_expression(scope: QuotaScopeRow):
             else_=UserQuotaUsagePeriodRow.request_limit_snapshot,
         )
         used = func.coalesce(UserQuotaUsagePeriodRow.request_used, 0)
+    elif scope.resource_type == "video_generation":
+        enforced = case(
+            (row_missing, literal(bool(scope.video_enforced))),
+            else_=UserQuotaUsagePeriodRow.video_enforced_snapshot,
+        )
+        limit = case(
+            (row_missing, literal(scope.video_limit)),
+            else_=UserQuotaUsagePeriodRow.video_limit_snapshot,
+        )
+        used = func.coalesce(UserQuotaUsagePeriodRow.video_used, 0)
     else:
         enforced = case(
             (row_missing, literal(bool(scope.image_enforced))),
@@ -286,24 +308,24 @@ class QuotaService:
                 detail={"code": "invalid_scope_rules", "message": "code must use lowercase letters, digits, and underscores"},
             )
         resource_type = str(payload.get("resource_type") or "model")
-        if resource_type not in {"model", "image_generation"}:
+        if resource_type not in {"model", "image_generation", "video_generation"}:
             raise HTTPException(status_code=400, detail={"code": "invalid_scope_rules", "message": "Invalid resource type"})
-        if resource_type == "image_generation" and code != "image_generation":
+        if resource_type in {"image_generation", "video_generation"} and code != resource_type:
             raise HTTPException(
                 status_code=400,
-                detail={"code": "invalid_scope_rules", "message": "Image scope code must be image_generation"},
+                detail={"code": "invalid_scope_rules", "message": f"{resource_type} scope code must be {resource_type}"},
             )
         rules = _normalize_rules(payload.get("match_rules")) if resource_type == "model" else {"exact": [], "prefix": []}
         enabled = bool(payload.get("enabled", True))
         async with self._sf() as session:
             if (await session.execute(select(QuotaScopeRow.id).where(QuotaScopeRow.code == code))).scalar_one_or_none():
                 raise HTTPException(status_code=409, detail={"code": "quota_scope_code_exists", "message": "Scope code already exists"})
-            if resource_type == "image_generation":
-                existing_image_scope = (await session.execute(select(QuotaScopeRow.id).where(QuotaScopeRow.resource_type == "image_generation"))).scalar_one_or_none()
-                if existing_image_scope is not None:
+            if resource_type in {"image_generation", "video_generation"}:
+                existing_scope = (await session.execute(select(QuotaScopeRow.id).where(QuotaScopeRow.resource_type == resource_type))).scalar_one_or_none()
+                if existing_scope is not None:
                     raise HTTPException(
                         status_code=409,
-                        detail={"code": "quota_scope_code_exists", "message": "Image generation scope already exists"},
+                        detail={"code": "quota_scope_code_exists", "message": f"{resource_type} scope already exists"},
                     )
             else:
                 await self._validate_scope_rules(session, rules, enabled=enabled)
@@ -315,12 +337,14 @@ class QuotaService:
                 resource_type=resource_type,
                 match_rules=rules,
                 enabled=enabled,
-                is_system=resource_type == "image_generation",
+                is_system=resource_type in {"image_generation", "video_generation"},
                 period_type=str(payload.get("period_type") or "weekly"),
                 request_enforced=bool(payload.get("request_enforced", False)) if resource_type == "model" else False,
                 request_limit=payload.get("request_limit") if resource_type == "model" else None,
                 image_enforced=bool(payload.get("image_enforced", False)) if resource_type == "image_generation" else False,
                 image_limit=payload.get("image_limit") if resource_type == "image_generation" else None,
+                video_enforced=bool(payload.get("video_enforced", False)) if resource_type == "video_generation" else False,
+                video_limit=payload.get("video_limit") if resource_type == "video_generation" else None,
                 policy_version=1,
                 created_at=now,
                 updated_at=now,
@@ -340,19 +364,30 @@ class QuotaService:
             if scope.is_system:
                 name = str(payload.get("name") or scope.name).strip()
                 enabled = bool(payload.get("enabled", True))
-                image_enforced = bool(payload.get("image_enforced", scope.image_enforced))
-                image_limit = payload.get("image_limit", scope.image_limit)
                 period_type = str(payload.get("period_type") or scope.period_type)
                 definition_changed = (scope.name, scope.enabled) != (name, enabled)
-                policy_changed = (scope.period_type, scope.image_enforced, scope.image_limit) != (
-                    period_type,
-                    image_enforced,
-                    image_limit,
-                )
+                if scope.resource_type == "video_generation":
+                    video_enforced = bool(payload.get("video_enforced", scope.video_enforced))
+                    video_limit = payload.get("video_limit", scope.video_limit)
+                    policy_changed = (scope.period_type, scope.video_enforced, scope.video_limit) != (
+                        period_type,
+                        video_enforced,
+                        video_limit,
+                    )
+                    scope.video_enforced = video_enforced
+                    scope.video_limit = video_limit
+                else:
+                    image_enforced = bool(payload.get("image_enforced", scope.image_enforced))
+                    image_limit = payload.get("image_limit", scope.image_limit)
+                    policy_changed = (scope.period_type, scope.image_enforced, scope.image_limit) != (
+                        period_type,
+                        image_enforced,
+                        image_limit,
+                    )
+                    scope.image_enforced = image_enforced
+                    scope.image_limit = image_limit
                 scope.name = name
                 scope.enabled = enabled
-                scope.image_enforced = image_enforced
-                scope.image_limit = image_limit
                 scope.period_type = period_type
             else:
                 rules = _normalize_rules(payload.get("match_rules"))
@@ -399,6 +434,11 @@ class QuotaService:
                     values.update(
                         request_enforced_snapshot=scope.request_enforced,
                         request_limit_snapshot=scope.request_limit,
+                    )
+                elif scope.resource_type == "video_generation":
+                    values.update(
+                        video_enforced_snapshot=scope.video_enforced,
+                        video_limit_snapshot=scope.video_limit,
                     )
                 else:
                     values.update(
@@ -481,6 +521,7 @@ class QuotaService:
                 "period_type": scope.period_type,
                 "requests": ({"enforced": bool(scope.request_enforced), "limit": scope.request_limit} if scope.resource_type == "model" else None),
                 "images": ({"enforced": bool(scope.image_enforced), "limit": scope.image_limit} if scope.resource_type == "image_generation" else None),
+                "videos": ({"enforced": bool(scope.video_enforced), "limit": scope.video_limit} if scope.resource_type == "video_generation" else None),
                 "policy_version": scope.policy_version,
             },
             "current_period_user_count": user_count,
@@ -565,6 +606,9 @@ class QuotaService:
             "image_enforced_snapshot": scope.image_enforced,
             "image_limit_snapshot": scope.image_limit,
             "image_used": 0,
+            "video_enforced_snapshot": scope.video_enforced,
+            "video_limit_snapshot": scope.video_limit,
+            "video_used": 0,
             "is_overridden": False,
             "created_at": now,
             "updated_at": now,
@@ -709,6 +753,68 @@ class QuotaService:
             )
             await session.commit()
 
+    async def reserve_video_generations(
+        self,
+        user_id: str,
+        *,
+        count: int = 1,
+        at: datetime | None = None,
+    ) -> VideoQuotaReservation:
+        count = int(count)
+        if count <= 0:
+            return VideoQuotaReservation(str(uuid.uuid4()), user_id, None, None, 0, 0)
+        async with self._sf() as session:
+            scope = (
+                await session.execute(
+                    select(QuotaScopeRow).where(
+                        QuotaScopeRow.resource_type == "video_generation",
+                        QuotaScopeRow.enabled.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+            if scope is None:
+                return VideoQuotaReservation(str(uuid.uuid4()), user_id, None, None, 0, 0)
+            row = await self._ensure_usage_period(session, user_id, scope, at=at)
+            result = await session.execute(
+                update(UserQuotaUsagePeriodRow)
+                .where(
+                    UserQuotaUsagePeriodRow.id == row.id,
+                    or_(
+                        UserQuotaUsagePeriodRow.video_enforced_snapshot.is_(False),
+                        UserQuotaUsagePeriodRow.video_limit_snapshot.is_(None),
+                        UserQuotaUsagePeriodRow.video_used + count <= UserQuotaUsagePeriodRow.video_limit_snapshot,
+                    ),
+                )
+                .values(
+                    video_used=UserQuotaUsagePeriodRow.video_used + count,
+                    updated_at=datetime.now(UTC),
+                )
+                .returning(UserQuotaUsagePeriodRow.video_used)
+            )
+            used = result.scalar_one_or_none()
+            if used is None:
+                await session.refresh(row)
+                raise QuotaExceededError(self._exceeded(scope, row, "video_generations"))
+            await session.commit()
+            return VideoQuotaReservation(str(uuid.uuid4()), user_id, scope.id, row.id, count, int(used))
+
+    async def release_video_generations(self, reservation: VideoQuotaReservation) -> None:
+        if not reservation.usage_period_id or reservation.count <= 0:
+            return
+        async with self._sf() as session:
+            await session.execute(
+                update(UserQuotaUsagePeriodRow)
+                .where(UserQuotaUsagePeriodRow.id == reservation.usage_period_id)
+                .values(
+                    video_used=case(
+                        (UserQuotaUsagePeriodRow.video_used >= reservation.count, UserQuotaUsagePeriodRow.video_used - reservation.count),
+                        else_=0,
+                    ),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
     @staticmethod
     def _exceeded(
         scope: QuotaScopeRow | ModelScopeSnapshot,
@@ -719,6 +825,8 @@ class QuotaService:
     ) -> QuotaExceeded:
         if metric == "model_requests":
             used, limit = int(row.request_used), int(row.request_limit_snapshot or 0)
+        elif metric == "video_generations":
+            used, limit = int(row.video_used), int(row.video_limit_snapshot or 0)
         else:
             used, limit = int(row.image_used), int(row.image_limit_snapshot or 0)
         return QuotaExceeded(
@@ -746,6 +854,8 @@ class QuotaService:
         reason: str | None,
         updated_by: str | None,
         at: datetime | None = None,
+        video_enforced: bool | None = None,
+        video_limit: int | None = None,
     ) -> dict[str, Any]:
         async with self._sf() as session:
             user = await session.get(UserRow, user_id)
@@ -762,6 +872,11 @@ class QuotaService:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "requests is required"})
                 row.request_enforced_snapshot = request_enforced
                 row.request_limit_snapshot = request_limit
+            elif scope.resource_type == "video_generation":
+                if video_enforced is None:
+                    raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "videos is required"})
+                row.video_enforced_snapshot = video_enforced
+                row.video_limit_snapshot = video_limit
             else:
                 if image_enforced is None:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "images is required"})
@@ -806,6 +921,8 @@ class QuotaService:
             row.request_limit_snapshot = scope.request_limit
             row.image_enforced_snapshot = scope.image_enforced
             row.image_limit_snapshot = scope.image_limit
+            row.video_enforced_snapshot = scope.video_enforced
+            row.video_limit_snapshot = scope.video_limit
             row.is_overridden = False
             row.overridden_at = None
             row.overridden_by = None
@@ -830,9 +947,13 @@ class QuotaService:
         image_enforced = bool(row.image_enforced_snapshot) if row else bool(scope.image_enforced)
         image_limit = row.image_limit_snapshot if row else scope.image_limit
         image_used = int(row.image_used) if row else 0
+        video_enforced = bool(row.video_enforced_snapshot) if row else bool(scope.video_enforced)
+        video_limit = row.video_limit_snapshot if row else scope.video_limit
+        video_used = int(row.video_used) if row else 0
         requests = _metric(request_enforced, request_limit, request_used) if scope.resource_type == "model" else None
         images = _metric(image_enforced, image_limit, image_used) if scope.resource_type == "image_generation" else None
-        status = (requests or images or {"status": "unlimited"})["status"]
+        videos = _metric(video_enforced, video_limit, video_used) if scope.resource_type == "video_generation" else None
+        status = (requests or images or videos or {"status": "unlimited"})["status"]
         overridden = bool(row and row.is_overridden)
         return {
             "usage_period_id": row.id if row else None,
@@ -856,6 +977,7 @@ class QuotaService:
             "token_observation": {"used": int(row.token_used) if row else 0} if scope.resource_type == "model" else None,
             "requests": requests,
             "images": images,
+            "videos": videos,
             "scope_policy_version": row.scope_policy_version_snapshot if row else scope.policy_version,
             "temporary_override": (
                 {
@@ -1011,6 +1133,7 @@ class QuotaService:
                     items.append(self._usage_item(scope, row_map.get((str(user.id), scope.id, window.period_start)), at=at))
                 overall = max((item["status"] for item in items), key=lambda value: _STATUS_ORDER[value], default="unlimited")
                 image = next((item for item in items if item["scope"]["resource_type"] == "image_generation"), None)
+                video = next((item for item in items if item["scope"]["resource_type"] == "video_generation"), None)
                 models = [item for item in items if item["scope"]["resource_type"] == "model"]
                 results.append(
                     {
@@ -1019,6 +1142,7 @@ class QuotaService:
                         "role": user.system_role,
                         "status": overall,
                         "image_generation": image,
+                        "video_generation": video,
                         "model_groups": {
                             "enabled": len(models),
                             "warning": sum(item["status"] == "warning" for item in models),

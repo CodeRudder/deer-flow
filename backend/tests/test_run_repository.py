@@ -204,6 +204,8 @@ class TestRunRepository:
             lead_agent_tokens=120,
             subagent_tokens=20,
             middleware_tokens=10,
+            image_generation_count=1,
+            video_generation_count=2,
             message_count=3,
             last_ai_message="The answer is 42",
             first_human_message="What is the meaning?",
@@ -214,6 +216,8 @@ class TestRunRepository:
         assert row["total_tokens"] == 150
         assert row["llm_call_count"] == 2
         assert row["lead_agent_tokens"] == 120
+        assert row["image_generation_count"] == 1
+        assert row["video_generation_count"] == 2
         assert row["message_count"] == 3
         assert row["last_ai_message"] == "The answer is 42"
         assert row["first_human_message"] == "What is the meaning?"

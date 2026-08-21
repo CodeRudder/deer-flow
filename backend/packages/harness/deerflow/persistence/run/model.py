@@ -41,6 +41,7 @@ class RunRow(Base):
     middleware_tokens: Mapped[int] = mapped_column(default=0)
     token_usage_by_model: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     image_generation_count: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    video_generation_count: Mapped[int] = mapped_column(default=0, server_default=text("0"))
 
     # Follow-up association
     follow_up_to_run_id: Mapped[str | None] = mapped_column(String(64))

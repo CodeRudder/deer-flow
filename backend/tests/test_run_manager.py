@@ -234,6 +234,8 @@ async def test_completion_persistence_recreates_missing_store_row():
         status="success",
         total_tokens=42,
         llm_call_count=2,
+        image_generation_count=1,
+        video_generation_count=2,
         last_ai_message="done",
     )
 
@@ -242,6 +244,8 @@ async def test_completion_persistence_recreates_missing_store_row():
     assert stored["status"] == "success"
     assert stored["total_tokens"] == 42
     assert stored["llm_call_count"] == 2
+    assert stored["image_generation_count"] == 1
+    assert stored["video_generation_count"] == 2
     assert stored["last_ai_message"] == "done"
     assert store.completion_update_attempts == 2
 

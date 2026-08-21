@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Users,
+  VideoIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -152,6 +153,7 @@ const trendSeries: Array<{ key: TrendMetric; label: string; color: string }> = [
   { key: "tokens", label: "Token", color: "#2563eb" },
   { key: "requests", label: "模型请求", color: "#059669" },
   { key: "images", label: "生图次数", color: "#d97706" },
+  { key: "videos", label: "视频次数", color: "#7c3aed" },
 ];
 
 const modelColors = ["#315d9e", "#059669", "#d97706", "#76589b", "#6b7280"];
@@ -163,6 +165,7 @@ const sessionMetricConfig: Record<
   tokens: { label: "Token", color: "#d97706" },
   requests: { label: "请求", color: "#d97706" },
   images: { label: "生图", color: "#d97706" },
+  videos: { label: "视频", color: "#d97706" },
 };
 
 const quotaProgressColors = {
@@ -236,7 +239,15 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
     () =>
       points.length
         ? points
-        : [{ label: "-", tokens: 0, requests: 0, images: 0 }],
+        : [
+            {
+              label: "-",
+              tokens: 0,
+              requests: 0,
+              images: 0,
+              videos: 0,
+            },
+          ],
     [points],
   );
   const coordinates = useMemo(
@@ -362,7 +373,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
                     fontWeight="600"
                     textAnchor="end"
                   >
-                    {formatUsageMetric(key, activePoint[key])}
+                    {formatUsageMetric(key, activePoint[key] ?? 0)}
                   </text>
                 </g>
               ))}
@@ -378,7 +389,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
             const hitLeft = index === 0 ? left : (previousX + x) / 2;
             const hitRight =
               index === data.length - 1 ? right : (x + nextX) / 2;
-            const ariaLabel = `${point.label}，Token ${formatUsageMetric("tokens", point.tokens)}，模型请求 ${formatUsageMetric("requests", point.requests)}，生图次数 ${formatUsageMetric("images", point.images)}`;
+            const ariaLabel = `${point.label}，Token ${formatUsageMetric("tokens", point.tokens)}，模型请求 ${formatUsageMetric("requests", point.requests)}，生图次数 ${formatUsageMetric("images", point.images)}，视频次数 ${formatUsageMetric("videos", point.videos ?? 0)}`;
             return (
               <rect
                 key={`hit-${point.label}-${index}`}
@@ -418,7 +429,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
       </svg>
       <div className="sr-only" aria-live="polite">
         {activePoint
-          ? `${activePoint.label}，Token ${formatUsageMetric("tokens", activePoint.tokens)}，模型请求 ${formatUsageMetric("requests", activePoint.requests)}，生图次数 ${formatUsageMetric("images", activePoint.images)}`
+          ? `${activePoint.label}，Token ${formatUsageMetric("tokens", activePoint.tokens)}，模型请求 ${formatUsageMetric("requests", activePoint.requests)}，生图次数 ${formatUsageMetric("images", activePoint.images)}，视频次数 ${formatUsageMetric("videos", activePoint.videos ?? 0)}`
           : ""}
       </div>
     </div>
@@ -1060,6 +1071,7 @@ function UserUsagePanel({
     tokens: UsageUserRank[];
     requests: UsageUserRank[];
     images: UsageUserRank[];
+    videos: UsageUserRank[];
   };
   isLoading: boolean;
 }) {
@@ -1068,7 +1080,7 @@ function UserUsagePanel({
       <div>
         <h2 className="font-medium">用户用量 Top 20</h2>
         <p className="text-muted-foreground text-sm">
-          三项指标分别按实际用量独立排名
+          四项指标分别按实际用量独立排名
         </p>
       </div>
       <div className="space-y-4">
@@ -1093,6 +1105,14 @@ function UserUsagePanel({
           users={rankings.images}
           color="bg-blue-600 dark:bg-blue-400"
           valueTone="text-blue-700 dark:text-blue-300"
+          format={formatExactNumber}
+          isLoading={isLoading}
+        />
+        <UserRankingChart
+          title="视频"
+          users={rankings.videos}
+          color="bg-violet-600 dark:bg-violet-400"
+          valueTone="text-violet-700 dark:text-violet-300"
           format={formatExactNumber}
           isLoading={isLoading}
         />
@@ -1236,6 +1256,13 @@ function QuotaUserRow({
           "-"
         )}
       </td>
+      <td className="px-5">
+        {item.video_generation?.videos ? (
+          <QuotaUsageCell metric={item.video_generation.videos} />
+        ) : (
+          "-"
+        )}
+      </td>
       <td className="px-5">{statusBadge(item.status)}</td>
       <td className="pl-4">
         <Button
@@ -1258,8 +1285,9 @@ function UserQuotaItemEditor({
   userId: string;
   item: UserQuotaItem;
 }) {
-  const metric = item.requests ?? item.images;
+  const metric = item.requests ?? item.images ?? item.videos;
   const isModelScope = item.scope.resource_type === "model";
+  const isVideoScope = item.scope.resource_type === "video_generation";
   const overrideQuota = useOverrideUserCurrentPeriod();
   const restoreQuota = useRestoreUserCurrentPeriod();
   const [enforced, setEnforced] = useState(metric?.enforced ?? false);
@@ -1282,6 +1310,7 @@ function UserQuotaItemEditor({
           item.scope.resource_type === "image_generation"
             ? { enforced, limit }
             : null,
+        videos: isVideoScope ? { enforced, limit } : null,
         reason: reason || undefined,
       },
     });
@@ -1310,7 +1339,11 @@ function UserQuotaItemEditor({
         </div>
         <label className="flex shrink-0 items-center gap-2 text-xs">
           <span className="text-muted-foreground">
-            {isModelScope ? "请求拦截" : "生图拦截"}
+            {isModelScope
+              ? "请求拦截"
+              : isVideoScope
+                ? "视频拦截"
+                : "生图拦截"}
           </span>
           <Switch checked={enforced} onCheckedChange={setEnforced} />
         </label>
@@ -1321,7 +1354,11 @@ function UserQuotaItemEditor({
       >
         <div className="px-4 py-3">
           <div className="text-muted-foreground text-[11px]">
-            {isModelScope ? "已用请求" : "已用生图"}
+            {isModelScope
+              ? "已用请求"
+              : isVideoScope
+                ? "已用视频"
+                : "已用生图"}
           </div>
           <div className="mt-1 text-xl font-semibold tabular-nums">
             {formatExactNumber(metric?.used ?? 0)}
@@ -1464,7 +1501,7 @@ function QuotaScopeEditor({
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [resourceType, setResourceType] = useState<
-    "model" | "image_generation"
+    "model" | "image_generation" | "video_generation"
   >("model");
   const [exact, setExact] = useState("");
   const [prefix, setPrefix] = useState("");
@@ -1481,7 +1518,10 @@ function QuotaScopeEditor({
     setPrefix((scope?.match_rules.prefix ?? []).join(", "));
     setPeriodType(scope?.default_policy.period_type ?? "weekly");
     const policy =
-      scope?.default_policy.requests ?? scope?.default_policy.images ?? null;
+      scope?.default_policy.requests ??
+      scope?.default_policy.images ??
+      scope?.default_policy.videos ??
+      null;
     setEnforced(policy?.enforced ?? false);
     setLimit(policy?.limit ?? null);
     setEnabled(scope?.enabled ?? true);
@@ -1494,17 +1534,19 @@ function QuotaScopeEditor({
       .filter(Boolean);
 
   const save = async () => {
-    const isImage = resourceType === "image_generation";
+    const isModel = resourceType === "model";
     const payload: QuotaScopePayload = {
       ...(scope ? {} : { code, resource_type: resourceType }),
       name,
-      match_rules: isImage
-        ? { exact: [], prefix: [] }
-        : { exact: splitRules(exact), prefix: splitRules(prefix) },
+      match_rules: isModel
+        ? { exact: splitRules(exact), prefix: splitRules(prefix) }
+        : { exact: [], prefix: [] },
       default_policy: {
         period_type: periodType,
-        requests: isImage ? null : { enforced, limit },
-        images: isImage ? { enforced, limit } : null,
+        requests: isModel ? { enforced, limit } : null,
+        images:
+          resourceType === "image_generation" ? { enforced, limit } : null,
+        videos: resourceType === "video_generation" ? { enforced, limit } : null,
       },
       enabled,
     };
@@ -1532,18 +1574,26 @@ function QuotaScopeEditor({
                 onChange={(event) => {
                   const value = event.target.value as
                     | "model"
-                    | "image_generation";
+                    | "image_generation"
+                    | "video_generation";
                   setResourceType(value);
                   if (value === "image_generation") {
                     setCode("image_generation");
                     setName((current) => current || "生图资源");
-                  } else if (code === "image_generation") {
+                  } else if (value === "video_generation") {
+                    setCode("video_generation");
+                    setName((current) => current || "视频资源");
+                  } else if (
+                    code === "image_generation" ||
+                    code === "video_generation"
+                  ) {
                     setCode("");
                   }
                 }}
               >
                 <option value="model">模型组</option>
                 <option value="image_generation">生图资源</option>
+                <option value="video_generation">视频资源</option>
               </select>
             </label>
           ) : null}
@@ -1621,21 +1671,28 @@ function QuotaScopeEditor({
           <div className="flex items-center justify-between rounded-lg border p-3">
             <div>
               <div className="text-sm font-medium">
-                {resourceType === "image_generation"
-                  ? "按生图次数拦截"
-                  : "按模型请求次数拦截"}
+                {resourceType === "video_generation"
+                  ? "按视频次数拦截"
+                  : resourceType === "image_generation"
+                    ? "按生图次数拦截"
+                    : "按模型请求次数拦截"}
               </div>
               <div className="text-muted-foreground text-xs">
-                {resourceType === "image_generation"
-                  ? "派发到供应商后即累计，供应商报错也保留"
-                  : "Token 只累计观测，不参与拦截"}
+                {resourceType === "model"
+                  ? "Token 只累计观测，不参与拦截"
+                  : "派发到供应商后即累计，供应商报错也保留"}
               </div>
             </div>
             <Switch checked={enforced} onCheckedChange={setEnforced} />
           </div>
           <div className="flex items-center justify-between rounded-lg border p-3">
             <span className="text-sm font-medium">
-              启用{resourceType === "image_generation" ? "生图额度" : "模型组"}
+              启用
+              {resourceType === "video_generation"
+                ? "视频额度"
+                : resourceType === "image_generation"
+                  ? "生图额度"
+                  : "模型组"}
             </span>
             <Switch checked={enabled} onCheckedChange={setEnabled} />
           </div>
@@ -1742,6 +1799,7 @@ export function AdminDashboard() {
     tokens: [],
     requests: [],
     images: [],
+    videos: [],
   };
   const models = usage.models.data?.items ?? [];
   const enabledModelQuotaScopes = (quotaScopes.data?.items ?? []).filter(
@@ -1840,7 +1898,7 @@ export function AdminDashboard() {
                 正在加载统计数据...
               </div>
             )}
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
               <KpiCard
                 label="模型 Token"
                 value={formatNumber(summary?.total_tokens ?? 0)}
@@ -1861,6 +1919,13 @@ export function AdminDashboard() {
                 note="生成与修改合并计数"
                 icon={ImageIcon}
                 tone="bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+              />
+              <KpiCard
+                label="视频次数"
+                value={formatNumber(summary?.video_generations ?? 0)}
+                note="视频生成调用计数"
+                icon={VideoIcon}
+                tone="bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
               />
               <KpiCard
                 label="活跃用户"
@@ -1884,7 +1949,7 @@ export function AdminDashboard() {
                     <h2 className="font-medium">用量趋势</h2>
                     <p className="text-muted-foreground text-sm">
                       按{usage.trends.data?.bucket === "hour" ? "小时" : "天"}
-                      聚合，生图只统计次数
+                      聚合，生图与视频只统计次数
                     </p>
                   </div>
                   <div className="text-muted-foreground hidden gap-4 text-xs md:flex">
@@ -1954,7 +2019,8 @@ export function AdminDashboard() {
                   {(quotaScopes.data?.items ?? []).map((scope, scopeIndex) => {
                     const policy =
                       scope.default_policy.requests ??
-                      scope.default_policy.images;
+                      scope.default_policy.images ??
+                      scope.default_policy.videos;
                     const identityColor = quotaScopeIdentityColor(scopeIndex);
                     return (
                       <article
@@ -1978,7 +2044,9 @@ export function AdminDashboard() {
                             <p className="text-muted-foreground mt-2 text-sm">
                               {scope.resource_type === "model"
                                 ? `${scope.matched_models.length} 个已配置模型`
-                                : "所有生图与图片编辑调用"}
+                                : scope.resource_type === "video_generation"
+                                  ? "所有视频生成调用"
+                                  : "所有生图与图片编辑调用"}
                             </p>
                           </div>
                           <Button
@@ -2079,7 +2147,7 @@ export function AdminDashboard() {
                     <table
                       className="w-full text-sm"
                       style={{
-                        minWidth: `${Math.max(940, 620 + enabledModelQuotaScopes.length * 190)}px`,
+                        minWidth: `${Math.max(940, 820 + enabledModelQuotaScopes.length * 190)}px`,
                       }}
                     >
                       <thead className="text-muted-foreground border-b text-left">
@@ -2092,6 +2160,7 @@ export function AdminDashboard() {
                             </th>
                           ))}
                           <th className="px-5">生图次数</th>
+                          <th className="px-5">视频次数</th>
                           <th className="px-5">状态</th>
                           <th className="pl-4">操作</th>
                         </tr>

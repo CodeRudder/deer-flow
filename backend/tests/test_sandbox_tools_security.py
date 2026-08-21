@@ -21,6 +21,7 @@ from deerflow.sandbox.tools import (
     _resolve_acp_workspace_path,
     _resolve_and_validate_user_data_path,
     _resolve_skills_path,
+    _video_generation_invocation_count,
     bash_background_tool,
     bash_tool,
     mask_local_paths_in_output,
@@ -847,6 +848,266 @@ def test_failed_dispatched_image_script_is_still_recorded(monkeypatch, command: 
 
     assert result == "Exit Code: 1"
     assert recorded == [1]
+
+
+VIDEO_SCRIPT = "python /mnt/skills/public/video-generation/scripts/generate.py --prompt-file x.txt --output-file y.mp4"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (VIDEO_SCRIPT, 1),
+        ("python video-generation/scripts/generate.py --prompt-file x.txt", 1),
+        ("python video-generation/scripts/generate.py --prompt-file x.txt && python video-generation/scripts/generate.py --prompt-file y.txt", 2),
+        ("echo /mnt/skills/public/video-generation/scripts/generate.py", 0),
+        ("cat video-generation/scripts/generate.py", 0),
+        ("bash -c 'python /mnt/skills/public/video-generation/scripts/generate.py --prompt-file x.txt'", 1),
+        (f"python /mnt/skills/public/image-generation/scripts/generate.py --prompt x && {VIDEO_SCRIPT}", 1),
+    ],
+)
+def test_video_generation_invocation_count_only_matches_execution(command: str, expected: int) -> None:
+    assert _video_generation_invocation_count(command) == expected
+
+
+def test_bash_background_rejects_video_generation_before_dispatch(monkeypatch) -> None:
+    runtime = SimpleNamespace(state={}, context={"thread_id": "thread-1"})
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools.ensure_sandbox_initialized",
+        lambda runtime: pytest.fail("video generation must be rejected before sandbox dispatch"),
+    )
+
+    result = bash_background_tool.func(
+        runtime=runtime,
+        description="generate video",
+        command=VIDEO_SCRIPT,
+    )
+
+    assert "foreground bash" in result
+
+
+@pytest.mark.asyncio
+async def test_async_bash_quota_rejection_skips_video_dispatch(monkeypatch) -> None:
+    class Bridge:
+        async def reserve_video_generations(self, count: int):
+            assert count == 1
+            return {"allowed": False, "message": "本月视频额度已用尽", "metric": "video_generations"}
+
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
+        },
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("quota-rejected video command must not dispatch"),
+    )
+
+    result = await _bash_tool_async(
+        runtime,
+        "generate video",
+        VIDEO_SCRIPT,
+    )
+
+    assert "本月视频额度已用尽" in result
+
+
+@pytest.mark.asyncio
+async def test_async_bash_releases_video_reservation_when_dispatch_does_not_start(monkeypatch) -> None:
+    reservation = object()
+    released: list[object] = []
+
+    class Bridge:
+        async def reserve_video_generations(self, count: int):
+            assert count == 1
+            return {"allowed": True, "reservation": reservation}
+
+        async def release_video_generations(self, value: object):
+            released.append(value)
+
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
+        },
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr("deerflow.sandbox.tools._execute_bash_tool", lambda *_args: ("Error: invalid path", False))
+
+    await _bash_tool_async(
+        runtime,
+        "generate video",
+        VIDEO_SCRIPT,
+    )
+
+    assert released == [reservation]
+
+
+@pytest.mark.asyncio
+async def test_async_bash_fails_closed_without_required_quota_bridge_for_video(monkeypatch) -> None:
+    runtime = SimpleNamespace(
+        state={},
+        context={"__quota_enforcement_required": True},
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("missing required bridge must block video dispatch"),
+    )
+
+    result = await _bash_tool_async(
+        runtime,
+        "generate video",
+        VIDEO_SCRIPT,
+    )
+
+    assert "quota service is unavailable" in result
+
+
+@pytest.mark.asyncio
+async def test_async_bash_mixed_command_releases_image_when_video_quota_rejected(monkeypatch) -> None:
+    image_reservation = object()
+    released: list[object] = []
+
+    class Bridge:
+        async def reserve_image_generations(self, count: int):
+            assert count == 1
+            return {"allowed": True, "reservation": image_reservation, "used": 1}
+
+        async def release_image_generations(self, value: object):
+            released.append(value)
+
+        async def reserve_video_generations(self, count: int):
+            return {"allowed": False, "message": "本月视频额度已用尽", "metric": "video_generations"}
+
+        async def release_video_generations(self, value: object):
+            released.append(value)
+
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
+        },
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("quota-rejected mixed command must not dispatch"),
+    )
+
+    result = await _bash_tool_async(
+        runtime,
+        "generate image then video",
+        f"python /mnt/skills/public/image-generation/scripts/generate.py --prompt x && {VIDEO_SCRIPT}",
+    )
+
+    assert "本月视频额度已用尽" in result
+    assert released == [image_reservation]
+
+
+@pytest.mark.asyncio
+async def test_async_bash_mixed_command_not_dispatched_releases_both_in_reverse_order(monkeypatch) -> None:
+    image_reservation = object()
+    video_reservation = object()
+    released: list[object] = []
+
+    class Bridge:
+        async def reserve_image_generations(self, count: int):
+            return {"allowed": True, "reservation": image_reservation, "used": 1}
+
+        async def reserve_video_generations(self, count: int):
+            return {"allowed": True, "reservation": video_reservation, "used": 1}
+
+        async def release_image_generations(self, value: object):
+            released.append(value)
+
+        async def release_video_generations(self, value: object):
+            released.append(value)
+
+    runtime = SimpleNamespace(
+        state={},
+        context={
+            "__quota_runtime_bridge": Bridge(),
+            "__quota_enforcement_required": True,
+        },
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr("deerflow.sandbox.tools._execute_bash_tool", lambda *_args: ("Error: invalid path", False))
+
+    await _bash_tool_async(
+        runtime,
+        "generate image then video",
+        f"python /mnt/skills/public/image-generation/scripts/generate.py --prompt x && {VIDEO_SCRIPT}",
+    )
+
+    assert released == [video_reservation, image_reservation]
+
+
+def test_failed_dispatched_video_script_is_still_recorded(monkeypatch) -> None:
+    recorded: list[int] = []
+    journal = SimpleNamespace(record_video_generation=lambda count: recorded.append(count))
+    runtime = SimpleNamespace(state={}, context={"__run_journal": journal})
+    sandbox = SimpleNamespace(execute_command=lambda _command: "Exit Code: 1")
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized", lambda _runtime: sandbox)
+    monkeypatch.setattr("deerflow.sandbox.tools.is_local_sandbox", lambda _runtime: False)
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_thread_directories_exist", lambda _runtime: None)
+
+    result = bash_tool.func(
+        runtime=runtime,
+        description="generate video",
+        command=VIDEO_SCRIPT,
+    )
+
+    assert result == "Exit Code: 1"
+    assert recorded == [1]
+
+
+def test_failed_dispatched_mixed_command_records_both_counters(monkeypatch) -> None:
+    recorded_images: list[int] = []
+    recorded_videos: list[int] = []
+    journal = SimpleNamespace(
+        record_image_generation=lambda count: recorded_images.append(count),
+        record_video_generation=lambda count: recorded_videos.append(count),
+    )
+    runtime = SimpleNamespace(state={}, context={"__run_journal": journal})
+    sandbox = SimpleNamespace(execute_command=lambda _command: "Exit Code: 1")
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized", lambda _runtime: sandbox)
+    monkeypatch.setattr("deerflow.sandbox.tools.is_local_sandbox", lambda _runtime: False)
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_thread_directories_exist", lambda _runtime: None)
+
+    result = bash_tool.func(
+        runtime=runtime,
+        description="generate image then video",
+        command=f"python /mnt/skills/public/image-generation/scripts/generate.py --prompt x && {VIDEO_SCRIPT}",
+    )
+
+    assert result == "Exit Code: 1"
+    assert recorded_images == [1]
+    assert recorded_videos == [1]
 
 
 # ---------- Skills path tests ----------

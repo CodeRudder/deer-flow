@@ -40,6 +40,7 @@ async def trace_service(tmp_path):
                     total_tokens=100,
                     llm_call_count=2,
                     image_generation_count=1,
+                    video_generation_count=3,
                     token_usage_by_model={"model-a": {"total_tokens": 100}},
                     first_human_message="--- BEGIN USER INPUT ---\nhello\n--- END USER INPUT ---",
                     last_ai_message="world\nresult",
@@ -95,6 +96,7 @@ async def test_user_overview_is_limited_to_last_30_days(trace_service):
         "total_tokens": 100,
         "model_requests": 2,
         "image_generations": 1,
+        "video_generations": 3,
     }
     assert len(result["trends"]) == 30
     assert result["trends"][-4] == {
@@ -102,6 +104,7 @@ async def test_user_overview_is_limited_to_last_30_days(trace_service):
         "tokens": 100,
         "model_requests": 2,
         "image_generations": 1,
+        "video_generations": 3,
     }
     assert result["models"][0]["model"] == "model-a"
     assert result["models"][0]["share"] == 1.0

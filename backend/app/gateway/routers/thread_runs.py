@@ -107,6 +107,7 @@ class RunResponse(BaseModel):
     subagent_tokens: int = 0
     middleware_tokens: int = 0
     image_generation_count: int = 0
+    video_generation_count: int = 0
     message_count: int = 0
 
 
@@ -164,6 +165,7 @@ def _record_to_response(record: RunRecord) -> RunResponse:
         subagent_tokens=record.subagent_tokens,
         middleware_tokens=record.middleware_tokens,
         image_generation_count=record.image_generation_count,
+        video_generation_count=record.video_generation_count,
         message_count=record.message_count,
     )
 

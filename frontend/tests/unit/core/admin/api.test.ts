@@ -140,6 +140,7 @@ test("quota scope create keeps request policy and model rules", async () => {
       period_type: "weekly",
       requests: { enforced: true, limit: 5000 },
       images: null,
+      videos: null,
     },
     enabled: true,
   });
@@ -168,6 +169,7 @@ test("quota scope create supports an administrator-created image range", async (
       period_type: "weekly",
       requests: null,
       images: { enforced: true, limit: 50 },
+      videos: null,
     },
     enabled: true,
   });
@@ -176,6 +178,30 @@ test("quota scope create supports an administrator-created image range", async (
   const payload = JSON.parse(init.body as string);
   expect(payload.resource_type).toBe("image_generation");
   expect(payload.default_policy.images).toEqual({ enforced: true, limit: 50 });
+});
+
+test("quota scope create supports an administrator-created video range", async () => {
+  const { createQuotaScope } = await import("@/core/admin/api");
+
+  await createQuotaScope({
+    code: "video_generation",
+    name: "视频资源",
+    resource_type: "video_generation",
+    match_rules: { exact: [], prefix: [] },
+    default_policy: {
+      period_type: "monthly",
+      requests: null,
+      images: null,
+      videos: { enforced: true, limit: 20 },
+    },
+    enabled: true,
+  });
+
+  const [, init] = fetchWithAuth.mock.calls[0]! as [string, RequestInit];
+  const payload = JSON.parse(init.body as string);
+  expect(payload.resource_type).toBe("video_generation");
+  expect(payload.match_rules).toEqual({ exact: [], prefix: [] });
+  expect(payload.default_policy.videos).toEqual({ enforced: true, limit: 20 });
 });
 
 test("user override and restore encode user and scope identifiers", async () => {

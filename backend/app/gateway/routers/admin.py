@@ -49,12 +49,13 @@ class QuotaDefaultPolicy(BaseModel):
     period_type: Literal["weekly", "monthly"] = "weekly"
     requests: QuotaMetricPolicy | None = None
     images: QuotaMetricPolicy | None = None
+    videos: QuotaMetricPolicy | None = None
 
 
 class QuotaScopeCreateRequest(BaseModel):
     code: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=1, max_length=128)
-    resource_type: Literal["model", "image_generation"] = "model"
+    resource_type: Literal["model", "image_generation", "video_generation"] = "model"
     match_rules: dict[str, list[str]]
     default_policy: QuotaDefaultPolicy
     enabled: bool = True
@@ -70,6 +71,7 @@ class QuotaScopeUpdateRequest(BaseModel):
 class QuotaOverrideRequest(BaseModel):
     requests: QuotaMetricPolicy | None = None
     images: QuotaMetricPolicy | None = None
+    videos: QuotaMetricPolicy | None = None
     reason: str | None = Field(default=None, max_length=512)
 
 
@@ -103,6 +105,7 @@ def _scope_payload(body: QuotaScopeCreateRequest | QuotaScopeUpdateRequest) -> d
     policy = body.default_policy
     requests = policy.requests
     images = policy.images
+    videos = policy.videos
     payload = body.model_dump(exclude={"default_policy"})
     payload.update(
         period_type=policy.period_type,
@@ -110,6 +113,8 @@ def _scope_payload(body: QuotaScopeCreateRequest | QuotaScopeUpdateRequest) -> d
         request_limit=requests.limit if requests else None,
         image_enforced=images.enforced if images else False,
         image_limit=images.limit if images else None,
+        video_enforced=videos.enforced if videos else False,
+        video_limit=videos.limit if videos else None,
     )
     return payload
 
@@ -306,7 +311,7 @@ async def usage_trends(
 async def usage_sessions(
     request: Request,
     range: Literal["day", "week", "month", "custom"] = Query(default="month"),
-    metric: Literal["tokens", "requests", "images"] = Query(default="tokens"),
+    metric: Literal["tokens", "requests", "images", "videos"] = Query(default="tokens"),
     limit: int = Query(default=20, ge=1, le=50),
     start: str | None = None,
     end: str | None = None,
@@ -341,7 +346,7 @@ async def usage_models(
 @router.get("/quotas/scopes", response_model=QuotaScopesResponse)
 async def list_quota_scopes(
     request: Request,
-    resource_type: Literal["model", "image_generation"] | None = None,
+    resource_type: Literal["model", "image_generation", "video_generation"] | None = None,
     include_disabled: bool = False,
     keyword: str | None = Query(default=None, max_length=128),
 ) -> dict[str, Any]:
@@ -415,6 +420,8 @@ async def override_user_quota(
         request_limit=body.requests.limit if body.requests else None,
         image_enforced=body.images.enforced if body.images else None,
         image_limit=body.images.limit if body.images else None,
+        video_enforced=body.videos.enforced if body.videos else None,
+        video_limit=body.videos.limit if body.videos else None,
         reason=body.reason,
         updated_by=str(getattr(user, "id", "")) or None,
     )

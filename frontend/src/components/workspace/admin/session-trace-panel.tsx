@@ -6,6 +6,7 @@ import {
   Hash,
   ImageIcon,
   MessageSquare,
+  VideoIcon,
   Wrench,
   Workflow,
   X,
@@ -87,6 +88,7 @@ const traceSeries = [
   { key: "tokens", label: "Token", color: "#ce5a2c" },
   { key: "model_requests", label: "模型调用", color: "#168979" },
   { key: "image_generations", label: "生图", color: "#3f5f99" },
+  { key: "video_generations", label: "视频", color: "#76589b" },
 ] as const;
 
 const traceModelColors = [
@@ -133,7 +135,9 @@ function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
     () =>
       Object.fromEntries(
         traceSeries.map(({ key }) => {
-          const max = Math.max(...trends.map((point) => point[key]), 1);
+          // `?? 0` keeps coordinates finite when an older backend still omits
+          // newer metric keys (e.g. video_generations) from its trend payload.
+          const max = Math.max(...trends.map((point) => point[key] ?? 0), 1);
           return [
             key,
             trends.map((point, index) => ({
@@ -145,7 +149,7 @@ function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
                       (bounds.right - bounds.left),
               y:
                 bounds.bottom -
-                (point[key] / max) * (bounds.bottom - bounds.top),
+                ((point[key] ?? 0) / max) * (bounds.bottom - bounds.top),
             })),
           ];
         }),
@@ -300,7 +304,7 @@ function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
               fill="transparent"
               tabIndex={0}
               role="button"
-              aria-label={`${point.date}，Token ${formatTokenNumber(point.tokens)}，模型调用 ${formatNumber(point.model_requests)}，生图 ${formatNumber(point.image_generations)}`}
+              aria-label={`${point.date}，Token ${formatTokenNumber(point.tokens)}，模型调用 ${formatNumber(point.model_requests)}，生图 ${formatNumber(point.image_generations)}，视频 ${formatNumber(point.video_generations ?? 0)}`}
               onFocus={() => setActiveIndex(index)}
               onBlur={() => setActiveIndex(null)}
               onPointerEnter={() => setActiveIndex(index)}
@@ -328,7 +332,7 @@ function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
       </svg>
       <div className="sr-only" aria-live="polite">
         {activePoint
-          ? `${activePoint.date}，Token ${formatTokenNumber(activePoint.tokens)}，模型调用 ${formatNumber(activePoint.model_requests)}，生图 ${formatNumber(activePoint.image_generations)}`
+          ? `${activePoint.date}，Token ${formatTokenNumber(activePoint.tokens)}，模型调用 ${formatNumber(activePoint.model_requests)}，生图 ${formatNumber(activePoint.image_generations)}，视频 ${formatNumber(activePoint.video_generations ?? 0)}`
           : ""}
       </div>
     </div>
@@ -590,10 +594,16 @@ function UserOverview({
       icon: ImageIcon,
       tone: "bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
     },
+    {
+      label: "视频",
+      value: summary ? (summary.video_generations ?? 0) : undefined,
+      icon: VideoIcon,
+      tone: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300",
+    },
   ];
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
         {kpis.map(({ label, value, icon: Icon, tone }) => (
           <div
             key={label}
@@ -625,7 +635,7 @@ function UserOverview({
             <div>
               <h3 className="text-sm font-medium">最近 30 天使用趋势</h3>
               <p className="text-muted-foreground text-xs">
-                按天聚合，三项指标使用独立量纲
+                按天聚合，四项指标使用独立量纲
               </p>
             </div>
             <div className="text-muted-foreground flex gap-3 text-xs">
@@ -733,7 +743,6 @@ function RunDrawer({
                 ],
                 ["Token", formatNumber(run.total_tokens)],
                 ["模型调用", run.llm_call_count],
-                ["生图", run.image_generation_count],
               ].map(([label, value]) => (
                 <div
                   key={label}
@@ -743,6 +752,19 @@ function RunDrawer({
                   <div className="mt-1 text-sm font-medium">{value}</div>
                 </div>
               ))}
+              <div className="bg-background border-r border-b">
+                <div className="grid h-full grid-cols-2 divide-x">
+                  {[
+                    ["生图", run.image_generation_count],
+                    ["视频", run.video_generation_count ?? 0],
+                  ].map(([label, value]) => (
+                    <div key={label} className="px-3 py-3">
+                      <div className="text-muted-foreground text-xs">{label}</div>
+                      <div className="mt-1 text-sm font-medium">{value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
             <section className="bg-background overflow-hidden rounded-md border shadow-xs">
               <div className="bg-muted flex items-center justify-between gap-3 border-b px-3 py-2">
@@ -1014,7 +1036,7 @@ export function SessionTracePanel() {
       </section>
       <section className="bg-muted/20 overflow-hidden rounded-lg border shadow-xs">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1940px] text-sm">
+          <table className="w-full min-w-[2050px] text-sm">
             <thead className="text-muted-foreground bg-muted/60 border-b text-left text-sm">
               <tr>
                 {[
@@ -1031,6 +1053,7 @@ export function SessionTracePanel() {
                   "Token",
                   "模型调用",
                   "生图",
+                  "视频",
                   "详情",
                 ].map((label) => (
                   <th
@@ -1115,6 +1138,9 @@ export function SessionTracePanel() {
                   <td className="px-3 tabular-nums">{run.llm_call_count}</td>
                   <td className="px-3 tabular-nums">
                     {run.image_generation_count}
+                  </td>
+                  <td className="px-3 tabular-nums">
+                    {run.video_generation_count}
                   </td>
                   <td className="px-3 whitespace-nowrap">
                     <button

@@ -4,7 +4,11 @@ import threading
 import pytest
 
 from app.gateway.admin.quota_runtime import QuotaRuntimeBridge
-from app.gateway.admin.quota_service import ImageQuotaReservation, ModelQuotaReservation
+from app.gateway.admin.quota_service import (
+    ImageQuotaReservation,
+    ModelQuotaReservation,
+    VideoQuotaReservation,
+)
 
 
 class _Service:
@@ -28,6 +32,13 @@ class _Service:
     async def release_image_generations(self, reservation):
         self.thread_ids.append(threading.get_ident())
 
+    async def reserve_video_generations(self, user_id: str, *, count: int):
+        self.thread_ids.append(threading.get_ident())
+        return VideoQuotaReservation("v1", user_id, "scope", "period", count, count)
+
+    async def release_video_generations(self, reservation):
+        self.thread_ids.append(threading.get_ident())
+
 
 @pytest.mark.asyncio
 async def test_subagent_bridge_schedules_database_work_on_parent_loop():
@@ -38,6 +49,19 @@ async def test_subagent_bridge_schedules_database_work_on_parent_loop():
     result = await asyncio.to_thread(lambda: asyncio.run(bridge.reserve_model_request("claude-sonnet-4")))
 
     assert result["allowed"] is True
+    assert service.thread_ids == [parent_thread]
+
+
+@pytest.mark.asyncio
+async def test_subagent_bridge_schedules_video_reserve_on_parent_loop():
+    service = _Service()
+    parent_thread = threading.get_ident()
+    bridge = QuotaRuntimeBridge(service, "user-1", owner_loop=asyncio.get_running_loop())  # type: ignore[arg-type]
+
+    result = await asyncio.to_thread(lambda: asyncio.run(bridge.reserve_video_generations(2)))
+
+    assert result["allowed"] is True
+    assert result["used"] == 2
     assert service.thread_ids == [parent_thread]
 
 
