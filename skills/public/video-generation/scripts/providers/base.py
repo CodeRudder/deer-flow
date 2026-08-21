@@ -3,8 +3,7 @@
 Every provider is "create task -> poll until terminal -> fetch video URL ->
 download". Differences live in four hooks: auth, create payload/parse, poll +
 status normalization, and video-URL extraction (H3 V2 takes it directly; the
-legacy MiniMax V1 needs an extra files/retrieve step; Gemini reads a nested
-operation response). `BaseVideoProvider.generate` owns the loop; adapters only
+legacy MiniMax V1 needs an extra files/retrieve step). `BaseVideoProvider.generate` owns the loop; adapters only
 implement the differences.
 """
 
@@ -75,7 +74,7 @@ class BaseVideoProvider:
     # Every model this adapter serves, not just default_model. Feeds
     # MODEL_PROVIDERS so credential fallback routes each model to its owner.
     known_models: tuple[str, ...] = ()
-    # Poll cadence — adapters override (H3 recommends 10s; Gemini/V1 used 3s).
+    # Poll cadence — adapters override (H3 recommends 10s; V1 uses 3s).
     poll_interval = 10
     poll_max_attempts = 120
 
@@ -89,7 +88,7 @@ class BaseVideoProvider:
         raise NotImplementedError
 
     def auth_headers(self) -> dict:
-        """Auth header(s). Bearer for the three mainline providers; Gemini overrides."""
+        """Auth header(s). Bearer for the mainline providers."""
         return {"Authorization": f"Bearer {self.api_key()}"}
 
     def create_task(
@@ -98,7 +97,7 @@ class BaseVideoProvider:
         """Create the async task; return an opaque handle (task_id or operation name).
 
         Adapters decide how to use reference_images: H3/V1 take the first as the
-        first frame; Gemini passes all as reference assets.
+        first frame.
         """
         raise NotImplementedError
 
@@ -111,7 +110,7 @@ class BaseVideoProvider:
         raise NotImplementedError
 
     def download(self, url: str, output_file: str) -> None:
-        """Default: plain GET. Gemini overrides to attach its auth header."""
+        """Default: plain GET."""
         resp = requests.get(url, timeout=300)
         resp.raise_for_status()
         ensure_output_dir(output_file)

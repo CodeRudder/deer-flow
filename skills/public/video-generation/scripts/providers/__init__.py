@@ -1,4 +1,4 @@
-from . import gemini, minimax_h3, minimax_v1
+from . import minimax_h3, minimax_v1
 
 
 # name -> provider class. Unlike image providers (which register a plain
@@ -7,7 +7,6 @@ from . import gemini, minimax_h3, minimax_v1
 #   PROVIDERS[name](model=...).generate(...)
 PROVIDERS = {
     "minimax_h3": minimax_h3.PROVIDER,  # V2, recommended
-    "gemini": gemini.PROVIDER,
     "minimax_v1": minimax_v1.PROVIDER,  # legacy Hailuo V1, compat only
 }
 

@@ -49,7 +49,6 @@ PROVIDERS = vid.PROVIDERS
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for k in [
-        "GEMINI_API_KEY",
         "MINIMAX_API_KEY",
         "MINIMAX_VIDEO_API_KEY",
         "VIDEO_GENERATION_PROVIDER",
@@ -76,13 +75,13 @@ def clean_env(monkeypatch):
 
 
 def test_registry_has_expected_providers():
-    assert set(PROVIDERS) == {"minimax_h3", "gemini", "minimax_v1"}
+    assert set(PROVIDERS) == {"minimax_h3", "minimax_v1"}
 
 
 _H3_CONFIG = {
     "providers": [
         {"name": "minimax_h3", "models": [{"name": "MiniMax-H3"}]},
-        {"name": "gemini", "models": [{"name": "veo-3"}]},
+        {"name": "minimax_v1", "models": [{"name": "MiniMax-Hailuo-2.3"}]},
     ]
 }
 
@@ -90,7 +89,7 @@ _H3_CONFIG = {
 def test_model_name_routes_to_its_provider():
     # The model name is the routing key: provider is reverse-looked-up from config.
     assert vid._resolve_target(_H3_CONFIG, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
-    assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
+    assert vid._resolve_target(_H3_CONFIG, None, "MiniMax-Hailuo-2.3") == ("minimax_v1", "MiniMax-Hailuo-2.3")
 
 
 def test_model_not_declared_in_config_rejected():
@@ -108,13 +107,12 @@ def test_model_without_config_falls_back_to_credential(monkeypatch):
 def test_explicit_provider_wins_and_minimax_aliases_to_v1():
     # Legacy "minimax" must keep routing to V1, not the new H3 (billing/behavior differ).
     assert vid._resolve_target({}, "minimax", None)[0] == "minimax_v1"
-    assert vid._resolve_target({}, "google", None)[0] == "gemini"
     assert vid._resolve_target({}, "minimax_h3", None)[0] == "minimax_h3"
 
 
 def test_explicit_provider_overrides_model_lookup():
     # Escape hatch: --provider skips the reverse lookup entirely.
-    assert vid._resolve_target(_H3_CONFIG, "gemini", "MiniMax-H3") == ("gemini", "MiniMax-H3")
+    assert vid._resolve_target(_H3_CONFIG, "minimax_v1", "MiniMax-H3") == ("minimax_v1", "MiniMax-H3")
 
 
 def test_env_var_selects_provider(monkeypatch):
@@ -123,7 +121,7 @@ def test_env_var_selects_provider(monkeypatch):
 
 
 def test_alias_enabled_check_accepts_legacy_config_names():
-    # P0-3: config.yaml may declare the legacy "minimax"/"google" provider names;
+    # P0-3: config.yaml may declare the legacy "minimax" provider name;
     # the enabled check must compare after alias normalization.
     cfg = {"providers": [{"name": "minimax", "models": ["MiniMax-Hailuo-2.3"]}]}
     assert vid._resolve_target(cfg, "minimax", None)[0] == "minimax_v1"
@@ -136,7 +134,7 @@ def test_alias_enabled_check_accepts_legacy_config_names():
 def test_explicit_model_beats_env_provider(monkeypatch):
     # P0-4: VIDEO_GENERATION_PROVIDER must not preempt the --model reverse lookup.
     monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "minimax_h3")
-    assert vid._resolve_target(_H3_CONFIG, None, "veo-3") == ("gemini", "veo-3")
+    assert vid._resolve_target(_H3_CONFIG, None, "MiniMax-Hailuo-2.3") == ("minimax_v1", "MiniMax-Hailuo-2.3")
 
 
 def test_env_model_beats_env_provider(monkeypatch):
@@ -151,12 +149,10 @@ def test_env_model_beats_env_provider(monkeypatch):
 def test_model_without_config_routes_to_its_provider_not_credential(monkeypatch):
     # P0-2: no config block + frontend-picked model — the model's owning provider
     # wins over credential priority, even with a foreign credential present.
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("MINIMAX_API_KEY", "shared")
     monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
     assert vid._resolve_target({}, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
     monkeypatch.delenv("MINIMAX_VIDEO_API_KEY")
-    monkeypatch.delenv("GEMINI_API_KEY")
-    monkeypatch.setenv("MINIMAX_API_KEY", "shared")
     assert vid._resolve_target({}, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
 
 
@@ -164,10 +160,10 @@ def test_config_first_provider_and_model():
     assert vid._resolve_target(_H3_CONFIG, None, None) == ("minimax_h3", "MiniMax-H3")
 
 
-def test_credential_fallback_prefers_gemini_then_v1(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    assert vid._resolve_target({}, None, None)[0] == "gemini"
-    monkeypatch.delenv("GEMINI_API_KEY")
+def test_credential_fallback_prefers_video_key_then_shared(monkeypatch):
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
+    assert vid._resolve_target({}, None, None)[0] == "minimax_h3"
+    monkeypatch.delenv("MINIMAX_VIDEO_API_KEY")
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
     assert vid._resolve_target({}, None, None)[0] == "minimax_v1"
 
@@ -535,10 +531,10 @@ def test_model_providers_covers_every_known_model():
 def test_unknown_model_without_config_rejected(monkeypatch):
     # P0-2 nail: an unowned model must not be paired with whichever credential
     # happens to be set. --provider stays the escape hatch.
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("MINIMAX_API_KEY", "k")
     with pytest.raises(ValueError, match="is not a known model"):
         vid._resolve_target({}, None, "veo-9-unreleased")
-    assert vid._resolve_target({}, "gemini", "veo-9-unreleased") == ("gemini", "veo-9-unreleased")
+    assert vid._resolve_target({}, "minimax_h3", "veo-9-unreleased") == ("minimax_h3", "veo-9-unreleased")
 
 
 def test_missing_credential_without_env_names_omits_hint():
@@ -652,74 +648,32 @@ def test_v1_task_fail_keeps_context(monkeypatch, tmp_path):
         vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="minimax_v1")
 
 
-# --- Gemini migration: non-Bearer auth + operation flow, behavior not regressed ---
-
-
-def test_gemini_uses_non_bearer_auth(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    import providers.gemini as gemini
-
-    assert gemini.PROVIDER().auth_headers() == {"x-goog-api-key": "g"}
-
-
-def test_gemini_full_flow_attaches_key_on_download(monkeypatch, tmp_path):
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    download_headers = {}
-
-    def fake_post(url, headers=None, json=None, **kw):
-        assert url.endswith(":predictLongRunning")
-        return FakeResp({"name": "operations/op1"})
-
-    def fake_get(url, headers=None, **kw):
-        if url.endswith("operations/op1"):
-            return FakeResp(
-                {
-                    "done": True,
-                    "response": {
-                        "generateVideoResponse": {
-                            "generatedSamples": [{"video": {"uri": "https://dl/v.mp4"}}]
-                        }
-                    },
-                }
-            )
-        download_headers.update(headers or {})
-        return FakeResp(content=b"VEOVIDEO")
-
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(requests, "get", fake_get)
-    out = tmp_path / "v.mp4"
-    pf = tmp_path / "p.txt"
-    pf.write_text("a cat", encoding="utf-8")
-    msg = vid.generate_video(str(pf), [], str(out), provider="gemini")
-    assert out.read_bytes() == b"VEOVIDEO"
-    assert download_headers == {"x-goog-api-key": "g"}
-    assert "successfully" in msg.lower()
-
-
 def test_poll_timeout_raises_with_handle(monkeypatch, tmp_path):
     # P2-5: timeout must raise (stderr + exit 1 upstream) and keep the task
     # handle in the message so a paid in-flight task stays recoverable.
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
     monkeypatch.setattr(
-        requests, "post", lambda *a, **k: FakeResp({"name": "operations/op9"})
+        requests, "post", lambda *a, **k: FakeResp({"task_id": "task9"})
     )
-    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp({"done": False}))
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "pending"}})
+    )
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
-    with pytest.raises(Exception, match=r"op9 timed out after"):
-        vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="gemini")
+    with pytest.raises(Exception, match=r"task9 timed out after"):
+        vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="minimax_h3")
 
 
-def test_gemini_poll_window_not_shorter_than_sandbox_kill():
+def test_h3_poll_window_not_shorter_than_sandbox_kill():
     # P2-5: the sandbox kills a run at 600s; the poll window must not give up first.
-    import providers.gemini as gemini
+    import providers.minimax_h3 as h3
 
-    p = gemini.PROVIDER
+    p = h3.PROVIDER
     assert p.poll_interval * p.poll_max_attempts >= 600
 
 
 def test_v1_poll_window_not_shorter_than_sandbox_kill():
-    # Same contract as gemini: the sandbox kills a run at 600s; never give up first.
+    # Same contract as H3: the sandbox kills a run at 600s; never give up first.
     import providers.minimax_v1 as v1
 
     p = v1.PROVIDER

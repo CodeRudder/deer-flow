@@ -30,15 +30,13 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
     )
     monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "test-key")
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     response = registry.get_video_generation_providers()
     providers = {provider.name: provider for provider in response.providers}
 
     assert response.skill_enabled is True
-    assert [provider.name for provider in response.providers] == ["minimax_h3", "gemini"]
+    assert [provider.name for provider in response.providers] == ["minimax_h3"]
     assert providers["minimax_h3"].configured is True
-    assert providers["gemini"].configured is False
     assert providers["minimax_h3"].models[0].name == "MiniMax-H3"
 
 
@@ -212,7 +210,6 @@ def test_registry_builtin_providers_use_fallback_key_chain(monkeypatch):
     providers = {provider.name: provider for provider in response.providers}
 
     assert providers["minimax_h3"].configured is True
-    assert providers["gemini"].configured is False
 
 
 def _enabled(monkeypatch, model_extra=None):
@@ -227,7 +224,7 @@ def _enabled(monkeypatch, model_extra=None):
             "get_app_config",
             lambda: SimpleNamespace(model_extra=model_extra),
         )
-    for env in ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY", "GEMINI_API_KEY"):
+    for env in ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY"):
         monkeypatch.delenv(env, raising=False)
 
 
@@ -242,41 +239,41 @@ def test_registry_falls_back_to_builtin_when_config_load_fails(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.skill_enabled is True
-    assert [p.name for p in response.providers] == ["minimax_h3", "gemini"]
+    assert [p.name for p in response.providers] == ["minimax_h3"]
 
 
 def test_registry_drops_provider_with_no_models_and_no_builtin_match(monkeypatch):
     # A custom provider without models cannot render; drop it, keep the rest.
     _enabled(
         monkeypatch,
-        {"video_generation": {"providers": [{"name": "mystery"}, {"name": "gemini"}]}},
+        {"video_generation": {"providers": [{"name": "mystery"}, {"name": "minimax_h3"}]}},
     )
 
     response = registry.get_video_generation_providers()
 
-    assert [p.name for p in response.providers] == ["gemini"]
+    assert [p.name for p in response.providers] == ["minimax_h3"]
 
 
 def test_registry_drops_provider_with_missing_or_invalid_name(monkeypatch):
     _enabled(
         monkeypatch,
-        {"video_generation": {"providers": [{}, {"name": ""}, {"name": 123}, {"name": "gemini"}]}},
+        {"video_generation": {"providers": [{}, {"name": ""}, {"name": 123}, {"name": "minimax_h3"}]}},
     )
 
     response = registry.get_video_generation_providers()
 
-    assert [p.name for p in response.providers] == ["gemini"]
+    assert [p.name for p in response.providers] == ["minimax_h3"]
 
 
 def test_registry_skips_non_dict_provider_entries(monkeypatch):
     _enabled(
         monkeypatch,
-        {"video_generation": {"providers": ["oops", 42, {"name": "gemini"}]}},
+        {"video_generation": {"providers": ["oops", 42, {"name": "minimax_h3"}]}},
     )
 
     response = registry.get_video_generation_providers()
 
-    assert [p.name for p in response.providers] == ["gemini"]
+    assert [p.name for p in response.providers] == ["minimax_h3"]
 
 
 def test_registry_ignores_non_list_providers(monkeypatch):
@@ -286,19 +283,19 @@ def test_registry_ignores_non_list_providers(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.skill_enabled is True
-    assert [p.name for p in response.providers] == ["minimax_h3", "gemini"]
+    assert [p.name for p in response.providers] == ["minimax_h3"]
 
 
 def test_registry_ignores_non_list_models(monkeypatch):
     # Invalid models fall back to the builtin provider's model list.
     _enabled(
         monkeypatch,
-        {"video_generation": {"providers": [{"name": "gemini", "models": "oops"}]}},
+        {"video_generation": {"providers": [{"name": "minimax_h3", "models": "oops"}]}},
     )
 
     response = registry.get_video_generation_providers()
 
-    assert [m.name for m in response.providers[0].models] == ["veo-3.1-generate-preview"]
+    assert [m.name for m in response.providers[0].models] == ["MiniMax-H3"]
 
 
 def test_registry_ignores_non_dict_video_generation_section(monkeypatch):
@@ -307,14 +304,14 @@ def test_registry_ignores_non_dict_video_generation_section(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.skill_enabled is True
-    assert [p.name for p in response.providers] == ["minimax_h3", "gemini"]
+    assert [p.name for p in response.providers] == ["minimax_h3"]
 
 
 def test_registry_supports_model_key_alias(monkeypatch):
     # Config may write `model:` instead of `name:` for a model entry.
     _enabled(
         monkeypatch,
-        {"video_generation": {"providers": [{"name": "gemini", "models": [{"model": "veo-custom"}]}]}},
+        {"video_generation": {"providers": [{"name": "minimax_v1", "models": [{"model": "veo-custom"}]}]}},
     )
 
     response = registry.get_video_generation_providers()

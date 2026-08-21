@@ -56,18 +56,6 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
             ),
         ),
     ),
-    _ProviderDefinition(
-        name="gemini",
-        display_name="Google Veo",
-        api_key_env="GEMINI_API_KEY",
-        models=(
-            VideoGenerationModel(
-                name="veo-3.1-generate-preview",
-                display_name="Veo 3.1",
-                description="支持文生视频与多图参考生视频",
-            ),
-        ),
-    ),
 )
 
 

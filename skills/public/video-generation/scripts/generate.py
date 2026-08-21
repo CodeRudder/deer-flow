@@ -14,7 +14,7 @@ except ImportError:
 # Old provider strings -> registry keys. The legacy "minimax" branch was Hailuo
 # V1, so it must keep routing to minimax_v1 (not the new H3) to avoid silently
 # changing behavior/billing for callers relying on the old env var.
-_PROVIDER_ALIASES = {"minimax": "minimax_v1", "google": "gemini"}
+_PROVIDER_ALIASES = {"minimax": "minimax_v1"}
 
 
 def _find_config_path() -> Path | None:
@@ -144,7 +144,7 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
         selected = _first_configured_provider(config) or _credential_fallback(requested_model)
     if not selected:
         raise ValueError(
-            "No video provider resolved. Set GEMINI_API_KEY or MINIMAX_VIDEO_API_KEY "
+            "No video provider resolved. Set MINIMAX_VIDEO_API_KEY "
             "(or the shared MINIMAX_API_KEY), declare video_generation.providers[] in "
             "config.yaml, or pass --model/--provider."
         )
@@ -153,7 +153,7 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     selected = _PROVIDER_ALIASES.get(selected, selected)
 
     # Compare after alias normalization on both sides: config.yaml may declare
-    # the legacy "minimax"/"google" names, which must stay acceptable aliases.
+    # the legacy "minimax" name, which must stay an acceptable alias.
     configured = _configured_provider_names(config)
     configured_keys = {_PROVIDER_ALIASES.get(name, name) for name in configured}
     if configured_keys and selected not in configured_keys:
@@ -170,8 +170,8 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
 def _credential_fallback(requested_model: str | None) -> str | None:
     """No config/override: pick by available credential. A known model routes to
     its owning provider (never a cross-provider pairing); otherwise credential
-    priority decides — Gemini keeps the old default; a dedicated video key
-    implies H3; the shared key keeps old behavior (legacy minimax_v1)."""
+    priority decides — a dedicated video key implies H3; the shared key keeps
+    old behavior (legacy minimax_v1)."""
     if requested_model:
         owner = MODEL_PROVIDERS.get(requested_model)
         if owner:
@@ -181,8 +181,6 @@ def _credential_fallback(requested_model: str | None) -> str | None:
             f"(known: {', '.join(sorted(MODEL_PROVIDERS))}). Declare it in config.yaml "
             "video_generation.providers[].models[], or pass --provider explicitly."
         )
-    if os.getenv("GEMINI_API_KEY"):
-        return "gemini"
     if os.getenv("MINIMAX_VIDEO_API_KEY"):
         return "minimax_h3"
     if os.getenv("MINIMAX_API_KEY"):
@@ -281,7 +279,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--provider",
         default=None,
-        help="Video provider, e.g. minimax_h3, gemini, minimax_v1",
+        help="Video provider, e.g. minimax_h3, minimax_v1",
     )
     parser.add_argument("--model", default=None, help="Provider model name")
     parser.add_argument(

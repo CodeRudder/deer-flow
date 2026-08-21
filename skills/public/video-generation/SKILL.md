@@ -32,7 +32,7 @@ below (translate to the user's language; all four parts must survive), then wait
 > A one-sentence description is enough — subject + action + setting, e.g. "a
 > ginger cat stretching on a sunlit windowsill". Everything else has a default
 > (MiniMax H3: duration 4–15 s, default 4 · aspect ratio 16:9, T2V only ·
-> resolution 768P; gemini / minimax_v1 use their own model defaults) —
+> resolution 768P; minimax_v1 uses its own model defaults) —
 > mention what you care about, skip the rest. You may upload images as first
 > frame / last frame / first+last, or as character/style reference (up to 9).
 > No professional prompt needed — I will expand your one-liner into a full
@@ -40,8 +40,7 @@ below (translate to the user's language; all four parts must survive), then wait
 
 `options`: text only · first-frame image · last-frame image · first + last
 frame · character/style reference · help me brainstorm an idea. Offer only modes
-the selected provider supports (gemini: multi-image reference; minimax_v1:
-first-frame only).
+the selected provider supports (minimax_v1: first-frame only).
 
 Once the reply contains any subject + action (even a bare "a cat video"), that
 is sufficient: pick the mode, apply defaults to everything unspecified, state
@@ -189,7 +188,7 @@ Parameters:
 - `--model`: Model name, e.g. `MiniMax-H3`. This is the routing key — the provider
   that owns the model is looked up from `config.yaml`, so normally this is the only
   one you pass.
-- `--provider`: Escape hatch (`minimax_h3`, `gemini`, `minimax_v1`) for debugging or
+- `--provider`: Escape hatch (`minimax_h3`, `minimax_v1`) for debugging or
   for a model not declared in `config.yaml`; skips the model lookup.
 - `--resolution`: `768P` (cheaper, default) or `2K` for MiniMax H3.
 - `--duration`: Seconds, 4–15 for MiniMax H3. Default 4.
@@ -348,10 +347,9 @@ it isn't obvious.
 | Provider | Resolution | Duration | Aspect ratio | Image roles | Audio |
 |---|---|---|---|---|---|
 | `minimax_h3` | 768P / 2K | 4–15 s | T2V: `--aspect-ratio`; with any image: from image | first_frame / last_frame / first_last / reference (1–9) | Native 32 kHz stereo |
-| `gemini` | model default | model default | model default (ignored) | reference asset(s) only | none |
 | `minimax_v1` | model default | model default | ignored | first frame only | none |
 
-Only MiniMax H3 supports `--image-role`; passing it to `gemini` or `minimax_v1`
+Only MiniMax H3 supports `--image-role`; passing it to `minimax_v1`
 is rejected with an error, so switch provider or drop the flag. Frame roles
 (first/last) and `reference` are mutually exclusive on H3. Reference mode takes
 up to 9 images (upstream limit); reference video/audio
@@ -400,16 +398,14 @@ rather than a guess.
 `--provider` (or `VIDEO_GENERATION_PROVIDER`) is an escape hatch that skips that
 lookup. With neither a model nor a provider, resolution falls back to the first
 provider in `video_generation.providers[]`, then to the credential fallback
-(`GEMINI_API_KEY` → `gemini`, else `MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else
-shared `MINIMAX_API_KEY` → `minimax_v1`).
+(`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else shared `MINIMAX_API_KEY` →
+`minimax_v1`).
 
 - `minimax_h3` — MiniMax H3 via the V2 API (recommended). 768P/2K, 4-15s, native
   stereo audio. T2V honors `--aspect-ratio`; for I2V the first reference image is
   sent as the first frame and the ratio follows that image. Env:
   `MINIMAX_VIDEO_API_KEY` (preferred) or the shared `MINIMAX_API_KEY`; optional
   `MINIMAX_API_HOST` (default `https://api.minimaxi.com`).
-- `gemini` — Google Veo (`x-goog-api-key` auth); reference images are passed as
-  asset images. Env: `GEMINI_API_KEY`.
 - `minimax_v1` — legacy Hailuo V1 (compatibility only). The old provider name
   `minimax` is an alias for it, so `VIDEO_GENERATION_PROVIDER=minimax` keeps the
   old behavior. Env: same credential resolution as `minimax_h3`; optional

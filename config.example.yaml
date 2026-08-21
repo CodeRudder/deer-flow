@@ -1230,9 +1230,9 @@ video_generation:
   # Providers shown by GET /api/video-generation/providers.
   # The first provider and its first model are treated as the default order.
   # If this section is removed, the skill falls back by available credential:
-  # a known model name routes to its owning provider; otherwise gemini if
-  # GEMINI_API_KEY, minimax_h3 if MINIMAX_VIDEO_API_KEY, or legacy minimax_v1
-  # when only the shared MINIMAX_API_KEY is set.
+  # a known model name routes to its owning provider; otherwise minimax_h3
+  # if MINIMAX_VIDEO_API_KEY, or legacy minimax_v1 when only the shared
+  # MINIMAX_API_KEY is set.
   # `api_key` can reference an environment variable; secret values are never returned.
   providers:
     - name: minimax_h3
@@ -1245,13 +1245,7 @@ video_generation:
         - name: MiniMax-H3
           display_name: MiniMax H3
           description: V2 接口，768P/2K + 原生 32kHz 立体声，支持文生视频与首帧/尾帧/首尾帧/参考图生视频（参考图 ≤9 张）
-    - name: gemini
-      display_name: Google Veo
-      api_key: $GEMINI_API_KEY
-      models:
-        - name: veo-3.1-generate-preview
-          display_name: Veo 3.1
-          description: 支持文生视频与多图参考生视频
+
   # 旧 minimax_v1（Hailuo V1 三步流）仅作兼容保留，不推荐；经 VIDEO_GENERATION_PROVIDER 环境变量回退可达
 
 # ============================================================================
