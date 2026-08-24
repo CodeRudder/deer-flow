@@ -204,6 +204,11 @@ def _read_prompt(prompt_file: str) -> str:
     return prompt_text
 
 
+# The regeneration request body caps at 64 MB and base64 inflates ~33%, so a
+# local source above ~45 MB cannot fit; public URLs bypass the limit.
+_UPSCALE_MAX_SOURCE_BYTES = 45 * 1024 * 1024
+
+
 def generate_video(
     prompt_file: str,
     reference_images: list[str],
@@ -214,6 +219,7 @@ def generate_video(
     resolution: str | None = None,
     duration: int | None = None,
     image_role: str | None = None,
+    upscale_video: str | None = None,
 ) -> str:
     output_path = Path(output_file)
     if output_path.exists():
@@ -221,6 +227,25 @@ def generate_video(
             f"Output file already exists and will not be overwritten: {output_file}. "
             "Choose a unique output filename."
         )
+
+    if upscale_video and (resolution or duration or aspect_ratio):
+        raise ValueError(
+            "--upscale-video runs the regeneration endpoint: resolution is fixed 2K "
+            "and duration/aspect-ratio follow the source video; drop --resolution/"
+            "--duration/--aspect-ratio"
+        )
+    if upscale_video and not upscale_video.startswith(("http://", "https://")):
+        source = Path(upscale_video)
+        if not source.exists():
+            raise FileNotFoundError(
+                f"--upscale-video source not found: {upscale_video}"
+            )
+        if source.stat().st_size > _UPSCALE_MAX_SOURCE_BYTES:
+            raise ValueError(
+                f"--upscale-video source is {source.stat().st_size / 1024 / 1024:.0f} MB; "
+                "the API caps request bodies at 64 MB and base64 adds ~33%. Shorten "
+                "the source video or host it at a public URL."
+            )
 
     config = _load_video_generation_config()
     selected_provider, selected_model = _resolve_target(config, provider, model)
@@ -234,6 +259,7 @@ def generate_video(
         "duration": duration,
         "ratio": aspect_ratio,
         "image_role": image_role,
+        "upscale_video": upscale_video,
     }
     params = {k: v for k, v in params.items() if v is not None}
     if params.get("image_role") and not reference_images:
@@ -250,7 +276,32 @@ def generate_video(
             f"Video generation provider '{selected_provider}' does not support "
             f"--image-role (supported: {supporters}). Switch provider or drop --image-role."
         )
-    return adapter.generate(prompt_text, reference_images, output_file, params)
+    if "upscale_video" in params and "upscale_video" not in adapter.supported_params:
+        supporters = ", ".join(
+            sorted(n for n, c in PROVIDERS.items() if "upscale_video" in c.supported_params)
+        )
+        raise ValueError(
+            f"Video generation provider '{selected_provider}' does not support "
+            f"--upscale-video (supported: {supporters})."
+        )
+    return adapter.generate(
+        prompt_text, reference_images, output_file, params, prompt_file=prompt_file
+    )
+
+
+def cancel_task(
+    task_id: str,
+    provider: str | None = None,
+    model: str | None = None,
+    output_file: str | None = None,
+) -> str:
+    """Cancel a still-queued generation task; finished tasks are never touched
+    (see the provider cancel hook). output_file, when given, also updates the
+    run's sidecar record."""
+    config = _load_video_generation_config()
+    selected_provider, selected_model = _resolve_target(config, provider, model)
+    adapter = PROVIDERS[selected_provider](model=selected_model)
+    return adapter.cancel(task_id, output_file=output_file)
 
 
 if __name__ == "__main__":
@@ -260,7 +311,7 @@ if __name__ == "__main__":
         description="Generate videos using a configured provider"
     )
     parser.add_argument(
-        "--prompt-file", required=True, help="Absolute path to JSON prompt file"
+        "--prompt-file", required=False, default=None, help="Absolute path to JSON prompt file"
     )
     parser.add_argument(
         "--reference-images",
@@ -269,7 +320,10 @@ if __name__ == "__main__":
         help="Absolute paths to reference images / first frame (space-separated)",
     )
     parser.add_argument(
-        "--output-file", required=True, help="Output path for generated video"
+        "--output-file",
+        required=False,
+        default=None,
+        help="Output path for generated video",
     )
     parser.add_argument(
         "--aspect-ratio",
@@ -304,22 +358,58 @@ if __name__ == "__main__":
             "are mutually exclusive."
         ),
     )
+    parser.add_argument(
+        "--upscale-video",
+        default=None,
+        help=(
+            "Path/URL to an existing 768P output to regenerate as 2K (MiniMax H3 "
+            "regeneration endpoint). Reuses --prompt-file/--reference-images/"
+            "--image-role/--model from the original run; --output-file must be "
+            "a NEW path."
+        ),
+    )
+    parser.add_argument(
+        "--cancel",
+        default=None,
+        metavar="TASK_ID",
+        help=(
+            "Cancel a still-queued task (state is checked first; finished tasks "
+            "are never deleted). Optional --output-file also updates the run's "
+            "sidecar record."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        print(
-            generate_video(
-                args.prompt_file,
-                args.reference_images,
-                args.output_file,
-                args.aspect_ratio,
-                args.provider,
-                args.model,
-                args.resolution,
-                args.duration,
-                args.image_role,
+        if args.cancel:
+            print(cancel_task(args.cancel, args.provider, args.model, args.output_file))
+        else:
+            missing = [
+                name
+                for name, value in (
+                    ("--prompt-file", args.prompt_file),
+                    ("--output-file", args.output_file),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"{', '.join(missing)} is required unless --cancel is used"
+                )
+            print(
+                generate_video(
+                    args.prompt_file,
+                    args.reference_images,
+                    args.output_file,
+                    args.aspect_ratio,
+                    args.provider,
+                    args.model,
+                    args.resolution,
+                    args.duration,
+                    args.image_role,
+                    args.upscale_video,
+                )
             )
-        )
     except Exception as e:
         print(f"Error while generating video: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
