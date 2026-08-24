@@ -232,6 +232,7 @@ class RunRepository(RunStore):
         middleware_tokens: int = 0,
         token_usage_by_model: dict[str, dict[str, int]] | None = None,
         image_generation_count: int = 0,
+        video_generation_count: int = 0,
         message_count: int = 0,
         last_ai_message: str | None = None,
         first_human_message: str | None = None,
@@ -256,6 +257,7 @@ class RunRepository(RunStore):
                 "subagent_tokens": subagent_tokens,
                 "middleware_tokens": middleware_tokens,
                 "image_generation_count": image_generation_count,
+                "video_generation_count": video_generation_count,
                 "message_count": message_count,
             }.items():
                 setattr(row, key, max(int(getattr(row, key) or 0), int(value or 0)))
@@ -284,6 +286,7 @@ class RunRepository(RunStore):
         middleware_tokens: int | None = None,
         token_usage_by_model: dict[str, dict[str, int]] | None = None,
         image_generation_count: int | None = None,
+        video_generation_count: int | None = None,
         message_count: int | None = None,
         last_ai_message: str | None = None,
         first_human_message: str | None = None,
@@ -305,6 +308,7 @@ class RunRepository(RunStore):
                 "subagent_tokens": subagent_tokens,
                 "middleware_tokens": middleware_tokens,
                 "image_generation_count": image_generation_count,
+                "video_generation_count": video_generation_count,
                 "message_count": message_count,
             }
             for key, value in optional_counters.items():

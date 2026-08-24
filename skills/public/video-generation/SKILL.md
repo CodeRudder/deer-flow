@@ -379,8 +379,11 @@ This skill does NOT edit an existing video — there is no video-editing capabil
   **refuses to overwrite** an existing file and errors out before calling the
   provider, so a reused filename costs no quota — but it does waste a turn. Keep
   versions to compare.
-- **Each run costs quota** (shares the image-generation usage counter), unlike
-  editing text — so change the prompt deliberately rather than re-running blindly.
+- **Each run costs quota** (charged against the video-generation usage counter,
+  a separate allowance from image generation; admins set weekly/monthly limits
+  per user), unlike editing text — so change the prompt deliberately rather
+  than re-running blindly. When the allowance is exhausted the command is
+  rejected before dispatch.
 
 ## Notes
 

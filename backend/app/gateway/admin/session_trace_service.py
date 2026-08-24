@@ -127,22 +127,36 @@ class SessionTraceService:
                         func.coalesce(func.sum(RunRow.total_tokens), 0),
                         func.coalesce(func.sum(RunRow.llm_call_count), 0),
                         func.coalesce(func.sum(RunRow.image_generation_count), 0),
+                        func.coalesce(func.sum(RunRow.video_generation_count), 0),
                         func.max(RunRow.created_at),
                     ).where(*where)
                 )
             ).one()
-            rows = (await session.execute(select(RunRow.created_at, RunRow.total_tokens, RunRow.llm_call_count, RunRow.image_generation_count, RunRow.model_name, RunRow.token_usage_by_model).where(*where))).all()
+            rows = (
+                await session.execute(
+                    select(
+                        RunRow.created_at,
+                        RunRow.total_tokens,
+                        RunRow.llm_call_count,
+                        RunRow.image_generation_count,
+                        RunRow.video_generation_count,
+                        RunRow.model_name,
+                        RunRow.token_usage_by_model,
+                    ).where(*where)
+                )
+            ).all()
 
-        thread_count, run_count, tokens, requests, images, last_active = summary
+        thread_count, run_count, tokens, requests, images, videos, last_active = summary
         buckets: dict[str, dict[str, int]] = {}
         by_model: dict[str, int] = {}
-        for created_at, run_tokens, calls, run_images, model_name, usage in rows:
+        for created_at, run_tokens, calls, run_images, run_videos, model_name, usage in rows:
             aware = created_at.replace(tzinfo=UTC) if created_at.tzinfo is None else created_at
             key = aware.astimezone(APP_TZ).date().isoformat()
-            bucket = buckets.setdefault(key, {"tokens": 0, "model_requests": 0, "image_generations": 0})
+            bucket = buckets.setdefault(key, {"tokens": 0, "model_requests": 0, "image_generations": 0, "video_generations": 0})
             bucket["tokens"] += int(run_tokens or 0)
             bucket["model_requests"] += int(calls or 0)
             bucket["image_generations"] += int(run_images or 0)
+            bucket["video_generations"] += int(run_videos or 0)
             if usage:
                 for model, data in usage.items():
                     by_model[model or "unknown"] = by_model.get(model or "unknown", 0) + int(data.get("total_tokens") or 0)
@@ -151,7 +165,7 @@ class SessionTraceService:
         trends = []
         for index in range(30):
             key = (start.date() + timedelta(days=index)).isoformat()
-            trends.append({"date": key, **buckets.get(key, {"tokens": 0, "model_requests": 0, "image_generations": 0})})
+            trends.append({"date": key, **buckets.get(key, {"tokens": 0, "model_requests": 0, "image_generations": 0, "video_generations": 0})})
         model_total = sum(by_model.values()) or 1
         models = [{"model": model, "tokens": value, "share": value / model_total} for model, value in by_model.items()]
         models.sort(key=lambda item: item["tokens"], reverse=True)
@@ -164,6 +178,7 @@ class SessionTraceService:
                 "total_tokens": int(tokens or 0),
                 "model_requests": int(requests or 0),
                 "image_generations": int(images or 0),
+                "video_generations": int(videos or 0),
             },
             "trends": trends,
             "models": models,
@@ -219,6 +234,7 @@ class SessionTraceService:
                     "total_tokens": row.total_tokens,
                     "llm_call_count": row.llm_call_count,
                     "image_generation_count": row.image_generation_count,
+                    "video_generation_count": row.video_generation_count,
                     "token_usage_by_model": row.token_usage_by_model or {},
                     "error": row.error,
                 }

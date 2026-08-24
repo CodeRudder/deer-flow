@@ -4,6 +4,11 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.gateway.admin.periods import PeriodWindow
+from app.gateway.admin.schemas import (
+    UsageSummaryResponse,
+    UsageTrendsResponse,
+    UsageUsersResponse,
+)
 from app.gateway.admin.usage_service import AdminUsageService, _session_title
 from deerflow.persistence.base import Base
 from deerflow.persistence.run.model import RunRow
@@ -47,6 +52,7 @@ async def test_usage_includes_terminal_failure_states_and_excludes_end_boundary(
                         total_tokens=40,
                         llm_call_count=1,
                         image_generation_count=1,
+                        video_generation_count=2,
                         model_name="legacy-model",
                     ),
                     RunRow(
@@ -85,6 +91,7 @@ async def test_usage_includes_terminal_failure_states_and_excludes_end_boundary(
         assert summary["total_tokens"] == 140
         assert summary["model_requests"] == 3
         assert summary["image_generations"] == 1
+        assert summary["video_generations"] == 2
         assert summary["run_count"] == 3
         by_model = {item["model"]: item for item in models["items"]}
         assert by_model["legacy-model"]["requests"] is None
@@ -173,6 +180,7 @@ async def test_usage_users_aggregates_three_metrics_and_supports_ranking(tmp_pat
                         created_at=datetime(2026, 7, 7, tzinfo=UTC),
                         total_tokens=500,
                         llm_call_count=10,
+                        video_generation_count=3,
                     ),
                     RunRow(
                         run_id="run-c",
@@ -191,6 +199,7 @@ async def test_usage_users_aggregates_three_metrics_and_supports_ranking(tmp_pat
         assert [item["user_id"] for item in result["rankings"]["tokens"]] == ["user-a", "user-b", "user-c"]
         assert [item["user_id"] for item in result["rankings"]["requests"]] == ["user-b", "user-a", "user-c"]
         assert [item["user_id"] for item in result["rankings"]["images"]] == ["user-c", "user-a", "user-b"]
+        assert [item["user_id"] for item in result["rankings"]["videos"]] == ["user-b", "user-a", "user-c"]
         assert result["rankings"]["requests"][0] == {
             "rank": 1,
             "user_id": "user-b",
@@ -201,5 +210,50 @@ async def test_usage_users_aggregates_three_metrics_and_supports_ranking(tmp_pat
         assert len(limited["rankings"]["tokens"]) == 2
         assert len(limited["rankings"]["requests"]) == 2
         assert len(limited["rankings"]["images"]) == 2
+        assert len(limited["rankings"]["videos"]) == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_usage_payloads_validate_against_response_models(tmp_path):
+    """Service output must satisfy the FastAPI response models — pins the
+    contract so adding a service key without the matching schema field (which
+    surfaces as a runtime ResponseValidationError) fails here first."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'schema.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    window = PeriodWindow(
+        period="month",
+        period_start=datetime(2026, 7, 1, tzinfo=UTC),
+        period_end=datetime(2026, 8, 1, tzinfo=UTC),
+        label="2026-07",
+    )
+    try:
+        async with sf() as session:
+            session.add_all(
+                [
+                    UserRow(id="user-a", email="a@example.com", system_role="user"),
+                    RunRow(
+                        run_id="run-a",
+                        thread_id="thread-a",
+                        user_id="user-a",
+                        status="success",
+                        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+                        total_tokens=100,
+                        llm_call_count=1,
+                        image_generation_count=2,
+                        video_generation_count=3,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        service = AdminUsageService(sf)
+        UsageSummaryResponse(**await service.usage_summary(window=window))
+        UsageTrendsResponse(**await service.usage_trends(window=window))
+        users = UsageUsersResponse(**await service.usage_users(window=window, limit=20))
+        assert set(users.rankings) == {"tokens", "requests", "images", "videos"}
     finally:
         await engine.dispose()

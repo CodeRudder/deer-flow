@@ -48,7 +48,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "company_20260716_user_mgmt"
+HEAD = "company_20260820_video_quota"
 BASELINE = "0001_baseline"
 
 
@@ -64,6 +64,11 @@ async def _table_names(engine) -> set[str]:
 async def _runs_columns(engine) -> set[str]:
     async with engine.connect() as conn:
         return await conn.run_sync(lambda c: {col["name"] for col in sa.inspect(c).get_columns("runs")})
+
+
+async def _table_columns(engine, table: str) -> set[str]:
+    async with engine.connect() as conn:
+        return await conn.run_sync(lambda c: {col["name"] for col in sa.inspect(c).get_columns(table)})
 
 
 async def _runs_column_meta(engine, column_name: str) -> dict:
@@ -145,6 +150,7 @@ async def test_empty_branch_creates_all_and_stamps_head(tmp_path: Path) -> None:
             assert required in tables, f"missing table: {required}"
         assert "token_usage_by_model" in await _runs_columns(engine)
         assert "image_generation_count" in await _runs_columns(engine)
+        assert "video_generation_count" in await _runs_columns(engine)
         assert await _alembic_version(engine) == HEAD
     finally:
         await engine.dispose()
@@ -475,6 +481,9 @@ async def test_admin_quota_schema_exists_after_legacy_upgrade(tmp_path: Path) ->
         assert "user_quota_usage_periods" in tables
         assert "user_quota_periods" in tables
         assert "image_generation_count" in await _runs_columns(engine)
+        assert {"video_enforced", "video_limit"} <= await _table_columns(engine, "quota_scopes")
+        assert {"video_enforced_snapshot", "video_limit_snapshot", "video_used"} <= await _table_columns(engine, "user_quota_usage_periods")
+        assert "video_generation_count" in await _runs_columns(engine)
         assert await _alembic_version(engine) == HEAD
     finally:
         await engine.dispose()

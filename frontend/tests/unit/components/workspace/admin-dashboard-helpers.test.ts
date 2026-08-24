@@ -7,6 +7,7 @@ import {
   prioritizeQuotaModelGroups,
   quotaProgressTone,
   smoothTrendPath,
+  type TrendPoint,
 } from "@/components/workspace/admin/admin-dashboard-helpers";
 
 describe("buildDonutSegments", () => {
@@ -86,7 +87,15 @@ describe("buildTrendCoordinates", () => {
   it("centers a single point and keeps it inside the plot", () => {
     expect(
       buildTrendCoordinates(
-        [{ label: "10:00", tokens: 50, requests: 2, images: 1 }],
+        [
+          {
+            label: "10:00",
+            tokens: 50,
+            requests: 2,
+            images: 1,
+            videos: 0,
+          },
+        ],
         "tokens",
       ),
     ).toEqual([{ x: 388, y: 24 }]);
@@ -94,9 +103,9 @@ describe("buildTrendCoordinates", () => {
 
   it("spreads points across the plot and scales each metric independently", () => {
     const points = [
-      { label: "Mon", tokens: 0, requests: 10, images: 2 },
-      { label: "Tue", tokens: 100, requests: 5, images: 4 },
-      { label: "Wed", tokens: 50, requests: 0, images: 1 },
+      { label: "Mon", tokens: 0, requests: 10, images: 2, videos: 0 },
+      { label: "Tue", tokens: 100, requests: 5, images: 4, videos: 3 },
+      { label: "Wed", tokens: 50, requests: 0, images: 1, videos: 1 },
     ];
 
     expect(buildTrendCoordinates(points, "tokens")).toEqual([
@@ -108,6 +117,22 @@ describe("buildTrendCoordinates", () => {
       x: 48,
       y: 24,
     });
+    expect(buildTrendCoordinates(points, "videos")[1]).toEqual({
+      x: 388,
+      y: 24,
+    });
+  });
+
+  it("keeps coordinates finite when a metric key is missing (older backend)", () => {
+    const legacyPoints = [
+      { label: "Mon", tokens: 10, requests: 1, images: 1 },
+      { label: "Tue", tokens: 20, requests: 2, images: 2 },
+    ] as TrendPoint[];
+
+    for (const coordinate of buildTrendCoordinates(legacyPoints, "videos")) {
+      expect(Number.isFinite(coordinate.x)).toBe(true);
+      expect(Number.isFinite(coordinate.y)).toBe(true);
+    }
   });
 });
 

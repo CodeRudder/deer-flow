@@ -61,7 +61,11 @@ export type QuotaStatus =
   | "warning"
   | "exceeded"
   | "unlimited";
-export type SessionMetric = "tokens" | "requests" | "images";
+export type SessionMetric =
+  | "tokens"
+  | "requests"
+  | "images"
+  | "videos";
 
 export interface PeriodInfo {
   period: string;
@@ -78,6 +82,7 @@ export interface UsageSummary {
   total_output_tokens: number;
   model_requests: number;
   image_generations: number;
+  video_generations: number;
   run_count: number;
   active_users: number;
   running_runs: number;
@@ -88,6 +93,7 @@ export interface UsageTrendPoint {
   tokens: number;
   requests: number;
   images: number;
+  videos: number;
 }
 
 export interface UsageTrends {
@@ -123,6 +129,7 @@ export interface UsageUsers {
     tokens: UsageUserRank[];
     requests: UsageUserRank[];
     images: UsageUserRank[];
+    videos: UsageUserRank[];
   };
 }
 
@@ -153,6 +160,7 @@ export interface QuotaScopePolicy {
   period_type: "weekly" | "monthly";
   requests: { enforced: boolean; limit: number | null } | null;
   images: { enforced: boolean; limit: number | null } | null;
+  videos: { enforced: boolean; limit: number | null } | null;
   policy_version: number;
 }
 
@@ -160,7 +168,7 @@ export interface QuotaScope {
   id: string;
   code: string;
   name: string;
-  resource_type: "model" | "image_generation";
+  resource_type: "model" | "image_generation" | "video_generation";
   match_rules: { exact: string[]; prefix: string[] };
   matched_models: Array<{
     name: string;
@@ -206,6 +214,7 @@ export interface UserQuotaItem {
   token_observation: { used: number } | null;
   requests: QuotaMetric | null;
   images: QuotaMetric | null;
+  videos: QuotaMetric | null;
   scope_policy_version: number;
   temporary_override: {
     overridden_at: string | null;
@@ -223,6 +232,7 @@ export interface QuotaUser {
   role: string;
   status: Exclude<QuotaStatus, "all">;
   image_generation: UserQuotaItem | null;
+  video_generation: UserQuotaItem | null;
   model_groups: {
     enabled: number;
     warning: number;
@@ -270,12 +280,13 @@ export interface QuotaPeriodsResponse {
 export interface QuotaScopePayload {
   code?: string;
   name: string;
-  resource_type?: "model" | "image_generation";
+  resource_type?: "model" | "image_generation" | "video_generation";
   match_rules: { exact: string[]; prefix: string[] };
   default_policy: {
     period_type: "weekly" | "monthly";
     requests: { enforced: boolean; limit: number | null } | null;
     images: { enforced: boolean; limit: number | null } | null;
+    videos: { enforced: boolean; limit: number | null } | null;
   };
   enabled: boolean;
 }
@@ -283,6 +294,7 @@ export interface QuotaScopePayload {
 export interface QuotaOverridePayload {
   requests?: { enforced: boolean; limit: number | null } | null;
   images?: { enforced: boolean; limit: number | null } | null;
+  videos?: { enforced: boolean; limit: number | null } | null;
   reason?: string;
 }
 
@@ -311,12 +323,14 @@ export interface TraceUserOverview {
     total_tokens: number;
     model_requests: number;
     image_generations: number;
+    video_generations: number;
   };
   trends: Array<{
     date: string;
     tokens: number;
     model_requests: number;
     image_generations: number;
+    video_generations: number;
   }>;
   models: Array<{ model: string; tokens: number; share: number }>;
 }
@@ -342,6 +356,7 @@ export interface TraceRun {
   total_tokens: number;
   llm_call_count: number;
   image_generation_count: number;
+  video_generation_count: number;
   token_usage_by_model: Record<string, unknown>;
   error: string | null;
 }

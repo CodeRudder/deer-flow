@@ -26,16 +26,19 @@ class QuotaScopeRow(Base):
     request_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     image_enforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     image_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    video_enforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    video_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     policy_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
     updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
-        CheckConstraint("resource_type IN ('model', 'image_generation')", name="ck_quota_scope_resource_type"),
+        CheckConstraint("resource_type IN ('model', 'image_generation', 'video_generation')", name="ck_quota_scope_resource_type"),
         CheckConstraint("period_type IN ('weekly', 'monthly')", name="ck_quota_scope_period_type"),
         CheckConstraint("request_limit IS NULL OR request_limit >= 0", name="ck_quota_scope_request_limit"),
         CheckConstraint("image_limit IS NULL OR image_limit >= 0", name="ck_quota_scope_image_limit"),
+        CheckConstraint("video_limit IS NULL OR video_limit >= 0", name="ck_quota_scope_video_limit"),
         CheckConstraint("policy_version >= 1", name="ck_quota_scope_policy_version"),
     )
 
@@ -57,6 +60,9 @@ class UserQuotaUsagePeriodRow(Base):
     image_enforced_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     image_limit_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     image_used: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default=text("0"))
+    video_enforced_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    video_limit_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    video_used: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default=text("0"))
     is_overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     overridden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     overridden_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -71,5 +77,5 @@ class UserQuotaUsagePeriodRow(Base):
         Index("ix_user_quota_usage_scope_period", "quota_scope_id", "period_start"),
         Index("ix_user_quota_usage_policy_sync", "quota_scope_id", "period_start", "is_overridden"),
         CheckConstraint("period_type IN ('weekly', 'monthly')", name="ck_user_quota_usage_period_type"),
-        CheckConstraint("token_used >= 0 AND request_used >= 0 AND image_used >= 0", name="ck_user_quota_usage_nonnegative"),
+        CheckConstraint("token_used >= 0 AND request_used >= 0 AND image_used >= 0 AND video_used >= 0", name="ck_user_quota_usage_nonnegative"),
     )

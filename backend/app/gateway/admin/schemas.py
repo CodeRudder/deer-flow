@@ -35,6 +35,7 @@ class UsageSummaryResponse(BaseModel):
     total_output_tokens: int
     model_requests: int
     image_generations: int
+    video_generations: int
     run_count: int
     active_users: int
     running_runs: int
@@ -45,6 +46,7 @@ class UsageTrendPoint(BaseModel):
     tokens: int
     requests: int
     images: int
+    videos: int
 
 
 class UsageTrendsResponse(BaseModel):
@@ -63,7 +65,7 @@ class UsageSession(BaseModel):
 
 class UsageSessionsResponse(BaseModel):
     period: PeriodInfo
-    metric: Literal["tokens", "requests", "images"]
+    metric: Literal["tokens", "requests", "images", "videos"]
     items: list[UsageSession]
 
 
@@ -76,7 +78,7 @@ class UsageUserRank(BaseModel):
 
 class UsageUsersResponse(BaseModel):
     period: PeriodInfo
-    rankings: dict[Literal["tokens", "requests", "images"], list[UsageUserRank]]
+    rankings: dict[Literal["tokens", "requests", "images", "videos"], list[UsageUserRank]]
 
 
 class UsageModel(BaseModel):
@@ -175,6 +177,7 @@ class TraceOverviewSummary(BaseModel):
     total_tokens: int
     model_requests: int
     image_generations: int
+    video_generations: int
 
 
 class TraceTrendPoint(BaseModel):
@@ -182,6 +185,7 @@ class TraceTrendPoint(BaseModel):
     tokens: int
     model_requests: int
     image_generations: int
+    video_generations: int
 
 
 class TraceModelUsage(BaseModel):
@@ -219,6 +223,7 @@ class TraceRunItem(BaseModel):
     total_tokens: int
     llm_call_count: int
     image_generation_count: int
+    video_generation_count: int
     token_usage_by_model: dict[str, Any]
     error: str | None
 

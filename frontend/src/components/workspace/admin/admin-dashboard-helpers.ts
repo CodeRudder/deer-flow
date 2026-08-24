@@ -3,9 +3,10 @@ export type TrendPoint = {
   tokens: number;
   requests: number;
   images: number;
+  videos: number;
 };
 
-export type TrendMetric = "tokens" | "requests" | "images";
+export type TrendMetric = "tokens" | "requests" | "images" | "videos";
 
 export type ChartCoordinate = {
   x: number;
@@ -115,14 +116,16 @@ export function buildTrendCoordinates(
   const { left, right, top, bottom } = TREND_CHART_BOUNDS;
   const width = right - left;
   const height = bottom - top;
-  const max = Math.max(...points.map((point) => point[metric]), 1);
+  // `?? 0` keeps coordinates finite when an older backend still omits newer
+  // metric keys (e.g. videos) from its trend payload.
+  const max = Math.max(...points.map((point) => point[metric] ?? 0), 1);
 
   return points.map((point, index) => ({
     x:
       points.length === 1
         ? left + width / 2
         : left + index * (width / Math.max(1, points.length - 1)),
-    y: bottom - (point[metric] / max) * height,
+    y: bottom - ((point[metric] ?? 0) / max) * height,
   }));
 }
 

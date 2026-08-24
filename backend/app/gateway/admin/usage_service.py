@@ -30,11 +30,12 @@ class AdminUsageService:
                 func.coalesce(func.sum(RunRow.total_output_tokens), 0),
                 func.coalesce(func.sum(RunRow.llm_call_count), 0),
                 func.coalesce(func.sum(RunRow.image_generation_count), 0),
+                func.coalesce(func.sum(RunRow.video_generation_count), 0),
                 func.count(RunRow.run_id),
                 func.count(func.distinct(RunRow.user_id)),
                 func.coalesce(func.sum(case((RunRow.status.in_(("pending", "running")), 1), else_=0)), 0),
             ).where(_runs_in_window(window))
-            tokens, input_tokens, output_tokens, requests, images, runs, active_users, running = (await session.execute(totals_stmt)).one()
+            tokens, input_tokens, output_tokens, requests, images, videos, runs, active_users, running = (await session.execute(totals_stmt)).one()
         return {
             "period": period_response(window),
             "total_tokens": int(tokens or 0),
@@ -42,6 +43,7 @@ class AdminUsageService:
             "total_output_tokens": int(output_tokens or 0),
             "model_requests": int(requests or 0),
             "image_generations": int(images or 0),
+            "video_generations": int(videos or 0),
             "run_count": int(runs or 0),
             "active_users": int(active_users or 0),
             "running_runs": int(running or 0),
@@ -51,6 +53,7 @@ class AdminUsageService:
         metric_expr = {
             "requests": func.coalesce(func.sum(RunRow.llm_call_count), 0),
             "images": func.coalesce(func.sum(RunRow.image_generation_count), 0),
+            "videos": func.coalesce(func.sum(RunRow.video_generation_count), 0),
         }.get(metric, func.coalesce(func.sum(RunRow.total_tokens), 0))
         async with self._sf() as session:
             rows = (
@@ -94,6 +97,7 @@ class AdminUsageService:
                         func.coalesce(func.sum(RunRow.total_tokens), 0),
                         func.coalesce(func.sum(RunRow.llm_call_count), 0),
                         func.coalesce(func.sum(RunRow.image_generation_count), 0),
+                        func.coalesce(func.sum(RunRow.video_generation_count), 0),
                     )
                     .join(UserRow, UserRow.id == RunRow.user_id, isouter=True)
                     .where(_runs_in_window(window), RunRow.user_id.is_not(None))
@@ -102,7 +106,7 @@ class AdminUsageService:
             ).all()
 
         users = []
-        for user_id, email, tokens, requests, images in rows:
+        for user_id, email, tokens, requests, images, videos in rows:
             users.append(
                 {
                     "user_id": user_id,
@@ -110,12 +114,13 @@ class AdminUsageService:
                     "tokens": int(tokens or 0),
                     "requests": int(requests or 0),
                     "images": int(images or 0),
+                    "videos": int(videos or 0),
                 }
             )
 
         size = min(max(1, limit), 50)
         rankings: dict[str, list[dict[str, Any]]] = {}
-        for metric in ("tokens", "requests", "images"):
+        for metric in ("tokens", "requests", "images", "videos"):
             ordered = sorted(users, key=lambda item: (-int(item[metric]), str(item["user_id"])))[:size]
             rankings[metric] = [
                 {
@@ -166,15 +171,16 @@ class AdminUsageService:
 
     async def usage_trends(self, *, window: PeriodWindow) -> dict[str, Any]:
         async with self._sf() as session:
-            rows = (await session.execute(select(RunRow.created_at, RunRow.total_tokens, RunRow.llm_call_count, RunRow.image_generation_count).where(_runs_in_window(window)))).all()
+            rows = (await session.execute(select(RunRow.created_at, RunRow.total_tokens, RunRow.llm_call_count, RunRow.image_generation_count, RunRow.video_generation_count).where(_runs_in_window(window)))).all()
         buckets: dict[str, dict[str, int]] = {}
-        for created_at, tokens, requests, images in rows:
+        for created_at, tokens, requests, images, videos in rows:
             local = created_at.astimezone(APP_TZ) if created_at.tzinfo else created_at.replace(tzinfo=UTC).astimezone(APP_TZ)
             key = local.strftime("%Y-%m-%d %H:00") if window.period == "day" else local.strftime("%Y-%m-%d")
-            bucket = buckets.setdefault(key, {"tokens": 0, "requests": 0, "images": 0})
+            bucket = buckets.setdefault(key, {"tokens": 0, "requests": 0, "images": 0, "videos": 0})
             bucket["tokens"] += int(tokens or 0)
             bucket["requests"] += int(requests or 0)
             bucket["images"] += int(images or 0)
+            bucket["videos"] += int(videos or 0)
         return {
             "period": period_response(window),
             "bucket": "hour" if window.period == "day" else "day",

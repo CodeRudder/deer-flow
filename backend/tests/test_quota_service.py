@@ -54,6 +54,22 @@ async def _create_image_scope(service: QuotaService, *, limit: int = 2) -> dict:
     )
 
 
+async def _create_video_scope(service: QuotaService, *, limit: int = 2) -> dict:
+    return await service.create_scope(
+        {
+            "code": "video_generation",
+            "name": "视频资源",
+            "resource_type": "video_generation",
+            "match_rules": {"exact": [], "prefix": []},
+            "period_type": "weekly",
+            "video_enforced": True,
+            "video_limit": limit,
+            "enabled": True,
+        },
+        updated_by="admin-1",
+    )
+
+
 @pytest.mark.asyncio
 async def test_model_request_reservation_is_atomic_and_tokens_are_observation_only(tmp_path):
     service, sf = await _quota_service(tmp_path)
@@ -325,6 +341,123 @@ async def test_only_one_image_generation_scope_can_be_created(tmp_path):
             await _create_image_scope(service)
 
         assert exc_info.value.status_code == 409
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_generation_reservation_is_atomic_and_release_keeps_period(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=2)
+        reservations = await asyncio.gather(
+            service.reserve_video_generations("user-1", count=1),
+            service.reserve_video_generations("user-1", count=1),
+        )
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_video_generations("user-1", count=1)
+        assert exc_info.value.exceeded.metric == "video_generations"
+        assert exc_info.value.exceeded.used == 2
+
+        await service.release_video_generations(reservations[0])
+
+        async with sf() as session:
+            row = (await session.execute(select(UserQuotaUsagePeriodRow))).scalar_one()
+            scope = (await session.execute(select(QuotaScopeRow))).scalar_one()
+        assert scope.code == "video_generation"
+        assert row.video_used == 1
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_generation_is_untracked_until_admin_creates_scope(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        reservation = await service.reserve_video_generations("user-1", count=1)
+
+        assert reservation.matched_scope_id is None
+        async with sf() as session:
+            scope_count = (await session.execute(select(func.count(QuotaScopeRow.id)))).scalar_one()
+            usage_count = (await session.execute(select(func.count(UserQuotaUsagePeriodRow.id)))).scalar_one()
+        assert scope_count == 0
+        assert usage_count == 0
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_only_one_video_generation_scope_can_be_created(tmp_path):
+    service, _ = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _create_video_scope(service)
+
+        assert exc_info.value.status_code == 409
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_image_and_video_quotas_are_independent_ledgers(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_image_scope(service, limit=1)
+        await _create_video_scope(service, limit=1)
+
+        image_reservation = await service.reserve_image_generations("user-1", count=1)
+        video_reservation = await service.reserve_video_generations("user-1", count=1)
+        with pytest.raises(QuotaExceededError):
+            await service.reserve_image_generations("user-1", count=1)
+        with pytest.raises(QuotaExceededError):
+            await service.reserve_video_generations("user-1", count=1)
+
+        await service.release_image_generations(image_reservation)
+        await service.release_video_generations(video_reservation)
+
+        async with sf() as session:
+            rows = {row.quota_scope_id: row for row in (await session.execute(select(UserQuotaUsagePeriodRow))).scalars()}
+        assert len(rows) == 2
+        assert {row.image_used for row in rows.values()} == {0}
+        assert {row.video_used for row in rows.values()} == {0}
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_new_week_resets_usage_and_does_not_inherit_override(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        scope = await _create_video_scope(service, limit=10)
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        first_week = datetime(2026, 7, 15, tzinfo=UTC)
+        next_week = datetime(2026, 7, 22, tzinfo=UTC)
+        await service.reserve_video_generations("user-1", count=1, at=first_week)
+        await service.override_user_current_period(
+            "user-1",
+            scope["id"],
+            request_enforced=None,
+            request_limit=None,
+            image_enforced=None,
+            image_limit=None,
+            video_enforced=True,
+            video_limit=99,
+            reason=None,
+            updated_by="admin-1",
+            at=first_week,
+        )
+
+        reservation = await service.reserve_video_generations("user-1", count=1, at=next_week)
+
+        assert reservation.video_used == 1
+        detail = await service.get_user_quota("user-1", at=next_week)
+        item = next(item for item in detail["items"] if item["scope"]["id"] == scope["id"])
+        assert item["videos"]["limit"] == 10
+        assert item["source"] == "scope_default"
     finally:
         await service._test_engine.dispose()  # type: ignore[attr-defined]
 

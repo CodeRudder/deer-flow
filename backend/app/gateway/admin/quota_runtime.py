@@ -12,6 +12,7 @@ from app.gateway.admin.quota_service import (
     ModelQuotaReservation,
     QuotaExceededError,
     QuotaService,
+    VideoQuotaReservation,
     quota_exceeded_payload,
 )
 
@@ -77,6 +78,20 @@ class QuotaRuntimeBridge:
 
     async def release_image_generations(self, reservation: ImageQuotaReservation) -> None:
         await self._call(lambda: self._service.release_image_generations(reservation))
+
+    async def reserve_video_generations(self, count: int) -> dict[str, Any]:
+        try:
+            reservation = await self._call(lambda: self._service.reserve_video_generations(self._user_id, count=count))
+        except QuotaExceededError as exc:
+            return {"allowed": False, "type": "quota_exceeded", **quota_exceeded_payload(exc.exceeded)}
+        return {
+            "allowed": True,
+            "reservation": reservation,
+            "used": reservation.video_used,
+        }
+
+    async def release_video_generations(self, reservation: VideoQuotaReservation) -> None:
+        await self._call(lambda: self._service.release_video_generations(reservation))
 
 
 __all__ = ["QuotaRuntimeBridge"]
