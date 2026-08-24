@@ -37,6 +37,18 @@ export const TREND_CHART_BOUNDS = {
   bottom: 216,
 } as const;
 
+export const TREND_TOOLTIP_ROWS = {
+  start: 36,
+  spacing: 23,
+  textOffset: 9,
+  bottomPadding: 30,
+} as const;
+
+export function trendTooltipHeight(seriesCount: number): number {
+  const { start, spacing, bottomPadding } = TREND_TOOLTIP_ROWS;
+  return start + (seriesCount - 1) * spacing + bottomPadding;
+}
+
 export function buildDonutSegments(values: number[]): DonutSegment[] {
   const normalized = values.map((value) => Math.max(0, value));
   const total = normalized.reduce((sum, value) => sum + value, 0);

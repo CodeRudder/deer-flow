@@ -38,7 +38,11 @@ import type {
   TraceUserOverview,
 } from "@/core/admin/types";
 
-import { buildDonutSegments, smoothTrendPath } from "./admin-dashboard-helpers";
+import {
+  buildDonutSegments,
+  smoothTrendPath,
+  trendTooltipHeight,
+} from "./admin-dashboard-helpers";
 
 const formatNumber = (value: number) =>
   new Intl.NumberFormat("zh-CN", {
@@ -166,6 +170,7 @@ function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
     activeIndex == null ? null : coordinates.tokens[activeIndex]?.x;
   const tooltipX =
     activeX == null ? 0 : activeX > 450 ? activeX - 210 : activeX + 12;
+  const tooltipHeight = trendTooltipHeight(traceSeries.length);
   const tokenPath = pathFor("tokens");
   const tokenArea = trends.length
     ? `${tokenPath} L ${coordinates.tokens.at(-1)!.x} ${bounds.bottom} L ${coordinates.tokens[0]!.x} ${bounds.bottom} Z`
@@ -245,7 +250,7 @@ function TraceTrendChart({ trends }: { trends: TraceUserOverview["trends"] }) {
             <g transform={`translate(${tooltipX} 28)`}>
               <rect
                 width="198"
-                height="112"
+                height={tooltipHeight}
                 rx="6"
                 fill="var(--popover)"
                 stroke="var(--border)"

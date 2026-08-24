@@ -7,6 +7,8 @@ import {
   prioritizeQuotaModelGroups,
   quotaProgressTone,
   smoothTrendPath,
+  trendTooltipHeight,
+  TREND_TOOLTIP_ROWS,
   type TrendPoint,
 } from "@/components/workspace/admin/admin-dashboard-helpers";
 
@@ -145,5 +147,20 @@ describe("smoothTrendPath", () => {
         { x: 728, y: 120 },
       ]),
     ).toBe("M 48 216 C 218 216, 218 24, 388 24 C 558 24, 558 120, 728 120");
+  });
+});
+
+describe("trendTooltipHeight", () => {
+  it("keeps the last row's text baseline inside the card for any row count", () => {
+    const { start, spacing, textOffset } = TREND_TOOLTIP_ROWS;
+    for (const count of [3, 4, 5]) {
+      const lastRowBaseline = start + (count - 1) * spacing + textOffset;
+      expect(trendTooltipHeight(count)).toBeGreaterThan(lastRowBaseline);
+    }
+  });
+
+  it("matches the historical three-row height and grows with each new row", () => {
+    expect(trendTooltipHeight(3)).toBe(112);
+    expect(trendTooltipHeight(4)).toBe(135);
   });
 });

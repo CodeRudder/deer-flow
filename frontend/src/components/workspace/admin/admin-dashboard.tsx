@@ -70,6 +70,7 @@ import {
   placeFloatingTooltip,
   quotaProgressTone,
   smoothTrendPath,
+  trendTooltipHeight,
   TREND_CHART_BOUNDS,
   type TrendMetric,
   type TrendPoint,
@@ -263,6 +264,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
     activeIndex == null ? null : coordinates.tokens[activeIndex]?.x;
   const tooltipX =
     activeX == null ? 0 : activeX > 520 ? activeX - 214 : activeX + 12;
+  const tooltipHeight = trendTooltipHeight(trendSeries.length);
   const tokenPath = smoothTrendPath(coordinates.tokens);
   const { left, right, top, bottom } = TREND_CHART_BOUNDS;
   const tokenArea = `${tokenPath} L ${coordinates.tokens.at(-1)?.x ?? right} ${bottom} L ${coordinates.tokens[0]?.x ?? left} ${bottom} Z`;
@@ -340,7 +342,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
             <g transform={`translate(${tooltipX} 28)`}>
               <rect
                 width="202"
-                height="112"
+                height={tooltipHeight}
                 rx="6"
                 fill="var(--popover)"
                 stroke="var(--border)"
