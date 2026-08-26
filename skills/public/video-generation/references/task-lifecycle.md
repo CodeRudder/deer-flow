@@ -8,7 +8,9 @@ or when a sidecar `.task.json` needs interpretation.
 Each run writes `outputs/{name}.task.json` next to the video (provider, task
 id, prompt file, parameters, status). The `status` field holds the latest
 observed state; a record without a confirmed terminal status (`succeeded` /
-`failed` / `cancelled`) may still be in flight.
+`failed` / `cancelled`) may still be in flight. If the run ended by sandbox
+timeout, the status reads `timeout` — resolve it with `--query` (see Local
+polling timeout), never blindly regenerate.
 
 ## Duplicate check before dispatch
 

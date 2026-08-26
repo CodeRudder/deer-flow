@@ -60,9 +60,8 @@ Prefill supplied values; do not make the user repeat them.
 Only a **theme** is required — it may be vague or abstract; the skill
 decomposes it into subject + action while writing the prompt. Tell the user:
 **anything left unfilled — including reference images — will be automatically
-completed and collected** (missing reference images are collected in Step 4:
-search first; image generation only after the user approves the quota spend;
-the plan card shows the collection plan).
+completed and collected** (missing reference images are collected in Step 4 —
+search first, generation only after approval; rules in Choosing the mode).
 Only treat files the user supplied in this conversation as user-provided.
 Reply "continue" for defaults, or say what to add or change.
 
@@ -95,13 +94,13 @@ Reply "continue" for defaults, or say what to add or change.
 Route by what the user actually provided. MiniMax H3 supports five modes,
 selected by `--image-role` plus the images you pass in `--reference-images`:
 
-| The user gives you | Mode | `--image-role` | Images |
-|---|---|---|---|
-| Only text | **T2V** | (omit) | none |
-| Text + one image to start from | **I2V (first frame)** | `first_frame` (default) | 1 |
-| Text + one image to END on | **last frame** | `last_frame` | 1 |
-| Text + a start image and an end image | **first + last frame** | `first_last` | 2 (first, then last) |
-| Text + image(s) of a character/style to imitate | **reference (Ref2VA)** | `reference` | 1–9 |
+| The user gives you | Mode | `--image-role` |
+|---|---|---|
+| Only text | **T2V** | (omit) |
+| Text + one image to start from | **I2V (first frame)** | `first_frame` (default) |
+| Text + one image to END on | **last frame** | `last_frame` |
+| Text + a start image and an end image | **first + last frame** | `first_last` |
+| Text + image(s) of a character/style to imitate | **reference (Ref2VA)** | `reference` |
 
 **Frame vs. reference — the key distinction (they are mutually exclusive):**
 
@@ -133,8 +132,8 @@ images — uses image quota / skip). Only generate after an explicit yes;
 otherwise stop and offer: user uploads / switch to pure T2V / revise the
 plan. Search may iterate at most TWICE before asking; a refused generation
 counts as a stop, not an iteration. Inspect the collected images
-(collected-material check), then write the final Ref2VA prompt FROM
-THE ACTUAL IMAGES — never describe planned-but-unseen images. Pure T2V only
+(collected-material check), then write the final Ref2VA prompt from the
+actual images (rules in Step 2). Pure T2V only
 when the user asks for text-only or the scene outranks consistency. Note:
 the default adds a collection stage (search always, image generation only
 with the user's approval) before video generation; choose T2V explicitly
@@ -152,16 +151,15 @@ interrogate on every image:
   style", "a character who looks like this") → go straight to `reference`, no
   question.
 - **Weak / no signal** (just "make a video from this image") → **default to
-  `reference`** (the default mode when the user has not specified one) and
-  note the choice in the plan card ("using it as a likeness reference — say
-  the word if you actually want the video to *start from* this image
-  instead").
+  `reference`** and note the choice in the plan card ("using it as a likeness
+  reference — say the word if you actually want the video to *start from*
+  this image instead").
 - **Self-contradictory** (asks both "start from this image" and "match this
   person's face") → only here use `ask_clarification` before writing anything.
 
-Rationale: reference is the skill-wide default; explicit frame language is the
-user actively choosing the frame mode. Defaulting with a correction exit in
-the plan card beats blocking on every upload.
+Rationale: explicit frame language is the user actively choosing the frame
+mode. Defaulting with a correction exit in the plan card beats blocking on
+every upload.
 
 ### Image count and order per mode
 
@@ -216,8 +214,8 @@ separate question.
 
 Guidance:
 
-- Casual request → draft plan = 768P · 5 s (ratio: `16:9` for T2V,
-  adaptive for reference); state it on the plan card, don't ask.
+- Casual request → draft plan = 768P · 5 s; state it on the plan card, don't
+  ask.
 - Vertical / social → suggest `9:16`; cinematic → `16:9` or `21:9`.
 - Prefer drafting at 768P and upgrading the take the user likes (Step 6). If
   the user explicitly requests direct 2K, preserve that setting in both the
@@ -238,8 +236,10 @@ checks as "passed" while planned images do not exist yet.
 
 ### Step 2: Write the structured prompt file
 
-For MiniMax H3, first load the format reference for the chosen mode, then write
-the prompt file in that format:
+For MiniMax H3, first load exactly ONE format reference for the chosen mode —
+the spec owns the grammar (fields/sections, `[Shot N]` timeline, camera
+motion, speakers and `<d>` dialogue, language exceptions, keyframe
+soft-anchoring) — then write the prompt file in that format:
 
 - T2V / first frame / last frame / first+last →
   `read_file /mnt/skills/public/video-generation/references/prompt-format-base.md`
@@ -249,8 +249,7 @@ the prompt file in that format:
 Write the result to `/mnt/user-data/workspace/{descriptive-name}.txt` — plain
 text whose content is the structured format (instruction line for keyframe
 modes, then the fields). The structured format is still plain text, never a raw
-JSON blob. (A `.json` file with a top-level `"prompt"` string field remains
-accepted for backward compatibility — only that field is used.)
+JSON blob.
 
 Other providers (`minimax_v1`) keep the prose methodology: subject + main
 action first, ONE main camera move, lighting, atmosphere, ~60–100 words for a
@@ -305,8 +304,9 @@ Reply "confirm" to start, or tell me what to change.
 The plan card is fully transparent about what will be submitted: materials
 are listed by their full paths, and the prompt file appears verbatim (path +
 complete content) so the user can review the actual input. The card must not
-show the model, quota, or cost notes. The 4 s upgrade limitation is a capability note, not a
-cost note; show it only when the user explicitly selects a 4 s 768P draft.
+show the model, quota, or cost notes. The 4 s upgrade limitation is a
+capability note, not a cost note; show it only when the user explicitly
+selects a 4 s 768P draft.
 Direct 2K output does not need an upgrade warning.
 
 - `clarification_type`: `approach_choice`.
@@ -340,33 +340,30 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 Parameters:
 
-- `--prompt-file` (required): structured `.txt` (H3), prose `.txt`, or JSON
-  with a `"prompt"` field.
+- `--prompt-file` (required): structured `.txt` (H3), prose `.txt`, or a
+  `.json` file with a top-level `"prompt"` string field (only that field is
+  used).
 - `--reference-images`: image path(s), space-separated; omit for T2V. Meaning
   depends on `--image-role`.
 - `--image-role` (H3): `first_frame` (default) / `last_frame` / `first_last` /
-  `reference`; frame and reference roles are mutually exclusive.
-- `--output-file` (required): output `.mp4`, must NOT already exist.
+  `reference` (see Choosing the mode).
+- `--output-file` (required): output `.mp4` under `/mnt/user-data/outputs/`,
+  must NOT already exist.
 - `--aspect-ratio`: per-mode semantics — see Output settings.
 - `--model` / `--provider`: routing + escape hatch — `references/provider-runtime.md`.
 - `--resolution`: `768P` (default draft tier) or `2K`.
 - `--duration`: 4–15 s for H3; default 5 (keeps 2K upgrade open — Step 6).
-- `--query`: read-only task lookup — see Task lifecycle below.
+- `--query` / `--cancel`: read-only task lookup / cancel a queued task —
+  `references/task-lifecycle.md`.
 
 [!NOTE]
 Do NOT read the python file, instead just call it with the parameters.
 
-Reference mode with an approved collection plan: **collect FIRST** — image
-search by purpose (keep only usable, subject-clear results). When nothing
-suitable is found, ask the user before generating: image generation spends
-the image quota, so it needs an explicit yes (allow generating the missing
-reference images / skip). On "skip", stop and offer: user uploads / pure
-T2V / revised plan. Search may iterate at most TWICE before asking. Then run
-the
-collected-material check, write the final Ref2VA prompt from the actual
-images, re-show the video plan card (materials now name the actual files and
-their source: searched / generated), and generate the video only after that
-fresh confirmation.
+Reference mode with an approved collection plan: **collect FIRST** under the
+search-first rules in Choosing the mode (search by purpose; ask before any
+image generation; at most two search rounds). Then re-show the video plan
+card (materials now name the actual files and their source: searched /
+generated), and generate the video only after that fresh confirmation.
 
 Before dispatching, check the sidecar for an unfinished duplicate. A local
 polling `timeout` is not an upstream terminal status — resolve it read-only
@@ -432,39 +429,6 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 Do NOT pass `--duration` / `--aspect-ratio` / `--resolution` together with
 `--upscale-video` — the upgrade runs at a fixed 2K and follows the source.
 
-## Task lifecycle (cancel & query)
-
-`--cancel` cancels only still-QUEUED tasks; running tasks cannot be
-cancelled, finished tasks are never touched. If the run ended by sandbox
-timeout, its id is in `outputs/{name}.task.json` (status `timeout`) — resolve
-with `--query`, never blindly regenerate.
-
-`--query` is a read-only status lookup, safe any time on every provider. In
-query mode `--output-file` only refreshes the sidecar record — it NEVER
-downloads the video. Full state machine: `references/task-lifecycle.md`.
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --query {task_id} --model MiniMax-H3
-
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --cancel {task_id} --model MiniMax-H3 \
-  --output-file /mnt/user-data/outputs/{name}.mp4
-```
-
-## Prompt methodology (routing only — full specs in references/)
-
-MiniMax H3 uses the official structured format; every other provider keeps
-natural-language prose. In Step 2 load exactly one spec and follow it — the
-specs own the grammar (fields/sections, `[Shot N]` timeline, camera motion,
-speakers and `<d>` dialogue, language exceptions, keyframe soft-anchoring):
-
-- base modes (T2V / first / last / first+last) →
-  `references/prompt-format-base.md`
-- reference mode (Ref2VA) → `references/prompt-format-ref.md`
-
-The H3 format is H3-only: do NOT use it for `minimax_v1` — keep prose there.
-
 ## Examples
 
 Example A shows the full T2V flow with both gates, Example E the 2K upgrade.
@@ -515,21 +479,14 @@ mutually exclusive on H3; reference video/audio is unsupported; avoid named
 real people or trademarked characters. Routing/credentials/compatibility:
 `references/provider-runtime.md`.
 
-## Output handling
-
-Videos land in `/mnt/user-data/outputs/`; each run also writes a sidecar
-`outputs/{name}.task.json` (provider, task id, prompt file, parameters, status)
-for duplicate checks, `--query`, and `--cancel`. Delivery and iteration rules
-are defined once in Step 5.
-
 ## Iteration (regenerate, not edit)
 
 This skill does NOT edit an existing video — iterating means changing the
 prompt, materials, or settings and generating a brand-new take. Generation is
 non-deterministic (no fixed seed): any change re-rolls the whole clip; the
 ONLY same-content path is the 2K upgrade (Step 6). A fixed first frame is the
-most controllable iteration. Always use a NEW output filename (the script
-refuses to overwrite) and regenerate deliberately, never blindly.
+most controllable iteration. Always use a NEW output filename and regenerate
+deliberately, never blindly.
 
 ## Delegation boundary
 
@@ -537,10 +494,3 @@ Single-video requests run on the lead agent because the input-table and
 plan-confirmation gates must interrupt the user-facing conversation. For
 batch or multi-segment work (>15 s stitching), confirm the aggregate plan
 first, then delegate per-segment execution; model preference carries over.
-
-## Providers
-
-The model name is the routing key (`--model` reverse-looked-up in
-`config.yaml` `video_generation.providers[].models[]`); `--provider` is the
-debugging escape hatch. Routing rules, credentials, compatibility:
-`references/provider-runtime.md`.
