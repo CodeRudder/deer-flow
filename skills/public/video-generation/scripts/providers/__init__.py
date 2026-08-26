@@ -1,4 +1,4 @@
-from . import minimax_h3, minimax_v1
+from . import minimax_h3, minimax_v1, seedance
 
 
 # name -> provider class. Unlike image providers (which register a plain
@@ -8,6 +8,7 @@ from . import minimax_h3, minimax_v1
 PROVIDERS = {
     "minimax_h3": minimax_h3.PROVIDER,  # V2, recommended
     "minimax_v1": minimax_v1.PROVIDER,  # legacy Hailuo V1, compat only
+    "seedance": seedance.PROVIDER,  # Volcano Ark doubao-seedance-2.x family
 }
 
 # Model name -> provider name, covering every model an adapter serves (not just

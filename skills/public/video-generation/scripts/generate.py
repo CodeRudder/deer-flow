@@ -171,8 +171,9 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
 def _credential_fallback(requested_model: str | None) -> str | None:
     """No config/override: pick by available credential. A known model routes to
     its owning provider (never a cross-provider pairing); otherwise credential
-    priority decides — a dedicated video key implies H3; the shared key keeps
-    old behavior (legacy minimax_v1)."""
+    priority decides — a dedicated MiniMax video key implies H3; the Seedance
+    keys imply seedance; the shared MiniMax key keeps old behavior (legacy
+    minimax_v1)."""
     if requested_model:
         owner = MODEL_PROVIDERS.get(requested_model)
         if owner:
@@ -184,6 +185,8 @@ def _credential_fallback(requested_model: str | None) -> str | None:
         )
     if os.getenv("MINIMAX_VIDEO_API_KEY"):
         return "minimax_h3"
+    if os.getenv("SEEDANCE_VIDEO_API_KEY") or os.getenv("ARK_API_KEY"):
+        return "seedance"
     if os.getenv("MINIMAX_API_KEY"):
         return "minimax_v1"
     return None
@@ -221,6 +224,8 @@ def generate_video(
     duration: int | None = None,
     image_role: str | None = None,
     upscale_video: str | None = None,
+    reference_videos: list[str] | None = None,
+    reference_audios: list[str] | None = None,
 ) -> str:
     output_path = Path(output_file)
     if output_path.exists():
@@ -234,6 +239,11 @@ def generate_video(
             "--upscale-video runs the regeneration endpoint: resolution is fixed 2K "
             "and duration/aspect-ratio follow the source video; drop --resolution/"
             "--duration/--aspect-ratio"
+        )
+    if upscale_video and (reference_videos or reference_audios):
+        raise ValueError(
+            "--upscale-video runs the regeneration endpoint and replays the original "
+            "materials; drop --reference-videos/--reference-audios"
         )
     if upscale_video and not upscale_video.startswith(("http://", "https://")):
         source = Path(upscale_video)
@@ -261,6 +271,10 @@ def generate_video(
         "ratio": aspect_ratio,
         "image_role": image_role,
         "upscale_video": upscale_video,
+        # Empty lists are normalized to None so an unguarded --reference-videos
+        # never trips the "unsupported param" check on providers that ignore it.
+        "reference_videos": reference_videos or None,
+        "reference_audios": reference_audios or None,
     }
     params = {k: v for k, v in params.items() if v is not None}
     if params.get("image_role") and not reference_images:
@@ -285,6 +299,16 @@ def generate_video(
             f"Video generation provider '{selected_provider}' does not support "
             f"--upscale-video (supported: {supporters})."
         )
+    for ref_param, flag in (("reference_videos", "--reference-videos"),
+                            ("reference_audios", "--reference-audios")):
+        if ref_param in params and ref_param not in adapter.supported_params:
+            supporters = ", ".join(
+                sorted(n for n, c in PROVIDERS.items() if ref_param in c.supported_params)
+            )
+            raise ValueError(
+                f"Video generation provider '{selected_provider}' does not support "
+                f"{flag} (supported: {supporters}). Switch provider or drop {flag}."
+            )
     return adapter.generate(
         prompt_text, reference_images, output_file, params, prompt_file=prompt_file
     )
@@ -340,6 +364,21 @@ if __name__ == "__main__":
         nargs="*",
         default=[],
         help="Absolute paths to reference images / first frame (space-separated)",
+    )
+    parser.add_argument(
+        "--reference-videos",
+        nargs="*",
+        default=[],
+        help=(
+            "Public URLs of reference videos (Seedance only; the API cannot fetch "
+            "local paths and rejects base64)"
+        ),
+    )
+    parser.add_argument(
+        "--reference-audios",
+        nargs="*",
+        default=[],
+        help="Public URLs of reference audio clips (Seedance only; URL-only like --reference-videos)",
     )
     parser.add_argument(
         "--output-file",
@@ -442,6 +481,8 @@ if __name__ == "__main__":
                     args.duration,
                     args.image_role,
                     args.upscale_video,
+                    args.reference_videos,
+                    args.reference_audios,
                 )
             )
     except Exception as e:

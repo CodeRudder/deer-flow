@@ -56,6 +56,10 @@ def clean_env(monkeypatch):
         "VIDEO_GENERATION_MODEL",
         "MINIMAX_API_HOST",
         "MINIMAX_VIDEO_MODEL",
+        "SEEDANCE_VIDEO_API_KEY",
+        "SEEDANCE_VIDEO_MODEL",
+        "SEEDANCE_API_BASE_URL",
+        "ARK_API_KEY",
         "DEER_FLOW_CONFIG_PATH",
     ]:
         monkeypatch.delenv(k, raising=False)
@@ -76,7 +80,7 @@ def clean_env(monkeypatch):
 
 
 def test_registry_has_expected_providers():
-    assert set(PROVIDERS) == {"minimax_h3", "minimax_v1"}
+    assert set(PROVIDERS) == {"minimax_h3", "minimax_v1", "seedance"}
 
 
 _H3_CONFIG = {
@@ -1206,3 +1210,387 @@ def test_failed_marks_sidecar(monkeypatch, tmp_path):
         vid.generate_video(str(pf), [], str(out), provider="minimax_h3")
     record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
     assert record["status"] == "failed"
+
+
+# --- Seedance (Volcano Ark): capability table + local pre-validation (feat-df-6) ---
+
+SD_25 = "doubao-seedance-2-5-260628"
+SD_20 = "doubao-seedance-2-0-260128"
+SD_MINI = "doubao-seedance-2-0-mini-260615"
+
+
+def _sd():
+    import providers.seedance as sd
+
+    return sd
+
+
+def _capture_sd_post(monkeypatch):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        captured["url"] = url
+        captured["json"] = json
+        return FakeResp({"id": "cgt-1"})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    return captured
+
+
+def test_seedance_t2v_payload_defaults(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task("a cat", [], {})
+    assert captured["url"] == (
+        "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
+    )
+    body = captured["json"]
+    assert body["model"] == SD_25  # default model
+    assert body["resolution"] == "720p"
+    assert body["duration"] == 5
+    assert body["ratio"] == "16:9"
+    assert body["content"] == [{"type": "text", "text": "a cat"}]
+
+
+def test_seedance_frame_on_25_locks_adaptive_and_auto_duration(monkeypatch):
+    # 2.5 frame tasks follow the source images: ratio/duration are locked
+    # upstream, and an explicit value must fail locally (async failure upstream).
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task("start here", ["https://cdn/a.png"], {})
+    body = captured["json"]
+    assert body["ratio"] == "adaptive"
+    assert body["duration"] == -1
+    assert "resolution" not in body
+    assert body["content"][1]["role"] == "first_frame"
+
+
+def test_seedance_frame_on_25_rejects_explicit_ratio_and_duration(monkeypatch):
+    _capture_sd_post(monkeypatch)
+    p = _sd().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="not supported for frame modes"):
+        p.create_task("x", ["https://cdn/a.png"], {"ratio": "16:9"})
+    with pytest.raises(ValueError, match="not supported for frame modes"):
+        p.create_task("x", ["https://cdn/a.png"], {"duration": 8})
+
+
+def test_seedance_frame_on_20_keeps_custom_params(monkeypatch):
+    # The 2.0 family documents no frame-task lock: explicit ratio/duration pass.
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_20).create_task(
+        "x", ["https://cdn/a.png"], {"ratio": "9:16", "duration": 8}
+    )
+    body = captured["json"]
+    assert body["ratio"] == "9:16"
+    assert body["duration"] == 8
+    assert body["resolution"] == "720p"
+
+
+def test_seedance_frame_on_20_default_omits_ratio(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_20).create_task("x", ["https://cdn/a.png"], {})
+    assert "ratio" not in captured["json"]
+
+
+def test_seedance_first_last_roles(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_MINI).create_task(
+        "x", ["https://cdn/a.png", "https://cdn/b.png"], {"image_role": "first_last"}
+    )
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None, "first_frame", "last_frame"]
+
+
+def test_seedance_reference_mixes_image_video_audio(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task(
+        "use @video1 camera, @audio1 bgm",
+        ["https://cdn/a.png"],
+        {
+            "image_role": "reference",
+            "reference_videos": ["https://cdn/ref.mp4"],
+            "reference_audios": ["https://cdn/bgm.mp3"],
+        },
+    )
+    pairs = [(c["type"], c.get("role")) for c in captured["json"]["content"]]
+    assert pairs == [
+        ("text", None),
+        ("video_url", "reference_video"),
+        ("audio_url", "reference_audio"),
+        ("image_url", "reference_image"),
+    ]
+    # reference mode stays adaptive unless an explicit ratio is set
+    assert "ratio" not in captured["json"]
+
+
+def test_seedance_reference_honors_explicit_ratio(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task(
+        "x", ["https://cdn/a.png"], {"image_role": "reference", "ratio": "9:16"}
+    )
+    assert captured["json"]["ratio"] == "9:16"
+
+
+def test_seedance_frame_role_rejects_reference_materials(monkeypatch):
+    _capture_sd_post(monkeypatch)
+    p = _sd().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        p.create_task(
+            "x",
+            ["https://cdn/a.png"],
+            {"image_role": "first_frame", "reference_videos": ["https://v.mp4"]},
+        )
+
+
+def test_seedance_videos_without_images_defaults_to_reference(monkeypatch):
+    # Video-only reference (no image) is a valid Ark reference task.
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task(
+        "x", [], {"reference_videos": ["https://cdn/v.mp4"]}
+    )
+    types = [c["type"] for c in captured["json"]["content"]]
+    assert types == ["text", "video_url"]
+
+
+def test_seedance_resolution_validated_per_model(monkeypatch):
+    _capture_sd_post(monkeypatch)
+    with pytest.raises(ValueError, match="does not support resolution '1080p'"):
+        _sd().PROVIDER(model=SD_MINI).create_task("x", [], {"resolution": "1080p"})
+    with pytest.raises(ValueError, match="does not support resolution '4k'"):
+        _sd().PROVIDER(model=SD_25).create_task("x", [], {"resolution": "4k"})
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_20).create_task("x", [], {"resolution": "4k"})
+    assert captured["json"]["resolution"] == "4k"
+
+
+def test_seedance_duration_30_only_on_2_5(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_25).create_task("x", [], {"duration": 30})
+    assert captured["json"]["duration"] == 30
+    with pytest.raises(ValueError, match="duration must be 4-15"):
+        _sd().PROVIDER(model=SD_20).create_task("x", [], {"duration": 30})
+
+
+def test_seedance_auto_duration_minus_one(monkeypatch):
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_20).create_task("x", [], {"duration": -1})
+    assert captured["json"]["duration"] == -1
+
+
+def test_seedance_aspect_ratio_validated():
+    with pytest.raises(ValueError, match="unsupported aspect ratio"):
+        _sd().PROVIDER(model=None).create_task("x", [], {"ratio": "3:2"})
+
+
+def test_seedance_material_caps(monkeypatch):
+    _capture_sd_post(monkeypatch)
+    p25 = _sd().PROVIDER(model=SD_25)
+    with pytest.raises(ValueError, match="too many reference images: 31"):
+        p25.create_task(
+            "x",
+            [f"https://cdn/{i}.png" for i in range(31)],
+            {"image_role": "reference"},
+        )
+    with pytest.raises(ValueError, match="too many reference videos: 11"):
+        p25.create_task(
+            "x", [], {"reference_videos": [f"https://v/{i}.mp4" for i in range(11)]}
+        )
+    with pytest.raises(ValueError, match="too many reference audios: 4"):
+        _sd().PROVIDER(model=SD_20).create_task(
+            "x", [], {"reference_audios": [f"https://a/{i}.mp3" for i in range(4)]}
+        )
+
+
+def test_seedance_local_media_paths_rejected():
+    p = _sd().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="public URL"):
+        p.create_task("x", [], {"reference_videos": ["/mnt/user-data/outputs/v.mp4"]})
+    with pytest.raises(ValueError, match="public URL"):
+        p.create_task("x", [], {"reference_audios": ["C:/sounds/bgm.mp3"]})
+
+
+def test_seedance_unknown_model_rejected():
+    with pytest.raises(ValueError, match="unknown Seedance model"):
+        _sd().PROVIDER(model="doubao-seedance-3").create_task("x", [], {})
+
+
+def test_seedance_upscale_video_rejected(monkeypatch):
+    _capture_sd_post(monkeypatch)
+    with pytest.raises(ValueError, match="does not support --upscale-video"):
+        _sd().PROVIDER(model=None).create_task(
+            "x", [], {"upscale_video": "https://dl/d.mp4"}
+        )
+
+
+def test_seedance_status_normalization(monkeypatch):
+    import providers.base as base
+
+    state = {"raw": None}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": state["raw"]})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    p = _sd().PROVIDER(model=None)
+    for raw, want in [
+        ("queued", base.STATUS_PENDING),
+        ("running", base.STATUS_PENDING),
+        ("succeeded", base.STATUS_SUCCEEDED),
+        ("failed", base.STATUS_FAILED),
+        ("cancelled", base.STATUS_FAILED),
+        ("expired", base.STATUS_FAILED),
+    ]:
+        state["raw"] = raw
+        assert p.poll_once("cgt-1") == (want, {"status": raw})
+
+
+def test_seedance_poll_window_covers_long_tasks():
+    # Sandbox kills a run at 600s and 2.5 30s tasks may run long; 10s x 180
+    # = 30 min gives headroom.
+    p = _sd().PROVIDER
+    assert p.poll_interval * p.poll_max_attempts >= 600
+
+
+def test_seedance_full_flow_downloads_video_and_writes_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+
+    def fake_post(url, headers=None, json=None, **kw):
+        return FakeResp({"id": "cgt-9"})
+
+    def fake_get(url, headers=None, **kw):
+        if "/contents/generations/tasks/cgt-9" in url:
+            return FakeResp(
+                {"status": "succeeded", "content": {"video_url": "https://dl/v.mp4"}}
+            )
+        return FakeResp(content=b"SDVIDEO")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", fake_get)
+    out = tmp_path / "v.mp4"
+    pf = tmp_path / "p.txt"
+    pf.write_text("a cat", encoding="utf-8")
+    msg = vid.generate_video(
+        str(pf), [], str(out), provider="seedance", model=SD_MINI
+    )
+    assert out.read_bytes() == b"SDVIDEO"
+    assert "successfully" in msg.lower()
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["provider"] == "seedance"
+    assert record["task_id"] == "cgt-9"
+    assert record["status"] == "succeeded"
+
+
+def test_seedance_key_prefers_dedicated_then_ark(monkeypatch):
+    p = _sd().PROVIDER(model=None)
+    monkeypatch.setenv("ARK_API_KEY", "ark")
+    assert p.api_key() == "ark"
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "seed")
+    assert p.api_key() == "seed"
+
+
+def test_seedance_missing_credential_names_env_vars(tmp_path):
+    with pytest.raises(Exception, match="SEEDANCE_VIDEO_API_KEY"):
+        _sd().PROVIDER(model=None).generate("x", [], str(tmp_path / "v.mp4"), {})
+
+
+def test_seedance_credential_fallback_routes(monkeypatch):
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    assert vid._resolve_target({}, None, None)[0] == "seedance"
+    monkeypatch.delenv("SEEDANCE_VIDEO_API_KEY")
+    monkeypatch.setenv("ARK_API_KEY", "a")
+    assert vid._resolve_target({}, None, None)[0] == "seedance"
+    # Model routing still beats a foreign credential.
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    assert vid._resolve_target({}, None, "MiniMax-H3") == ("minimax_h3", "MiniMax-H3")
+
+
+def test_reference_videos_rejected_on_minimax(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not support --reference-videos"):
+        vid.generate_video(
+            str(pf),
+            [],
+            str(tmp_path / "v.mp4"),
+            provider="minimax_h3",
+            reference_videos=["https://v.mp4"],
+        )
+
+
+def test_reference_audios_rejected_on_minimax(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not support --reference-audios"):
+        vid.generate_video(
+            str(pf),
+            [],
+            str(tmp_path / "v.mp4"),
+            provider="minimax_h3",
+            reference_audios=["https://a.mp3"],
+        )
+
+
+def test_empty_reference_lists_are_neutral(monkeypatch, tmp_path):
+    # An unguarded --reference-videos (no values) must not trip the
+    # provider-support check on providers that don't support the param.
+    import providers.base as base
+
+    class FakeProvider(base.BaseVideoProvider):
+        name = "fake2"
+
+        def api_key(self):
+            return "k"
+
+        def generate(self, prompt_text, reference_images, output_file, params, **kw):
+            assert "reference_videos" not in params
+            Path(output_file).write_text("ok", encoding="utf-8")
+            return "ok fake"
+
+    monkeypatch.setitem(PROVIDERS, "fake2", FakeProvider)
+    monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "fake2")
+    pf = tmp_path / "p.txt"
+    pf.write_text("hello", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    msg = vid.generate_video(
+        str(pf), [], str(out), reference_videos=[], reference_audios=[]
+    )
+    assert msg == "ok fake"
+    assert out.read_text(encoding="utf-8") == "ok"
+
+
+def test_seedance_cancel_queued_sends_delete(monkeypatch):
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    calls = {"delete": []}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": "queued"})
+
+    def fake_delete(url, headers=None, **kw):
+        calls["delete"].append(url)
+        return FakeResp({"id": "cgt-1"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    msg = _sd().PROVIDER(model=None).cancel("cgt-1")
+    assert "cancelled" in msg
+    assert calls["delete"][0].endswith("/contents/generations/tasks/cgt-1")
+
+
+@pytest.mark.parametrize("status", ["running", "succeeded", "failed", "cancelled", "expired"])
+def test_seedance_cancel_never_deletes_non_queued(monkeypatch, status):
+    # Ark's DELETE is 'cancel or delete record'; a cancel request must never
+    # touch a non-queued task.
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    calls = {"delete": []}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": status})
+
+    def fake_delete(url, headers=None, **kw):
+        calls["delete"].append(url)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    msg = _sd().PROVIDER(model=None).cancel("cgt-1")
+    assert calls["delete"] == []
+    assert status in msg

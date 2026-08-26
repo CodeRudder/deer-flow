@@ -13,7 +13,8 @@ error rather than a guess.
 `--provider` (or `VIDEO_GENERATION_PROVIDER`) is an escape hatch that skips
 that lookup. With neither a model nor a provider, resolution falls back to the
 first provider in `video_generation.providers[]`, then to the credential
-fallback (`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else shared
+fallback (`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else
+`SEEDANCE_VIDEO_API_KEY`/`ARK_API_KEY` → `seedance`, else shared
 `MINIMAX_API_KEY` → `minimax_v1`).
 
 ## Providers
@@ -27,20 +28,31 @@ fallback (`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else shared
   `minimax` is an alias for it, so `VIDEO_GENERATION_PROVIDER=minimax` keeps
   the old behavior. Env: same credential resolution as `minimax_h3`; optional
   `MINIMAX_VIDEO_MODEL` (default `MiniMax-Hailuo-2.3`).
+- `seedance` — Volcano Ark doubao-seedance-2.x family, one adapter for four
+  models. `doubao-seedance-2-5-260628` (30 s, 50 multimodal references,
+  480p/720p), `doubao-seedance-2-0-260128` (only model with 1080p/4k),
+  `…-fast-…` / `…-mini-…` (480p/720p, cheaper tiers; mini ≈ half the standard
+  price). Reference video/audio are URL-only (the API rejects base64 and
+  cannot fetch local paths). Seedance 2.5 locks frame tasks to
+  ratio=adaptive / duration=-1 — enforced locally with a clear error. Env:
+  `SEEDANCE_VIDEO_API_KEY` (preferred) or `ARK_API_KEY`; optional
+  `SEEDANCE_API_BASE_URL` (default `https://ark.cn-beijing.volces.com/api/v3`)
+  and `SEEDANCE_VIDEO_MODEL`.
 
 ## Parameter compatibility
 
 `--query` is read-only and works on every provider. Params a provider does not
 support print a warning instead of being dropped silently; `--image-role`,
-`--upscale-video`, and `--cancel` are the exceptions and are rejected with an
-error (MiniMax H3 only).
+`--reference-videos`, `--reference-audios`, `--upscale-video`, and `--cancel`
+are the exceptions and are rejected with an error.
 
-| Param | `minimax_h3` | `minimax_v1` |
-|---|---|---|
-| `--resolution` / `--duration` | 768P/2K · 4–15 s (defaults 768P · 5) | ignored (model-side defaults) |
-| `--aspect-ratio` | per-mode semantics — see SKILL.md Output settings | ignored |
-| `--reference-images` | per `--image-role` | first frame only (one image) |
-| `--image-role` | `first_frame` / `last_frame` / `first_last` / `reference` | rejected |
-| `--upscale-video` | 2K regeneration | rejected |
-| `--cancel` | queued tasks only | rejected |
-| `--query` | supported | supported |
+| Param | `minimax_h3` | `minimax_v1` | `seedance` |
+|---|---|---|---|
+| `--resolution` / `--duration` | 768P/2K · 4–15 s (defaults 768P · 5) | ignored (model-side defaults) | per model: 480p/720p (1080p/4k on 2.0 standard) · 4–15 s (4–30 s on 2.5, or -1 auto) |
+| `--aspect-ratio` | per-mode semantics — see SKILL.md Output settings | ignored | same enum; frame modes on 2.5 are forced adaptive |
+| `--reference-images` | per `--image-role` | first frame only (one image) | per `--image-role`; reference mode up to 30 (2.5) / 9 (2.0 family) |
+| `--reference-videos` / `--reference-audios` | rejected | rejected | reference mode only; public URLs only; ≤10/≤10 (2.5), ≤3/≤3 (2.0 family) |
+| `--image-role` | `first_frame` / `last_frame` / `first_last` / `reference` | rejected | same roles |
+| `--upscale-video` | 2K regeneration | rejected | rejected |
+| `--cancel` | queued tasks only | rejected | queued tasks only |
+| `--query` | supported | supported | supported |

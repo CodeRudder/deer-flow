@@ -56,6 +56,34 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
             ),
         ),
     ),
+    _ProviderDefinition(
+        name="seedance",
+        display_name="Seedance（火山方舟）",
+        api_key_env="SEEDANCE_VIDEO_API_KEY",
+        fallback_api_key_envs=("ARK_API_KEY",),
+        models=(
+            VideoGenerationModel(
+                name="doubao-seedance-2-5-260628",
+                display_name="Seedance 2.5",
+                description="30秒长叙事+全模态参考(30图/10视频/10音频)，输出480p/720p，时长4-30s",
+            ),
+            VideoGenerationModel(
+                name="doubao-seedance-2-0-260128",
+                display_name="Seedance 2.0",
+                description="唯一支持1080p/4k输出的版本(480p/720p/1080p/4k)，时长4-15s，高清成片首选",
+            ),
+            VideoGenerationModel(
+                name="doubao-seedance-2-0-fast-260128",
+                display_name="Seedance 2.0 Fast",
+                description="速度与成本折中，输出480p/720p，时长4-15s",
+            ),
+            VideoGenerationModel(
+                name="doubao-seedance-2-0-mini-260615",
+                display_name="Seedance 2.0 Mini",
+                description="最低成本(约为标准版一半)，输出480p/720p，批量出片首选",
+            ),
+        ),
+    ),
 )
 
 
