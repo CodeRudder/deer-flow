@@ -43,6 +43,7 @@ Prefill supplied values; do not make the user repeat them.
 | Field | Prefilled value | Required |
 |---|---|---|
 | Theme | {user content — may be vague or abstract / needs input} | yes |
+| Mode | {T2V / first frame / last frame / first+last / reference — inferred from the request; default `reference`} | no |
 | Subject | {decomposed from the theme / user override} | no |
 | Action | {decomposed from the theme / user override} | no |
 | Setting | {user content / auto-complete} | no |
@@ -54,13 +55,14 @@ Prefill supplied values; do not make the user repeat them.
 | Duration | {user content / default 5 s} | no |
 | Aspect ratio | {user content / default 16:9 / frame ratio, adaptive for references} | no |
 | Resolution | {user content / default 768P} | no |
-| Images (reference mode default) | {filenames and stated intent / none — will be auto-collected: search first, generate as fallback} | no |
+| Images (reference mode default) | {filenames and stated intent / none — will be auto-collected: search first; image generation only after user approval} | no |
 
 Only a **theme** is required — it may be vague or abstract; the skill
 decomposes it into subject + action while writing the prompt. Tell the user:
 **anything left unfilled — including reference images — will be automatically
 completed and collected** (missing reference images are collected in Step 4:
-search first, generate as fallback; the plan card shows the collection plan).
+search first; image generation only after the user approves the quota spend;
+the plan card shows the collection plan).
 Only treat files the user supplied in this conversation as user-provided.
 Reply "continue" for defaults, or say what to add or change.
 
@@ -74,7 +76,10 @@ Reply "continue" for defaults, or say what to add or change.
   shown with the theme row marked as missing); otherwise `approach_choice`.
 - `options` (theme present): `["Continue with these inputs", "I want to add
   or change something"]`.
-- If the user edits any field, update and re-show the complete table.
+- If the user edits any field, update and re-show the complete table. A mode
+  edit re-routes: confirm the new mode's material expectations (reference
+  needs images — see the collection plan; frame modes need the frame image;
+  T2V needs none) and refresh the Images row accordingly.
 - Optional fields never block progress. The user confirms the table as a whole;
   do not interrogate field by field.
 - Creative-field precedence: explicit user input > image-determined values >
@@ -119,18 +124,21 @@ Reference mode needs images. If the user supplied none, do NOT call any
 provider yet — draft a **collection plan** (one line per image: purpose —
 face / outfit / scene / style, count, target ratio) for the plan card's
 Materials row: **three images by default**, adjusted up or down to fit the
-storyboard. Confirming that plan approves collection; then collect in
-Step 4 — **search first** (image search by purpose; only use results whose
-subject is clear and usable), and fall back to **image-generation** only when
-nothing suitable is found. Collection/generation may iterate at most TWICE;
-if usable images are still missing after two iterations, stop and offer:
-user uploads / switch to pure T2V / revise the plan. Inspect the collected
-images (collected-material check), then write the final Ref2VA prompt FROM
-THE ACTUAL IMAGES — never
-describe planned-but-unseen images. Pure T2V only when the user
-asks for text-only or the scene outranks consistency. Note: the default adds
-a collection stage (search or image call) before video generation; choose
-T2V explicitly when visual freedom and a single call matter more.
+storyboard. Confirming that plan approves the **search** stage only. Then
+collect in Step 4 — **search first** (image search by purpose; only use
+results whose subject is clear and usable). When nothing suitable is found,
+do NOT silently fall back to image generation: it spends the image quota, so
+**ask the user first** (one question: allow generating the missing reference
+images — uses image quota / skip). Only generate after an explicit yes;
+otherwise stop and offer: user uploads / switch to pure T2V / revise the
+plan. Search may iterate at most TWICE before asking; a refused generation
+counts as a stop, not an iteration. Inspect the collected images
+(collected-material check), then write the final Ref2VA prompt FROM
+THE ACTUAL IMAGES — never describe planned-but-unseen images. Pure T2V only
+when the user asks for text-only or the scene outranks consistency. Note:
+the default adds a collection stage (search always, image generation only
+with the user's approval) before video generation; choose T2V explicitly
+when visual freedom and a single call matter more.
 
 ### When the image role is ambiguous
 
@@ -258,7 +266,8 @@ never fill the word budget by describing planned-but-unseen images.
 Creating the plan card and performing the final self-check are one workflow
 state, not two. Before showing the card, verify that the confirmed theme has
 been decomposed into a concrete subject + action in the prompt, the
-material checks in Step 1 passed, output settings have values, and the
+material checks in Step 1 passed, output settings have values, the prompt
+file exists and its full content is shown on the card, and the
 user-facing refinement/storyboard exists. In reference mode without an explicit
 ratio, the plan card shows `adaptive` — never invent a concrete ratio. Return to
 the relevant earlier step
@@ -276,8 +285,11 @@ language:
 [Video generation plan]
 
 - Mode: {T2V / first frame / last frame / first + last frame / reference}
-- Materials: {none / filenames with roles and order / collection plan: purpose, count, ratio per image}
+- Materials: {none / FULL paths with roles and order / collection plan: purpose, count, ratio per image — search first; image generation only after user approval}
 - Output: {duration} · {resolution} · {explicit ratio / frame-image ratio / adaptive}
+- Prompt file: {workspace path}
+  Full prompt (verbatim, exactly as it will be submitted):
+  {the complete content of the prompt file}
 - Refined prompt:
   {subject, action, setting, style/mood, camera, and sound as needed in the user's language}
 - Storyboard:
@@ -290,8 +302,10 @@ language:
 Reply "confirm" to start, or tell me what to change.
 ```
 
-The plan card must not show the model, quota, cost notes, prompt-file path, or
-full internal prompt. The 4 s upgrade limitation is a capability note, not a
+The plan card is fully transparent about what will be submitted: materials
+are listed by their full paths, and the prompt file appears verbatim (path +
+complete content) so the user can review the actual input. The card must not
+show the model, quota, or cost notes. The 4 s upgrade limitation is a capability note, not a
 cost note; show it only when the user explicitly selects a 4 s 768P draft.
 Direct 2K output does not need an upgrade warning.
 
@@ -343,10 +357,12 @@ Parameters:
 Do NOT read the python file, instead just call it with the parameters.
 
 Reference mode with an approved collection plan: **collect FIRST** — image
-search by purpose (keep only usable, subject-clear results), fall back to
-image-generation when nothing suitable is found. Collection/generation may
-iterate at most TWICE; still unusable after two iterations → stop and offer:
-user uploads / pure T2V / revised plan. Then run the
+search by purpose (keep only usable, subject-clear results). When nothing
+suitable is found, ask the user before generating: image generation spends
+the image quota, so it needs an explicit yes (allow generating the missing
+reference images / skip). On "skip", stop and offer: user uploads / pure
+T2V / revised plan. Search may iterate at most TWICE before asking. Then run
+the
 collected-material check, write the final Ref2VA prompt from the actual
 images, re-show the video plan card (materials now name the actual files and
 their source: searched / generated), and generate the video only after that
