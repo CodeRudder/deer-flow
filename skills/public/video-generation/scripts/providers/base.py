@@ -8,8 +8,11 @@ implement the differences.
 """
 
 import base64
+import json
 import os
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -48,10 +51,47 @@ def image_ref(image: str) -> str:
     return to_data_url(image)
 
 
+def video_ref(video_path: str) -> str:
+    """Public URL is sent as-is (preferred); local path -> base64 data URL.
+    Base64 inflates ~33% against the 64 MB request-body cap, so large sources
+    should be hosted at a public URL instead."""
+    if video_path.startswith(("http://", "https://")):
+        return video_path
+    with open(video_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:video/mp4;base64,{b64}"
+
+
 def ensure_output_dir(output_file: str) -> None:
     output_dir = os.path.dirname(output_file)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+
+
+def task_record_path(output_file: str) -> Path:
+    return Path(output_file).with_suffix(".task.json")
+
+
+def write_task_record(output_file: str, record: dict) -> None:
+    """Sidecar `.task.json` next to the output so a later run (or --cancel) can
+    discover the task instead of double-submitting."""
+    path = task_record_path(output_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def set_task_status(output_file: str, task_id: str, status: str) -> bool:
+    """Update the sidecar's status when it matches task_id; no-op otherwise."""
+    path = task_record_path(output_file)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if record.get("task_id") != task_id:
+        return False
+    record["status"] = status
+    write_task_record(output_file, record)
+    return True
 
 
 def warn_ignored(provider: str, params: dict, supported: set[str]) -> None:
@@ -109,6 +149,13 @@ class BaseVideoProvider:
         """Pull the downloadable video URL out of a succeeded poll result."""
         raise NotImplementedError
 
+    def cancel(self, handle: str, output_file: str | None = None) -> str:
+        """Cancel a queued task; returns a human-readable result. Implementers
+        must check task state first — MiniMax's DELETE both cancels queued
+        tasks and deletes finished records, and only the former may happen
+        here (finished records feed regeneration/audit lookups)."""
+        raise NotImplementedError(f"provider={self.name} does not support --cancel")
+
     def download(self, url: str, output_file: str) -> None:
         """Default: plain GET."""
         resp = requests.get(url, timeout=300)
@@ -127,6 +174,7 @@ class BaseVideoProvider:
         params: dict,
         max_attempts: int | None = None,
         interval: int | None = None,
+        prompt_file: str | None = None,
     ) -> str:
         if not self.api_key():
             hint = (
@@ -144,18 +192,35 @@ class BaseVideoProvider:
 
         handle = self.create_task(prompt_text, reference_images, params)
         print(f"[create] provider={self.name} handle={handle}")
+        write_task_record(
+            output_file,
+            {
+                "provider": self.name,
+                "task_id": handle,
+                "prompt_file": prompt_file,
+                "params": params,
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        )
 
+        started = time.monotonic()
         for attempt in range(max_attempts):
             status, result = self.poll_once(handle)
             if status == STATUS_SUCCEEDED:
                 url = self.extract_video_url(handle, result)
                 print(f"[poll] succeeded after {attempt + 1} polls")
                 self.download(url, output_file)
+                set_task_status(output_file, handle, STATUS_SUCCEEDED)
                 return f"The video has been generated successfully to {output_file}"
             if status == STATUS_FAILED:
+                set_task_status(output_file, handle, STATUS_FAILED)
                 raise Exception(f"provider={self.name} task {handle} failed: {result}")
-            print(f"[poll] attempt {attempt + 1}: status=pending")
+            print(
+                f"[poll] attempt {attempt + 1}: status=pending "
+                f"({time.monotonic() - started:.0f}s elapsed)"
+            )
             time.sleep(interval)
+        set_task_status(output_file, handle, "timeout")
         raise Exception(
             f"provider={self.name} task {handle} timed out after {max_attempts} polls"
         )

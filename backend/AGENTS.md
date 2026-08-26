@@ -61,7 +61,7 @@ deer-flow/
 │   └── docs/                  # Documentation
 ├── frontend/                   # Next.js frontend application
 └── skills/                     # Agent skills directory
-    ├── public/                # Public skills (committed)
+    ├── public/                # Public skills (committed); may carry references/ docs the skill loads on demand via read_file
     └── custom/                # Custom skills (gitignored)
 ```
 

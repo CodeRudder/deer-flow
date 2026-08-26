@@ -13,6 +13,7 @@ poll, and download across every adapter at once.
 """
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -274,8 +275,16 @@ def test_h3_t2v_payload_includes_ratio(monkeypatch):
     assert captured["json"]["content"] == [{"type": "text", "text": "a cat"}]
 
 
+def test_h3_t2v_accepts_portrait_3_4_ratio(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "a cat", [], {"resolution": "768P", "duration": 4, "ratio": "3:4"}
+    )
+    assert captured["json"]["ratio"] == "3:4"
+
+
 def test_h3_i2v_omits_ratio_and_adds_first_frame(monkeypatch, tmp_path):
-    # I2V ratio is fixed by the first frame; sending ratio errors on that path.
+    # I2V ratio is fixed by the first frame; the API ignores an explicit ratio.
     captured = {}
 
     def fake_post(url, headers=None, json=None, **kw):
@@ -331,7 +340,7 @@ def test_h3_last_frame_role(monkeypatch):
         ["https://cdn/end.png"],
         {"image_role": "last_frame", "ratio": "16:9"},
     )
-    assert "ratio" not in captured["json"]  # image-bearing mode omits ratio
+    assert "ratio" not in captured["json"]  # frame mode: ratio fixed by image
     frame = captured["json"]["content"][1]
     assert frame["role"] == "last_frame"
     assert frame["image_url"]["url"] == "https://cdn/end.png"
@@ -358,15 +367,36 @@ def test_h3_first_last_with_single_image_is_first_frame_only(monkeypatch):
     assert roles == [None, "first_frame"]
 
 
-def test_h3_reference_role_multi_image_omits_ratio(monkeypatch):
+def test_extra_image_prints_warning_and_is_dropped(monkeypatch, capsys):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "x",
+        ["https://cdn/a.png", "https://cdn/b.png"],
+        {"image_role": "first_frame"},
+    )
+    assert "uses only the first 1 image(s); ignoring 1 extra" in capsys.readouterr().out
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None, "first_frame"]
+
+
+def test_h3_reference_role_honors_explicit_ratio(monkeypatch):
     captured = _capture_post(monkeypatch)
     _h3().PROVIDER(model=None).create_task(
         "dance like the refs",
         ["https://cdn/1.png", "https://cdn/2.png", "https://cdn/3.png"],
-        {"image_role": "reference", "ratio": "16:9"},
+        {"image_role": "reference", "ratio": "9:16"},
     )
     roles = [c.get("role") for c in captured["json"]["content"]]
     assert roles == [None, "reference_image", "reference_image", "reference_image"]
+    assert captured["json"]["ratio"] == "9:16"
+
+
+def test_h3_reference_role_default_omits_ratio(monkeypatch):
+    # Without an explicit ratio the API stays adaptive for r2va.
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "x", ["https://cdn/1.png"], {"image_role": "reference"}
+    )
     assert "ratio" not in captured["json"]
 
 
@@ -693,3 +723,337 @@ def test_h3_extra_images_warned(capsys):
     assert len(content) == 3  # text + first + last
     assert "ignoring 1 extra" in capsys.readouterr().out
 
+
+# --- 768P -> 2K upscale (regeneration) + cancel + sidecar (feat-df-5) ---
+
+
+def _capture_h3_post(captured):
+    def fake_post(url, headers=None, json=None, **kw):
+        captured["url"] = url
+        captured["json"] = json
+        return FakeResp({"task_id": "R1"})
+
+    return fake_post
+
+
+def test_upscale_replays_content_with_base_video(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", _capture_h3_post(captured))
+    _h3().PROVIDER(model=None).create_task(
+        "same prompt",
+        ["https://cdn/a.png", "https://cdn/b.png"],
+        {"image_role": "reference", "upscale_video": "https://dl/draft.mp4"},
+    )
+    assert captured["url"].endswith("/v2/video_regeneration")
+    body = captured["json"]
+    assert body["resolution"] == "2K"
+    assert "duration" not in body
+    assert "ratio" not in body
+    assert body["content"][0] == {"type": "text", "text": "same prompt"}
+    roles = [c.get("role") for c in body["content"]]
+    assert roles == [None, "reference_image", "reference_image", "base_video"]
+    assert body["content"][-1]["type"] == "video_url"
+    assert body["content"][-1]["video_url"]["url"] == "https://dl/draft.mp4"
+
+
+def test_upscale_local_source_becomes_data_url(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", _capture_h3_post(captured))
+    draft = tmp_path / "draft.mp4"
+    draft.write_bytes(b"MP4DATA")
+    _h3().PROVIDER(model=None).create_task("p", [], {"upscale_video": str(draft)})
+    url = captured["json"]["content"][-1]["video_url"]["url"]
+    assert url.startswith("data:video/mp4;base64,")
+
+
+def test_h3_default_duration_is_five(monkeypatch):
+    # 5s (=120 frames) keeps the 2K-regeneration source floor (107 frames)
+    # reachable on the default draft.
+    captured = {}
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", _capture_h3_post(captured))
+    _h3().PROVIDER(model=None).create_task("p", [], {})
+    assert captured["json"]["duration"] == 5
+
+
+def test_upscale_rejects_generation_only_params(tmp_path):
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    out = tmp_path / "v2k.mp4"
+    with pytest.raises(ValueError, match="regeneration endpoint"):
+        vid.generate_video(
+            str(pf), [], str(out), provider="minimax_h3",
+            upscale_video="https://dl/d.mp4", duration=8,
+        )
+    with pytest.raises(ValueError, match="regeneration endpoint"):
+        vid.generate_video(
+            str(pf), [], str(out), provider="minimax_h3",
+            upscale_video="https://dl/d.mp4", aspect_ratio="16:9",
+        )
+    with pytest.raises(ValueError, match="regeneration endpoint"):
+        vid.generate_video(
+            str(pf), [], str(out), provider="minimax_h3",
+            upscale_video="https://dl/d.mp4", resolution="768P",
+        )
+
+
+def test_upscale_missing_source_rejected(tmp_path):
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="source not found"):
+        vid.generate_video(
+            str(pf), [], str(tmp_path / "v2k.mp4"),
+            provider="minimax_h3", upscale_video=str(tmp_path / "nope.mp4"),
+        )
+
+
+def test_upscale_source_over_limit_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(vid, "_UPSCALE_MAX_SOURCE_BYTES", 8)
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    big = tmp_path / "big.mp4"
+    big.write_bytes(b"x" * 16)
+    with pytest.raises(ValueError, match="64 MB"):
+        vid.generate_video(
+            str(pf), [], str(tmp_path / "v2k.mp4"),
+            provider="minimax_h3", upscale_video=str(big),
+        )
+
+
+def test_upscale_output_must_be_new(tmp_path):
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    existing = tmp_path / "v2k.mp4"
+    existing.write_bytes(b"old")
+    with pytest.raises(FileExistsError, match="already exists"):
+        vid.generate_video(
+            str(pf), [], str(existing),
+            provider="minimax_h3", upscale_video="https://dl/d.mp4",
+        )
+
+
+def test_upscale_rejected_on_provider_without_support(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not support --upscale-video"):
+        vid.generate_video(
+            str(pf), [], str(tmp_path / "v2k.mp4"),
+            provider="minimax_v1", upscale_video="https://dl/d.mp4",
+        )
+
+
+def test_upscale_full_flow_writes_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        captured["url"] = url
+        return FakeResp({"task_id": "R1"})
+
+    def fake_get(url, headers=None, **kw):
+        if "/v2/query/video_generation/" in url:
+            return FakeResp(
+                {"task": {"status": "succeeded", "content": {"url": "https://dl/v2k.mp4"}}}
+            )
+        return FakeResp(content=b"2KVIDEO")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", fake_get)
+    draft = tmp_path / "draft.mp4"
+    draft.write_bytes(b"768P")
+    pf = tmp_path / "p.txt"
+    pf.write_text("same prompt", encoding="utf-8")
+    out = tmp_path / "v2k.mp4"
+    msg = vid.generate_video(
+        str(pf), [], str(out), provider="minimax_h3", upscale_video=str(draft)
+    )
+    assert out.read_bytes() == b"2KVIDEO"
+    assert "successfully" in msg.lower()
+    assert captured["url"].endswith("/v2/video_regeneration")
+    record = json.loads((tmp_path / "v2k.task.json").read_text(encoding="utf-8"))
+    assert record["provider"] == "minimax_h3"
+    assert record["task_id"] == "R1"
+    assert record["prompt_file"] == str(pf)
+    assert record["status"] == "succeeded"
+
+
+def _capture_cancel(monkeypatch, status):
+    calls = {"delete": []}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"task": {"status": status}})
+
+    def fake_delete(url, headers=None, **kw):
+        calls["delete"].append(url)
+        return FakeResp({"task_id": "T1", "action": "cancelled", "status": "cancelled"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    return calls
+
+
+def test_cancel_queued_sends_delete(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    calls = _capture_cancel(monkeypatch, "queued")
+    msg = _h3().PROVIDER(model=None).cancel("T1")
+    assert "cancelled" in msg
+    assert calls["delete"][0].endswith("/v2/video_generation/T1")
+
+
+def test_cancel_succeeded_never_deletes(monkeypatch):
+    # P0-2: the DELETE endpoint record-deletes finished tasks; a cancel
+    # request must never do that.
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    calls = _capture_cancel(monkeypatch, "succeeded")
+    msg = _h3().PROVIDER(model=None).cancel("T1")
+    assert "already succeeded" in msg
+    assert calls["delete"] == []
+
+
+def test_cancel_running_never_deletes(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    calls = _capture_cancel(monkeypatch, "running")
+    msg = _h3().PROVIDER(model=None).cancel("T1")
+    assert "running" in msg
+    assert calls["delete"] == []
+
+
+def test_cancel_updates_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    _capture_cancel(monkeypatch, "queued")
+    import providers.base as base
+
+    out = tmp_path / "v.mp4"
+    base.write_task_record(str(out), {"provider": "minimax_h3", "task_id": "T1"})
+    _h3().PROVIDER(model=None).cancel("T1", output_file=str(out))
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "cancelled"
+
+
+def test_cancel_task_via_generate(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    calls = _capture_cancel(monkeypatch, "queued")
+    msg = vid.cancel_task("T1", provider="minimax_h3")
+    assert "cancelled" in msg
+    assert calls["delete"]
+
+
+# --- read-only --query (timeout recovery) ---
+
+
+def test_query_task_reports_succeeded_with_url(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+
+    def fake_get(url, headers=None, params=None, **kw):
+        return FakeResp(
+            {"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}}
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    msg = vid.query_task("T1", provider="minimax_h3")
+    assert "succeeded" in msg
+    assert "https://dl/v.mp4" in msg
+
+
+def test_query_task_is_read_only_and_updates_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    side_effects = {"delete": 0}
+
+    def fake_get(url, headers=None, params=None, **kw):
+        return FakeResp({"task": {"status": "failed"}})
+
+    def fake_delete(*a, **kw):
+        side_effects["delete"] += 1
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    import providers.base as base
+
+    out = tmp_path / "v.mp4"
+    base.write_task_record(
+        str(out), {"provider": "minimax_h3", "task_id": "T1", "status": "timeout"}
+    )
+    msg = vid.query_task("T1", provider="minimax_h3", output_file=str(out))
+    assert "failed" in msg
+    assert side_effects["delete"] == 0  # read-only: never cancels
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+
+
+def test_query_task_pending_without_url(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+
+    def fake_get(url, headers=None, params=None, **kw):
+        return FakeResp({"task": {"status": "running"}})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    msg = vid.query_task("T1", provider="minimax_h3")
+    assert "pending" in msg
+    assert "http" not in msg
+
+
+def test_v1_cancel_unsupported(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    import providers.minimax_v1 as v1
+
+    with pytest.raises(NotImplementedError, match="does not support --cancel"):
+        v1.PROVIDER(model=None).cancel("T1")
+
+
+def test_poll_prints_elapsed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    polls = {"n": 0}
+
+    def fake_get(url, headers=None, **kw):
+        if "/v2/query/video_generation/" in url:
+            polls["n"] += 1
+            if polls["n"] == 1:
+                return FakeResp({"task": {"status": "pending"}})
+            return FakeResp(
+                {"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}}
+            )
+        return FakeResp(content=b"V")
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"}))
+    monkeypatch.setattr(requests, "get", fake_get)
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    vid.generate_video(str(pf), [], str(tmp_path / "v.mp4"), provider="minimax_h3")
+    assert "s elapsed" in capsys.readouterr().out
+
+
+def test_timeout_marks_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: FakeResp({"task_id": "task9"})
+    )
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "pending"}})
+    )
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    with pytest.raises(Exception, match="timed out"):
+        vid.generate_video(str(pf), [], str(out), provider="minimax_h3")
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "timeout"
+
+
+def test_failed_marks_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"})
+    )
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "failed"}})
+    )
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    with pytest.raises(Exception, match="failed"):
+        vid.generate_video(str(pf), [], str(out), provider="minimax_h3")
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "failed"

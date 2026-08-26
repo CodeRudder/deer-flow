@@ -191,6 +191,12 @@ export function isImageFile(filepath: string) {
   return imageExtensions.has(getFileExtension(filepath));
 }
 
+const videoExtensions = new Set(["mp4", "mov", "m4v", "webm"]);
+
+export function isVideoFile(filepath: string) {
+  return videoExtensions.has(getFileExtension(filepath));
+}
+
 export function checkCodeFile(
   filepath: string,
 ):

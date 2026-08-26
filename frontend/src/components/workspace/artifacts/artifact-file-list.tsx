@@ -18,6 +18,7 @@ import {
   getFileIcon,
   getFileName,
   isImageFile,
+  isVideoFile,
 } from "@/core/utils/files";
 import { cn } from "@/lib/utils";
 
@@ -82,7 +83,10 @@ export function ArtifactFileList({
   );
 
   const imageFiles = files.filter(isImageFile);
-  const nonImageFiles = files.filter((file) => !isImageFile(file));
+  const videoFiles = files.filter(isVideoFile);
+  const nonMediaFiles = files.filter(
+    (file) => !isImageFile(file) && !isVideoFile(file),
+  );
 
   if (variant === "message") {
     return (
@@ -101,9 +105,22 @@ export function ArtifactFileList({
             ))}
           </div>
         )}
-        {nonImageFiles.length > 0 && (
+        {videoFiles.length > 0 && (
+          <div className="flex flex-col items-start gap-3">
+            {videoFiles.map((file) => (
+              <video
+                key={file}
+                src={urlOfArtifact({ filepath: file, threadId })}
+                controls
+                preload="metadata"
+                className="max-h-[min(70vh,560px)] max-w-full rounded-md"
+              />
+            ))}
+          </div>
+        )}
+        {nonMediaFiles.length > 0 && (
           <ul className="flex w-full flex-col gap-3">
-            {nonImageFiles.map((file) => (
+            {nonMediaFiles.map((file) => (
               <ArtifactFileCard
                 key={file}
                 file={file}
