@@ -275,8 +275,16 @@ def test_h3_t2v_payload_includes_ratio(monkeypatch):
     assert captured["json"]["content"] == [{"type": "text", "text": "a cat"}]
 
 
+def test_h3_t2v_accepts_portrait_3_4_ratio(monkeypatch):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "a cat", [], {"resolution": "768P", "duration": 4, "ratio": "3:4"}
+    )
+    assert captured["json"]["ratio"] == "3:4"
+
+
 def test_h3_i2v_omits_ratio_and_adds_first_frame(monkeypatch, tmp_path):
-    # I2V ratio is fixed by the first frame; sending ratio errors on that path.
+    # I2V ratio is fixed by the first frame; the API ignores an explicit ratio.
     captured = {}
 
     def fake_post(url, headers=None, json=None, **kw):
@@ -332,7 +340,7 @@ def test_h3_last_frame_role(monkeypatch):
         ["https://cdn/end.png"],
         {"image_role": "last_frame", "ratio": "16:9"},
     )
-    assert "ratio" not in captured["json"]  # image-bearing mode omits ratio
+    assert "ratio" not in captured["json"]  # frame mode: ratio fixed by image
     frame = captured["json"]["content"][1]
     assert frame["role"] == "last_frame"
     assert frame["image_url"]["url"] == "https://cdn/end.png"
@@ -359,15 +367,36 @@ def test_h3_first_last_with_single_image_is_first_frame_only(monkeypatch):
     assert roles == [None, "first_frame"]
 
 
-def test_h3_reference_role_multi_image_omits_ratio(monkeypatch):
+def test_extra_image_prints_warning_and_is_dropped(monkeypatch, capsys):
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "x",
+        ["https://cdn/a.png", "https://cdn/b.png"],
+        {"image_role": "first_frame"},
+    )
+    assert "uses only the first 1 image(s); ignoring 1 extra" in capsys.readouterr().out
+    roles = [c.get("role") for c in captured["json"]["content"]]
+    assert roles == [None, "first_frame"]
+
+
+def test_h3_reference_role_honors_explicit_ratio(monkeypatch):
     captured = _capture_post(monkeypatch)
     _h3().PROVIDER(model=None).create_task(
         "dance like the refs",
         ["https://cdn/1.png", "https://cdn/2.png", "https://cdn/3.png"],
-        {"image_role": "reference", "ratio": "16:9"},
+        {"image_role": "reference", "ratio": "9:16"},
     )
     roles = [c.get("role") for c in captured["json"]["content"]]
     assert roles == [None, "reference_image", "reference_image", "reference_image"]
+    assert captured["json"]["ratio"] == "9:16"
+
+
+def test_h3_reference_role_default_omits_ratio(monkeypatch):
+    # Without an explicit ratio the API stays adaptive for r2va.
+    captured = _capture_post(monkeypatch)
+    _h3().PROVIDER(model=None).create_task(
+        "x", ["https://cdn/1.png"], {"image_role": "reference"}
+    )
     assert "ratio" not in captured["json"]
 
 
@@ -912,6 +941,60 @@ def test_cancel_task_via_generate(monkeypatch):
     assert calls["delete"]
 
 
+# --- read-only --query (timeout recovery) ---
+
+
+def test_query_task_reports_succeeded_with_url(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+
+    def fake_get(url, headers=None, params=None, **kw):
+        return FakeResp(
+            {"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}}
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    msg = vid.query_task("T1", provider="minimax_h3")
+    assert "succeeded" in msg
+    assert "https://dl/v.mp4" in msg
+
+
+def test_query_task_is_read_only_and_updates_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    side_effects = {"delete": 0}
+
+    def fake_get(url, headers=None, params=None, **kw):
+        return FakeResp({"task": {"status": "failed"}})
+
+    def fake_delete(*a, **kw):
+        side_effects["delete"] += 1
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    import providers.base as base
+
+    out = tmp_path / "v.mp4"
+    base.write_task_record(
+        str(out), {"provider": "minimax_h3", "task_id": "T1", "status": "timeout"}
+    )
+    msg = vid.query_task("T1", provider="minimax_h3", output_file=str(out))
+    assert "failed" in msg
+    assert side_effects["delete"] == 0  # read-only: never cancels
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+
+
+def test_query_task_pending_without_url(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+
+    def fake_get(url, headers=None, params=None, **kw):
+        return FakeResp({"task": {"status": "running"}})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    msg = vid.query_task("T1", provider="minimax_h3")
+    assert "pending" in msg
+    assert "http" not in msg
+
+
 def test_v1_cancel_unsupported(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
     import providers.minimax_v1 as v1
@@ -974,4 +1057,3 @@ def test_failed_marks_sidecar(monkeypatch, tmp_path):
         vid.generate_video(str(pf), [], str(out), provider="minimax_h3")
     record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
     assert record["status"] == "failed"
-

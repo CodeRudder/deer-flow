@@ -1,6 +1,6 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness). Staged workflow — every generation is confirmed with the user (plan + full prompt + cost) before any quota is spent, and 768P drafts can be upgraded to 2K. Read SKILL.md before replying — including before any clarifying question — for the mode routing, the confirmation gate, the structured-prompt methodology (MiniMax H3), and output settings.
+description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness). Staged workflow — always show a prefilled input information table, then confirm a fixed user-facing generation plan before execution; 768P drafts can be upgraded to 2K. Read SKILL.md before replying — including before any clarifying question — for the input table, mode routing, confirmation gate, structured-prompt methodology (MiniMax H3), and output settings.
 ---
 
 # Video Generation Skill
@@ -9,59 +9,81 @@ description: Use this skill when the user requests to generate, create, or imagi
 
 This skill generates short videos through a **staged, confirmed workflow**:
 
-1. Route the request to one of five input modes.
-2. Write the prompt file — MiniMax H3 uses the official **structured format**
+1. Parse every new video request into a fixed, prefilled **input information
+   table** and wait for the user to continue or edit it. Only a theme is
+   required — it may be vague or abstract; the skill decomposes it into
+   subject + action and completes everything else.
+2. Route the confirmed inputs to one of five input modes (reference mode by
+   default) and perform only the necessary material checks.
+3. Write the prompt file — MiniMax H3 uses the official **structured format**
    (`[Shot N]` timeline, three fields / six sections), loaded on demand from
    `references/`; other providers keep natural-language prose.
-3. Show the user a **generation plan** (mode, output settings, the complete
-   prompt, cost) and **wait for confirmation** — quota is only spent after the
-   user says go.
-4. Generate a 768P draft (default), present it, and offer structured next
-   steps — including upgrading the take to 2K via the official regeneration
-   endpoint.
+4. Show a fixed **generation plan** containing the mode, materials, output,
+   user-language prompt refinement, storyboard, change summary, and capability
+   note; then wait for confirmation.
+5. Generate a 768P draft (default), present it, and offer structured next
+   steps — including upgrading eligible takes to 2K via the official
+   regeneration endpoint.
 
-Every run costs quota and is not refunded, so nothing is sent to the provider
-before the user has seen and approved the exact plan.
+Nothing is sent to the provider before the user has approved the latest plan.
 
-## Core Capabilities
+Capabilities: T2V; I2V (first / last / first+last frame); reference transfer
+(Ref2VA, ≤9 images, H3); 768P → 2K upgrade; queued-task cancel; read-only
+task query; per-run sidecar (`outputs/{name}.task.json`). Async create →
+poll → download is handled by the script.
 
-- Text-to-video (T2V): generate a video from a text prompt only.
-- Image-to-video (I2V): use one supplied image as the first frame, the last
-  frame, or both (first + last).
-- Reference-to-video (Ref2VA, MiniMax H3): use images as a character/style
-  likeness to imitate — up to 9 images.
-- 768P → 2K **upgrade** of an existing H3 draft (regeneration endpoint; replays
-  the original prompt and inputs — content corresponds, details are re-rendered).
-- Cancel of still-queued tasks and a per-run sidecar task record
-  (`outputs/{name}.task.json`).
-- Provider/model selectable via CLI; async create → poll → download is handled
-  by the script.
+## Input information table (always show before routing)
 
-## Empty or vague request (clarify once, with a parameter list)
+For **every new video request**, first parse everything the user already gave
+you, then call `ask_clarification` with the fixed **Markdown table** below,
+translated to the user's language. This gate is mandatory even when the theme
+is already present — and the table is shown even when the theme is missing.
+Prefill supplied values; do not make the user repeat them.
 
-"I want to generate a video" with no picture content is not generatable — there
-is nothing to write a prompt from, and every run costs quota, so do NOT invent
-content. Call `ask_clarification` (type `missing_info`) ONCE using the template
-below (translate to the user's language; all four parts must survive), then wait:
+| Field | Prefilled value | Required |
+|---|---|---|
+| Theme | {user content — may be vague or abstract / needs input} | yes |
+| Subject | {decomposed from the theme / user override} | no |
+| Action | {decomposed from the theme / user override} | no |
+| Setting | {user content / auto-complete} | no |
+| Style | {user content / auto-complete} | no |
+| Camera | {user content / auto-complete} | no |
+| Mood | {user content / auto-complete} | no |
+| Sound | {user content / auto-complete} | no |
+| Storyboard | {user content / plan as needed} | no |
+| Duration | {user content / default 5 s} | no |
+| Aspect ratio | {user content / default 16:9 / frame ratio, adaptive for references} | no |
+| Resolution | {user content / default 768P} | no |
+| Images (reference mode default) | {filenames and stated intent / none — will be auto-collected: search first, generate as fallback} | no |
 
-> A one-sentence description is enough — subject + action + setting, e.g. "a
-> ginger cat stretching on a sunlit windowsill". Everything else has a default
-> (MiniMax H3: duration 4–15 s, default 5 · aspect ratio 16:9, T2V only ·
-> resolution 768P; minimax_v1 uses its own model defaults) —
-> mention what you care about, skip the rest. You may upload images as first
-> frame / last frame / first+last, or as character/style reference (up to 9).
-> No professional prompt needed — I will expand your one-liner into a full
-> cinematic prompt (camera, lighting, atmosphere, audio) and show it to you
-> for confirmation before generating.
+Only a **theme** is required — it may be vague or abstract; the skill
+decomposes it into subject + action while writing the prompt. Tell the user:
+**anything left unfilled — including reference images — will be automatically
+completed and collected** (missing reference images are collected in Step 4:
+search first, generate as fallback; the plan card shows the collection plan).
+Only treat files the user supplied in this conversation as user-provided.
+Reply "continue" for defaults, or say what to add or change.
 
-`options`: text only · first-frame image · last-frame image · first + last
-frame · character/style reference · help me brainstorm an idea. Offer only modes
-the selected provider supports (minimax_v1: first-frame only).
-
-Once the reply contains any subject + action (even a bare "a cat video"), that
-is sufficient: pick the mode, apply defaults to everything unspecified, and move
-straight to Step 2 — the plan card in Step 3 states them. Do not re-ask optional
-fields.
+- **The full table is ALWAYS shown in the first reply** — even when the theme
+  is missing (prefill the theme row with "needs input") — together with the
+  auto-completion note. Never send a bare clarifying question without the
+  table.
+- `clarification_type`: `missing_info` if there is no theme at all (not even
+  a vague one) — then ask for ONLY the theme in the question and do NOT offer
+  a "continue" option (there is nothing to continue yet; the table is still
+  shown with the theme row marked as missing); otherwise `approach_choice`.
+- `options` (theme present): `["Continue with these inputs", "I want to add
+  or change something"]`.
+- If the user edits any field, update and re-show the complete table.
+- Optional fields never block progress. The user confirms the table as a whole;
+  do not interrogate field by field.
+- Creative-field precedence: explicit user input > image-determined values >
+  semantic completion > fixed defaults. Preserve explicit executable settings
+  when compatible with the mode. A frame image's physical ratio is a hard
+  constraint — resolve a conflicting requested ratio in Necessary material
+  checks, never pretend both apply.
+- Once a theme is present and the user confirms the table, proceed to
+  mode routing and material checks. Do not write the prompt before this gate.
 
 ## Choosing the mode (read this first)
 
@@ -73,7 +95,7 @@ selected by `--image-role` plus the images you pass in `--reference-images`:
 | Only text | **T2V** | (omit) | none |
 | Text + one image to start from | **I2V (first frame)** | `first_frame` (default) | 1 |
 | Text + one image to END on | **last frame** | `last_frame` | 1 |
-| Text + a start image and an end image | **first + last frame** | `first_last` | 1–2 (first, then last) |
+| Text + a start image and an end image | **first + last frame** | `first_last` | 2 (first, then last) |
 | Text + image(s) of a character/style to imitate | **reference (Ref2VA)** | `reference` | 1–9 |
 
 **Frame vs. reference — the key distinction (they are mutually exclusive):**
@@ -81,9 +103,10 @@ selected by `--image-role` plus the images you pass in `--reference-images`:
 - A **frame** image (first/last) is an *actual frame of the video* — it literally
   appears on screen at 0:00 (first) or at the end (last). The model fills in the
   motion between frames. Think: "start the video from this photo."
-- A **reference** image is *not any frame of the video* — it never appears
-  as-is. It only tells the model "the character/style looks like this," and the
-  model transfers that identity/look into a freshly generated video. Think:
+- A **reference** image does not pin an exact frame. It tells the model "the
+  character/style looks like this," and the model transfers that identity/look
+  into a freshly generated video. A prompt may use it as a soft opening/closing
+  composition anchor, but that is not pixel-exact frame preservation. Think:
   "make a video of this person, who looks like this photo."
 
 Because one pins a concrete frame on the timeline and the other transfers
@@ -91,10 +114,23 @@ features, H3 does not allow mixing frame roles with reference roles in one
 request. Pick the mode from intent: is the image a moment *in* the video (frame)
 or a likeness to *imitate* (reference)?
 
-T2V is a first-class native capability, not a fallback. For a text-only request,
-generating a reference image first is **opt-in** (the user must ask): it costs an
-extra image-generation call and locks the video to that frame. When in doubt for
-a text-only request, do T2V.
+**When the user has not specified a mode, default to reference mode.**
+Reference mode needs images. If the user supplied none, do NOT call any
+provider yet — draft a **collection plan** (one line per image: purpose —
+face / outfit / scene / style, count, target ratio) for the plan card's
+Materials row: **three images by default**, adjusted up or down to fit the
+storyboard. Confirming that plan approves collection; then collect in
+Step 4 — **search first** (image search by purpose; only use results whose
+subject is clear and usable), and fall back to **image-generation** only when
+nothing suitable is found. Collection/generation may iterate at most TWICE;
+if usable images are still missing after two iterations, stop and offer:
+user uploads / switch to pure T2V / revise the plan. Inspect the collected
+images (collected-material check), then write the final Ref2VA prompt FROM
+THE ACTUAL IMAGES — never
+describe planned-but-unseen images. Pure T2V only when the user
+asks for text-only or the scene outranks consistency. Note: the default adds
+a collection stage (search or image call) before video generation; choose
+T2V explicitly when visual freedom and a single call matter more.
 
 ### When the image role is ambiguous
 
@@ -108,15 +144,16 @@ interrogate on every image:
   style", "a character who looks like this") → go straight to `reference`, no
   question.
 - **Weak / no signal** (just "make a video from this image") → **default to
-  `first_frame`** (the most common, most intuitive reading) and note the choice
-  in the plan card ("using it as the opening frame — say the word if you
-  actually want a video *of* this person/style instead").
+  `reference`** (the default mode when the user has not specified one) and
+  note the choice in the plan card ("using it as a likeness reference — say
+  the word if you actually want the video to *start from* this image
+  instead").
 - **Self-contradictory** (asks both "start from this image" and "match this
   person's face") → only here use `ask_clarification` before writing anything.
 
-Rationale: first-frame I2V is the mainstream use; reference is a specialist need
-users usually state explicitly. Defaulting with a correction exit in the plan
-card beats blocking on every upload.
+Rationale: reference is the skill-wide default; explicit frame language is the
+user actively choosing the frame mode. Defaulting with a correction exit in
+the plan card beats blocking on every upload.
 
 ### Image count and order per mode
 
@@ -127,47 +164,69 @@ label), so order matters — confirm it with the user when it isn't obvious:
 |---|---|---|
 | `first_frame` | 1 | the single image is the opening frame |
 | `last_frame` | 1 | the single image is the closing frame |
-| `first_last` | 1–2 | **first image = opening frame, second = closing frame** — never swap |
+| `first_last` | exactly 2 | **first image = opening frame, second = closing frame** — never swap; if only one image is available, route to `first_frame` instead of invoking `first_last` |
 | `reference` | 1–9 | all treated as likeness references (upstream limit: 9) |
 
 Do not pass more images than a mode uses — a 3rd image to `first_last`, or a 2nd
-to `first_frame`/`last_frame`, is silently dropped, so send only what the mode
-takes. For `reference`, name the images in your prompt in the same order you
+to `first_frame`/`last_frame`, is dropped with a printed warning, so send only
+what the mode takes. For `reference`, name the images in your prompt in the same
+order you
 pass them (the Ref2VA format labels them `<Picture 1>`, `<Picture 2>`, … by
 position — see `references/prompt-format-ref.md`).
 
-## Output settings (offer these; use defaults if the user is unsure)
+### Necessary material checks
 
-Briefly surface the three output settings so the user can steer them. If the
-user doesn't specify or isn't sure, use the defaults and state them on the plan
-card — do NOT block or interrogate.
+Before prompt writing, check only what is required to continue:
+
+- image count matches the selected mode;
+- image role is clear and first/last order is correct;
+- frame and reference roles are not mixed;
+- images are usable and the subject is basically recognizable;
+- `first_last`: the two images' ratios equal or close enough for a coherent
+  transition.
+
+Do not require matching ratios across `reference` images, and do not compare
+across images for a single first or last frame. If frame-image ratios conflict
+with each other or with an explicitly requested output ratio, use exactly
+three exits: ① crop the frame image(s) to the requested or a common ratio
+② replace the conflicting image(s) ③ keep the original frame-image ratios —
+a single frame keeps the image's native ratio; `first_last` keeps both and
+explicitly accepts the transition mismatch. An accepted exception counts as a
+passed material check and is never asked again.
+
+## Output settings
+
+Surface these settings in the input table. Preserve explicit choices; otherwise
+apply the defaults and show the resolved values on the plan card without a
+separate question.
 
 | Setting | Options (MiniMax H3) | Default | Notes |
 |---|---|---|---|
-| Aspect ratio (`--aspect-ratio`) | `16:9`, `9:16`, `1:1`, `4:3`, `21:9` | `16:9` | T2V only; for I2V the first frame fixes it (do not pass) |
-| Duration (`--duration`) | 4–15 s (integer) | `5` | longer costs more; a multi-shot script needs 6 s+ |
-| Resolution (`--resolution`) | `768P`, `2K` | `768P` | `2K` costs more — the default flow drafts at 768P and upgrades after confirmation (Step 6) |
+| Aspect ratio (`--aspect-ratio`) | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9` | `16:9` | T2V: optional, default `16:9`; reference mode: optional, defaults to adaptive; frame modes: fixed by the image (do not pass) |
+| Duration (`--duration`) | 4–15 s (integer) | `5` | 2+ shots: prefer 6 s or longer; follow the shot budget in the selected prompt reference |
+| Resolution (`--resolution`) | `768P`, `2K` | `768P` | default to a 768P draft, then upgrade an eligible take after confirmation |
 
 Guidance:
 
-- Casual request → draft plan = 768P · 5 s · 16:9 (T2V); state it on the plan
-  card, don't ask.
+- Casual request → draft plan = 768P · 5 s (ratio: `16:9` for T2V,
+  adaptive for reference); state it on the plan card, don't ask.
 - Vertical / social → suggest `9:16`; cinematic → `16:9` or `21:9`.
-- Direct `2K` is the expensive path. Prefer drafting at 768P and upgrading the
-  take the user likes (Step 6). If the user insists on direct 2K, the plan card
-  must flag the higher platform cost.
-- Explicitly given parameters are already confirmed — show them marked "(as you
-  specified)" on the plan card; never re-ask them.
+- Prefer drafting at 768P and upgrading the take the user likes (Step 6). If
+  the user explicitly requests direct 2K, preserve that setting in both the
+  input information table and the generation plan.
+- Explicitly given parameters are prefilled in the input table and preserved in
+  the plan; never replace them with defaults.
 
 ## Workflow
 
-### Step 1: Understand the request
+### Step 1: Confirm inputs, route the mode, and check materials
 
-Identify: subject and action, setting, mood/style, and whether the user supplied
-images (and their role). Pick the mode using the table above and the output
-settings per the section above — falling back to defaults if the user is unsure.
-You do not need to scan `/mnt/user-data` yourself — if an image was uploaded it
-will be referenced for you.
+Apply the input-table, mode-routing, precedence, and material-check rules
+above. Material checks run in two layers: **available-material checks** (the
+images the user supplied) before prompt writing; **collected-material
+checks** (auto-collected images: usable, subject clear) after collection in
+Step 4, before the final Ref2VA prompt is written. Never report material
+checks as "passed" while planned images do not exist yet.
 
 ### Step 2: Write the structured prompt file
 
@@ -185,134 +244,164 @@ modes, then the fields). The structured format is still plain text, never a raw
 JSON blob. (A `.json` file with a top-level `"prompt"` string field remains
 accepted for backward compatibility — only that field is used.)
 
-For providers other than MiniMax H3 (`minimax_v1`), keep the prose
-methodology: subject + main action first, ONE main camera move, lighting,
-atmosphere, ~60–100 words for a single-beat clip (audio description is H3-only).
+Other providers (`minimax_v1`) keep the prose methodology: subject + main
+action first, ONE main camera move, lighting, atmosphere, ~60–100 words for a
+single-beat clip (audio description is H3-only).
 
-### Step 3: Confirmation gate (always, before executing)
+Ref2VA prompts must be written from the ACTUAL images — their real subjects,
+features, and `<Picture N>` order. When reference images are auto-collected,
+write this prompt only after collection and the collected-material check;
+never fill the word budget by describing planned-but-unseen images.
 
-Call `ask_clarification` ONCE with the generation plan card, translated to the
-user's language. Template (include only the cost notes that apply):
+### Step 3: Build, self-check, and confirm the fixed plan card
 
+Creating the plan card and performing the final self-check are one workflow
+state, not two. Before showing the card, verify that the confirmed theme has
+been decomposed into a concrete subject + action in the prompt, the
+material checks in Step 1 passed, output settings have values, and the
+user-facing refinement/storyboard exists. In reference mode without an explicit
+ratio, the plan card shows `adaptive` — never invent a concrete ratio. Return to
+the relevant earlier step
+if an essential is missing.
+
+Create a concise **user-language refinement** from the internal prompt — not a
+copy of it. Preserve the subject, action, setting, style/mood, camera
+movement, and material role; add a short storyboard only when needed (`None`
+for a simple single-shot clip).
+
+Call `ask_clarification` with this fixed template, translated to the user's
+language:
+
+```text
+[Video generation plan]
+
+- Mode: {T2V / first frame / last frame / first + last frame / reference}
+- Materials: {none / filenames with roles and order / collection plan: purpose, count, ratio per image}
+- Output: {duration} · {resolution} · {explicit ratio / frame-image ratio / adaptive}
+- Refined prompt:
+  {subject, action, setting, style/mood, camera, and sound as needed in the user's language}
+- Storyboard:
+  {None / concise storyboard in the user's language}
+- Changes this round:
+  {Initial plan / changes from the latest superseded plan}
+- Capability note:
+  {None / This 4 s draft cannot be upgraded to 2K; use 5 s or longer to keep the upgrade option}
+
+Reply "confirm" to start, or tell me what to change.
 ```
-[Generation plan]
-- Mode: {T2V | first frame | last frame | first+last | reference (N images)}
-- Output: {duration}s · {resolution} · {aspect ratio}{ · ratio from the image}
-- Quota: 1 video-generation credit
-- Platform cost note:{ 2K billed per second at a higher rate}{ each reference
-  image beyond the 5th is billed per image}
-- Prompt file: /mnt/user-data/workspace/{name}.txt
-- Prompt (full text):
-{the complete structured prompt}
 
-Reply "confirm" (or "go ahead") to start, or tell me what to change.
-```
+The plan card must not show the model, quota, cost notes, prompt-file path, or
+full internal prompt. The 4 s upgrade limitation is a capability note, not a
+cost note; show it only when the user explicitly selects a 4 s 768P draft.
+Direct 2K output does not need an upgrade warning.
 
-- `clarification_type`: `risk_confirmation` when an expensive parameter is hit
-  (`2K` / `duration > 5` / more than 5 reference images) — put the platform
-  cost note first and bold it; otherwise `approach_choice`.
+- `clarification_type`: `approach_choice`.
 - `options`: `["Confirm and generate", "I want to adjust"]`.
-- Explicit `duration=4`: add the cost note "4s drafts cannot be upgraded to 2K
-  (below the source frame minimum); use 5s+ if you may want the upgrade" —
-  4 s ≈ 96 frames, under the 107-frame regeneration floor.
 
 Confirmation protocol (prevents loops and skips):
 
 - **Affirmative** reply (confirm / okay / go ahead / 可以 / 生成吧) → execute
   Step 4 immediately; do not re-ask anything optional.
-- **Adjustment** reply → revise the prompt file and parameters, then re-show
-  the FULL plan card (change summary + complete prompt) and wait again. No
-  round limit; never advance without a fresh approval.
+- **Adjustment** reply → revise the prompt file, user-facing refinement,
+  storyboard, settings, or materials as needed, then re-show the FULL fixed
+  card with a change summary. No round limit; never advance without fresh
+  approval. Re-run material checks if images change.
 - **Resume across runs**: the gate ends the current run; the user's next
-  message starts a new one. Treat the LATEST plan card in history as the only
-  live one (earlier cards are superseded): if the user's latest message
-  approves it — or applies an adjustment you have re-shown — execute directly,
-  without re-asking and never against an older card.
-- **Vague reply** ("嗯", "ok?") to a default-parameter plan counts as
-  approval; to an expensive-parameter plan, re-confirm the cost once, briefly,
-  then act on the answer.
+  message starts a new one. The LATEST plan card in history is the only live
+  one — execute only that approved plan, never an older card.
+- **Ambiguous or non-committal** reply (for example, "嗯" or "ok?") → remain at
+  the gate and ask for an explicit confirmation. Never execute without one.
 
 ### Step 4: Execute
 
-The default draft is **768P · 5 s**. Do not pass `--resolution 2K` unless the
-user insisted on direct 2K and the plan card said so.
+Use the confirmed Output settings. Pass `--resolution 2K` only when direct 2K
+appeared in the latest approved plan card.
 
 ```bash
-# T2V (text only)
+# T2V (text only). Mode-specific commands: references/workflow-examples.md
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/{name}.txt \
-  --output-file /mnt/user-data/outputs/{name}.mp4
-
-# I2V (user supplied a first frame) — no --aspect-ratio, the image fixes it
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/{name}.txt \
-  --reference-images /mnt/user-data/uploads/{image} \
   --output-file /mnt/user-data/outputs/{name}.mp4
 ```
 
 Parameters:
 
-- `--prompt-file`: Absolute path to the prompt file (required). Structured
-  `.txt` (H3), prose `.txt`, or JSON with a `"prompt"` field.
-- `--reference-images`: Absolute path(s) to image(s), space-separated. Omit for
-  T2V. Meaning depends on `--image-role`: the first frame (default), the last
-  frame, first+last (two images), or reference images (up to 9).
-- `--image-role` (MiniMax H3): `first_frame` (default), `last_frame`,
-  `first_last`, or `reference`. Frame roles and `reference` are mutually
-  exclusive. Omit for T2V or plain first-frame I2V.
-- `--output-file`: Absolute path to the output `.mp4` (required, must NOT
-  already exist).
-- `--aspect-ratio`: T2V only, e.g. `16:9` (default). Ignored whenever an image
-  is passed.
-- `--model`: Model name, e.g. `MiniMax-H3`. This is the routing key — the
-  provider that owns the model is looked up from `config.yaml`, so normally
-  this is the only one you pass.
-- `--provider`: Escape hatch (`minimax_h3`, `minimax_v1`) for debugging or
-  for a model not declared in `config.yaml`; skips the model lookup.
-- `--resolution`: `768P` (default, the draft tier) or `2K` (expensive path).
-- `--duration`: Seconds, 4–15 for MiniMax H3. Default 5 (keeps the 2K upgrade
-  path open — see Step 6).
+- `--prompt-file` (required): structured `.txt` (H3), prose `.txt`, or JSON
+  with a `"prompt"` field.
+- `--reference-images`: image path(s), space-separated; omit for T2V. Meaning
+  depends on `--image-role`.
+- `--image-role` (H3): `first_frame` (default) / `last_frame` / `first_last` /
+  `reference`; frame and reference roles are mutually exclusive.
+- `--output-file` (required): output `.mp4`, must NOT already exist.
+- `--aspect-ratio`: per-mode semantics — see Output settings.
+- `--model` / `--provider`: routing + escape hatch — `references/provider-runtime.md`.
+- `--resolution`: `768P` (default draft tier) or `2K`.
+- `--duration`: 4–15 s for H3; default 5 (keeps 2K upgrade open — Step 6).
+- `--query`: read-only task lookup — see Task lifecycle below.
 
 [!NOTE]
 Do NOT read the python file, instead just call it with the parameters.
 
-Before dispatching, check for an unfinished duplicate: if
-`outputs/{name}.task.json` exists without a terminal status (`succeeded` /
-`failed` / `cancelled` / `timeout`), a task for this output may still be in
-flight — report its task id and the elapsed time instead of submitting again (a
-resubmission is billed again). Execution is a single foreground call: there is
-no live progress while it runs; per-poll elapsed times and a stage summary
-arrive in the output when it ends.
+Reference mode with an approved collection plan: **collect FIRST** — image
+search by purpose (keep only usable, subject-clear results), fall back to
+image-generation when nothing suitable is found. Collection/generation may
+iterate at most TWICE; still unusable after two iterations → stop and offer:
+user uploads / pure T2V / revised plan. Then run the
+collected-material check, write the final Ref2VA prompt from the actual
+images, re-show the video plan card (materials now name the actual files and
+their source: searched / generated), and generate the video only after that
+fresh confirmation.
+
+Before dispatching, check the sidecar for an unfinished duplicate. A local
+polling `timeout` is not an upstream terminal status — resolve it read-only
+with `--query`: `succeeded` → download to a NEW output path, then Step 5
+delivery; `failed` → offer a fresh plan; still active (`queued` /
+`processing` / `pending` / `running`) → report and wait.
+Never auto-resubmit without the user's explicit go-ahead. Full state machine:
+`references/task-lifecycle.md`. Execution is one foreground call — no live
+progress; per-poll elapsed times and a stage summary arrive at the end.
 
 ### Step 5: Present the result + iteration exits
 
-`present_files` the video (video first, then any generated reference image).
-Briefly describe the result, then ALWAYS append the iteration exits (translated
-to the user's language):
+Before delivery, verify the generation succeeded, the output path is known,
+and the video file exists and is usable; on failure or polling timeout, report
+the error or task id instead. Then `present_files` the video (video first,
+then any generated reference image), describe it briefly, and append the
+iteration exits in the user's language. Every success offers three exits:
 
-```
+```text
 Happy with it? I can: ① tweak the prompt ② change duration/resolution
-③ swap the input image(s) ④ upgrade this take to 2K (+1 credit, same content,
-refined details).
-Any change re-rolls the whole clip (no fixed seed) and costs a credit.
+③ swap the input image(s).
 ```
 
-Offer ④ (upgrade) ONLY for MiniMax H3 drafts whose duration allows it (4s
-drafts are below the upgrade source minimum — offer ①/② instead).
+Append `④ upgrade this take to 2K (same content, refined details)` ONLY when
+all conditions hold: the result is a MiniMax H3 768P draft, its duration is at
+least 5 s, and its source video is available to the regeneration endpoint.
+Never show the upgrade exit for a 4 s draft; offer only ①–③ so the user
+cannot enter an impossible upgrade flow. Prompt/setting changes return to
+prompt writing; image changes return to mode routing, then material checks
+and prompt rewriting (a different image may change the mode). Routes ①–③
+each re-pass the full fixed plan card (④ uses the Step 6 gate); new output
+filenames per Iteration. Do not repeat the
+input-table gate unless the user starts a new request or invalidates the
+confirmed theme.
 
 ### Step 6: Upgrade to 2K (optional, MiniMax H3 only)
 
-The upgrade runs the same confirmation gate with a short plan card: source
-video path + "content corresponds, details re-rendered, 768P→2K" + the
-one-extra-credit note. Hard constraints for the command:
+The upgrade runs a short confirmation gate showing the source video path and
+"content corresponds, details re-rendered, 768P→2K". Do not include model,
+quota, cost, or the full prompt in the user-facing card. Execute only after an
+explicit confirmation; cancellation returns to Step 5. A prompt, material, or
+setting change starts a new generation plan rather than changing the upgrade.
+Hard constraints for the command:
 
-- Reuse the ORIGINAL prompt file and reference images — same paths, same order,
-  same `--image-role`, same `--model` (the endpoint replays the exact original
-  input; a changed input is a different generation, not an upgrade).
-- `--output-file` must be a NEW path, e.g. `{name}-2k.mp4` (existing files are
-  never overwritten).
-- A local source video above ~45 MB is rejected (request-body cap) — shorten it
-  or point `--upscale-video` at a public URL.
+- Reuse the ORIGINAL prompt file and reference images — same paths, order,
+  `--image-role`, and `--model` (the endpoint replays the exact original
+  input; a changed input is a new generation, not an upgrade).
+- `--output-file` must be a NEW path, e.g. `{name}-2k.mp4` (never overwritten).
+- A local source above ~45 MB is rejected (request-body cap). Point
+  `--upscale-video` at a public URL, or draft a shorter one — a new
+  generation that must pass the full plan-card gate.
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
@@ -327,99 +416,52 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 Do NOT pass `--duration` / `--aspect-ratio` / `--resolution` together with
 `--upscale-video` — the upgrade runs at a fixed 2K and follows the source.
 
-### Cancelling a queued task
+## Task lifecycle (cancel & query)
 
-`--cancel` cancels only tasks still QUEUED. Running tasks cannot be cancelled;
-finished tasks are never touched (the upstream endpoint would delete their
-records — the script checks state first and refuses). If the run ended by
-sandbox timeout, the task may still finish upstream: its id is in
-`outputs/{name}.task.json` (status `timeout`), and it can be queried later —
-do not blindly regenerate.
+`--cancel` cancels only still-QUEUED tasks; running tasks cannot be
+cancelled, finished tasks are never touched. If the run ended by sandbox
+timeout, its id is in `outputs/{name}.task.json` (status `timeout`) — resolve
+with `--query`, never blindly regenerate.
+
+`--query` is a read-only status lookup, safe any time on every provider. In
+query mode `--output-file` only refreshes the sidecar record — it NEVER
+downloads the video. Full state machine: `references/task-lifecycle.md`.
 
 ```bash
+python /mnt/skills/public/video-generation/scripts/generate.py \
+  --query {task_id} --model MiniMax-H3
+
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --cancel {task_id} --model MiniMax-H3 \
   --output-file /mnt/user-data/outputs/{name}.mp4
 ```
 
-(`--output-file` is optional; when given it also marks that run's `.task.json`
-as cancelled.)
+## Prompt methodology (routing only — full specs in references/)
 
-## Prompt methodology (summary — full specs in references/)
+MiniMax H3 uses the official structured format; every other provider keeps
+natural-language prose. In Step 2 load exactly one spec and follow it — the
+specs own the grammar (fields/sections, `[Shot N]` timeline, camera motion,
+speakers and `<d>` dialogue, language exceptions, keyframe soft-anchoring):
 
-MiniMax H3 uses the official **structured format**; other providers keep prose.
-Load the full specification in Step 2. Summary of the elements:
+- base modes (T2V / first / last / first+last) →
+  `references/prompt-format-base.md`
+- reference mode (Ref2VA) → `references/prompt-format-ref.md`
 
-- **Base modes** (`references/prompt-format-base.md`): instruction line
-  (i2va / fl2va / l2va only — exact official templates) + three fields:
-  `integrated_multimodal_description`, `overall_soundscape`,
-  `non_diegetic_music`.
-- **Reference mode** (`references/prompt-format-ref.md`): six sections:
-  `subject_definitions` (`<Subject N>` / `<Picture N>`, numbered by
-  `--reference-images` position), `summary` (task-type prefix),
-  `retention_analysis` (fixed markers `fully_preserved` / `partially_preserved`
-  / `attribute_transfer` / `weak_reference`), `detailed_description`,
-  `overall_soundscape`, `non_diegetic_music`.
-- **Timeline**: `[Shot 1]` opens with style + composition, no timestamp; later
-  shots `[Shot N] At MM:SS.mmm` with strictly increasing timestamps inside the
-  duration; one dominant action per shot; a cut must add new information,
-  otherwise use camera motion.
-- **Camera motion**: always type + amplitude + speed as natural English.
-- **Speakers**: stable IDs (S1), (S2)… reused at every vocal event; dialogue in
-  `<d>[Language] exact words</d>` — original language, verbatim; voiceover adds
-  "while his lips remain completely closed."
-- **On-screen text**: quoted verbatim in the original language.
-- **Language**: body in English; only dialogue and on-screen text stay in the
-  user's language.
-- **Keyframe soft-anchor** (reference mode): a reference image may be declared
-  the opening/closing frame inside the prompt (see the ref format) — soft
-  anchoring; pixel-exact stitching needs the frame modes.
-
-This is an H3-specific format. Do NOT use it for `minimax_v1` — keep prose
-there.
+The H3 format is H3-only: do NOT use it for `minimax_v1` — keep prose there.
 
 ## Examples
 
-### Example A — T2V with the gate
+Example A shows the full T2V flow with both gates, Example E the 2K upgrade.
+Worked commands for the other modes live in `references/workflow-examples.md`
+— load it after the gates when the routed mode is not plain T2V.
 
-User: "Make a short clip of a cat stretching on a windowsill in the morning."
+### Example A — explicit text-only request (pure T2V)
 
-Step 2 — write `/mnt/user-data/workspace/cat-stretch.txt` (structured format,
-full worked example in `references/prompt-format-base.md`):
-
-```
-integrated_multimodal_description: [Shot 1] Live-action, cinematic. A medium
-wide shot frames a ginger cat stretching on a sunlit wooden windowsill beside
-a potted plant, arching its back and extending one paw toward the pot. Morning
-golden-hour light streams through sheer curtains, casting soft volumetric rays
-across its fur. The camera pushes in with small amplitude at slow speed from
-the medium shot toward the cat. [Shot 2] At 00:03.000, the camera cuts to a
-close-up of the paw reaching the pot's rim, dust motes drifting through the
-light beam, while the stretch's lazy contentment carries over from the
-previous shot.
-
-overall_soundscape: Gentle birdsong outside, the soft rustle of curtains in a
-light breeze, a faint creak of the wooden sill under the cat's weight, and a
-low contented purr.
-
-non_diegetic_music: N/A
-```
-
-Step 3 — plan card (type `approach_choice`; nothing expensive):
-
-```
-[Generation plan]
-- Mode: T2V
-- Output: 5s · 768P · 16:9
-- Quota: 1 video-generation credit
-- Prompt file: /mnt/user-data/workspace/cat-stretch.txt
-- Prompt (full text):
-{the prompt above}
-
-Reply "confirm" (or "go ahead") to start, or tell me what to change.
-```
-
-After "confirm" — Step 4 (defaults apply, no extra flags needed):
+User: "Make a short clip of a cat stretching on a windowsill in the morning —
+text only, no reference images." The explicit text-only ask opts out of the
+reference-mode default. Flow: theme-prefilled input table → T2V structured
+prompt (`references/prompt-format-base.md`) → plan card (`T2V`, no materials,
+`5 s · 768P · 16:9`, `Storyboard: None`, `Initial plan`). Run:
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
@@ -427,61 +469,14 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --output-file /mnt/user-data/outputs/cat-stretch.mp4
 ```
 
-Step 5 — `present_files` + the iteration exits (①–④).
-
-### Example B — I2V, user uploaded a first frame
-
-User uploaded `portrait.jpg` and said "make her slowly turn to the camera."
-
-Prompt file `turn.txt` starts with the i2va instruction line, then the three
-fields (see the base format's per-mode strategy: anchor the image, then direct
-only the motion). The plan card marks the mode "first frame"; no
-`--aspect-ratio` (the image fixes it). Command:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/turn.txt \
-  --reference-images /mnt/user-data/uploads/portrait.jpg \
-  --output-file /mnt/user-data/outputs/turn.mp4
-```
-
-### Example C — first + last frame
-
-User uploaded `dawn.jpg` and `dusk.jpg`: "morph the sky from dawn to dusk."
-
-Prompt `sky.txt` uses the fl2va instruction line and a SINGLE shot describing
-only the transition (both endpoints are fixed — first-frame state → narrowing
-differences → last-frame state). Command (order is load-bearing: dawn first,
-dusk second):
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/sky.txt \
-  --reference-images /mnt/user-data/uploads/dawn.jpg /mnt/user-data/uploads/dusk.jpg \
-  --image-role first_last \
-  --output-file /mnt/user-data/outputs/sky.mp4
-```
-
-### Example D — reference (Ref2VA)
-
-User uploaded a face photo and an outfit photo: "make a video of this person
-wearing this outfit, waving hello." The full six-section prompt (worked
-example) is in `references/prompt-format-ref.md`. Pass the images in the order
-the prompt names them — face first:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/wave.txt \
-  --reference-images /mnt/user-data/uploads/face.jpg /mnt/user-data/uploads/outfit.jpg \
-  --image-role reference \
-  --output-file /mnt/user-data/outputs/wave.mp4
-```
+Present with exits ①–③ plus ④ (eligible 5 s H3 768P draft).
 
 ### Example E — upgrade the take to 2K
 
 User (after watching `cat-stretch.mp4`): "yes — give me this one in 2K."
 
-Short plan card → "confirm" → original prompt file and settings replayed:
+Brief confirmation card (source video path + content-corresponds note) →
+"confirm" → original prompt file and settings replayed:
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
@@ -495,92 +490,41 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 | Provider | Resolution | Duration | Aspect ratio | Image roles | Audio |
 |---|---|---|---|---|---|
-| `minimax_h3` | 768P / 2K | 4–15 s | T2V: `--aspect-ratio`; with any image: from image | first_frame / last_frame / first_last / reference (1–9) | Native 32 kHz stereo |
+| `minimax_h3` | 768P / 2K | 4–15 s | see Output settings | first_frame / last_frame / first_last / reference (1–9) | Native stereo audio |
 | `minimax_v1` | model default | model default | ignored | first frame only | none |
 
-Only MiniMax H3 supports `--image-role`, `--upscale-video`, and `--cancel`;
-passing them to `minimax_v1` is rejected with an error, so switch provider or
-drop the flag. Frame roles (first/last) and `reference` are mutually exclusive
-on H3. Reference mode takes up to 9 images (upstream limit); reference
-video/audio is not supported by this skill. Unsupported params print a warning
-rather than being dropped silently. Avoid named real people or trademarked
-characters.
+`--query` works on every provider; `--image-role` / `--upscale-video` /
+`--cancel` are H3-only (error on `minimax_v1`). Frame and reference roles are
+mutually exclusive on H3; reference video/audio is unsupported; avoid named
+real people or trademarked characters. Routing/credentials/compatibility:
+`references/provider-runtime.md`.
 
 ## Output handling
 
-- Videos land in `/mnt/user-data/outputs/`; each run also writes a sidecar
-  `outputs/{name}.task.json` (provider, task id, prompt file, parameters,
-  status) — the source for duplicate checks and `--cancel`.
-- Present the video to the user with `present_files` (video first, then any
-  generated reference image if one was made).
-- Give a brief description of the result and ALWAYS append the iteration exits
-  (Step 5).
+Videos land in `/mnt/user-data/outputs/`; each run also writes a sidecar
+`outputs/{name}.task.json` (provider, task id, prompt file, parameters, status)
+for duplicate checks, `--query`, and `--cancel`. Delivery and iteration rules
+are defined once in Step 5.
 
 ## Iteration (regenerate, not edit)
 
-This skill does NOT edit an existing video — there is no video-editing capability.
-"Iterating" means changing the prompt (or first frame / duration / provider) and
-**generating a brand-new video from scratch**. Consequences to keep in mind:
-
-- **Non-deterministic**: even the exact same prompt produces a different video
-  each run (no fixed seed). You cannot tweak just one moment (e.g. "slow down the
-  camera at 0:02") — any change re-rolls the whole clip. The ONLY same-content
-  path is the 2K upgrade (Step 6), which re-renders the take at higher fidelity.
-- **I2V is the most controllable iteration**: keep the same first-frame image and
-  only adjust the motion/camera prose, so at least the opening frame stays stable.
-  Pure T2V iteration is closer to re-rolling from scratch.
-- **Use a NEW output filename each time** (e.g. `cat-v2.mp4`). The script
-  **refuses to overwrite** an existing file and errors out before calling the
-  provider, so a reused filename costs no quota — but it does waste a turn. Keep
-  versions to compare.
-- **Each run costs quota** (charged against the video-generation usage counter,
-  a separate allowance from image generation; admins set weekly/monthly limits
-  per user), unlike editing text — so change the prompt deliberately rather
-  than re-running blindly. When the allowance is exhausted the command is
-  rejected before dispatch.
-
-## Notes
-
-- MiniMax H3 handles English and Chinese prompts natively; the structured
-  format's body is English with dialogue/on-screen text in the original
-  language.
-- The prompt is plain structured text — never hand the provider a raw JSON
-  blob.
+This skill does NOT edit an existing video — iterating means changing the
+prompt, materials, or settings and generating a brand-new take. Generation is
+non-deterministic (no fixed seed): any change re-rolls the whole clip; the
+ONLY same-content path is the 2K upgrade (Step 6). A fixed first frame is the
+most controllable iteration. Always use a NEW output filename (the script
+refuses to overwrite) and regenerate deliberately, never blindly.
 
 ## Delegation boundary
 
-Single-video requests run on the lead agent directly: the workflow is one
-prompt-file write, one clarification gate, and one bash call — delegation buys
-nothing, and `ask_clarification`/`present_files` are lead-agent tools (disabled
-in subagents). For batch / multi-segment work (e.g. >15 s stitching), the lead
-agent runs the AGGREGATE confirmation gate first (total segments + total cost),
-then may delegate the per-segment executions to a subagent; the model preference
-and per-run quota enforcement carry over automatically.
+Single-video requests run on the lead agent because the input-table and
+plan-confirmation gates must interrupt the user-facing conversation. For
+batch or multi-segment work (>15 s stitching), confirm the aggregate plan
+first, then delegate per-segment execution; model preference carries over.
 
 ## Providers
 
-The model name is the routing key: `--model` (or `VIDEO_GENERATION_MODEL`) is
-reverse-looked-up in `config.yaml` `video_generation.providers[].models[]` to find
-its owning provider. A model that config declares under no provider is an error
-rather than a guess.
-
-`--provider` (or `VIDEO_GENERATION_PROVIDER`) is an escape hatch that skips that
-lookup. With neither a model nor a provider, resolution falls back to the first
-provider in `video_generation.providers[]`, then to the credential fallback
-(`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else shared `MINIMAX_API_KEY` →
-`minimax_v1`).
-
-- `minimax_h3` — MiniMax H3 via the V2 API (recommended). 768P/2K, 4-15s, native
-  stereo audio, structured prompts, regeneration-based 2K upgrade, task cancel.
-  T2V honors `--aspect-ratio`; for I2V the first reference image is sent as the
-  first frame and the ratio follows that image. Env: `MINIMAX_VIDEO_API_KEY`
-  (preferred) or the shared `MINIMAX_API_KEY`; optional `MINIMAX_API_HOST`
-  (default `https://api.minimaxi.com`).
-- `minimax_v1` — legacy Hailuo V1 (compatibility only). The old provider name
-  `minimax` is an alias for it, so `VIDEO_GENERATION_PROVIDER=minimax` keeps the
-  old behavior. Env: same credential resolution as `minimax_h3`; optional
-  `MINIMAX_VIDEO_MODEL` (default `MiniMax-Hailuo-2.3`).
-
-Params a provider does not support print a warning instead of being dropped
-silently; `--image-role`, `--upscale-video`, and `--cancel` are the exceptions
-and are rejected with an error.
+The model name is the routing key (`--model` reverse-looked-up in
+`config.yaml` `video_generation.providers[].models[]`); `--provider` is the
+debugging escape hatch. Routing rules, credentials, compatibility:
+`references/provider-runtime.md`.

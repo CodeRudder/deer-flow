@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from providers import MODEL_PROVIDERS, PROVIDERS
+from providers.base import STATUS_SUCCEEDED, set_task_status
 
 try:
     import yaml
@@ -304,6 +305,27 @@ def cancel_task(
     return adapter.cancel(task_id, output_file=output_file)
 
 
+def query_task(
+    task_id: str,
+    provider: str | None = None,
+    model: str | None = None,
+    output_file: str | None = None,
+) -> str:
+    """Read-only status lookup for a task id (e.g. after a local polling
+    timeout). Never cancels; output_file, when given, refreshes the run's
+    sidecar record with the observed status."""
+    config = _load_video_generation_config()
+    selected_provider, selected_model = _resolve_target(config, provider, model)
+    adapter = PROVIDERS[selected_provider](model=selected_model)
+    status, result = adapter.poll_once(task_id)
+    detail = ""
+    if status == STATUS_SUCCEEDED:
+        detail = f"; video: {adapter.extract_video_url(task_id, result)}"
+    if output_file:
+        set_task_status(output_file, task_id, status)
+    return f"task {task_id}: {status}{detail}"
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -378,11 +400,23 @@ if __name__ == "__main__":
             "sidecar record."
         ),
     )
+    parser.add_argument(
+        "--query",
+        default=None,
+        metavar="TASK_ID",
+        help=(
+            "Read-only status lookup for a task id (e.g. after a local "
+            "polling timeout). Never cancels; optional --output-file also "
+            "refreshes the run's sidecar record."
+        ),
+    )
     args = parser.parse_args()
 
     try:
         if args.cancel:
             print(cancel_task(args.cancel, args.provider, args.model, args.output_file))
+        elif args.query:
+            print(query_task(args.query, args.provider, args.model, args.output_file))
         else:
             missing = [
                 name
@@ -394,7 +428,7 @@ if __name__ == "__main__":
             ]
             if missing:
                 raise ValueError(
-                    f"{', '.join(missing)} is required unless --cancel is used"
+                    f"{', '.join(missing)} is required unless --cancel/--query is used"
                 )
             print(
                 generate_video(

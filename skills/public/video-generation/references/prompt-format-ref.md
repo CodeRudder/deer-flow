@@ -18,8 +18,9 @@ these exact lowercase field names followed by a colon.
   path in `--reference-images` is `<Picture k>` — the order you pass them on
   the command line defines the labels, and the prompt must name them in that
   same order.
-- **TARGET**: `--duration` seconds (4–15, default 5). The aspect ratio follows
-  the reference images; do not pass `--aspect-ratio`.
+- **TARGET**: `--duration` seconds (4–15, default 5). The aspect ratio defaults
+  to adaptive; pass `--aspect-ratio` only when the user explicitly requested a
+  ratio.
 
 ## Output contract (absolute)
 

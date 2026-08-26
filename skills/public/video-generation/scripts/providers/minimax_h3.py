@@ -24,7 +24,7 @@ from .base import (
 DEFAULT_HOST = "https://api.minimaxi.com"  # 国内站；国际站 https://api.minimax.io
 DEFAULT_MODEL = "MiniMax-H3"
 # Keep in sync with the aspect-ratio row in SKILL.md's output-settings table.
-SUPPORTED_RATIOS = ("16:9", "9:16", "1:1", "4:3", "21:9")
+SUPPORTED_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 
 
 class MiniMaxH3Provider(BaseVideoProvider):
@@ -43,14 +43,17 @@ class MiniMaxH3Provider(BaseVideoProvider):
         return os.getenv("MINIMAX_API_HOST", DEFAULT_HOST).rstrip("/")
 
     def _build_content(
-        self, prompt_text: str, reference_images: list[str], image_role: str
+        self,
+        prompt_text: str,
+        reference_images: list[str],
+        image_role: str,
+        explicit_ratio: str | None = None,
     ) -> tuple[list[dict], bool]:
         """Build the V2 content[] array for the requested mode.
 
-        Returns (content, send_ratio). Per the official H3 examples, only pure
-        text-to-video sends `ratio`; every mode that carries an image (first/
-        last frame or reference) omits it — the image determines the aspect
-        ratio, and sending `ratio` on those paths errors.
+        Returns (content, send_ratio). T2V requires `ratio`; frame modes are
+        always adaptive (the API ignores an explicit ratio there); reference
+        mode defaults to adaptive and honors `explicit_ratio`.
         """
         content: list[dict] = [{"type": "text", "text": prompt_text}]
         images = reference_images or []
@@ -72,13 +75,15 @@ class MiniMaxH3Provider(BaseVideoProvider):
                 )
 
         if not images:
-            return content, True  # T2V — the only mode that sends ratio
+            return content, True  # T2V — ratio is required
 
         if image_role == "reference":
             # Ref2VA: identity/style transfer (not a frame). All images pass
             # through; upstream accepts up to 9 and rejects the rest.
             for path in images:
                 content.append(image_item(path, "reference_image"))
+            # r2va: adaptive by default, explicit ratio honored.
+            return content, bool(explicit_ratio)
         elif image_role == "last_frame":
             warn_extra(1)
             content.append(image_item(images[0], "last_frame"))
@@ -93,7 +98,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
             warn_extra(1)
             content.append(image_item(images[0], "first_frame"))
 
-        return content, False
+        return content, False  # frame modes: always adaptive
 
     def create_task(
         self, prompt_text: str, reference_images: list[str], params: dict
@@ -107,7 +112,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
         if image_role is None:
             image_role = "first_frame"
         content, send_ratio = self._build_content(
-            prompt_text, reference_images, image_role
+            prompt_text, reference_images, image_role, params.get("ratio")
         )
         duration = params.get("duration")
         if duration is not None and not (4 <= duration <= 15):
@@ -126,8 +131,8 @@ class MiniMaxH3Provider(BaseVideoProvider):
             # frames) reachable on the default draft.
             "duration": duration if duration is not None else 5,
         }
-        # Only pure T2V takes a `ratio`; any image-bearing mode lets the image
-        # fix the aspect ratio (sending `ratio` there errors).
+        # T2V requires a ratio (default 16:9); reference mode sends it only
+        # when explicitly set; frame modes let the image fix it.
         if send_ratio:
             body["ratio"] = params.get("ratio") if params.get("ratio") is not None else "16:9"
 
