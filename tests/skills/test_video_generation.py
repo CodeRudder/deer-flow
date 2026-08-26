@@ -538,6 +538,155 @@ def test_h3_aspect_ratio_validated():
         p.create_task("x", [], {"ratio": "3:2"})
 
 
+# --- input-image spec validation (out-of-spec must fail locally, not on the API) ---
+
+
+def _make_image(tmp_path, w, h, name="img.png"):
+    from PIL import Image
+
+    p = tmp_path / name
+    Image.new("RGB", (w, h)).save(p)
+    return p
+
+
+def test_h3_local_image_out_of_ratio_blocked_locally(tmp_path):
+    # A 2.573 banner exceeded the [0.4, 2.5] reference range and failed AFTER
+    # task creation upstream (billed); the local check must catch it first.
+    p = _h3().PROVIDER(model=None)
+    img = _make_image(tmp_path, 898, 349)
+    with pytest.raises(ValueError, match="check_materials.py"):
+        p._validate_image_specs([str(img)])
+
+
+def test_h3_local_image_out_of_side_range_blocked_locally(tmp_path):
+    p = _h3().PROVIDER(model=None)
+    img = _make_image(tmp_path, 8000, 4000)
+    with pytest.raises(ValueError, match="side"):
+        p._validate_image_specs([str(img)])
+
+
+def test_h3_local_image_within_spec_passes(tmp_path):
+    p = _h3().PROVIDER(model=None)
+    img = _make_image(tmp_path, 1674, 875)
+    p._validate_image_specs([str(img)])  # must not raise
+
+
+def test_h3_spec_validation_skips_urls_and_undecodable(tmp_path):
+    # URLs cannot be inspected locally; undecodable bytes are left to the API.
+    p = _h3().PROVIDER(model=None)
+    p._validate_image_specs(["https://cdn/wide.png"])
+    bad = tmp_path / "bad.jpg"
+    bad.write_bytes(b"\xff\xd8img")
+    p._validate_image_specs([str(bad)])
+
+
+def test_h3_create_task_blocks_out_of_spec_before_post(monkeypatch, tmp_path):
+    # End-to-end: the POST (and therefore a billed task) must never happen
+    # for an out-of-spec local image.
+    calls = {"post": 0}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        calls["post"] += 1
+        return FakeResp({"task_id": "T1"})
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", fake_post)
+    img = _make_image(tmp_path, 898, 349)
+    p = _h3().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="check_materials.py"):
+        p.create_task("x", [str(img)], {"image_role": "reference"})
+    assert calls["post"] == 0
+
+
+# --- check_materials.py spec preflight (auto-fix, never calls the provider) ---
+
+
+def _load_check_materials():
+    spec = importlib.util.spec_from_file_location(
+        "vg_check_materials", SCRIPT_DIR / "check_materials.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["vg_check_materials"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_check_materials_crops_wide_image_to_spec(tmp_path):
+    cm = _load_check_materials()
+    src = _make_image(tmp_path, 898, 349, "wide.png")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    out_path, ops = cm.fix_image(str(src), str(out_dir))
+    assert ops == ["crop-width"]
+    from PIL import Image
+
+    with Image.open(out_path) as im:
+        w, h = im.size
+    assert h == 349  # height kept, width cropped
+    assert 0.4 <= w / h <= 2.5
+
+
+def test_check_materials_crops_tall_image_to_spec(tmp_path):
+    cm = _load_check_materials()
+    src = _make_image(tmp_path, 300, 900, "tall.png")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    out_path, ops = cm.fix_image(str(src), str(out_dir))
+    assert ops == ["crop-height"]
+    from PIL import Image
+
+    with Image.open(out_path) as im:
+        w, h = im.size
+    assert w == 300  # width kept, height cropped
+    assert 0.4 <= w / h <= 2.5
+
+
+def test_check_materials_downscales_huge_image(tmp_path):
+    cm = _load_check_materials()
+    src = _make_image(tmp_path, 8000, 4000, "huge.png")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    out_path, ops = cm.fix_image(str(src), str(out_dir))
+    assert ops == ["downscale-to-5760"]
+    from PIL import Image
+
+    with Image.open(out_path) as im:
+        w, h = im.size
+    assert max(w, h) == 5760
+
+
+def test_check_materials_keeps_in_spec_image_untouched(tmp_path):
+    cm = _load_check_materials()
+    src = _make_image(tmp_path, 1674, 875, "ok.png")
+    out_path, ops = cm.fix_image(str(src), str(tmp_path))
+    assert ops == []
+    assert out_path == str(src)  # no copy produced
+
+
+def test_check_materials_converts_unsupported_format(tmp_path):
+    # In-spec dims but .gif: the API would reject the format, so the preflight
+    # must convert instead of passing it through as [ok].
+    from PIL import Image
+
+    src = tmp_path / "anim.gif"
+    Image.new("RGB", (1024, 768)).save(src, "GIF")
+    cm = _load_check_materials()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    out_path, ops = cm.fix_image(str(src), str(out_dir))
+    assert ops == ["convert-format"]
+    assert out_path.endswith(".png")
+    with Image.open(out_path) as im:
+        assert im.size == (1024, 768)  # dims unchanged, format converted
+
+
+def test_h3_local_image_unsupported_format_blocked_locally(tmp_path):
+    p = _h3().PROVIDER(model=None)
+    img = _make_image(tmp_path, 1024, 768, name="anim.gif")
+    with pytest.raises(ValueError, match="unsupported format"):
+        p._validate_image_specs([str(img)])
+
+
 def test_output_file_is_not_overwritten(monkeypatch, tmp_path):
     # Align with image-generation: a finished (paid) video must not be clobbered.
     monkeypatch.setenv("MINIMAX_API_KEY", "m")

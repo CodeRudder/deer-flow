@@ -25,6 +25,13 @@ DEFAULT_HOST = "https://api.minimaxi.com"  # 国内站；国际站 https://api.m
 DEFAULT_MODEL = "MiniMax-H3"
 # Keep in sync with the aspect-ratio row in SKILL.md's output-settings table.
 SUPPORTED_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
+# H3 输入图片规格（官方：宽高 [256, 5760]px、比例 5:2~2:5、格式
+# JPG/JPEG/PNG/WEBP/HEIC/HEIF），与 scripts/check_materials.py 保持一致。
+H3_SIDE_MIN = 256
+H3_SIDE_MAX = 5760
+H3_RATIO_MIN = 0.4
+H3_RATIO_MAX = 2.5
+H3_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 
 
 class MiniMaxH3Provider(BaseVideoProvider):
@@ -100,9 +107,46 @@ class MiniMaxH3Provider(BaseVideoProvider):
 
         return content, False  # frame modes: always adaptive
 
+    def _validate_image_specs(self, reference_images: list[str]) -> None:
+        """本地拦截 H3 图片规格超限（宽高 [256, 5760]px、比例 [0.4, 2.5]），
+        避免任务创建后 API 端报错扣生成次数。URL 图与无 PIL 环境跳过。"""
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            return
+        for path in reference_images:
+            if path.startswith(("http://", "https://")):
+                continue
+            ext = os.path.splitext(path)[1].lower()
+            if ext and ext not in H3_EXTENSIONS:
+                raise ValueError(
+                    f"image {path} has unsupported format {ext}; MiniMax-H3 accepts "
+                    f"{', '.join(sorted(H3_EXTENSIONS))}. Run scripts/check_materials.py "
+                    "to convert it, then resubmit"
+                )
+            try:
+                with Image.open(path) as im:
+                    im = ImageOps.exif_transpose(im)
+                    w, h = im.size
+            except Exception:
+                continue
+            ratio = w / h
+            if not (
+                H3_SIDE_MIN <= w <= H3_SIDE_MAX
+                and H3_SIDE_MIN <= h <= H3_SIDE_MAX
+                and H3_RATIO_MIN <= ratio <= H3_RATIO_MAX
+            ):
+                raise ValueError(
+                    f"image {path} ({w}x{h}, ratio {ratio:.3f}) violates MiniMax-H3 "
+                    f"spec (side [{H3_SIDE_MIN},{H3_SIDE_MAX}]px, ratio "
+                    f"[{H3_RATIO_MIN},{H3_RATIO_MAX}]); run "
+                    "scripts/check_materials.py to fix it, then resubmit"
+                )
+
     def create_task(
         self, prompt_text: str, reference_images: list[str], params: dict
     ) -> str:
+        self._validate_image_specs(reference_images)
         upscale_video = params.get("upscale_video")
         if upscale_video:
             return self._create_regeneration_task(

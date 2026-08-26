@@ -189,7 +189,21 @@ Before prompt writing, check only what is required to continue:
 - frame and reference roles are not mixed;
 - images are usable and the subject is basically recognizable;
 - `first_last`: the two images' ratios equal or close enough for a coherent
-  transition.
+  transition;
+- images pass the provider's input specs — run the spec preflight once
+  materials are in hand (MiniMax H3: each side [256, 5760] px, aspect ratio
+  [0.4, 2.5]):
+
+  ```bash
+  python /mnt/skills/public/video-generation/scripts/check_materials.py \
+    --images {full paths or URLs, space-separated} \
+    --out-dir /mnt/user-data/workspace
+  ```
+
+  Out-of-spec images are auto-fixed locally (no question needed); use the
+  script's output paths as the materials. An image it cannot decode is NOT
+  fixable — replace it before writing any prompt. The script never calls the
+  provider.
 
 Do not require matching ratios across `reference` images, and do not compare
 across images for a single first or last frame. If frame-image ratios conflict
@@ -231,8 +245,9 @@ Apply the input-table, mode-routing, precedence, and material-check rules
 above. Material checks run in two layers: **available-material checks** (the
 images the user supplied) before prompt writing; **collected-material
 checks** (auto-collected images: usable, subject clear) after collection in
-Step 4, before the final Ref2VA prompt is written. Never report material
-checks as "passed" while planned images do not exist yet.
+Step 4, before the final Ref2VA prompt is written. Both layers include the
+spec preflight (`scripts/check_materials.py`). Never report material checks
+as "passed" while planned images do not exist yet.
 
 ### Step 2: Write the structured prompt file
 
@@ -303,10 +318,16 @@ Reply "confirm" to start, or tell me what to change.
 
 The plan card is fully transparent about what will be submitted: materials
 are listed by their full paths, and the prompt file appears verbatim (path +
-complete content) so the user can review the actual input. The card must not
-show the model, quota, or cost notes. The 4 s upgrade limitation is a
-capability note, not a cost note; show it only when the user explicitly
-selects a 4 s 768P draft.
+complete content) so the user can review the actual input. The originals are
+also opened via `present_files` before the card is shown: copy the prompt
+file to `/mnt/user-data/outputs/{name}.prompt.txt` and every material to
+`/mnt/user-data/outputs/{name}-materials/` (use the final images that will
+be submitted — fixed files replace their sources — and include
+user-uploaded images), then present them all. Re-copy on any change
+(contents update in place; the artifact list stays the same).
+The card must not show the model, quota, or cost notes. The 4 s upgrade
+limitation is a capability note, not a cost note; show it only when the user
+explicitly selects a 4 s 768P draft.
 Direct 2K output does not need an upgrade warning.
 
 - `clarification_type`: `approach_choice`.
@@ -361,9 +382,11 @@ Do NOT read the python file, instead just call it with the parameters.
 
 Reference mode with an approved collection plan: **collect FIRST** under the
 search-first rules in Choosing the mode (search by purpose; ask before any
-image generation; at most two search rounds). Then re-show the video plan
-card (materials now name the actual files and their source: searched /
-generated), and generate the video only after that fresh confirmation.
+image generation; at most two search rounds), then run the spec preflight
+(`scripts/check_materials.py`) on the collected images. Then re-show the
+video plan card (materials now name the actual files and their source:
+searched / generated), and generate the video only after that fresh
+confirmation.
 
 Before dispatching, check the sidecar for an unfinished duplicate. A local
 polling `timeout` is not an upstream terminal status — resolve it read-only
