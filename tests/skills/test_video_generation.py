@@ -522,6 +522,40 @@ def test_image_role_without_images_rejected(monkeypatch, tmp_path):
         )
 
 
+def test_image_role_reference_with_only_videos_not_rejected(monkeypatch, tmp_path):
+    # feat-df-6: --image-role reference with no images but with reference videos
+    # must NOT be rejected by the provider-agnostic guard — Seedance reference
+    # mode accepts video-only references.
+    import providers.base as base
+
+    class FakeRefVideoProvider(base.BaseVideoProvider):
+        name = "fake_ref_video"
+        supported_params = {"image_role", "reference_videos", "reference_audios"}
+
+        def api_key(self):
+            return "k"
+
+        def generate(self, prompt_text, reference_images, output_file, params, **kw):
+            assert params.get("image_role") == "reference"
+            assert params.get("reference_videos") == ["https://v.mp4"]
+            assert reference_images == []
+            Path(output_file).write_text("ok", encoding="utf-8")
+            return "ok fake"
+
+    monkeypatch.setitem(PROVIDERS, "fake_ref_video", FakeRefVideoProvider)
+    monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "fake_ref_video")
+    pf = tmp_path / "p.txt"
+    pf.write_text("hello", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    msg = vid.generate_video(
+        str(pf), [], str(out),
+        image_role="reference",
+        reference_videos=["https://v.mp4"],
+    )
+    assert msg == "ok fake"
+    assert out.read_text(encoding="utf-8") == "ok"
+
+
 def test_h3_duration_and_resolution_validated():
     # P2-4: out-of-range values must raise instead of being sent as-is or
     # silently replaced by defaults (0 -> 4, "" -> 768P).
@@ -615,33 +649,33 @@ def _load_check_materials():
     return module
 
 
-def test_check_materials_crops_wide_image_to_spec(tmp_path):
+def test_check_materials_pads_wide_image_to_spec(tmp_path):
     cm = _load_check_materials()
     src = _make_image(tmp_path, 898, 349, "wide.png")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    out_path, ops = cm.fix_image(str(src), str(out_dir))
-    assert ops == ["crop-width"]
+    out_path, ops = cm.fix_image(str(src), str(out_dir), cm.IMAGE_SPECS["minimax_h3"])
+    assert ops == ["pad-height"]
     from PIL import Image
 
     with Image.open(out_path) as im:
         w, h = im.size
-    assert h == 349  # height kept, width cropped
+    assert w == 898  # width kept, height padded
     assert 0.4 <= w / h <= 2.5
 
 
-def test_check_materials_crops_tall_image_to_spec(tmp_path):
+def test_check_materials_pads_tall_image_to_spec(tmp_path):
     cm = _load_check_materials()
     src = _make_image(tmp_path, 300, 900, "tall.png")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    out_path, ops = cm.fix_image(str(src), str(out_dir))
-    assert ops == ["crop-height"]
+    out_path, ops = cm.fix_image(str(src), str(out_dir), cm.IMAGE_SPECS["minimax_h3"])
+    assert ops == ["pad-width"]
     from PIL import Image
 
     with Image.open(out_path) as im:
         w, h = im.size
-    assert w == 300  # width kept, height cropped
+    assert h == 900  # height kept, width padded
     assert 0.4 <= w / h <= 2.5
 
 
@@ -650,7 +684,7 @@ def test_check_materials_downscales_huge_image(tmp_path):
     src = _make_image(tmp_path, 8000, 4000, "huge.png")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    out_path, ops = cm.fix_image(str(src), str(out_dir))
+    out_path, ops = cm.fix_image(str(src), str(out_dir), cm.IMAGE_SPECS["minimax_h3"])
     assert ops == ["downscale-to-5760"]
     from PIL import Image
 
@@ -662,7 +696,7 @@ def test_check_materials_downscales_huge_image(tmp_path):
 def test_check_materials_keeps_in_spec_image_untouched(tmp_path):
     cm = _load_check_materials()
     src = _make_image(tmp_path, 1674, 875, "ok.png")
-    out_path, ops = cm.fix_image(str(src), str(tmp_path))
+    out_path, ops = cm.fix_image(str(src), str(tmp_path), cm.IMAGE_SPECS["minimax_h3"])
     assert ops == []
     assert out_path == str(src)  # no copy produced
 
@@ -677,7 +711,7 @@ def test_check_materials_converts_unsupported_format(tmp_path):
     cm = _load_check_materials()
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    out_path, ops = cm.fix_image(str(src), str(out_dir))
+    out_path, ops = cm.fix_image(str(src), str(out_dir), cm.IMAGE_SPECS["minimax_h3"])
     assert ops == ["convert-format"]
     assert out_path.endswith(".png")
     with Image.open(out_path) as im:
@@ -1254,22 +1288,46 @@ def test_seedance_t2v_payload_defaults(monkeypatch):
 def test_seedance_frame_on_25_locks_adaptive_and_auto_duration(monkeypatch):
     # 2.5 frame tasks follow the source images: ratio/duration are locked
     # upstream, and an explicit value must fail locally (async failure upstream).
+    # resolution is NOT frame-locked; it is carried (default 720p) instead of
+    # being silently dropped to the upstream default.
     captured = _capture_sd_post(monkeypatch)
     _sd().PROVIDER(model=None).create_task("start here", ["https://cdn/a.png"], {})
     body = captured["json"]
     assert body["ratio"] == "adaptive"
     assert body["duration"] == -1
-    assert "resolution" not in body
+    assert body["resolution"] == "720p"
     assert body["content"][1]["role"] == "first_frame"
 
 
-def test_seedance_frame_on_25_rejects_explicit_ratio_and_duration(monkeypatch):
+def test_seedance_frame_on_25_keeps_explicit_resolution(monkeypatch):
+    # An explicit validated resolution on a 2.5 frame task is forwarded, not
+    # silently dropped to the upstream 720p default.
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task(
+        "start here", ["https://cdn/a.png"], {"resolution": "480p"}
+    )
+    body = captured["json"]
+    assert body["ratio"] == "adaptive"
+    assert body["duration"] == -1
+    assert body["resolution"] == "480p"
+
+
+def test_seedance_frame_on_25_rejects_explicit_ratio(monkeypatch):
+    # 2.5 frame tasks lock ratio=adaptive; an explicit non-adaptive ratio is
+    # rejected locally (it would fail asynchronously upstream).
     _capture_sd_post(monkeypatch)
     p = _sd().PROVIDER(model=None)
     with pytest.raises(ValueError, match="not supported for frame modes"):
         p.create_task("x", ["https://cdn/a.png"], {"ratio": "16:9"})
-    with pytest.raises(ValueError, match="not supported for frame modes"):
-        p.create_task("x", ["https://cdn/a.png"], {"duration": 8})
+
+
+def test_seedance_frame_on_25_allows_custom_duration(monkeypatch):
+    # duration is NOT frame-locked (only video-edit locks duration=-1, per API
+    # Ref); an explicit in-range duration is forwarded, not rejected.
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {"duration": 8})
+    assert captured["json"]["duration"] == 8
+    assert captured["json"]["ratio"] == "adaptive"
 
 
 def test_seedance_frame_on_20_keeps_custom_params(monkeypatch):
@@ -1340,6 +1398,15 @@ def test_seedance_frame_role_rejects_reference_materials(monkeypatch):
         )
 
 
+def test_seedance_last_frame_rejected(monkeypatch):
+    # Seedance has no single-tail-frame mode (official defines first-frame 1 img
+    # and first+last 2 imgs only); last_frame is MiniMax H3 only.
+    _capture_sd_post(monkeypatch)
+    p = _sd().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="single-tail-frame"):
+        p.create_task("x", ["https://cdn/a.png"], {"image_role": "last_frame"})
+
+
 def test_seedance_videos_without_images_defaults_to_reference(monkeypatch):
     # Video-only reference (no image) is a valid Ark reference task.
     captured = _capture_sd_post(monkeypatch)
@@ -1350,12 +1417,32 @@ def test_seedance_videos_without_images_defaults_to_reference(monkeypatch):
     assert types == ["text", "video_url"]
 
 
+def test_seedance_2_0_audio_only_rejected(monkeypatch):
+    # 2.0 family cannot accept audio-only input (API Ref); 2.5 can.
+    _capture_sd_post(monkeypatch)
+    p = _sd().PROVIDER(model=SD_20)
+    with pytest.raises(ValueError, match="audio-only"):
+        p.create_task("x", [], {"reference_audios": ["https://cdn/a.mp3"]})
+
+
+def test_seedance_2_5_audio_only_allowed(monkeypatch):
+    # 2.5 accepts audio-only input.
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_25).create_task("x", [], {"reference_audios": ["https://cdn/a.mp3"]})
+    types = [c["type"] for c in captured["json"]["content"]]
+    assert types == ["text", "audio_url"]
+
+
 def test_seedance_resolution_validated_per_model(monkeypatch):
     _capture_sd_post(monkeypatch)
     with pytest.raises(ValueError, match="does not support resolution '1080p'"):
         _sd().PROVIDER(model=SD_MINI).create_task("x", [], {"resolution": "1080p"})
     with pytest.raises(ValueError, match="does not support resolution '4k'"):
         _sd().PROVIDER(model=SD_25).create_task("x", [], {"resolution": "4k"})
+    # 2.5 supports 1080p (10bit); only 4k is 2.0-standard-only.
+    captured = _capture_sd_post(monkeypatch)
+    _sd().PROVIDER(model=SD_25).create_task("x", [], {"resolution": "1080p"})
+    assert captured["json"]["resolution"] == "1080p"
     captured = _capture_sd_post(monkeypatch)
     _sd().PROVIDER(model=SD_20).create_task("x", [], {"resolution": "4k"})
     assert captured["json"]["resolution"] == "4k"
