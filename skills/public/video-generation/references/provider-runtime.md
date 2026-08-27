@@ -30,14 +30,14 @@ fallback (`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else
   `MINIMAX_VIDEO_MODEL` (default `MiniMax-Hailuo-2.3`).
 - `seedance` — Volcano Ark doubao-seedance-2.x family, one adapter for four
   models. `doubao-seedance-2-5-260628` (30 s, 50 multimodal references,
-  480p/720p), `doubao-seedance-2-0-260128` (only model with 1080p/4k),
-  `…-fast-…` / `…-mini-…` (480p/720p, cheaper tiers; mini ≈ half the standard
-  price). Reference video/audio are URL-only (the API rejects base64 and
-  cannot fetch local paths). Seedance 2.5 locks frame tasks to
-  ratio=adaptive / duration=-1 — enforced locally with a clear error. Env:
-  `SEEDANCE_VIDEO_API_KEY` (preferred) or `ARK_API_KEY`; optional
-  `SEEDANCE_API_BASE_URL` (default `https://ark.cn-beijing.volces.com/api/v3`)
-  and `SEEDANCE_VIDEO_MODEL`.
+  480p/720p/1080p), `doubao-seedance-2-0-260128` (only model with 4k; also
+  1080p), `…-fast-…` / `…-mini-…` (480p/720p, cheaper tiers; mini ≈ half the
+  standard price). Reference video/audio are URL-only (the API rejects base64
+  and cannot fetch local paths). Seedance 2.5 locks frame/edit/extend tasks to
+  ratio=adaptive; only video-edit also locks duration=-1 (API Ref) — enforced
+  locally with a clear error. Env: `SEEDANCE_VIDEO_API_KEY` (preferred) or
+  `ARK_API_KEY`; optional `SEEDANCE_API_BASE_URL` (default
+  `https://ark.cn-beijing.volces.com/api/v3`) and `SEEDANCE_VIDEO_MODEL`.
 
 ## Parameter compatibility
 
@@ -48,7 +48,7 @@ are the exceptions and are rejected with an error.
 
 | Param | `minimax_h3` | `minimax_v1` | `seedance` |
 |---|---|---|---|
-| `--resolution` / `--duration` | 768P/2K · 4–15 s (defaults 768P · 5) | ignored (model-side defaults) | per model: 480p/720p (1080p/4k on 2.0 standard) · 4–15 s (4–30 s on 2.5, or -1 auto) |
+| `--resolution` / `--duration` | 768P/2K · 4–15 s (defaults 768P · 5) | ignored (model-side defaults) | per model: 480p/720p/1080p (2.5 & 2.0 standard); 4k (2.0 standard only) · 4–15 s (4–30 s on 2.5, or -1 auto) |
 | `--aspect-ratio` | per-mode semantics — see SKILL.md Output settings | ignored | same enum; frame modes on 2.5 are forced adaptive |
 | `--reference-images` | per `--image-role` | first frame only (one image) | per `--image-role`; reference mode up to 30 (2.5) / 9 (2.0 family) |
 | `--reference-videos` / `--reference-audios` | rejected | rejected | reference mode only; public URLs only; ≤10/≤10 (2.5), ≤3/≤3 (2.0 family) |

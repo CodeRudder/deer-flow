@@ -1,64 +1,154 @@
-# Seedance prompt format (all doubao-seedance-2-x models)
+# Seedance prompt format (doubao-seedance-2.x models)
 
 Load this file when the routed provider is `seedance`, in place of the
-MiniMax H3 formats. Follow the official Seedance 2.x prompt guide: a timeline
-of shots with explicit material tags. Structured plain text only — never a raw
-JSON blob.
+MiniMax H3 formats. Follow the official Seedance 2.x prompt guide: a director
+mindset, structured plain text with `@` material tags and a time/shot axis.
+Never a raw JSON blob.
 
-## Core structure
+## Model family branch
 
-```
-<One-line overall intent: subject, product/story, style, and audio direction.>
+The two generations organize time differently — branch on the model name:
 
-[0-5秒] <Shot 1: subject + action + camera + lighting.> 台词或音效：「…」
-[5-12秒] <Shot 2 …>
-[12-15秒] <Shot 3 …>
-```
+- **Seedance 2.5** (`doubao-seedance-2-5-260628`) responds to integer-second
+  timestamps. Long videos prefer `【阶段N】` (one state change + end state per
+  stage) or continuous ranges `[0-10秒][10-20秒]`; also `第5s`, `3秒后`.
+- **Seedance 2.0 family** (2.0 / fast / mini) is **unstable on exact
+  timestamps** — use shot numbers only: `镜头1 / 镜头2 / 镜头3`. Do NOT use
+  absolute seconds.
 
-- Segment the video by seconds (`[0-10秒][10-20秒][10-30秒]` style). Segment
-  count follows the target duration; one beat per ~5 seconds is a good pace.
-- Lead each shot with the shot type / camera move (特写、全景、跟拍、环绕、
-  推近、拉远、固定机位、手持晃动…), then subject, action, and environment.
-- Keep Chinese ≤500 characters / English ≤1000 words total.
+## Material tags and subject binding
 
-## Material tags (@image1 / @video1 / @audio1)
-
-When reference materials are passed, refer to them by explicit tag. Tag
-numbers match the CLI argument order, starting at 1:
+Number every passed material by CLI argument order, starting at 1:
 
 - `--reference-images a b` → `@image1` = a, `@image2` = b
 - `--reference-videos v` → `@video1` = v
 - `--reference-audios s` → `@audio1` = s
 
-State each material's job in one clause: `全程使用 @video1 的运镜方式`,
-`人物形象参考 @image1`, `全程使用 @audio1 作为背景音乐`. Give every passed
-material a role; unused materials waste the reference budget.
+State each material's job in one clause (what to use, what not to):
+`人物形象参考 @image1，不采用其背景`; `全程使用 @video1 的运镜方式`;
+`使用 @audio1 的音色`. Give every passed material a role; unused materials
+waste the reference budget.
 
-## Audio
+Multi-subject scenes need explicit binding to avoid ID drift:
+`将 @image1 中穿红色连衣裙的女人定义为<主体1>`, then refer to `<主体1>`
+consistently. When a subject is undefined, bind `<主体N>@图片N` each time. Do
+NOT put mapping info only inside an image (e.g. a name written on the picture)
+— state mappings in text.
 
-- Audio is generated with the video by default (no extra cost).
-- Put spoken lines in quotes so they are voiced: 男人说：「你记住，以后不可以用手指指月亮。」
-- Describe ambient sound and music direction inline (轻脆的碰撞声、卡点鼓点、
-  女生旁白…); Seedance 2.5 supports 11 dubbing languages.
+## Special characters
+
+| Type | Symbol | Example |
+|---|---|---|
+| Music (BGM) | `（）` | `（背景中播放着快节奏的摇滚乐）` |
+| SFX | `<>` | `<远处传来狗叫声>` |
+| Dialogue | `{}` | `{你好，世界}`; non-Chinese needs a language tag: `用日语说道{こんにちは}` |
+| Subtitle | `【】` | `【第一章：启程】` |
+
+Put spoken lines in `{}` so they are voiced.
+
+## Time / shot organization
+
+### Seedance 2.5
+
+Segment by seconds; one beat per ~5s is a good pace. Keep Chinese ≤500 chars
+/ English ≤1000 words total.
+
+```
+<One-line intent: subject + event + style + audio direction.>
+
+[0-10秒] <Shot 1: camera move + subject + action + environment.> {dialogue} <sfx>
+[10-20秒] <Shot 2 …>
+[20-30秒] <Shot 3 …>
+```
+
+Long narratives may use `【阶段1】…【阶段2】…` (one state change + end state per
+stage). Relative time (`3秒后`, `第5s`) and time points also work. Keep the axis
+continuous — avoid gaps like `0-3秒...5-6秒`.
+
+### Seedance 2.0 family
+
+Use shot numbers only (exact timestamps are unstable):
+
+```
+<One-line intent.>
+
+镜头1：<camera move + subject + action>
+镜头2：<...>
+```
+
+## Templates by mode
+
+- **T2V**: one-line intent (subject + event + style + audio direction) +
+  time/shot segments + closing constraints.
+- **Reference (Ref2VA)**: material binding → overall intent → per-shot script
+  referencing `@imageN/@videoN/@audioN` → consistency clause.
+- **First frame / first+last**: `@image1 作为首帧。` as a standalone sentence;
+  other materials declare "不改变首帧构图"; describe the motion between frames.
+
+## Task-type locks (2.5 only — API Ref)
+
+Seedance 2.5 locks output params for some task types. Violating fails
+**asynchronously** (`InvalidParameter.TaskTypeConstraint`); the adapter
+enforces them locally before submit. 2.0 family has no such locks.
+
+| Task | Trigger | ratio | duration |
+|---|---|---|---|
+| First frame / first+last | `role=first_frame` / `last_frame` | forced `adaptive` | user `[4,30]` or `-1` (default `-1`) |
+| Video edit | `reference_video` + edit keywords | forced `adaptive` | forced `-1` (input video 4–30s) |
+| Video extend | `reference_video` + extend keywords | forced `adaptive` | user `[4,30]` or `-1` |
+| T2V / reference | text / `reference_*` | user-set or `adaptive` | user `[4,30]` or `-1` |
+
+Only `video-edit` locks `duration=-1`. Frame tasks lock `ratio` only — do NOT
+promise a custom ratio or a fixed duration in the plan card for 2.5 frame
+tasks (duration may be `-1`/auto).
 
 ## Forbidden words in reference mode (critical)
 
-The API routes the task type from the prompt. In reference mode
-(`--image-role reference`) NEVER use editing/extension intent words — they
-flip the task into video-edit/extend mode, which locks the output to the
-source's ratio/duration and fails the task asynchronously when combined with a
-custom ratio/duration:
+The API routes the task type from the prompt + `content.role`. In reference
+mode (`--image-role reference`) NEVER use editing/extension intent words —
+they flip the task into edit/extend mode, which locks `ratio=adaptive` (and
+edit also forces `duration=-1`):
 
-> 编辑、替换、换成、删掉、去掉、增加、修改、延长、向前、向后、续写、延续
+> 编辑、替换、换成、删掉、删除、去掉、增加、加上、修改、改成、延长、向前、向后、续写、延续
 
-To *describe continuous action*, say it directly (`镜头继续跟随她走进门内`),
-not "延长/续写". Genuine edit/extend requests are NOT supported yet (P1) —
+To describe continuous action, say it directly (`镜头继续跟随她走进门内`),
+not "延长/续写". Genuine edit/extend requests are NOT supported yet (P1 — will
+use `omni_reference_task_type=edit/extend` for synchronous validation) —
 reroute them per SKILL.md instead of passing them through.
 
-## Frame modes
+## Audio
 
-`first_frame` / `last_frame` / `first_last` need no special tags — the frame
-images are bound by role. The prompt describes the motion between frames and,
-for `first_last`, the transition. On Seedance 2.5 the output follows the
-frames (adaptive ratio, auto duration), so do not promise a custom ratio or
-duration in the plan card.
+- Audio is generated with the video by default (`generate_audio=true`); no
+  extra cost. Set `false` for silent video.
+- Dialogue in `{}` is voiced; non-Chinese needs a language tag (`使用英语`,
+  `用日语说道{...}`). Multi-person scenes bind speaker per segment; others
+  "自然闭口聆听".
+- Describe ambient sound and music inline (轻脆的碰撞声、卡点鼓点、女生旁白…).
+- Seedance 2.5 supports 11 dubbing languages; 2.0 family supports 6
+  (zh/en/es/id/pt/ja).
+
+## Constraints and negative control
+
+Default constraint pack (append as needed):
+- Subtitle guardrail: `保持无字幕` / `避免生成任何文字或字幕`.
+- Watermark/Logo guardrail: `不要生成水印` / `不要生成Logo`.
+- Multi-person twins drift: `禁止生成同款分身、双胞胎，同一画面仅保留单个对应人物`.
+- Non-realistic style (anime/CG): anchor explicitly (`2D日漫风格`,
+  `3D国风漫画`) — realistic reference images drift to live-action otherwise.
+- Negative audio on demand: `无 bgm，只生成环境音和动作音` / `不要任何声音`.
+
+## Action / camera norms
+
+- One camera move per shot — do not stack push+pull+pan in one shot.
+- Prefer slow, continuous small actions over explosive ones (狂奔/大跳/翻滚
+  are unstable).
+- Concretize emotions via body details (肩膀微微颤抖、眼眶泛红), not abstract
+  words (很悲伤).
+- Use deterministic verbs; avoid ambiguous double verbs (打飞).
+
+## Difference from the H3 format
+
+The H3 structured format (`[Shot N]` timeline, three fields / six sections,
+`<d>` dialogue, audio-description block) is H3-only. Do NOT mix it with
+Seedance's `@`-tag + `{}` dialogue + constraint pack. Pick one provider's
+format per run.
