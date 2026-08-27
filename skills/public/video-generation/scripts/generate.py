@@ -47,9 +47,7 @@ def _load_video_generation_config() -> dict:
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
     except Exception as e:
-        print(
-            f"Warning: failed to load video_generation config from {config_path}: {e}"
-        )
+        print(f"Warning: failed to load video_generation config from {config_path}: {e}")
         return {}
 
     video_generation = config.get("video_generation", {})
@@ -136,19 +134,12 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
         # reason to guess a provider.
         if not selected and _provider_configs(config):
             declared = ", ".join(_all_model_names(config)) or "(none)"
-            raise ValueError(
-                f"Video generation model '{requested_model}' is not declared in config.yaml "
-                f"video_generation.providers[].models[]. Declared models: {declared}"
-            )
+            raise ValueError(f"Video generation model '{requested_model}' is not declared in config.yaml video_generation.providers[].models[]. Declared models: {declared}")
 
     if not selected:
         selected = _first_configured_provider(config) or _credential_fallback(requested_model)
     if not selected:
-        raise ValueError(
-            "No video provider resolved. Set MINIMAX_VIDEO_API_KEY "
-            "(or the shared MINIMAX_API_KEY), declare video_generation.providers[] in "
-            "config.yaml, or pass --model/--provider."
-        )
+        raise ValueError("No video provider resolved. Set MINIMAX_VIDEO_API_KEY (or the shared MINIMAX_API_KEY), declare video_generation.providers[] in config.yaml, or pass --model/--provider.")
 
     selected = selected.strip().lower()
     selected = _PROVIDER_ALIASES.get(selected, selected)
@@ -158,10 +149,7 @@ def _resolve_target(config: dict, provider: str | None, model: str | None) -> tu
     configured = _configured_provider_names(config)
     configured_keys = {_PROVIDER_ALIASES.get(name, name) for name in configured}
     if configured_keys and selected not in configured_keys:
-        raise ValueError(
-            f"Video generation provider '{selected}' is not enabled in config.yaml. "
-            f"Enabled providers: {', '.join(configured)}"
-        )
+        raise ValueError(f"Video generation provider '{selected}' is not enabled in config.yaml. Enabled providers: {', '.join(configured)}")
     if selected not in PROVIDERS:
         raise ValueError(f"Unknown video generation provider: {selected}. Supported: {', '.join(sorted(PROVIDERS))}")
 
@@ -179,9 +167,7 @@ def _credential_fallback(requested_model: str | None) -> str | None:
         if owner:
             return owner
         raise ValueError(
-            f"Video generation model '{requested_model}' is not a known model of any provider "
-            f"(known: {', '.join(sorted(MODEL_PROVIDERS))}). Declare it in config.yaml "
-            "video_generation.providers[].models[], or pass --provider explicitly."
+            f"Video generation model '{requested_model}' is not a known model of any provider (known: {', '.join(sorted(MODEL_PROVIDERS))}). Declare it in config.yaml video_generation.providers[].models[], or pass --provider explicitly."
         )
     if os.getenv("MINIMAX_VIDEO_API_KEY"):
         return "minimax_h3"
@@ -229,34 +215,18 @@ def generate_video(
 ) -> str:
     output_path = Path(output_file)
     if output_path.exists():
-        raise FileExistsError(
-            f"Output file already exists and will not be overwritten: {output_file}. "
-            "Choose a unique output filename."
-        )
+        raise FileExistsError(f"Output file already exists and will not be overwritten: {output_file}. Choose a unique output filename.")
 
     if upscale_video and (resolution or duration or aspect_ratio):
-        raise ValueError(
-            "--upscale-video runs the regeneration endpoint: resolution is fixed 2K "
-            "and duration/aspect-ratio follow the source video; drop --resolution/"
-            "--duration/--aspect-ratio"
-        )
+        raise ValueError("--upscale-video runs the regeneration endpoint: resolution is fixed 2K and duration/aspect-ratio follow the source video; drop --resolution/--duration/--aspect-ratio")
     if upscale_video and (reference_videos or reference_audios):
-        raise ValueError(
-            "--upscale-video runs the regeneration endpoint and replays the original "
-            "materials; drop --reference-videos/--reference-audios"
-        )
+        raise ValueError("--upscale-video runs the regeneration endpoint and replays the original materials; drop --reference-videos/--reference-audios")
     if upscale_video and not upscale_video.startswith(("http://", "https://")):
         source = Path(upscale_video)
         if not source.exists():
-            raise FileNotFoundError(
-                f"--upscale-video source not found: {upscale_video}"
-            )
+            raise FileNotFoundError(f"--upscale-video source not found: {upscale_video}")
         if source.stat().st_size > _UPSCALE_MAX_SOURCE_BYTES:
-            raise ValueError(
-                f"--upscale-video source is {source.stat().st_size / 1024 / 1024:.0f} MB; "
-                "the API caps request bodies at 64 MB and base64 adds ~33%. Shorten "
-                "the source video or host it at a public URL."
-            )
+            raise ValueError(f"--upscale-video source is {source.stat().st_size / 1024 / 1024:.0f} MB; the API caps request bodies at 64 MB and base64 adds ~33%. Shorten the source video or host it at a public URL.")
 
     config = _load_video_generation_config()
     selected_provider, selected_model = _resolve_target(config, provider, model)
@@ -277,41 +247,21 @@ def generate_video(
         "reference_audios": reference_audios or None,
     }
     params = {k: v for k, v in params.items() if v is not None}
-    if params.get("image_role") and not reference_images:
-        raise ValueError(
-            "--image-role requires --reference-images; drop --image-role for pure text-to-video"
-        )
+    if params.get("image_role") and not (reference_images or reference_videos or reference_audios):
+        raise ValueError("--image-role requires --reference-images (or --reference-videos/--reference-audios for Seedance reference); drop --image-role for pure text-to-video")
 
     adapter = PROVIDERS[selected_provider](model=selected_model)
     if "image_role" in params and "image_role" not in adapter.supported_params:
-        supporters = ", ".join(
-            sorted(n for n, c in PROVIDERS.items() if "image_role" in c.supported_params)
-        )
-        raise ValueError(
-            f"Video generation provider '{selected_provider}' does not support "
-            f"--image-role (supported: {supporters}). Switch provider or drop --image-role."
-        )
+        supporters = ", ".join(sorted(n for n, c in PROVIDERS.items() if "image_role" in c.supported_params))
+        raise ValueError(f"Video generation provider '{selected_provider}' does not support --image-role (supported: {supporters}). Switch provider or drop --image-role.")
     if "upscale_video" in params and "upscale_video" not in adapter.supported_params:
-        supporters = ", ".join(
-            sorted(n for n, c in PROVIDERS.items() if "upscale_video" in c.supported_params)
-        )
-        raise ValueError(
-            f"Video generation provider '{selected_provider}' does not support "
-            f"--upscale-video (supported: {supporters})."
-        )
-    for ref_param, flag in (("reference_videos", "--reference-videos"),
-                            ("reference_audios", "--reference-audios")):
+        supporters = ", ".join(sorted(n for n, c in PROVIDERS.items() if "upscale_video" in c.supported_params))
+        raise ValueError(f"Video generation provider '{selected_provider}' does not support --upscale-video (supported: {supporters}).")
+    for ref_param, flag in (("reference_videos", "--reference-videos"), ("reference_audios", "--reference-audios")):
         if ref_param in params and ref_param not in adapter.supported_params:
-            supporters = ", ".join(
-                sorted(n for n, c in PROVIDERS.items() if ref_param in c.supported_params)
-            )
-            raise ValueError(
-                f"Video generation provider '{selected_provider}' does not support "
-                f"{flag} (supported: {supporters}). Switch provider or drop {flag}."
-            )
-    return adapter.generate(
-        prompt_text, reference_images, output_file, params, prompt_file=prompt_file
-    )
+            supporters = ", ".join(sorted(n for n, c in PROVIDERS.items() if ref_param in c.supported_params))
+            raise ValueError(f"Video generation provider '{selected_provider}' does not support {flag} (supported: {supporters}). Switch provider or drop {flag}.")
+    return adapter.generate(prompt_text, reference_images, output_file, params, prompt_file=prompt_file)
 
 
 def cancel_task(
@@ -353,12 +303,8 @@ def query_task(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Generate videos using a configured provider"
-    )
-    parser.add_argument(
-        "--prompt-file", required=False, default=None, help="Absolute path to JSON prompt file"
-    )
+    parser = argparse.ArgumentParser(description="Generate videos using a configured provider")
+    parser.add_argument("--prompt-file", required=False, default=None, help="Absolute path to JSON prompt file")
     parser.add_argument(
         "--reference-images",
         nargs="*",
@@ -369,10 +315,7 @@ if __name__ == "__main__":
         "--reference-videos",
         nargs="*",
         default=[],
-        help=(
-            "Public URLs of reference videos (Seedance only; the API cannot fetch "
-            "local paths and rejects base64)"
-        ),
+        help=("Public URLs of reference videos (Seedance only; the API cannot fetch local paths and rejects base64)"),
     )
     parser.add_argument(
         "--reference-audios",
@@ -413,41 +356,29 @@ if __name__ == "__main__":
         default=None,
         choices=["first_frame", "last_frame", "first_last", "reference"],
         help=(
-            "How to use --reference-images (MiniMax H3): first_frame (default, I2V), "
-            "last_frame, first_last (first + optional last frame), or reference "
-            "(up to 9 identity/style reference images). Frame roles and reference "
-            "are mutually exclusive."
+            "How to use --reference-images: first_frame (default, I2V), last_frame, "
+            "first_last (first + last frame, exactly 2 images), or reference "
+            "(identity/style reference images; up to 9 on MiniMax H3 / Seedance 2.0 "
+            "family, 30 on Seedance 2.5). Frame and reference roles are mutually "
+            "exclusive."
         ),
     )
     parser.add_argument(
         "--upscale-video",
         default=None,
-        help=(
-            "Path/URL to an existing 768P output to regenerate as 2K (MiniMax H3 "
-            "regeneration endpoint). Reuses --prompt-file/--reference-images/"
-            "--image-role/--model from the original run; --output-file must be "
-            "a NEW path."
-        ),
+        help=("Path/URL to an existing 768P output to regenerate as 2K (MiniMax H3 regeneration endpoint). Reuses --prompt-file/--reference-images/--image-role/--model from the original run; --output-file must be a NEW path."),
     )
     parser.add_argument(
         "--cancel",
         default=None,
         metavar="TASK_ID",
-        help=(
-            "Cancel a still-queued task (state is checked first; finished tasks "
-            "are never deleted). Optional --output-file also updates the run's "
-            "sidecar record."
-        ),
+        help=("Cancel a still-queued task (state is checked first; finished tasks are never deleted). Optional --output-file also updates the run's sidecar record."),
     )
     parser.add_argument(
         "--query",
         default=None,
         metavar="TASK_ID",
-        help=(
-            "Read-only status lookup for a task id (e.g. after a local "
-            "polling timeout). Never cancels; optional --output-file also "
-            "refreshes the run's sidecar record."
-        ),
+        help=("Read-only status lookup for a task id (e.g. after a local polling timeout). Never cancels; optional --output-file also refreshes the run's sidecar record."),
     )
     args = parser.parse_args()
 
@@ -466,9 +397,7 @@ if __name__ == "__main__":
                 if not value
             ]
             if missing:
-                raise ValueError(
-                    f"{', '.join(missing)} is required unless --cancel/--query is used"
-                )
+                raise ValueError(f"{', '.join(missing)} is required unless --cancel/--query is used")
             print(
                 generate_video(
                     args.prompt_file,

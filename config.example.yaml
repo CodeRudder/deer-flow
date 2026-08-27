@@ -1247,7 +1247,7 @@ video_generation:
           description: 提供768P/2K+立体声的顶级视频生成能力(单次≤15s)，支持文生视频与首帧/尾帧/首尾帧/参考图生视频(参考图≤9张)
 
     # 火山方舟 Seedance 2.x 系列（不配置时 Gateway 仍会展示内置定义）；
-    # 参考视频/音频仅接受公网 URL；Seedance 2.5 首尾帧任务跟随素材(adaptive/-1)。
+    # 参考视频/音频仅接受公网 URL；Seedance 2.5 帧/编辑/延长任务锁 ratio=adaptive（仅编辑另锁 duration=-1）。
     # - name: seedance
     #   display_name: Seedance（火山方舟）
     #   api_key: $SEEDANCE_VIDEO_API_KEY
@@ -1255,10 +1255,10 @@ video_generation:
     #   models:
     #     - name: doubao-seedance-2-5-260628
     #       display_name: Seedance 2.5
-    #       description: 30秒长叙事+全模态参考(30图/10视频/10音频)，输出480p/720p，时长4-30s
+    #       description: 30秒长叙事+全模态参考(30图/10视频/10音频)，输出480p/720p/1080p(10bit)，时长4-30s
     #     - name: doubao-seedance-2-0-260128
     #       display_name: Seedance 2.0
-    #       description: 唯一支持1080p/4k输出的版本，时长4-15s，高清成片首选
+    #       description: 唯一支持4k输出的版本（也支持1080p），时长4-15s，高清成片首选
     #     - name: doubao-seedance-2-0-fast-260128
     #       display_name: Seedance 2.0 Fast
     #       description: 速度与成本折中，输出480p/720p
