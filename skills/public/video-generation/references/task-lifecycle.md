@@ -49,7 +49,9 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 ```
 
 `--output-file` is optional; when given it also marks that run's `.task.json`
-as cancelled.
+as cancelled. `--model` must match the task's provider model (`MiniMax-H3` for
+H3 tasks, `doubao-seedance-2-x` for Seedance) — it routes the cancel/query to
+the right provider endpoint; a mismatched model cannot reach the task.
 
 ## Query
 

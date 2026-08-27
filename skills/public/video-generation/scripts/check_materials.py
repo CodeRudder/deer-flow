@@ -1,15 +1,16 @@
-"""素材规格 preflight 检查与自动修复（MiniMax H3）。
+"""素材规格 preflight 检查与自动修复（按 provider 图片规格）。
 
-在调用 generate.py 之前运行：逐图校验 H3 图片规格（每边 [256, 5760]px、
-比例 [0.4, 2.5]、格式 JPG/JPEG/PNG/WEBP/HEIC/HEIF），超限图自动修复
-（比例中心裁剪、边长缩放、格式转 PNG），修复文件写入 --out-dir。
-不调用任何生成 API，不产生费用；超限素材在本地处理完毕后再进生成，
-避免 API 端报错导致重复扣生成次数。
+在调用 generate.py 之前运行：逐图校验所选 provider 的图片规格
+（--provider minimax_h3 或 seedance；H3 每边 [256, 5760]px，Seedance
+[300, 6000]px，比例均 [0.4, 2.5]），超限图自动修复（比例中心裁剪、边长
+缩放、格式转 PNG），修复文件写入 --out-dir。不调用任何生成 API，不产生
+费用；超限素材在本地处理完毕后再进生成，避免 API 端报错导致重复扣生成次数。
 
 用法（供 SKILL 指引，勿直接读源码）：
 python /mnt/skills/public/video-generation/scripts/check_materials.py \
   --images /mnt/user-data/uploads/a.png /mnt/user-data/uploads/b.jpg \
   --out-dir /mnt/user-data/workspace
+# Seedance 素材：加 --provider seedance
 
 输出：逐图状态行 + 一行 ready 列表（修复后可直接拼进 generate.py 的
 --reference-images）。无法解码的图报错退出（需替换素材），超限已修复
@@ -17,8 +18,10 @@ python /mnt/skills/public/video-generation/scripts/check_materials.py \
 """
 
 import argparse
+import math
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -29,15 +32,42 @@ except ImportError:
 
 import requests
 
-# MiniMax H3 图片规格（官方：宽高 [256, 5760]px、比例 5:2~2:5）
-H3_SIDE_MIN = 256
-H3_SIDE_MAX = 5760
-H3_RATIO_MIN = 0.4
-H3_RATIO_MAX = 2.5
-# 官方支持的输入格式；其余格式解码后转 PNG
-H3_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+# ── 图片规格表（per provider）───────────────────────────────────────────
+# 官方源：MiniMax H3（宽高 [256, 5760]px、比例 5:2~2:5）；
+# Seedance API Ref（宽高 [300, 6000]px、比例 [0.4, 2.5]）。
+# 不在 extensions 内的格式解码后转 PNG。
 # base64 传输膨胀约 33%，请求体上限 64MB —— 本地图总大小软顶，超出提示改用公网 URL
 _REQUEST_BODY_SOFT_LIMIT = 45 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _ImageSpec:
+    side_min: int
+    side_max: int
+    ratio_min: float
+    ratio_max: float
+    extensions: frozenset[str]
+    label: str
+
+
+IMAGE_SPECS: dict[str, _ImageSpec] = {
+    "minimax_h3": _ImageSpec(
+        side_min=256,
+        side_max=5760,
+        ratio_min=0.4,
+        ratio_max=2.5,
+        extensions=frozenset({".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}),
+        label="MiniMax-H3",
+    ),
+    "seedance": _ImageSpec(
+        side_min=300,
+        side_max=6000,
+        ratio_min=0.4,
+        ratio_max=2.5,
+        extensions=frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif", ".heic", ".heif"}),
+        label="Seedance",
+    ),
+}
 
 
 def _fail(message: str) -> None:
@@ -67,45 +97,52 @@ def _to_rgb(im):
     return im.convert("RGB")
 
 
-def fix_image(path: str, out_dir: str) -> tuple[str, list[str]]:
+def fix_image(path: str, out_dir: str, spec: _ImageSpec) -> tuple[str, list[str]]:
     """修复单张图，返回 (输出路径, 操作列表)；无修改时返回原路径。"""
     ops: list[str] = []
     im = Image.open(path)
     im = ImageOps.exif_transpose(im)
     w, h = im.size
 
-    if Path(path).suffix.lower() not in H3_EXTENSIONS:
+    if Path(path).suffix.lower() not in spec.extensions:
         ops.append("convert-format")
 
-    if min(w, h) < H3_SIDE_MIN:
-        scale = H3_SIDE_MIN / min(w, h)
+    if min(w, h) < spec.side_min:
+        scale = spec.side_min / min(w, h)
         im = im.resize(
             (max(1, round(w * scale)), max(1, round(h * scale))),
             Image.LANCZOS,
         )
-        ops.append("upscale-to-256")
-    if max(w, h) > H3_SIDE_MAX:
-        scale = H3_SIDE_MAX / max(w, h)
+        ops.append(f"upscale-to-{spec.side_min}")
+    if max(w, h) > spec.side_max:
+        scale = spec.side_max / max(w, h)
         im = im.resize(
             (max(1, round(w * scale)), max(1, round(h * scale))),
             Image.LANCZOS,
         )
-        ops.append("downscale-to-5760")
+        ops.append(f"downscale-to-{spec.side_max}")
 
     w, h = im.size
     ratio = w / h
-    if ratio > H3_RATIO_MAX:
-        # 太宽：保持高度，中心裁剪宽度
-        new_w = max(1, round(h * H3_RATIO_MAX))
-        left = (w - new_w) // 2
-        im = im.crop((left, 0, left + new_w, h))
-        ops.append("crop-width")
-    elif ratio < H3_RATIO_MIN:
-        # 太高：保持宽度，中心裁剪高度
-        new_h = max(1, round(w / H3_RATIO_MIN))
-        top = (h - new_h) // 2
-        im = im.crop((0, top, w, top + new_h))
-        ops.append("crop-height")
+    if ratio > spec.ratio_max:
+        # 太宽：上下补白边降比例（保留原图，不裁剪丢信息）；ceil 保证 ratio 不超
+        new_h = max(1, math.ceil(w / spec.ratio_max))
+        canvas = Image.new("RGB", (w, new_h), (255, 255, 255))
+        canvas.paste(_to_rgb(im), (0, (new_h - h) // 2))
+        im = canvas
+        ops.append("pad-height")
+    elif ratio < spec.ratio_min:
+        # 太高：左右补白边升比例；ceil 保证 ratio 不低于 min
+        new_w = max(1, math.ceil(h * spec.ratio_min))
+        canvas = Image.new("RGB", (new_w, h), (255, 255, 255))
+        canvas.paste(_to_rgb(im), ((new_w - w) // 2, 0))
+        im = canvas
+        ops.append("pad-width")
+    # pad 后若超 side_max，整体缩小（不裁剪信息）
+    if max(im.size) > spec.side_max:
+        scale = spec.side_max / max(im.size)
+        im = im.resize((max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale))), Image.LANCZOS)
+        ops.append(f"downscale-to-{spec.side_max}")
 
     if not ops:
         return path, ops
@@ -130,16 +167,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--images", nargs="*", default=[], required=True, help="Absolute paths or public URLs")
     parser.add_argument("--out-dir", required=True, help="Directory for fixed files")
+    parser.add_argument(
+        "--provider",
+        default="minimax_h3",
+        choices=sorted(IMAGE_SPECS),
+        help="Image-spec set to check against (minimax_h3 or seedance)",
+    )
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
     if not args.images:
         _fail("Error: --images is empty; pass at least one image path or URL")
 
+    spec = IMAGE_SPECS[args.provider]
     ready: list[str] = []
     total_bytes = 0
-    print(f"== material check: {len(args.images)} image(s) vs MiniMax-H3 specs "
-          f"(side [{H3_SIDE_MIN},{H3_SIDE_MAX}]px, ratio [{H3_RATIO_MIN},{H3_RATIO_MAX}]) ==")
+    print(f"== material check: {len(args.images)} image(s) vs {spec.label} specs (side [{spec.side_min},{spec.side_max}]px, ratio [{spec.ratio_min},{spec.ratio_max}]) ==")
     for src in args.images:
         if src.startswith(("http://", "https://")):
             name = os.path.basename(src.split("?")[0]) or "remote-image"
@@ -161,20 +204,18 @@ def main() -> None:
         total_bytes += size
         ratio = w / h
 
-        out_path, ops = fix_image(src, args.out_dir)
+        out_path, ops = fix_image(src, args.out_dir, spec)
         if ops:
             fw, fh, _, ferr = probe_image(out_path)
             if ferr:
                 _fail(f"[error] fixed output unreadable: {out_path}: {ferr}")
-            print(f"[fixed] {src} ({w}x{h}, ratio {ratio:.3f}) -> {out_path} "
-                  f"({fw}x{fh}, ratio {fw / fh:.3f}) [{', '.join(ops)}]")
+            print(f"[fixed] {src} ({w}x{h}, ratio {ratio:.3f}) -> {out_path} ({fw}x{fh}, ratio {fw / fh:.3f}) [{', '.join(ops)}]")
         else:
             print(f"[ok]    {src} ({w}x{h}, ratio {ratio:.3f})")
         ready.append(out_path)
 
     if total_bytes > _REQUEST_BODY_SOFT_LIMIT:
-        print(f"!! local images total {total_bytes / 1024 / 1024:.0f} MB; base64 body "
-              f"nears the 64 MB request cap — host large files at a public URL instead")
+        print(f"!! local images total {total_bytes / 1024 / 1024:.0f} MB; base64 body nears the 64 MB request cap — host large files at a public URL instead")
     print("ready:", " ".join(ready))
 
 

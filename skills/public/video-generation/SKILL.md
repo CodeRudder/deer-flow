@@ -1,6 +1,6 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness). Staged workflow — always show a prefilled input information table, then confirm a fixed user-facing generation plan before execution; 768P drafts can be upgraded to 2K. Read SKILL.md before replying — including before any clarifying question — for the input table, mode routing, confirmation gate, structured-prompt methodology (MiniMax H3), and output settings.
+description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness). Staged workflow — always show a prefilled input information table, then confirm a fixed user-facing generation plan before execution; 768P drafts can be upgraded to 2K. Read SKILL.md before replying — including before any clarifying question — for the input table, mode routing, confirmation gate, structured-prompt methodology (MiniMax H3) or @-tag/timeline methodology (Seedance — also accepts reference videos/audios), and output settings.
 ---
 
 # Video Generation Skill
@@ -15,22 +15,22 @@ This skill generates short videos through a **staged, confirmed workflow**:
    subject + action and completes everything else.
 2. Route the confirmed inputs to one of five input modes (reference mode by
    default) and perform only the necessary material checks.
-3. Write the prompt file — MiniMax H3 uses the official **structured format**
-   (`[Shot N]` timeline, three fields / six sections), loaded on demand from
-   `references/`; other providers keep natural-language prose.
+3. Write the prompt file — route by provider: MiniMax H3 uses the official
+   **structured format** (`[Shot N]` timeline, three fields / six sections) from
+   `references/prompt-format-base.md` (T2V/frame modes) or `prompt-format-ref.md`
+   (reference mode); Seedance uses the **@-tag + timeline format**
+   (`@image1`/`@video1`/`@audio1` material tags, time-axis segments) from
+   `references/prompt-format-seedance.md`; `minimax_v1` keeps natural-language prose.
 4. Show a fixed **generation plan** containing the mode, materials, output,
    user-language prompt refinement, storyboard, change summary, and capability
    note; then wait for confirmation.
-5. Generate a 768P draft (default), present it, and offer structured next
-   steps — including upgrading eligible takes to 2K via the official
-   regeneration endpoint.
+5. Generate a draft-tier video (default; H3 drafts at 768P and is upgradable
+   to 2K via the official regeneration endpoint, Seedance drafts at 720p with
+   no upgrade path), present it, and offer structured next steps.
 
 Nothing is sent to the provider before the user has approved the latest plan.
 
-Capabilities: T2V; I2V (first / last / first+last frame); reference transfer
-(Ref2VA, ≤9 images, H3); 768P → 2K upgrade; queued-task cancel; read-only
-task query; per-run sidecar (`outputs/{name}.task.json`). Async create →
-poll → download is handled by the script.
+Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Ref2VA, ≤9 images on H3 / ≤30 images + reference videos + reference audios on Seedance 2.5); 768P → 2K upgrade (H3); up to 30s on Seedance 2.5; queued-task cancel; read-only task query; per-run sidecar (`outputs/{name}.task.json`). Async create → poll → download is handled by the script.
 
 ## Input information table (always show before routing)
 
@@ -54,7 +54,7 @@ Prefill supplied values; do not make the user repeat them.
 | Storyboard | {user content / plan as needed} | no |
 | Duration | {user content / default 5 s} | no |
 | Aspect ratio | {user content / default 16:9 / frame ratio, adaptive for references} | no |
-| Resolution | {user content / default 768P} | no |
+| Resolution | {user content / default draft tier (H3 768P, Seedance 720p)} | no |
 | Images (reference mode default) | {filenames and stated intent / none — will be auto-collected: search first; image generation only after user approval} | no |
 
 Only a **theme** is required — it may be vague or abstract; the skill
@@ -68,7 +68,9 @@ Reply "continue" for defaults, or say what to add or change.
 - **The full table is ALWAYS shown in the first reply** — even when the theme
   is missing (prefill the theme row with "needs input") — together with the
   auto-completion note. Never send a bare clarifying question without the
-  table.
+  table. The table must appear in the visible reply text **before** calling
+  `ask_clarification`; the tool's `question` only carries the short confirm
+  prompt (e.g. "continue or edit?"), never the table itself.
 - `clarification_type`: `missing_info` if there is no theme at all (not even
   a vague one) — then ask for ONLY the theme in the question and do NOT offer
   a "continue" option (there is nothing to continue yet; the table is still
@@ -101,6 +103,13 @@ selected by `--image-role` plus the images you pass in `--reference-images`:
 | Text + one image to END on | **last frame** | `last_frame` |
 | Text + a start image and an end image | **first + last frame** | `first_last` |
 | Text + image(s) of a character/style to imitate | **reference (Ref2VA)** | `reference` |
+
+**Seedance multimodal reference:** Seedance reference mode also accepts
+reference videos and reference audios (public URLs). When the user supplies a
+reference video or audio (not just images), route to Seedance — MiniMax H3
+cannot consume reference video/audio. Pass them via `--reference-videos` /
+`--reference-audios`; the prompt labels them `@video1` / `@audio1` in
+CLI-pass order (see `references/prompt-format-seedance.md`).
 
 **Frame vs. reference — the key distinction (they are mutually exclusive):**
 
@@ -171,7 +180,7 @@ label), so order matters — confirm it with the user when it isn't obvious:
 | `first_frame` | 1 | the single image is the opening frame |
 | `last_frame` | 1 | the single image is the closing frame |
 | `first_last` | exactly 2 | **first image = opening frame, second = closing frame** — never swap; if only one image is available, route to `first_frame` instead of invoking `first_last` |
-| `reference` | 1–9 | all treated as likeness references (upstream limit: 9) |
+| `reference` | 1–9 (H3 / Seedance 2.0 family) · 1–30 (Seedance 2.5) | all treated as likeness references; Seedance reference mode also accepts reference videos/audios (URLs) |
 
 Do not pass more images than a mode uses — a 3rd image to `first_last`, or a 2nd
 to `first_frame`/`last_frame`, is dropped with a printed warning, so send only
@@ -190,14 +199,22 @@ Before prompt writing, check only what is required to continue:
 - images are usable and the subject is basically recognizable;
 - `first_last`: the two images' ratios equal or close enough for a coherent
   transition;
+- Seedance reference videos/audios are public URLs (the API rejects base64
+  and cannot fetch local paths); counts stay within the model's caps (2.5:
+  30 images / 10 videos / 10 audios; 2.0 family: 9 / 3 / 3);
+- Seedance 2.5 frame tasks lock `ratio=adaptive` (the output follows the
+  frame image's aspect ratio); only video-edit locks `duration=-1` — an
+  explicit non-adaptive `--aspect-ratio` on a 2.5 frame task is rejected
+  locally with a clear error;
 - images pass the provider's input specs — run the spec preflight once
-  materials are in hand (MiniMax H3: each side [256, 5760] px, aspect ratio
-  [0.4, 2.5]):
+  materials are in hand (MiniMax H3: each side [256, 5760] px; Seedance:
+  each side [300, 6000] px; both aspect ratio [0.4, 2.5]):
 
   ```bash
   python /mnt/skills/public/video-generation/scripts/check_materials.py \
     --images {full paths or URLs, space-separated} \
     --out-dir /mnt/user-data/workspace
+  # Seedance materials: add --provider seedance
   ```
 
   Out-of-spec images are auto-fixed locally (no question needed); use the
@@ -220,20 +237,30 @@ Surface these settings in the input table. Preserve explicit choices; otherwise
 apply the defaults and show the resolved values on the plan card without a
 separate question.
 
-| Setting | Options (MiniMax H3) | Default | Notes |
+| Setting | Options | Default | Notes |
 |---|---|---|---|
-| Aspect ratio (`--aspect-ratio`) | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9` | `16:9` | T2V: optional, default `16:9`; reference mode: optional, defaults to adaptive; frame modes: fixed by the image (do not pass) |
-| Duration (`--duration`) | 4–15 s (integer) | `5` | 2+ shots: prefer 6 s or longer; follow the shot budget in the selected prompt reference |
-| Resolution (`--resolution`) | `768P`, `2K` | `768P` | default to a 768P draft, then upgrade an eligible take after confirmation |
+| Aspect ratio (`--aspect-ratio`) | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9` (+ `adaptive` for Seedance) | `16:9` | T2V: optional, default `16:9`; reference mode: optional, defaults to adaptive; frame modes: fixed by the image (do not pass); Seedance 2.5 frame modes force `adaptive` |
+| Duration (`--duration`) | H3: 4–15 s; Seedance: 4–15 s (2.5: 4–30 s or `-1` auto) | `5` | 2+ shots: prefer 6 s or longer; follow the shot budget in the selected prompt reference |
+| Resolution (`--resolution`) | H3: `768P`, `2K`; Seedance: `480p`/`720p`/`1080p` (2.5 & 2.0 standard); `4k` (2.0 standard only) | H3 `768P` · Seedance `720p` | H3: draft 768P then upgrade; Seedance: per-model value domain (rejected locally if unsupported) |
+
+Seedance model selection guide:
+
+| Model | Resolution | Duration | Best for |
+|---|---|---|---|
+| `doubao-seedance-2-5-260628` | 480p / 720p / 1080p | 4–30 s or -1 | long narratives + full multimodal reference (30 images / 10 videos / 10 audios) |
+| `doubao-seedance-2-0-260128` | 480p / 720p / 1080p / 4k | 4–15 s | the only 4k option — high-fidelity finished takes |
+| `doubao-seedance-2-0-fast-260128` | 480p / 720p | 4–15 s | speed/cost middle ground |
+| `doubao-seedance-2-0-mini-260615` | 480p / 720p | 4–15 s | cheapest, batch generation (≈ half the standard price) |
 
 Guidance:
 
-- Casual request → draft plan = 768P · 5 s; state it on the plan card, don't
-  ask.
+- Casual request → draft plan = draft tier · 5 s (H3 768P, Seedance 720p);
+  state it on the plan card, don't ask.
 - Vertical / social → suggest `9:16`; cinematic → `16:9` or `21:9`.
-- Prefer drafting at 768P and upgrading the take the user likes (Step 6). If
-  the user explicitly requests direct 2K, preserve that setting in both the
-  input information table and the generation plan.
+- H3: prefer drafting at 768P and upgrading the take the user likes (Step 6);
+  Seedance has no upgrade path, so pick its draft tier. If the user explicitly
+  requests direct 2K (H3), preserve that setting in both the input information
+  table and the generation plan.
 - Explicitly given parameters are prefilled in the input table and preserved in
   the plan; never replace them with defaults.
 
@@ -251,15 +278,20 @@ as "passed" while planned images do not exist yet.
 
 ### Step 2: Write the structured prompt file
 
-For MiniMax H3, first load exactly ONE format reference for the chosen mode —
-the spec owns the grammar (fields/sections, `[Shot N]` timeline, camera
-motion, speakers and `<d>` dialogue, language exceptions, keyframe
-soft-anchoring) — then write the prompt file in that format:
+Route by provider and load exactly ONE format reference for the chosen mode —
+the spec owns the grammar — then write the prompt file in that format:
 
-- T2V / first frame / last frame / first+last →
+- MiniMax H3, T2V / first frame / last frame / first+last →
   `read_file /mnt/skills/public/video-generation/references/prompt-format-base.md`
-- reference mode (Ref2VA) →
+  (fields/sections, `[Shot N]` timeline, camera motion, speakers and `<d>`
+  dialogue, language exceptions, keyframe soft-anchoring)
+- MiniMax H3, reference mode (Ref2VA) →
   `read_file /mnt/skills/public/video-generation/references/prompt-format-ref.md`
+- Seedance, any mode →
+  `read_file /mnt/skills/public/video-generation/references/prompt-format-seedance.md`
+  (`@image1`/`@video1`/`@audio1` material tags in CLI-pass order, time-axis
+  segments, dialogue in quotes; reference mode may mix images + reference
+  videos + reference audios as public URLs)
 
 Write the result to `/mnt/user-data/workspace/{descriptive-name}.txt` — plain
 text whose content is the structured format (instruction line for keyframe
@@ -361,19 +393,24 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 Parameters:
 
-- `--prompt-file` (required): structured `.txt` (H3), prose `.txt`, or a
-  `.json` file with a top-level `"prompt"` string field (only that field is
-  used).
+- `--prompt-file` (required): structured `.txt` (H3), `@`-tag `.txt` (Seedance),
+  prose `.txt`, or a `.json` file with a top-level `"prompt"` string field (only
+  that field is used).
 - `--reference-images`: image path(s), space-separated; omit for T2V. Meaning
   depends on `--image-role`.
-- `--image-role` (H3): `first_frame` (default) / `last_frame` / `first_last` /
-  `reference` (see Choosing the mode).
+- `--reference-videos` / `--reference-audios` (Seedance reference mode): public
+  URLs only — the API rejects base64 and cannot fetch local paths. Labeled
+  `@video1`/`@audio1` in the prompt in CLI-pass order.
+- `--image-role`: `first_frame` (default) / `last_frame` / `first_last` /
+  `reference` (H3 and Seedance; unsupported on `minimax_v1`).
 - `--output-file` (required): output `.mp4` under `/mnt/user-data/outputs/`,
   must NOT already exist.
 - `--aspect-ratio`: per-mode semantics — see Output settings.
 - `--model` / `--provider`: routing + escape hatch — `references/provider-runtime.md`.
-- `--resolution`: `768P` (default draft tier) or `2K`.
-- `--duration`: 4–15 s for H3; default 5 (keeps 2K upgrade open — Step 6).
+- `--resolution`: H3 `768P` (default draft tier) or `2K`; Seedance `480p`/`720p`
+  (`1080p` on 2.5 & 2.0 standard; `4k` on 2.0 standard only) — per-model, validated locally.
+- `--duration`: H3 4–15 s (default 5, keeps 2K upgrade open); Seedance 4–15 s
+  (2.5: 4–30 s or `-1` auto).
 - `--query` / `--cancel`: read-only task lookup / cancel a queued task —
   `references/task-lifecycle.md`.
 
@@ -393,7 +430,7 @@ polling `timeout` is not an upstream terminal status — resolve it read-only
 with `--query`: `succeeded` → download to a NEW output path, then Step 5
 delivery; `failed` → offer a fresh plan; still active (`queued` /
 `processing` / `pending` / `running`) → report and wait.
-Never auto-resubmit without the user's explicit go-ahead. Full state machine:
+Never auto-resubmit without the user's explicit go-ahead. If `generate.py` or any call errors, stop immediately — never self-retry or debug (paid API, each call consumes quota); report the error + task id and wait for the user. Full state machine:
 `references/task-lifecycle.md`. Execution is one foreground call — no live
 progress; per-poll elapsed times and a stage summary arrive at the end.
 
@@ -495,11 +532,13 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 |---|---|---|---|---|---|
 | `minimax_h3` | 768P / 2K | 4–15 s | see Output settings | first_frame / last_frame / first_last / reference (1–9) | Native stereo audio |
 | `minimax_v1` | model default | model default | ignored | first frame only | none |
+| `seedance` | 480p / 720p / 1080p (2.5 & 2.0 standard); 4k (2.0 standard only) | 4–15 s (2.5: 4–30 s or -1 auto) | same enum; 2.5 frame modes forced `adaptive` | first_frame / last_frame / first_last / reference (1–30 on 2.5, 1–9 on 2.0 family); reference mode also accepts `reference_video` / `reference_audio` (public URLs) | generated by default |
 
-`--query` works on every provider; `--image-role` / `--upscale-video` /
-`--cancel` are H3-only (error on `minimax_v1`). Frame and reference roles are
-mutually exclusive on H3; reference video/audio is unsupported; avoid named
-real people or trademarked characters. Routing/credentials/compatibility:
+`--query` works on every provider; `--image-role` and `--cancel` work on
+`minimax_h3` and `seedance` (error on `minimax_v1`); `--upscale-video` is
+H3-only. Frame and reference roles are mutually exclusive; `minimax_h3` does
+not accept reference video/audio (use Seedance); avoid named real people or
+trademarked characters. Routing/credentials/compatibility:
 `references/provider-runtime.md`.
 
 ## Iteration (regenerate, not edit)

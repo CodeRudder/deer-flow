@@ -1231,8 +1231,8 @@ video_generation:
   # The first provider and its first model are treated as the default order.
   # If this section is removed, the skill falls back by available credential:
   # a known model name routes to its owning provider; otherwise minimax_h3
-  # if MINIMAX_VIDEO_API_KEY, or legacy minimax_v1 when only the shared
-  # MINIMAX_API_KEY is set.
+  # if MINIMAX_VIDEO_API_KEY, seedance if SEEDANCE_VIDEO_API_KEY/ARK_API_KEY,
+  # or legacy minimax_v1 when only the shared MINIMAX_API_KEY is set.
   # `api_key` can reference an environment variable; secret values are never returned.
   providers:
     - name: minimax_h3
@@ -1245,6 +1245,26 @@ video_generation:
         - name: MiniMax-H3
           display_name: MiniMax H3
           description: 提供768P/2K+立体声的顶级视频生成能力(单次≤15s)，支持文生视频与首帧/尾帧/首尾帧/参考图生视频(参考图≤9张)
+
+    # 火山方舟 Seedance 2.x 系列（不配置时 Gateway 仍会展示内置定义）；
+    # 参考视频/音频仅接受公网 URL；Seedance 2.5 帧/编辑/延长任务锁 ratio=adaptive（仅编辑另锁 duration=-1）。
+    # - name: seedance
+    #   display_name: Seedance（火山方舟）
+    #   api_key: $SEEDANCE_VIDEO_API_KEY
+    #   # 默认国内站 https://ark.cn-beijing.volces.com；海外站可用 SEEDANCE_API_BASE_URL 覆盖
+    #   models:
+    #     - name: doubao-seedance-2-5-260628
+    #       display_name: Seedance 2.5
+    #       description: 30秒长叙事+全模态参考(30图/10视频/10音频)，输出480p/720p/1080p(10bit)，时长4-30s
+    #     - name: doubao-seedance-2-0-260128
+    #       display_name: Seedance 2.0
+    #       description: 唯一支持4k输出的版本（也支持1080p），时长4-15s，高清成片首选
+    #     - name: doubao-seedance-2-0-fast-260128
+    #       display_name: Seedance 2.0 Fast
+    #       description: 速度与成本折中，输出480p/720p
+    #     - name: doubao-seedance-2-0-mini-260615
+    #       display_name: Seedance 2.0 Mini
+    #       description: 最低成本(约为标准版一半)，批量出片首选
 
   # 旧 minimax_v1（Hailuo V1 三步流）仅作兼容保留，不推荐；经 VIDEO_GENERATION_PROVIDER 环境变量回退可达
 

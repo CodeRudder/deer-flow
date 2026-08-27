@@ -11,7 +11,7 @@ import base64
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
@@ -30,6 +30,9 @@ _MIME_BY_EXT = {
     ".jpeg": "image/jpeg",
     ".heic": "image/heic",
     ".heif": "image/heif",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
 }
 
 
@@ -98,9 +101,7 @@ def warn_ignored(provider: str, params: dict, supported: set[str]) -> None:
     """Surface params a provider does not honor instead of silently dropping them (AC-11)."""
     ignored = [k for k, v in params.items() if v is not None and k not in supported]
     if ignored:
-        print(
-            f"Warning: provider={provider} ignores unsupported params: {', '.join(sorted(ignored))}"
-        )
+        print(f"Warning: provider={provider} ignores unsupported params: {', '.join(sorted(ignored))}")
 
 
 class BaseVideoProvider:
@@ -131,9 +132,7 @@ class BaseVideoProvider:
         """Auth header(s). Bearer for the mainline providers."""
         return {"Authorization": f"Bearer {self.api_key()}"}
 
-    def create_task(
-        self, prompt_text: str, reference_images: list[str], params: dict
-    ) -> str:
+    def create_task(self, prompt_text: str, reference_images: list[str], params: dict) -> str:
         """Create the async task; return an opaque handle (task_id or operation name).
 
         Adapters decide how to use reference_images: H3/V1 take the first as the
@@ -177,16 +176,10 @@ class BaseVideoProvider:
         prompt_file: str | None = None,
     ) -> str:
         if not self.api_key():
-            hint = (
-                f"; set one of: {', '.join(self.api_key_envs)}"
-                if self.api_key_envs
-                else ""
-            )
+            hint = f"; set one of: {', '.join(self.api_key_envs)}" if self.api_key_envs else ""
             raise Exception(f"provider={self.name} credential is not set{hint}")
 
-        max_attempts = (
-            max_attempts if max_attempts is not None else self.poll_max_attempts
-        )
+        max_attempts = max_attempts if max_attempts is not None else self.poll_max_attempts
         interval = interval if interval is not None else self.poll_interval
         warn_ignored(self.name, params, self.supported_params)
 
@@ -199,7 +192,7 @@ class BaseVideoProvider:
                 "task_id": handle,
                 "prompt_file": prompt_file,
                 "params": params,
-                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
         )
 
@@ -215,12 +208,7 @@ class BaseVideoProvider:
             if status == STATUS_FAILED:
                 set_task_status(output_file, handle, STATUS_FAILED)
                 raise Exception(f"provider={self.name} task {handle} failed: {result}")
-            print(
-                f"[poll] attempt {attempt + 1}: status=pending "
-                f"({time.monotonic() - started:.0f}s elapsed)"
-            )
+            print(f"[poll] attempt {attempt + 1}: status=pending ({time.monotonic() - started:.0f}s elapsed)")
             time.sleep(interval)
         set_task_status(output_file, handle, "timeout")
-        raise Exception(
-            f"provider={self.name} task {handle} timed out after {max_attempts} polls"
-        )
+        raise Exception(f"provider={self.name} task {handle} timed out after {max_attempts} polls")
