@@ -1,5 +1,5 @@
 import { SparklesIcon } from "lucide-react";
-import { type CSSProperties, type ComponentProps, useState } from "react";
+import { type CSSProperties, type ComponentProps } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -90,12 +90,11 @@ export function ModelProviderLogo({
 }: {
   name: string;
   displayName?: string | null;
-} & Omit<ComponentProps<"img">, "src" | "alt">) {
+} & Omit<ComponentProps<"span">, "children">) {
   const provider = resolveProviderFromModelName(name, displayName);
   const logoPath = provider ? getModelLogoPath(provider) : undefined;
-  const [failed, setFailed] = useState(false);
 
-  if (!logoPath || failed) {
+  if (!provider || !logoPath) {
     return (
       <span
         aria-label="model logo"
@@ -111,7 +110,7 @@ export function ModelProviderLogo({
   }
 
   const logoStyle = {
-    "--model-logo-color": PROVIDER_LOGO_COLORS[provider!],
+    "--model-logo-color": getModelLogoColor(provider),
     "--model-logo-url": `url("${logoPath}")`,
   } as CSSProperties;
 
@@ -121,16 +120,12 @@ export function ModelProviderLogo({
         "flex size-6 shrink-0 items-center justify-center rounded-md border bg-background",
         className,
       )}
+      {...props}
     >
-      <img
-        {...props}
-        alt={`${name} logo`}
-        className="size-4 dark:invert"
-        height={16}
-        onError={() => setFailed(true)}
-        src={logoPath}
+      <span
+        aria-hidden
+        className="size-4 bg-(--model-logo-color) [-webkit-mask:var(--model-logo-url)_center/contain_no-repeat] [mask:var(--model-logo-url)_center/contain_no-repeat]"
         style={logoStyle}
-        width={16}
       />
     </span>
   );

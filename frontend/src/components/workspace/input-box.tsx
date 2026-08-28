@@ -22,7 +22,6 @@ import {
   useRef,
   useState,
   type ComponentProps,
-  type CSSProperties,
   type KeyboardEvent,
   type RefObject,
 } from "react";
@@ -66,12 +65,7 @@ import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
-import {
-  type ModelLogoProvider,
-  getModelLogoColor,
-  getModelLogoPath,
-  resolveProviderFromModelName,
-} from "@/core/models/logo";
+import { ModelProviderLogo as ModelProviderLogoBase } from "@/core/models/logo";
 import type { Skill } from "@/core/skills";
 import { useSkills } from "@/core/skills/hooks";
 import { useSuggestionsConfig } from "@/core/suggestions/hooks";
@@ -181,36 +175,12 @@ type ModelLogoSource = {
   display_name?: string | null;
 };
 
-function getModelLogoProvider(model: ModelLogoSource): ModelLogoProvider | null {
-  return resolveProviderFromModelName(
-    [model.name, model.model].join(" "),
-    model.display_name,
-  );
-}
-
 function ModelProviderLogo({ model }: { model: ModelLogoSource }) {
-  const provider = getModelLogoProvider(model);
-  const logoPath = provider ? getModelLogoPath(provider) : undefined;
-  const logoStyle =
-    provider && logoPath
-      ? ({
-          "--model-logo-color": getModelLogoColor(provider),
-          "--model-logo-url": `url("${logoPath}")`,
-        } as CSSProperties)
-      : undefined;
-
   return (
-    <span className="bg-background flex size-6 shrink-0 items-center justify-center rounded-md border">
-      {logoStyle ? (
-        <span
-          aria-hidden
-          className="size-4 bg-(--model-logo-color) [-webkit-mask:var(--model-logo-url)_center/contain_no-repeat] [mask:var(--model-logo-url)_center/contain_no-repeat]"
-          style={logoStyle}
-        />
-      ) : (
-        <SparklesIcon className="size-3.5 text-[#f59e0b]" />
-      )}
-    </span>
+    <ModelProviderLogoBase
+      displayName={model.display_name}
+      name={[model.name, model.model].filter(Boolean).join(" ")}
+    />
   );
 }
 
