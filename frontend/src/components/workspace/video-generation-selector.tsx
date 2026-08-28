@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useI18n } from "@/core/i18n/hooks";
+import { ModelProviderLogo } from "@/core/models/logo";
 import { useVideoGenerationProviders } from "@/core/video-generation";
 import { cn } from "@/lib/utils";
 
@@ -152,6 +153,10 @@ export function VideoGenerationSelector({
                     });
                   }}
                 >
+                  <ModelProviderLogo
+                    name={model.name}
+                    displayName={model.display_name}
+                  />
                   <span className="min-w-0 truncate font-medium">
                     {model.display_name}
                   </span>
