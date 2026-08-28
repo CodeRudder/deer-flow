@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useI18n } from "@/core/i18n/hooks";
 import { useImageGenerationProviders } from "@/core/image-generation";
+import { ModelProviderLogo } from "@/core/models/logo";
 import { cn } from "@/lib/utils";
 
 type ImageGenerationSelection = {
@@ -154,6 +155,10 @@ export function ImageGenerationSelector({
                     });
                   }}
                 >
+                  <ModelProviderLogo
+                    name={model.name}
+                    displayName={model.display_name}
+                  />
                   <span className="min-w-0 truncate font-medium">
                     {model.display_name}
                   </span>

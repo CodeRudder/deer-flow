@@ -66,7 +66,12 @@ import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
-import { getModelLogoPath } from "@/core/models/logo";
+import {
+  type ModelLogoProvider,
+  getModelLogoColor,
+  getModelLogoPath,
+  resolveProviderFromModelName,
+} from "@/core/models/logo";
 import type { Skill } from "@/core/skills";
 import { useSkills } from "@/core/skills/hooks";
 import { useSuggestionsConfig } from "@/core/suggestions/hooks";
@@ -176,80 +181,11 @@ type ModelLogoSource = {
   display_name?: string | null;
 };
 
-function getModelLogoProvider(model: ModelLogoSource): string | null {
-  const value = [model.name, model.model, model.display_name ?? ""]
-    .join(" ")
-    .toLowerCase();
-
-  if (value.includes("kimi") || value.includes("moonshot")) {
-    return "moonshotai-cn";
-  }
-  if (
-    value.includes("doubao") ||
-    value.includes("volcengine") ||
-    value.includes("volcano") ||
-    value.includes("seed")
-  ) {
-    return "doubao";
-  }
-  if (value.includes("gpt") || value.includes("openai")) {
-    return "openai";
-  }
-  if (value.includes("claude") || value.includes("anthropic")) {
-    return "anthropic";
-  }
-  if (value.includes("gemini") || value.includes("google")) {
-    return "google";
-  }
-  if (value.includes("deepseek")) {
-    return "deepseek";
-  }
-  if (value.includes("qwen") || value.includes("alibaba")) {
-    return "alibaba-cn";
-  }
-  if (value.includes("zhipu") || value.includes("glm")) {
-    return "zhipuai";
-  }
-  if (value.includes("minimax")) {
-    return "minimax";
-  }
-  if (value.includes("mistral")) {
-    return "mistral";
-  }
-  if (value.includes("llama") || value.includes("meta")) {
-    return "llama";
-  }
-
-  return null;
-}
-
-function getModelLogoColor(provider: string): string {
-  switch (provider) {
-    case "moonshotai-cn":
-      return "#111827";
-    case "doubao":
-      return "#2563eb";
-    case "openai":
-      return "#10a37f";
-    case "anthropic":
-      return "#d97757";
-    case "google":
-      return "#4285f4";
-    case "deepseek":
-      return "#4d6bfe";
-    case "alibaba-cn":
-      return "#ff6a00";
-    case "zhipuai":
-      return "#315cec";
-    case "minimax":
-      return "#7c3aed";
-    case "mistral":
-      return "#ff7000";
-    case "llama":
-      return "#0467df";
-    default:
-      return "#f59e0b";
-  }
+function getModelLogoProvider(model: ModelLogoSource): ModelLogoProvider | null {
+  return resolveProviderFromModelName(
+    [model.name, model.model].join(" "),
+    model.display_name,
+  );
 }
 
 function ModelProviderLogo({ model }: { model: ModelLogoSource }) {
