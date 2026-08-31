@@ -3,6 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
+  CircleHelp,
   ImageIcon,
   Pencil,
   Plus,
@@ -40,6 +41,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   useAdminUsage,
   useOverrideUserCurrentPeriod,
@@ -1524,6 +1530,7 @@ function QuotaScopeEditor({
   onOpenChange: (open: boolean) => void;
 }) {
   const saveScope = useSaveQuotaScope();
+  const videoBillingRulesId = useId();
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [resourceType, setResourceType] = useState<
@@ -1727,20 +1734,79 @@ function QuotaScopeEditor({
             </label>
           </div>
           {resourceType === "video_generation" ? (
-            <label className="block text-sm">
-              视频费率 JSON（元/秒，1 积分 = 1 元）
+            <div className="text-sm">
+              <div className="flex items-center gap-1">
+                <label htmlFor={videoBillingRulesId}>
+                  视频费率 JSON（元/秒，1 积分 = 1 元）
+                </label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-sm outline-none focus-visible:ring-2"
+                      aria-label="查看视频费率 JSON 配置说明"
+                    >
+                      <CircleHelp className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="left"
+                    align="start"
+                    sideOffset={8}
+                    className="bg-popover text-popover-foreground w-96 max-w-[calc(100vw-2rem)] space-y-2 p-3 text-left text-xs text-pretty shadow-md"
+                  >
+                    <p className="font-medium">视频费率 JSON 配置说明</p>
+                    <ul className="text-muted-foreground list-disc space-y-1 pl-4">
+                      <li>
+                        <code>currency</code> 固定为 <code>CNY</code>，
+                        <code>point_to_yuan</code> 固定为 <code>1</code>。
+                      </li>
+                      <li>
+                        <code>models</code> 下填写实际模型 ID，不同厂商通过模型
+                        ID 区分；模型内按分辨率填写人民币/秒费率。
+                      </li>
+                      <li>
+                        费率必须大于
+                        0，最多两位小数；未配置的模型、分辨率或指定时长将无法生成。
+                      </li>
+                      <li>
+                        如同一分辨率按时长定价，可配置
+                        <code>{' "durations": {"4": 3.5, "10": 3.2}'}</code>
+                        ，并覆盖允许生成的时长。
+                      </li>
+                    </ul>
+                    <pre className="bg-muted overflow-x-auto rounded border p-2 font-mono text-[11px] leading-4">
+                      {`{
+  "currency": "CNY",
+  "point_to_yuan": 1,
+  "models": {
+    "MiniMax-H3": { "768P": 2, "2K": 4 },
+    "doubao-seedance-2-5-260628": {
+      "720p": 2.5,
+      "1080p": 3.5
+    }
+  }
+}`}
+                    </pre>
+                    <p>
+                      示例：1080p 每秒 3.5 元，生成 10 秒视频，扣除 35 积分。
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
               <Textarea
+                id={videoBillingRulesId}
                 className="mt-1 min-h-36 font-mono text-xs"
                 value={videoBillingRules}
                 onChange={(event) => setVideoBillingRules(event.target.value)}
                 placeholder={
-                  '{\n  "currency": "CNY",\n  "point_to_yuan": 1,\n  "models": {\n    "seedance-2.5": {\n      "1080p": 3.5\n    }\n  }\n}'
+                  '{\n  "currency": "CNY",\n  "point_to_yuan": 1,\n  "models": {\n    "doubao-seedance-2-5-260628": {\n      "1080p": 3.5\n    }\n  }\n}'
                 }
               />
               <span className="text-muted-foreground mt-1 block text-xs">
                 按配置的模型/清晰度费率 × 视频秒数扣除积分。
               </span>
-            </label>
+            </div>
           ) : null}
           <div className="flex items-center justify-between rounded-lg border p-3">
             <div>
