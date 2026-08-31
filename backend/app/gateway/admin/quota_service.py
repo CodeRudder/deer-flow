@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from fastapi import HTTPException
@@ -22,6 +24,9 @@ from deerflow.persistence.user.model import UserRow
 QuotaMetricName = Literal["model_requests", "image_generations", "video_generations"]
 _SCOPE_CODE_PATTERN = re.compile(r"^[a-z0-9_]{2,64}$")
 _STATUS_ORDER = {"unlimited": 0, "normal": 1, "warning": 2, "exceeded": 3}
+# Video generation is billed exclusively in points.
+_VIDEO_BILLING_MODE = "points"
+_VIDEO_MINOR_UNIT_SCALE = 100
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,10 @@ class QuotaExceeded:
     scope_code: str
     scope_name: str
     model: str | None = None
+    reserved: int = 0
+    unit: str = "count"
+    scale: int = 1
+    requested: int | None = None
 
 
 class QuotaExceededError(Exception):
@@ -66,13 +75,28 @@ class ImageQuotaReservation:
 
 
 @dataclass(frozen=True)
-class VideoQuotaReservation:
+class VideoPointsReservation:
+    """A persisted video-points reservation for one generation request."""
+
     reservation_id: str
+    record_id: str
     user_id: str
+    model: str
+    resolution: str
+    duration_seconds: int
     matched_scope_id: str | None
     usage_period_id: str | None
-    count: int
+    reserved_minor_units: int
     video_used: int
+    billing_mode: str = "points"
+    price_fen_per_second: int = 0
+    idempotency_key: str = ""
+    status: str = "reserved"
+    reused: bool = False
+
+    @property
+    def estimated_minor_units(self) -> int:
+        return self.reserved_minor_units
 
 
 @dataclass(frozen=True)
@@ -96,6 +120,150 @@ class ModelScopeSnapshot:
 
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _points_to_minor(value: Any) -> int:
+    """Convert an API points value to integer RMB fen without float math."""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_video_points", "message": "视频积分必须是非负数字"}) from exc
+    if not amount.is_finite() or amount < 0 or amount * _VIDEO_MINOR_UNIT_SCALE != (amount * _VIDEO_MINOR_UNIT_SCALE).to_integral_value():
+        raise HTTPException(status_code=400, detail={"code": "invalid_video_points", "message": "视频积分最多保留两位小数"})
+    return int(amount * _VIDEO_MINOR_UNIT_SCALE)
+
+
+def _minor_to_points(value: int | None) -> float | None:
+    if value is None:
+        return None
+    return float(Decimal(int(value)) / _VIDEO_MINOR_UNIT_SCALE)
+
+
+def _video_rule_models(rules: Any) -> dict[str, Any]:
+    if not isinstance(rules, dict):
+        return {}
+    models = rules.get("models")
+    if models is None:
+        # Accept a plain model map as a small convenience for admin JSON.
+        models = {key: value for key, value in rules.items() if key not in {"schema_version", "currency", "point_to_yuan", "minor_unit_scale"}}
+    return models if isinstance(models, dict) else {}
+
+
+def _mapping_value(mapping: dict[str, Any], key: str) -> Any:
+    if key in mapping:
+        return mapping[key]
+    lowered = key.lower()
+    for candidate, value in mapping.items():
+        if str(candidate).lower() == lowered:
+            return value
+    return None
+
+
+def _price_to_minor(value: Any) -> int | None:
+    if isinstance(value, dict):
+        if "price_fen_per_second" in value:
+            raw = value["price_fen_per_second"]
+            try:
+                amount = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "price_fen_per_second 必须是整数"}) from exc
+            if amount <= 0:
+                raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "视频费率必须大于 0"})
+            return amount
+        for key in ("price_yuan_per_second", "price_per_second", "price"):
+            if key in value:
+                return _positive_price_to_minor(value[key])
+        return None
+    return _positive_price_to_minor(value)
+
+
+def _positive_price_to_minor(value: Any) -> int:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "视频费率必须是数字"}) from exc
+    if not amount.is_finite() or amount <= 0 or amount * _VIDEO_MINOR_UNIT_SCALE != (amount * _VIDEO_MINOR_UNIT_SCALE).to_integral_value():
+        raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "视频费率必须大于 0 且最多保留两位小数"})
+    return int(amount * _VIDEO_MINOR_UNIT_SCALE)
+
+
+def _lookup_video_price(rules: Any, model: str, resolution: str, duration_seconds: int) -> int:
+    models = _video_rule_models(rules)
+    model_config = _mapping_value(models, model)
+    if not isinstance(model_config, dict):
+        raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置模型 {model} 的视频费率"})
+    resolutions = model_config.get("resolutions", model_config)
+    if not isinstance(resolutions, dict):
+        raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置模型 {model} 的分辨率费率"})
+    resolution_config = _mapping_value(resolutions, resolution)
+    if resolution_config is None:
+        raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置 {model}/{resolution} 的视频费率"})
+    # A resolution may provide optional duration-specific entries. The common
+    # case remains one RMB/second price for the whole supported duration range.
+    if isinstance(resolution_config, dict) and isinstance(resolution_config.get("durations"), dict):
+        duration_config = _mapping_value(resolution_config["durations"], str(duration_seconds))
+        if duration_config is not None:
+            resolution_config = duration_config
+    price = _price_to_minor(resolution_config)
+    if price is None:
+        raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置 {model}/{resolution} 的每秒费率"})
+    if isinstance(resolution_config, dict):
+        minimum = resolution_config.get("min_duration", resolution_config.get("min_seconds", 4))
+        maximum = resolution_config.get("max_duration", resolution_config.get("max_seconds"))
+        if int(duration_seconds) < int(minimum) or (maximum is not None and int(duration_seconds) > int(maximum)):
+            raise HTTPException(status_code=400, detail={"code": "video_duration_not_supported", "message": f"视频时长需在 {minimum} 秒至 {maximum or '无上限'} 秒之间"})
+    return price
+
+
+def _validate_video_billing_rules(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not _video_rule_models(value):
+        raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "积分模式必须配置 models 费率 JSON"})
+    if value.get("currency", "CNY") != "CNY" or value.get("point_to_yuan", 1) != 1:
+        raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "视频积分规则必须使用 CNY 且 1 积分等于 1 元"})
+    # Validate every configured rate once so malformed admin JSON fails early.
+    for model_config in _video_rule_models(value).values():
+        if not isinstance(model_config, dict):
+            raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "models 配置格式无效"})
+        resolutions = model_config.get("resolutions", model_config)
+        if not isinstance(resolutions, dict) or not resolutions:
+            raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "每个模型至少需要一个分辨率费率"})
+        for resolution_config in resolutions.values():
+            if isinstance(resolution_config, dict) and isinstance(resolution_config.get("durations"), dict):
+                entries = resolution_config["durations"].values()
+            else:
+                entries = (resolution_config,)
+            for entry in entries:
+                if _price_to_minor(entry) is None:
+                    raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "分辨率费率配置无效"})
+    return value
+
+
+def _video_metric(enforced: bool, limit_minor: int | None, used_minor: int, reserved_minor: int) -> dict[str, Any]:
+    limit = _minor_to_points(limit_minor)
+    used = _minor_to_points(used_minor) or 0.0
+    reserved = _minor_to_points(reserved_minor) or 0.0
+    effective = used + reserved
+    if not enforced or limit is None:
+        return {
+            "enforced": bool(enforced),
+            "limit": limit,
+            "used": used,
+            "reserved": reserved,
+            "remaining": None if limit is None else max(0.0, limit - effective),
+            "ratio": None,
+            "status": "unlimited",
+        }
+    ratio = None if limit == 0 else effective / limit
+    status = "exceeded" if effective >= limit else "warning" if ratio is not None and ratio >= 0.8 else "normal"
+    return {
+        "enforced": True,
+        "limit": limit,
+        "used": used,
+        "reserved": reserved,
+        "remaining": max(0.0, limit - effective),
+        "ratio": ratio,
+        "status": status,
+    }
 
 
 def quota_period_window(period_type: str, at: datetime | None = None) -> PeriodWindow:
@@ -211,6 +379,7 @@ def _scope_status_rank_expression(scope: QuotaScopeRow):
             else_=UserQuotaUsagePeriodRow.video_limit_snapshot,
         )
         used = func.coalesce(UserQuotaUsagePeriodRow.video_used, 0)
+        used = used + func.coalesce(UserQuotaUsagePeriodRow.video_reserved, 0)
     else:
         enforced = case(
             (row_missing, literal(bool(scope.image_enforced))),
@@ -317,6 +486,16 @@ class QuotaService:
             )
         rules = _normalize_rules(payload.get("match_rules")) if resource_type == "model" else {"exact": [], "prefix": []}
         enabled = bool(payload.get("enabled", True))
+        video_billing_rules: dict[str, Any] = {}
+        video_enforced = False
+        video_limit = payload.get("video_limit") if resource_type == "video_generation" else None
+        if resource_type == "video_generation":
+            video_enforced = bool(payload.get("video_enforced", False))
+            raw_video_rules = payload.get("video_billing_rules")
+            # An initially disabled scope may be created before its rate JSON
+            # is entered; generation remains blocked until rates are present.
+            video_billing_rules = {} if not raw_video_rules and not video_enforced else _validate_video_billing_rules(raw_video_rules)
+            video_limit = _points_to_minor(video_limit) if video_limit is not None else None
         async with self._sf() as session:
             if (await session.execute(select(QuotaScopeRow.id).where(QuotaScopeRow.code == code))).scalar_one_or_none():
                 raise HTTPException(status_code=409, detail={"code": "quota_scope_code_exists", "message": "Scope code already exists"})
@@ -343,8 +522,9 @@ class QuotaService:
                 request_limit=payload.get("request_limit") if resource_type == "model" else None,
                 image_enforced=bool(payload.get("image_enforced", False)) if resource_type == "image_generation" else False,
                 image_limit=payload.get("image_limit") if resource_type == "image_generation" else None,
-                video_enforced=bool(payload.get("video_enforced", False)) if resource_type == "video_generation" else False,
-                video_limit=payload.get("video_limit") if resource_type == "video_generation" else None,
+                video_enforced=video_enforced if resource_type == "video_generation" else False,
+                video_limit=video_limit,
+                video_billing_rules=video_billing_rules,
                 policy_version=1,
                 created_at=now,
                 updated_at=now,
@@ -368,14 +548,24 @@ class QuotaService:
                 definition_changed = (scope.name, scope.enabled) != (name, enabled)
                 if scope.resource_type == "video_generation":
                     video_enforced = bool(payload.get("video_enforced", scope.video_enforced))
-                    video_limit = payload.get("video_limit", scope.video_limit)
-                    policy_changed = (scope.period_type, scope.video_enforced, scope.video_limit) != (
+                    raw_video_rules = payload.get("video_billing_rules", getattr(scope, "video_billing_rules", {}))
+                    video_billing_rules = {} if not raw_video_rules and not video_enforced else _validate_video_billing_rules(raw_video_rules)
+                    raw_video_limit = payload.get("video_limit", _minor_to_points(scope.video_limit))
+                    video_limit = _points_to_minor(raw_video_limit) if raw_video_limit is not None else None
+                    policy_changed = (
+                        scope.period_type,
+                        scope.video_enforced,
+                        scope.video_limit,
+                        getattr(scope, "video_billing_rules", {}),
+                    ) != (
                         period_type,
                         video_enforced,
                         video_limit,
+                        video_billing_rules,
                     )
                     scope.video_enforced = video_enforced
                     scope.video_limit = video_limit
+                    scope.video_billing_rules = video_billing_rules
                 else:
                     image_enforced = bool(payload.get("image_enforced", scope.image_enforced))
                     image_limit = payload.get("image_limit", scope.image_limit)
@@ -521,9 +711,23 @@ class QuotaService:
                 "period_type": scope.period_type,
                 "requests": ({"enforced": bool(scope.request_enforced), "limit": scope.request_limit} if scope.resource_type == "model" else None),
                 "images": ({"enforced": bool(scope.image_enforced), "limit": scope.image_limit} if scope.resource_type == "image_generation" else None),
-                "videos": ({"enforced": bool(scope.video_enforced), "limit": scope.video_limit} if scope.resource_type == "video_generation" else None),
+                "videos": (
+                    {
+                        "enforced": bool(scope.video_enforced),
+                        "limit": _minor_to_points(scope.video_limit),
+                        "billing_mode": _VIDEO_BILLING_MODE,
+                        "unit": "points",
+                        "scale": _VIDEO_MINOR_UNIT_SCALE,
+                        "billing_rules": getattr(scope, "video_billing_rules", {}) or {},
+                    }
+                    if scope.resource_type == "video_generation"
+                    else None
+                ),
                 "policy_version": scope.policy_version,
             },
+            # Keep these aliases for clients that do not unpack default_policy.
+            "video_billing_mode": _VIDEO_BILLING_MODE,
+            "video_billing_rules": getattr(scope, "video_billing_rules", {}) or {},
             "current_period_user_count": user_count,
             "updated_at": _as_utc(scope.updated_at).isoformat(),
             "updated_by": scope.updated_by,
@@ -609,6 +813,8 @@ class QuotaService:
             "video_enforced_snapshot": scope.video_enforced,
             "video_limit_snapshot": scope.video_limit,
             "video_used": 0,
+            "video_reserved": 0,
+            "video_billing_records": {},
             "is_overridden": False,
             "created_at": now,
             "updated_at": now,
@@ -753,16 +959,118 @@ class QuotaService:
             )
             await session.commit()
 
-    async def reserve_video_generations(
+    async def reserve_video_generation(
         self,
         user_id: str,
         *,
-        count: int = 1,
+        model: str | None = None,
+        resolution: str | None = None,
+        duration_seconds: int | None = None,
+        idempotency_key: str | None = None,
+        provider: str | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+        output_file: str | None = None,
         at: datetime | None = None,
-    ) -> VideoQuotaReservation:
-        count = int(count)
-        if count <= 0:
-            return VideoQuotaReservation(str(uuid.uuid4()), user_id, None, None, 0, 0)
+    ) -> VideoPointsReservation:
+        """Reserve one point-billed generation."""
+        return await self.reserve_video_points(
+            user_id,
+            model=model or "",
+            resolution=resolution or "",
+            duration_seconds=duration_seconds,
+            idempotency_key=idempotency_key,
+            provider=provider,
+            run_id=run_id,
+            thread_id=thread_id,
+            output_file=output_file,
+            at=at,
+        )
+
+    @staticmethod
+    def _video_records(row: UserQuotaUsagePeriodRow) -> dict[str, Any]:
+        """Return a mutable, normalized container for period billing records."""
+        raw = row.video_billing_records
+        if isinstance(raw, dict) and isinstance(raw.get("items"), dict):
+            return copy.deepcopy(raw)
+        # Accept the initial flat-map shape so an early deployment can be
+        # upgraded without losing records.
+        return {"schema_version": 1, "items": copy.deepcopy(raw) if isinstance(raw, dict) else {}}
+
+    @staticmethod
+    def _video_record_for(
+        records: dict[str, Any],
+        *,
+        reservation_id: str | None = None,
+        record_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        items = records.get("items") if isinstance(records.get("items"), dict) else {}
+        for key, value in items.items():
+            if not isinstance(value, dict):
+                continue
+            if reservation_id and value.get("reservation_id") == reservation_id:
+                return str(key), value
+            if record_id and (value.get("record_id") == record_id or str(key) == record_id):
+                return str(key), value
+            if idempotency_key and value.get("idempotency_key") == idempotency_key:
+                return str(key), value
+        return None
+
+    @staticmethod
+    def _video_reservation_from_record(
+        record: dict[str, Any],
+        *,
+        user_id: str,
+        scope_id: str | None,
+        usage_period_id: str | None,
+        video_used: int = 0,
+    ) -> VideoPointsReservation:
+        return VideoPointsReservation(
+            reservation_id=str(record.get("reservation_id") or record.get("record_id") or ""),
+            record_id=str(record.get("record_id") or record.get("reservation_id") or ""),
+            user_id=user_id,
+            model=str(record.get("model") or ""),
+            resolution=str(record.get("resolution") or ""),
+            duration_seconds=int(record.get("requested_duration_seconds") or 0),
+            matched_scope_id=scope_id,
+            usage_period_id=usage_period_id,
+            reserved_minor_units=int(record.get("reserved_minor_units") or 0),
+            video_used=video_used,
+            billing_mode="points",
+            price_fen_per_second=int(record.get("price_fen_per_second") or 0),
+            idempotency_key=str(record.get("idempotency_key") or ""),
+            status=str(record.get("status") or "reserved"),
+            reused=True,
+        )
+
+    async def reserve_video_points(
+        self,
+        user_id: str,
+        *,
+        model: str,
+        resolution: str,
+        duration_seconds: int | None = None,
+        duration: int | None = None,
+        idempotency_key: str | None = None,
+        provider: str | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+        output_file: str | None = None,
+        at: datetime | None = None,
+    ) -> VideoPointsReservation:
+        """按模型、分辨率和时长预占视频积分（内部单位为人民币分）。"""
+        seconds = duration_seconds if duration_seconds is not None else duration
+        try:
+            seconds = int(seconds) if seconds is not None else 0
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail={"code": "invalid_video_duration", "message": "视频时长必须是整数秒"}) from exc
+        if seconds < 4:
+            raise HTTPException(status_code=400, detail={"code": "invalid_video_duration", "message": "视频最短时长为 4 秒"})
+        model = str(model or "").strip()
+        resolution = str(resolution or "").strip()
+        if not model or not resolution:
+            raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_request", "message": "model、resolution 和 duration 为必填项"})
         async with self._sf() as session:
             scope = (
                 await session.execute(
@@ -773,47 +1081,230 @@ class QuotaService:
                 )
             ).scalar_one_or_none()
             if scope is None:
-                return VideoQuotaReservation(str(uuid.uuid4()), user_id, None, None, 0, 0)
+                raise HTTPException(status_code=409, detail={"code": "video_billing_unavailable", "message": "视频积分额度尚未配置"})
+            price = _lookup_video_price(scope.video_billing_rules, model, resolution, seconds)
+            amount = price * seconds
             row = await self._ensure_usage_period(session, user_id, scope, at=at)
-            result = await session.execute(
-                update(UserQuotaUsagePeriodRow)
-                .where(
-                    UserQuotaUsagePeriodRow.id == row.id,
-                    or_(
-                        UserQuotaUsagePeriodRow.video_enforced_snapshot.is_(False),
-                        UserQuotaUsagePeriodRow.video_limit_snapshot.is_(None),
-                        UserQuotaUsagePeriodRow.video_used + count <= UserQuotaUsagePeriodRow.video_limit_snapshot,
-                    ),
+            # Production uses PostgreSQL; serialize reserve/settle transitions
+            # on the current aggregate row.
+            row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == row.id).with_for_update())).scalar_one()
+            records = self._video_records(row)
+            key = idempotency_key or str(uuid.uuid4())
+            existing = self._video_record_for(records, idempotency_key=key)
+            if existing is not None:
+                _, old_record = existing
+                if str(old_record.get("model")) != model or str(old_record.get("resolution")) != resolution or int(old_record.get("requested_duration_seconds") or 0) != seconds:
+                    raise HTTPException(status_code=409, detail={"code": "video_billing_idempotency_conflict", "message": "重复请求的计费参数不一致"})
+                return self._video_reservation_from_record(
+                    old_record,
+                    user_id=user_id,
+                    scope_id=scope.id,
+                    usage_period_id=row.id,
+                    video_used=int(row.video_used or 0),
                 )
-                .values(
-                    video_used=UserQuotaUsagePeriodRow.video_used + count,
-                    updated_at=datetime.now(UTC),
+            current_used = int(row.video_used or 0)
+            current_reserved = int(row.video_reserved or 0)
+            limit = row.video_limit_snapshot
+            if row.video_enforced_snapshot and limit is not None and current_used + current_reserved + amount > int(limit):
+                raise QuotaExceededError(
+                    self._exceeded(
+                        scope,
+                        row,
+                        "video_generations",
+                        model=model,
+                        requested=amount,
+                        reserved=current_reserved,
+                        unit="points",
+                        scale=_VIDEO_MINOR_UNIT_SCALE,
+                    )
                 )
-                .returning(UserQuotaUsagePeriodRow.video_used)
-            )
-            used = result.scalar_one_or_none()
-            if used is None:
-                await session.refresh(row)
-                raise QuotaExceededError(self._exceeded(scope, row, "video_generations"))
+            reservation_id = str(uuid.uuid4())
+            record_id = str(uuid.uuid4())
+            now = datetime.now(UTC).isoformat()
+            record = {
+                "record_id": record_id,
+                "record_type": "generation",
+                "reservation_id": reservation_id,
+                "idempotency_key": key,
+                "usage_period_id": row.id,
+                "status": "reserved",
+                "user_id": user_id,
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "output_file": output_file,
+                "provider": provider,
+                "model": model,
+                "resolution": resolution,
+                "requested_duration_seconds": seconds,
+                "billable_duration_seconds": None,
+                "price_fen_per_second": price,
+                "policy_version_snapshot": scope.policy_version,
+                "reserved_minor_units": amount,
+                "settled_minor_units": 0,
+                "provider_task_id": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            records["items"][record_id] = record
+            row.video_reserved = current_reserved + amount
+            row.video_billing_records = records
+            row.updated_at = datetime.now(UTC)
             await session.commit()
-            return VideoQuotaReservation(str(uuid.uuid4()), user_id, scope.id, row.id, count, int(used))
+            return VideoPointsReservation(
+                reservation_id=reservation_id,
+                record_id=record_id,
+                user_id=user_id,
+                model=model,
+                resolution=resolution,
+                duration_seconds=seconds,
+                matched_scope_id=scope.id,
+                usage_period_id=row.id,
+                reserved_minor_units=amount,
+                video_used=current_used,
+                billing_mode="points",
+                price_fen_per_second=price,
+                idempotency_key=key,
+                status="reserved",
+            )
 
-    async def release_video_generations(self, reservation: VideoQuotaReservation) -> None:
-        if not reservation.usage_period_id or reservation.count <= 0:
-            return
+    async def settle_video_points(
+        self,
+        reservation: VideoPointsReservation | str,
+        *,
+        usage_period_id: str | None = None,
+        provider_task_id: str | None = None,
+        billable_duration_seconds: int | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """将预占转为已用；重复结算直接返回已有终态。"""
+        if isinstance(reservation, VideoPointsReservation):
+            reservation_id = reservation.reservation_id
+            usage_period_id = usage_period_id or reservation.usage_period_id
+            user_id = user_id or reservation.user_id
+        else:
+            reservation_id = str(reservation)
+        if not usage_period_id:
+            raise HTTPException(status_code=400, detail={"code": "video_billing_reservation_invalid", "message": "缺少 usage_period_id"})
         async with self._sf() as session:
-            await session.execute(
-                update(UserQuotaUsagePeriodRow)
-                .where(UserQuotaUsagePeriodRow.id == reservation.usage_period_id)
-                .values(
-                    video_used=case(
-                        (UserQuotaUsagePeriodRow.video_used >= reservation.count, UserQuotaUsagePeriodRow.video_used - reservation.count),
-                        else_=0,
-                    ),
-                    updated_at=datetime.now(UTC),
-                )
+            row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == usage_period_id).with_for_update())).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail={"code": "video_billing_reservation_not_found", "message": "视频积分预占不存在"})
+            records = self._video_records(row)
+            found = self._video_record_for(records, reservation_id=reservation_id, record_id=reservation_id)
+            if found is None:
+                raise HTTPException(status_code=404, detail={"code": "video_billing_reservation_not_found", "message": "视频积分预占不存在"})
+            key, record = found
+            if user_id and record.get("user_id") not in (None, user_id):
+                raise HTTPException(status_code=403, detail={"code": "video_billing_reservation_forbidden", "message": "无权操作该视频积分预占"})
+            if record.get("status") in {"settled", "released"}:
+                return {"transitioned": False, "record": record}
+            if record.get("status") not in {"reserved", "pending"}:
+                raise HTTPException(status_code=409, detail={"code": "video_billing_state_conflict", "message": "视频积分状态不可结算"})
+            requested_seconds = int(record.get("requested_duration_seconds") or 0)
+            if billable_duration_seconds is None:
+                seconds = requested_seconds
+            else:
+                try:
+                    supplied_seconds = int(billable_duration_seconds)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail={"code": "invalid_video_duration", "message": "视频计费时长必须是整数秒"}) from exc
+                # This release bills the explicit duration sent to Provider;
+                # do not let an untrusted sidecar arbitrarily change charge.
+                seconds = requested_seconds if supplied_seconds != requested_seconds else supplied_seconds
+            if seconds < 4:
+                raise HTTPException(status_code=400, detail={"code": "invalid_video_duration", "message": "视频时长必须至少为 4 秒"})
+            amount = int(record.get("price_fen_per_second") or 0) * int(seconds)
+            reserved = int(record.get("reserved_minor_units") or 0)
+            row.video_reserved = max(0, int(row.video_reserved or 0) - reserved)
+            row.video_used = int(row.video_used or 0) + amount
+            record.update(
+                status="settled",
+                billable_duration_seconds=int(seconds),
+                settled_minor_units=amount,
+                provider_task_id=provider_task_id or record.get("provider_task_id"),
+                updated_at=datetime.now(UTC).isoformat(),
             )
+            records["items"][key] = record
+            row.video_billing_records = records
+            row.updated_at = datetime.now(UTC)
             await session.commit()
+            return {"transitioned": True, "record": record, "video_used": int(row.video_used), "video_reserved": int(row.video_reserved)}
+
+    async def release_video_points(
+        self,
+        reservation: VideoPointsReservation | str,
+        *,
+        usage_period_id: str | None = None,
+        reason: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """释放明确失败的预占；幂等地保留已结算状态。"""
+        if isinstance(reservation, VideoPointsReservation):
+            reservation_id = reservation.reservation_id
+            usage_period_id = usage_period_id or reservation.usage_period_id
+            user_id = user_id or reservation.user_id
+        else:
+            reservation_id = str(reservation)
+        if not usage_period_id:
+            raise HTTPException(status_code=400, detail={"code": "video_billing_reservation_invalid", "message": "缺少 usage_period_id"})
+        async with self._sf() as session:
+            row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == usage_period_id).with_for_update())).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail={"code": "video_billing_reservation_not_found", "message": "视频积分预占不存在"})
+            records = self._video_records(row)
+            found = self._video_record_for(records, reservation_id=reservation_id, record_id=reservation_id)
+            if found is None:
+                raise HTTPException(status_code=404, detail={"code": "video_billing_reservation_not_found", "message": "视频积分预占不存在"})
+            key, record = found
+            if user_id and record.get("user_id") not in (None, user_id):
+                raise HTTPException(status_code=403, detail={"code": "video_billing_reservation_forbidden", "message": "无权操作该视频积分预占"})
+            if record.get("status") in {"released", "settled"}:
+                return {"transitioned": False, "record": record}
+            reserved = int(record.get("reserved_minor_units") or 0)
+            row.video_reserved = max(0, int(row.video_reserved or 0) - reserved)
+            record.update(status="released", release_reason=reason, settled_minor_units=0, updated_at=datetime.now(UTC).isoformat())
+            records["items"][key] = record
+            row.video_billing_records = records
+            row.updated_at = datetime.now(UTC)
+            await session.commit()
+            return {"transitioned": True, "record": record, "video_used": int(row.video_used), "video_reserved": int(row.video_reserved)}
+
+    async def mark_video_points_pending(
+        self,
+        reservation: VideoPointsReservation | str,
+        *,
+        usage_period_id: str | None = None,
+        provider_task_id: str | None = None,
+        reason: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """记录状态不明的任务，保留积分预占等待后续查询。"""
+        if isinstance(reservation, VideoPointsReservation):
+            reservation_id = reservation.reservation_id
+            usage_period_id = usage_period_id or reservation.usage_period_id
+        else:
+            reservation_id = str(reservation)
+        if not usage_period_id:
+            raise HTTPException(status_code=400, detail={"code": "video_billing_reservation_invalid", "message": "缺少 usage_period_id"})
+        async with self._sf() as session:
+            row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == usage_period_id).with_for_update())).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail={"code": "video_billing_reservation_not_found", "message": "视频积分预占不存在"})
+            records = self._video_records(row)
+            found = self._video_record_for(records, reservation_id=reservation_id, record_id=reservation_id)
+            if found is None:
+                raise HTTPException(status_code=404, detail={"code": "video_billing_reservation_not_found", "message": "视频积分预占不存在"})
+            key, record = found
+            if user_id and record.get("user_id") not in (None, user_id):
+                raise HTTPException(status_code=403, detail={"code": "video_billing_reservation_forbidden", "message": "无权操作该视频积分预占"})
+            if record.get("status") not in {"reserved", "pending"}:
+                return {"transitioned": False, "record": record}
+            record.update(status="pending", pending_reason=reason, provider_task_id=provider_task_id or record.get("provider_task_id"), updated_at=datetime.now(UTC).isoformat())
+            records["items"][key] = record
+            row.video_billing_records = records
+            row.updated_at = datetime.now(UTC)
+            await session.commit()
+            return {"transitioned": True, "record": record}
 
     @staticmethod
     def _exceeded(
@@ -822,11 +1313,15 @@ class QuotaService:
         metric: QuotaMetricName,
         *,
         model: str | None = None,
+        requested: int | None = None,
+        reserved: int | None = None,
+        unit: str | None = None,
+        scale: int | None = None,
     ) -> QuotaExceeded:
         if metric == "model_requests":
             used, limit = int(row.request_used), int(row.request_limit_snapshot or 0)
         elif metric == "video_generations":
-            used, limit = int(row.video_used), int(row.video_limit_snapshot or 0)
+            used, limit = int(row.video_used) + int(getattr(row, "video_reserved", 0) or 0), int(row.video_limit_snapshot or 0)
         else:
             used, limit = int(row.image_used), int(row.image_limit_snapshot or 0)
         return QuotaExceeded(
@@ -840,6 +1335,10 @@ class QuotaService:
             scope_code=scope.code,
             scope_name=scope.name,
             model=model,
+            reserved=(int(getattr(row, "video_reserved", 0) or 0) if reserved is None else int(reserved)) if metric == "video_generations" else 0,
+            unit=unit or ("points" if metric == "video_generations" else "count"),
+            scale=scale or (_VIDEO_MINOR_UNIT_SCALE if metric == "video_generations" else 1),
+            requested=requested,
         )
 
     async def override_user_current_period(
@@ -876,7 +1375,7 @@ class QuotaService:
                 if video_enforced is None:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "videos is required"})
                 row.video_enforced_snapshot = video_enforced
-                row.video_limit_snapshot = video_limit
+                row.video_limit_snapshot = _points_to_minor(video_limit) if video_limit is not None else None
             else:
                 if image_enforced is None:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "images is required"})
@@ -950,9 +1449,14 @@ class QuotaService:
         video_enforced = bool(row.video_enforced_snapshot) if row else bool(scope.video_enforced)
         video_limit = row.video_limit_snapshot if row else scope.video_limit
         video_used = int(row.video_used) if row else 0
+        video_reserved = int(getattr(row, "video_reserved", 0) or 0) if row else 0
         requests = _metric(request_enforced, request_limit, request_used) if scope.resource_type == "model" else None
         images = _metric(image_enforced, image_limit, image_used) if scope.resource_type == "image_generation" else None
-        videos = _metric(video_enforced, video_limit, video_used) if scope.resource_type == "video_generation" else None
+        videos = _video_metric(video_enforced, video_limit, video_used, video_reserved) if scope.resource_type == "video_generation" else None
+        if videos is not None:
+            videos["billing_mode"] = _VIDEO_BILLING_MODE
+            videos["unit"] = "points"
+            videos["scale"] = _VIDEO_MINOR_UNIT_SCALE
         status = (requests or images or videos or {"status": "unlimited"})["status"]
         overridden = bool(row and row.is_overridden)
         return {
@@ -1210,7 +1714,8 @@ class QuotaService:
 
 
 def quota_exceeded_payload(exceeded: QuotaExceeded) -> dict[str, Any]:
-    return {
+    points_mode = exceeded.metric == "video_generations" and exceeded.unit == "points"
+    payload: dict[str, Any] = {
         "code": "quota_exceeded",
         "message": f"{exceeded.scope_name}额度已用尽",
         "scope": {"id": exceeded.scope_id, "code": exceeded.scope_code, "name": exceeded.scope_name},
@@ -1226,6 +1731,26 @@ def quota_exceeded_payload(exceeded: QuotaExceeded) -> dict[str, Any]:
         "limit": exceeded.limit,
         "retryable": False,
     }
+    if points_mode:
+        # Keep the legacy used/limit keys in internal units for compatibility,
+        # while exposing human-facing point values for new video callers.
+        payload.update(
+            {
+                "billing_mode": "points",
+                "unit": "points",
+                "scale": exceeded.scale,
+                "used_points": _minor_to_points(exceeded.used),
+                "limit_points": _minor_to_points(exceeded.limit),
+                "reserved_points": _minor_to_points(exceeded.reserved),
+                "requested_points": _minor_to_points(exceeded.requested),
+                "remaining_points": _minor_to_points(max(0, exceeded.limit - exceeded.used)),
+            }
+        )
+        requested = _minor_to_points(exceeded.requested)
+        remaining = _minor_to_points(max(0, exceeded.limit - exceeded.used))
+        if requested is not None and remaining is not None:
+            payload["message"] = f"视频生成预计需要 {requested:g} 积分，当前仅剩余 {remaining:g} 积分"
+    return payload
 
 
 def quota_exceeded_http_error(exc: QuotaExceededError) -> HTTPException:

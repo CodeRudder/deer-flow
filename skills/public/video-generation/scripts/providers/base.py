@@ -21,6 +21,16 @@ import requests
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_PENDING = "pending"
+STATUS_PROVIDER_SUCCEEDED = "provider_succeeded"
+
+_BILLING_ENV_FIELDS = {
+    "reservation_id": "DEERFLOW_VIDEO_QUOTA_RESERVATION_ID",
+    "usage_period_id": "DEERFLOW_VIDEO_QUOTA_USAGE_PERIOD_ID",
+    "record_id": "DEERFLOW_VIDEO_QUOTA_RECORD_ID",
+    "run_id": "DEERFLOW_VIDEO_QUOTA_RUN_ID",
+    "thread_id": "DEERFLOW_VIDEO_QUOTA_THREAD_ID",
+    "idempotency_key": "DEERFLOW_VIDEO_QUOTA_IDEMPOTENCY_KEY",
+}
 
 _MIME_BY_EXT = {
     ".png": "image/png",
@@ -83,18 +93,54 @@ def write_task_record(output_file: str, record: dict) -> None:
     path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def set_task_status(output_file: str, task_id: str, status: str) -> bool:
-    """Update the sidecar's status when it matches task_id; no-op otherwise."""
+def read_task_record(output_file: str) -> dict | None:
+    """Read a task sidecar, returning None when it is missing or invalid."""
     path = task_record_path(output_file)
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def update_task_record(output_file: str, task_id: str, **updates) -> bool:
+    """Update a matching task sidecar while preserving its other metadata."""
+    record = read_task_record(output_file)
+    if record is None:
         return False
     if record.get("task_id") != task_id:
         return False
-    record["status"] = status
+    record.update(updates)
+    record["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     write_task_record(output_file, record)
     return True
+
+
+def set_task_status(output_file: str, task_id: str, status: str) -> bool:
+    """Update the sidecar's status when it matches task_id; no-op otherwise."""
+    return update_task_record(output_file, task_id, status=status)
+
+
+def billing_context() -> dict:
+    """Return non-secret quota identifiers injected by the runtime bridge."""
+    return {
+        field: value
+        for field, env_name in _BILLING_ENV_FIELDS.items()
+        if (value := os.getenv(env_name))
+    }
+
+
+def billing_metadata(model: str | None, params: dict) -> dict:
+    """Copy request billing inputs into the sidecar for runtime validation."""
+    context = billing_context()
+    metadata = {
+        "record_id": context.get("record_id"),
+        "model": model,
+        "resolution": params.get("resolution"),
+        "requested_duration_seconds": params.get("duration"),
+        "billable_duration_seconds": params.get("duration"),
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
 
 
 def warn_ignored(provider: str, params: dict, supported: set[str]) -> None:
@@ -183,18 +229,35 @@ class BaseVideoProvider:
         interval = interval if interval is not None else self.poll_interval
         warn_ignored(self.name, params, self.supported_params)
 
-        handle = self.create_task(prompt_text, reference_images, params)
-        print(f"[create] provider={self.name} handle={handle}")
+        # Persist the reservation before contacting the provider. If task
+        # creation becomes ambiguous, the runtime keeps the points pending.
         write_task_record(
             output_file,
             {
+                "schema_version": 2,
+                **billing_context(),
                 "provider": self.name,
-                "task_id": handle,
+                "task_id": None,
+                "model": self.model,
                 "prompt_file": prompt_file,
+                "output_file": output_file,
                 "params": params,
+                "billing": billing_metadata(self.model, params),
+                "status": STATUS_PENDING,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
         )
+        try:
+            handle = self.create_task(prompt_text, reference_images, params)
+        except ValueError:
+            # Local validation proves the Provider was never called, so the
+            # runtime can release the reservation instead of leaving it pending.
+            set_task_status(output_file, None, "rejected")
+            raise
+        print(f"[create] provider={self.name} handle={handle}")
+        record = read_task_record(output_file) or {}
+        record.update(task_id=handle, updated_at=datetime.now(UTC).isoformat(timespec="seconds"))
+        write_task_record(output_file, record)
 
         started = time.monotonic()
         for attempt in range(max_attempts):
@@ -202,6 +265,7 @@ class BaseVideoProvider:
             if status == STATUS_SUCCEEDED:
                 url = self.extract_video_url(handle, result)
                 print(f"[poll] succeeded after {attempt + 1} polls")
+                set_task_status(output_file, handle, STATUS_PROVIDER_SUCCEEDED)
                 self.download(url, output_file)
                 set_task_status(output_file, handle, STATUS_SUCCEEDED)
                 return f"The video has been generated successfully to {output_file}"

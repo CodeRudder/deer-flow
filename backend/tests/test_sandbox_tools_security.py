@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from deerflow.sandbox.exceptions import SandboxError
+from deerflow.sandbox.generation_quota import count_image_invocations, count_video_invocations
 from deerflow.sandbox.tools import (
     VIRTUAL_PATH_PREFIX,
     _apply_cwd_prefix,
@@ -13,7 +14,6 @@ from deerflow.sandbox.tools import (
     _compiled_mask_patterns,
     _get_custom_mount_for_path,
     _get_custom_mounts,
-    _image_generation_invocation_count,
     _is_acp_workspace_path,
     _is_custom_mount_path,
     _is_skills_path,
@@ -21,7 +21,6 @@ from deerflow.sandbox.tools import (
     _resolve_acp_workspace_path,
     _resolve_and_validate_user_data_path,
     _resolve_skills_path,
-    _video_generation_invocation_count,
     bash_background_tool,
     bash_tool,
     mask_local_paths_in_output,
@@ -628,7 +627,7 @@ def test_bash_tool_blocks_relative_traversal_before_host_execution(monkeypatch) 
     ],
 )
 def test_image_generation_invocation_count_only_matches_execution(command: str, expected: int) -> None:
-    assert _image_generation_invocation_count(command) == expected
+    assert count_image_invocations(command) == expected
 
 
 @pytest.mark.parametrize(
@@ -850,7 +849,7 @@ def test_failed_dispatched_image_script_is_still_recorded(monkeypatch, command: 
     assert recorded == [1]
 
 
-VIDEO_SCRIPT = "python /mnt/skills/public/video-generation/scripts/generate.py --prompt-file x.txt --output-file y.mp4"
+VIDEO_SCRIPT = "python /mnt/skills/public/video-generation/scripts/generate.py --prompt-file x.txt --model seedance-2.5 --resolution 1080p --duration 10 --output-file y.mp4"
 
 
 @pytest.mark.parametrize(
@@ -866,7 +865,7 @@ VIDEO_SCRIPT = "python /mnt/skills/public/video-generation/scripts/generate.py -
     ],
 )
 def test_video_generation_invocation_count_only_matches_execution(command: str, expected: int) -> None:
-    assert _video_generation_invocation_count(command) == expected
+    assert count_video_invocations(command) == expected
 
 
 def test_bash_background_rejects_video_generation_before_dispatch(monkeypatch) -> None:
@@ -885,11 +884,37 @@ def test_bash_background_rejects_video_generation_before_dispatch(monkeypatch) -
     assert "foreground bash" in result
 
 
+def test_sync_bash_fails_closed_for_dynamic_video_generation_when_quota_enforced(monkeypatch) -> None:
+    runtime = SimpleNamespace(state={}, context={"__quota_enforcement_required": True})
+    command = 'script=/mnt/skills/public/video-generation/scripts/generate.py; python "$script" --model seedance-2.5 --resolution 1080p --duration 10 --output-file y.mp4'
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("dynamic video generation must be rejected before dispatch"),
+    )
+
+    result = bash_tool.func(runtime=runtime, description="generate video", command=command)
+
+    assert "无法安全识别视频生成命令" in result
+
+
+def test_bash_background_rejects_dynamic_video_generation_before_dispatch(monkeypatch) -> None:
+    runtime = SimpleNamespace(state={}, context={"thread_id": "thread-1"})
+    command = 'script=/mnt/skills/public/video-generation/scripts/generate.py; python "$script" --model seedance-2.5 --resolution 1080p --duration 10 --output-file y.mp4'
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools.ensure_sandbox_initialized",
+        lambda _runtime: pytest.fail("dynamic video generation must be rejected before sandbox dispatch"),
+    )
+
+    result = bash_background_tool.func(runtime=runtime, description="generate video", command=command)
+
+    assert "foreground bash" in result
+
+
 @pytest.mark.asyncio
 async def test_async_bash_quota_rejection_skips_video_dispatch(monkeypatch) -> None:
     class Bridge:
-        async def reserve_video_generations(self, count: int):
-            assert count == 1
+        async def reserve_video_generation(self, **kwargs):
+            assert kwargs["duration_seconds"] == 10
             return {"allowed": False, "message": "本月视频额度已用尽", "metric": "video_generations"}
 
     runtime = SimpleNamespace(
@@ -924,11 +949,11 @@ async def test_async_bash_releases_video_reservation_when_dispatch_does_not_star
     released: list[object] = []
 
     class Bridge:
-        async def reserve_video_generations(self, count: int):
-            assert count == 1
+        async def reserve_video_generation(self, **kwargs):
+            assert kwargs["duration_seconds"] == 10
             return {"allowed": True, "reservation": reservation}
 
-        async def release_video_generations(self, value: object):
+        async def release_video_points(self, value: object):
             released.append(value)
 
     runtime = SimpleNamespace(
@@ -992,11 +1017,8 @@ async def test_async_bash_mixed_command_releases_image_when_video_quota_rejected
         async def release_image_generations(self, value: object):
             released.append(value)
 
-        async def reserve_video_generations(self, count: int):
+        async def reserve_video_generation(self, **_kwargs):
             return {"allowed": False, "message": "本月视频额度已用尽", "metric": "video_generations"}
-
-        async def release_video_generations(self, value: object):
-            released.append(value)
 
     runtime = SimpleNamespace(
         state={},
@@ -1035,13 +1057,13 @@ async def test_async_bash_mixed_command_not_dispatched_releases_both_in_reverse_
         async def reserve_image_generations(self, count: int):
             return {"allowed": True, "reservation": image_reservation, "used": 1}
 
-        async def reserve_video_generations(self, count: int):
+        async def reserve_video_generation(self, **_kwargs):
             return {"allowed": True, "reservation": video_reservation, "used": 1}
 
         async def release_image_generations(self, value: object):
             released.append(value)
 
-        async def release_video_generations(self, value: object):
+        async def release_video_points(self, value: object):
             released.append(value)
 
     runtime = SimpleNamespace(

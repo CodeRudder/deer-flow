@@ -12,7 +12,7 @@ from app.gateway.admin.quota_service import (
     ModelQuotaReservation,
     QuotaExceededError,
     QuotaService,
-    VideoQuotaReservation,
+    VideoPointsReservation,
     quota_exceeded_payload,
 )
 
@@ -29,11 +29,15 @@ class QuotaRuntimeBridge:
         *,
         owner_loop: asyncio.AbstractEventLoop,
         timeout_seconds: float = 10.0,
+        run_id: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
         self._service = service
         self._user_id = user_id
         self._owner_loop = owner_loop
         self._timeout_seconds = timeout_seconds
+        self._run_id = run_id
+        self._thread_id = thread_id
 
     async def _call(self, factory: Callable[[], Awaitable[T]]) -> T:
         current_loop = asyncio.get_running_loop()
@@ -79,19 +83,145 @@ class QuotaRuntimeBridge:
     async def release_image_generations(self, reservation: ImageQuotaReservation) -> None:
         await self._call(lambda: self._service.release_image_generations(reservation))
 
-    async def reserve_video_generations(self, count: int) -> dict[str, Any]:
+    async def reserve_video_generation(
+        self,
+        *,
+        model: str | None,
+        resolution: str | None,
+        duration_seconds: int | None,
+        idempotency_key: str | None,
+        output_file: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """Reserve one point-billed video request."""
         try:
-            reservation = await self._call(lambda: self._service.reserve_video_generations(self._user_id, count=count))
+            reservation = await self._call(
+                lambda: self._service.reserve_video_generation(
+                    self._user_id,
+                    model=model,
+                    resolution=resolution,
+                    duration_seconds=duration_seconds,
+                    idempotency_key=idempotency_key,
+                    provider=provider,
+                    run_id=self._run_id,
+                    thread_id=self._thread_id,
+                    output_file=output_file,
+                )
+            )
         except QuotaExceededError as exc:
             return {"allowed": False, "type": "quota_exceeded", **quota_exceeded_payload(exc.exceeded)}
+        if getattr(reservation, "reused", False):
+            return {
+                "allowed": False,
+                "type": "idempotent_replay",
+                "message": "该视频生成请求已存在，未重复提交 Provider",
+                "reservation": reservation,
+            }
         return {
             "allowed": True,
             "reservation": reservation,
             "used": reservation.video_used,
+            "billing_mode": "points",
+            "unit": "points",
+            "scale": 100,
+            "reserved_points": reservation.reserved_minor_units / 100,
         }
 
-    async def release_video_generations(self, reservation: VideoQuotaReservation) -> None:
-        await self._call(lambda: self._service.release_video_generations(reservation))
+    async def reserve_video_points(
+        self,
+        *,
+        model: str,
+        resolution: str,
+        duration_seconds: int,
+        idempotency_key: str | None,
+        output_file: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """Explicit point-mode reservation helper for callers that need it."""
+        try:
+            reservation = await self._call(
+                lambda: self._service.reserve_video_points(
+                    self._user_id,
+                    model=model,
+                    resolution=resolution,
+                    duration_seconds=duration_seconds,
+                    idempotency_key=idempotency_key,
+                    provider=provider,
+                    run_id=self._run_id,
+                    thread_id=self._thread_id,
+                    output_file=output_file,
+                )
+            )
+        except QuotaExceededError as exc:
+            return {"allowed": False, "type": "quota_exceeded", **quota_exceeded_payload(exc.exceeded)}
+        if getattr(reservation, "reused", False):
+            return {
+                "allowed": False,
+                "type": "idempotent_replay",
+                "message": "该视频生成请求已存在，未重复提交 Provider",
+                "reservation": reservation,
+            }
+        return {
+            "allowed": True,
+            "reservation": reservation,
+            "used": reservation.video_used,
+            "billing_mode": "points",
+            "unit": "points",
+            "scale": 100,
+            "reserved_points": reservation.reserved_minor_units / 100,
+        }
+
+    async def settle_video_points(
+        self,
+        reservation: VideoPointsReservation | str,
+        *,
+        usage_period_id: str | None = None,
+        provider_task_id: str | None = None,
+        billable_duration_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        return await self._call(
+            lambda: self._service.settle_video_points(
+                reservation,
+                usage_period_id=usage_period_id,
+                provider_task_id=provider_task_id,
+                billable_duration_seconds=billable_duration_seconds,
+                user_id=self._user_id,
+            )
+        )
+
+    async def release_video_points(
+        self,
+        reservation: VideoPointsReservation | str,
+        *,
+        usage_period_id: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._call(
+            lambda: self._service.release_video_points(
+                reservation,
+                usage_period_id=usage_period_id,
+                reason=reason,
+                user_id=self._user_id,
+            )
+        )
+
+    async def mark_video_points_pending(
+        self,
+        reservation: VideoPointsReservation | str,
+        *,
+        usage_period_id: str | None = None,
+        provider_task_id: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._call(
+            lambda: self._service.mark_video_points_pending(
+                reservation,
+                usage_period_id=usage_period_id,
+                provider_task_id=provider_task_id,
+                reason=reason,
+                user_id=self._user_id,
+            )
+        )
 
 
 __all__ = ["QuotaRuntimeBridge"]

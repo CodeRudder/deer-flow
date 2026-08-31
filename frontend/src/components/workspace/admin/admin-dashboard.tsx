@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   useAdminUsage,
   useOverrideUserCurrentPeriod,
@@ -1123,7 +1124,13 @@ function UserUsagePanel({
   );
 }
 
-function QuotaUsageCell({ metric }: { metric: QuotaMetric }) {
+function QuotaUsageCell({
+  metric,
+  unit = "次",
+}: {
+  metric: QuotaMetric;
+  unit?: "次" | "积分";
+}) {
   const percent = metricPercent(metric);
   const colors =
     quotaProgressColors[
@@ -1132,11 +1139,22 @@ function QuotaUsageCell({ metric }: { metric: QuotaMetric }) {
   return (
     <div className="min-w-40">
       <div className="flex justify-between text-xs">
-        <span>{formatNumber(metric.used)}</span>
+        <span>
+          {formatNumber(metric.used)} {unit}
+        </span>
         <span className="text-muted-foreground">
-          {metric.enforced ? formatNumber(metric.limit) : "仅记录"}
+          {metric.enforced && metric.limit != null
+            ? `${formatNumber(metric.limit)} ${unit}`
+            : metric.enforced
+              ? "不限"
+              : "仅记录"}
         </span>
       </div>
+      {metric.reserved != null && metric.reserved > 0 ? (
+        <div className="text-muted-foreground mt-1 text-[11px]">
+          预占 {formatNumber(metric.reserved)} {unit}
+        </div>
+      ) : null}
       <div
         className={`mt-2 h-2 overflow-hidden rounded-full ${colors.track}`}
         role="progressbar"
@@ -1260,7 +1278,7 @@ function QuotaUserRow({
       </td>
       <td className="px-5">
         {item.video_generation?.videos ? (
-          <QuotaUsageCell metric={item.video_generation.videos} />
+          <QuotaUsageCell metric={item.video_generation.videos} unit="积分" />
         ) : (
           "-"
         )}
@@ -1290,6 +1308,7 @@ function UserQuotaItemEditor({
   const metric = item.requests ?? item.images ?? item.videos;
   const isModelScope = item.scope.resource_type === "model";
   const isVideoScope = item.scope.resource_type === "video_generation";
+  const metricUnit = isVideoScope ? "积分" : "次";
   const overrideQuota = useOverrideUserCurrentPeriod();
   const restoreQuota = useRestoreUserCurrentPeriod();
   const [enforced, setEnforced] = useState(metric?.enforced ?? false);
@@ -1344,7 +1363,7 @@ function UserQuotaItemEditor({
             {isModelScope
               ? "请求拦截"
               : isVideoScope
-                ? "视频拦截"
+                ? "视频积分拦截"
                 : "生图拦截"}
           </span>
           <Switch checked={enforced} onCheckedChange={setEnforced} />
@@ -1359,15 +1378,20 @@ function UserQuotaItemEditor({
             {isModelScope
               ? "已用请求"
               : isVideoScope
-                ? "已用视频"
+                ? "已用视频积分"
                 : "已用生图"}
           </div>
           <div className="mt-1 text-xl font-semibold tabular-nums">
             {formatExactNumber(metric?.used ?? 0)}
             <span className="text-muted-foreground ml-1 text-xs font-normal">
-              次
+              {metricUnit}
             </span>
           </div>
+          {isVideoScope && metric?.reserved ? (
+            <div className="text-muted-foreground mt-1 text-xs">
+              预占 {formatExactNumber(metric.reserved)} 积分
+            </div>
+          ) : null}
         </div>
         {isModelScope ? (
           <div className="border-t px-4 py-3 sm:border-t-0 sm:border-l">
@@ -1388,7 +1412,7 @@ function UserQuotaItemEditor({
               : "不拦截"}
             {metric?.enforced && metric.limit != null ? (
               <span className="text-muted-foreground ml-1 text-xs font-normal">
-                次
+                {metricUnit}
               </span>
             ) : null}
           </div>
@@ -1398,7 +1422,7 @@ function UserQuotaItemEditor({
       <div className="mt-3 border-t pt-3">
         <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
           <label className="text-muted-foreground text-xs">
-            额度上限
+            {isVideoScope ? "积分上限" : "额度上限"}
             <Input
               className="mt-1"
               type="number"
@@ -1510,6 +1534,7 @@ function QuotaScopeEditor({
   const [periodType, setPeriodType] = useState<"weekly" | "monthly">("weekly");
   const [enforced, setEnforced] = useState(false);
   const [limit, setLimit] = useState<number | null>(null);
+  const [videoBillingRules, setVideoBillingRules] = useState("{}");
   const [enabled, setEnabled] = useState(true);
 
   useEffect(() => {
@@ -1526,6 +1551,11 @@ function QuotaScopeEditor({
       null;
     setEnforced(policy?.enforced ?? false);
     setLimit(policy?.limit ?? null);
+    const rules =
+      scope?.default_policy.videos?.billing_rules ??
+      scope?.video_billing_rules ??
+      {};
+    setVideoBillingRules(JSON.stringify(rules, null, 2));
     setEnabled(scope?.enabled ?? true);
   }, [scope, open]);
 
@@ -1537,6 +1567,25 @@ function QuotaScopeEditor({
 
   const save = async () => {
     const isModel = resourceType === "model";
+    let parsedVideoBillingRules: Record<string, unknown> = {};
+    if (resourceType === "video_generation") {
+      try {
+        const parsed: unknown = JSON.parse(videoBillingRules || "{}");
+        if (
+          parsed === null ||
+          typeof parsed !== "object" ||
+          Array.isArray(parsed)
+        ) {
+          throw new Error("视频费率 JSON 必须是对象");
+        }
+        parsedVideoBillingRules = parsed as Record<string, unknown>;
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "视频费率 JSON 格式无效",
+        );
+        return;
+      }
+    }
     const payload: QuotaScopePayload = {
       ...(scope ? {} : { code, resource_type: resourceType }),
       name,
@@ -1548,7 +1597,14 @@ function QuotaScopeEditor({
         requests: isModel ? { enforced, limit } : null,
         images:
           resourceType === "image_generation" ? { enforced, limit } : null,
-        videos: resourceType === "video_generation" ? { enforced, limit } : null,
+        videos:
+          resourceType === "video_generation"
+            ? {
+                enforced,
+                limit,
+                billing_rules: parsedVideoBillingRules,
+              }
+            : null,
       },
       enabled,
     };
@@ -1670,11 +1726,27 @@ function QuotaScopeEditor({
               />
             </label>
           </div>
+          {resourceType === "video_generation" ? (
+            <label className="block text-sm">
+              视频费率 JSON（元/秒，1 积分 = 1 元）
+              <Textarea
+                className="mt-1 min-h-36 font-mono text-xs"
+                value={videoBillingRules}
+                onChange={(event) => setVideoBillingRules(event.target.value)}
+                placeholder={
+                  '{\n  "currency": "CNY",\n  "point_to_yuan": 1,\n  "models": {\n    "seedance-2.5": {\n      "1080p": 3.5\n    }\n  }\n}'
+                }
+              />
+              <span className="text-muted-foreground mt-1 block text-xs">
+                按配置的模型/清晰度费率 × 视频秒数扣除积分。
+              </span>
+            </label>
+          ) : null}
           <div className="flex items-center justify-between rounded-lg border p-3">
             <div>
               <div className="text-sm font-medium">
                 {resourceType === "video_generation"
-                  ? "按视频次数拦截"
+                  ? "按视频积分拦截"
                   : resourceType === "image_generation"
                     ? "按生图次数拦截"
                     : "按模型请求次数拦截"}
@@ -2088,9 +2160,17 @@ export function AdminDashboard() {
                             </div>
                             <div className="mt-1 font-medium">
                               {formatNumber(policy?.limit)}
+                              {scope.resource_type === "video_generation"
+                                ? " 积分"
+                                : null}
                             </div>
                           </div>
                         </div>
+                        {scope.resource_type === "video_generation" ? (
+                          <div className="text-muted-foreground mt-3 text-xs">
+                            计费方式：按积分（人民币等值）
+                          </div>
+                        ) : null}
                         {scope.resource_type === "model" ? (
                           <div className="text-muted-foreground mt-3 text-xs">
                             精确：{scope.match_rules.exact.join("、") || "无"} ·
@@ -2162,7 +2242,7 @@ export function AdminDashboard() {
                             </th>
                           ))}
                           <th className="px-5">生图次数</th>
-                          <th className="px-5">视频次数</th>
+                          <th className="px-5">视频积分</th>
                           <th className="px-5">状态</th>
                           <th className="pl-4">操作</th>
                         </tr>

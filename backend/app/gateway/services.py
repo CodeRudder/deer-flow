@@ -518,6 +518,8 @@ async def start_run(
                 quota_service,
                 billable_user_id,
                 owner_loop=asyncio.get_running_loop(),
+                run_id=str(record.run_id),
+                thread_id=thread_id,
             )
 
         stream_modes = normalize_stream_modes(body.stream_mode)

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import posixpath
 import re
@@ -19,6 +20,13 @@ from deerflow.sandbox.exceptions import (
     SandboxRuntimeError,
 )
 from deerflow.sandbox.file_operation_lock import get_file_operation_lock
+from deerflow.sandbox.generation_quota import (
+    GenerationQuotaLifecycle,
+    count_image_invocations,
+    count_video_invocations,
+    has_unparsed_video_intent,
+    parse_video_invocations,
+)
 from deerflow.sandbox.sandbox import Sandbox
 from deerflow.sandbox.sandbox_provider import get_sandbox_provider
 from deerflow.sandbox.search import GrepMatch
@@ -34,16 +42,6 @@ _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FILE_URL_PATTERN = re.compile(r"\bfile://\S+", re.IGNORECASE)
 _URL_WITH_SCHEME_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 _URL_IN_COMMAND_PATTERN = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'`;&|<>()]+", re.IGNORECASE)
-_IMAGE_GENERATION_COMMAND_MARKERS = (
-    "/mnt/skills/public/image-generation/scripts/generate.py",
-    "image-generation/scripts/generate.py",
-    "/mnt/skills/public/image-editing/scripts/edit.py",
-    "image-editing/scripts/edit.py",
-)
-_VIDEO_GENERATION_COMMAND_MARKERS = (
-    "/mnt/skills/public/video-generation/scripts/generate.py",
-    "video-generation/scripts/generate.py",
-)
 _DOTDOT_PATH_SEGMENT_PATTERN = re.compile(r"(?:^|[/\\=])\.\.(?:$|[/\\])")
 _LOCAL_BASH_SYSTEM_PATH_PREFIXES = (
     "/bin/",
@@ -1399,67 +1397,19 @@ def _truncate_ls_output(output: str, max_chars: int) -> str:
     return f"{output[:kept]}{marker}"
 
 
-def _is_generation_script(token: str, markers: tuple[str, ...]) -> bool:
-    normalized = token.strip()
-    return any(normalized == marker or normalized.endswith(f"/{marker}") for marker in markers)
-
-
-def _is_image_generation_script(token: str) -> bool:
-    return _is_generation_script(token, _IMAGE_GENERATION_COMMAND_MARKERS)
-
-
-def _generation_invocation_count(command: str, markers: tuple[str, ...]) -> int:
-    """Count billable generation-script invocations matching *markers*."""
+def _video_sidecar(runtime: Runtime, output_file: str | None) -> dict | None:
+    if not output_file or any(token in output_file for token in ("$", "`", "$(", ";", "|", "&")):
+        return None
     try:
-        lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return 0
-
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token and all(char in ";&|" for char in token):
-            if segments[-1]:
-                segments.append([])
-            continue
-        segments[-1].append(token)
-
-    count = 0
-    for segment in segments:
-        if not segment:
-            continue
-        index = 0
-        while index < len(segment) and ("=" in segment[index] and not segment[index].startswith("=")):
-            index += 1
-        if index >= len(segment):
-            continue
-        executable = posixpath.basename(segment[index])
-        args = segment[index + 1 :]
-        if executable == "env":
-            nested = " ".join(args)
-            count += _generation_invocation_count(nested, markers)
-        elif executable in {"bash", "sh", "zsh"} and "-c" in args:
-            shell_index = args.index("-c")
-            if shell_index + 1 < len(args):
-                count += _generation_invocation_count(args[shell_index + 1], markers)
-        elif executable in {"python", "python3", "uv"}:
-            if any(_is_generation_script(arg, markers) for arg in args):
-                count += 1
-        elif _is_generation_script(segment[index], markers):
-            count += 1
-    return count
+        path = Path(replace_virtual_path(output_file, get_thread_data(runtime))).with_suffix(".task.json")
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
-def _image_generation_invocation_count(command: str) -> int:
-    """Count billable image-generation and image-editing script invocations."""
-    return _generation_invocation_count(command, _IMAGE_GENERATION_COMMAND_MARKERS)
-
-
-def _video_generation_invocation_count(command: str) -> int:
-    """Count billable video-generation script invocations."""
-    return _generation_invocation_count(command, _VIDEO_GENERATION_COMMAND_MARKERS)
+def _generation_quota_lifecycle(runtime: Runtime) -> GenerationQuotaLifecycle:
+    return GenerationQuotaLifecycle(runtime, lambda output_file: _video_sidecar(runtime, output_file))
 
 
 def _execute_bash_tool(runtime: Runtime, command: str, image_generation_count: int, video_generation_count: int = 0) -> tuple[str, bool]:
@@ -1506,84 +1456,6 @@ def _execute_bash_tool(runtime: Runtime, command: str, image_generation_count: i
                 journal.record_video_generation(video_generation_count)
 
 
-def _sync_generation_quota_error(runtime: Runtime, image_generation_count: int, video_generation_count: int) -> str | None:
-    """Reject generation commands that require the asynchronous quota bridge."""
-    if image_generation_count <= 0 and video_generation_count <= 0:
-        return None
-    context = runtime.context or {}
-    quota_bridge = context.get("__quota_runtime_bridge")
-    if context.get("__quota_enforcement_required") and quota_bridge is None:
-        return "Error: Generation quota service is unavailable."
-    if quota_bridge is not None:
-        return "Error: Generation quota checks require asynchronous foreground bash execution."
-    return None
-
-
-async def _reserve_generation_quotas(
-    runtime: Runtime,
-    image_generation_count: int,
-    video_generation_count: int,
-) -> tuple[object | None, object | None, str | None]:
-    """Reserve image and video quota without executing the Bash command.
-
-    Reserves image first, then video; when either fails, the already-reserved
-    counterpart is released in reverse order and the whole command is rejected.
-    """
-    if image_generation_count <= 0 and video_generation_count <= 0:
-        return None, None, None
-
-    context = runtime.context or {}
-    quota_bridge = context.get("__quota_runtime_bridge")
-    if context.get("__quota_enforcement_required") and quota_bridge is None:
-        return None, None, "Error: Generation quota service is unavailable."
-    if quota_bridge is None:
-        return None, None, None
-
-    image_reservation: object | None = None
-    if image_generation_count > 0:
-        try:
-            result = await quota_bridge.reserve_image_generations(image_generation_count)
-        except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
-            return None, None, f"Error: Failed to check image generation quota: {exc}"
-        if not isinstance(result, dict) or not result.get("allowed", False):
-            message = result.get("message") if isinstance(result, dict) else None
-            return None, None, f"Error: {message or '生图额度检查返回无效结果'}"
-        image_reservation = result.get("reservation")
-
-    if video_generation_count > 0:
-        try:
-            result = await quota_bridge.reserve_video_generations(video_generation_count)
-        except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
-            release_error = await _release_generation_quotas(runtime, image_reservation, None)
-            return None, None, f"Error: Failed to check video generation quota: {exc}" + (f"\n{release_error}" if release_error else "")
-        if not isinstance(result, dict) or not result.get("allowed", False):
-            message = result.get("message") if isinstance(result, dict) else None
-            release_error = await _release_generation_quotas(runtime, image_reservation, None)
-            error = f"Error: {message or '视频额度检查返回无效结果'}"
-            return None, None, f"{error}\n{release_error}" if release_error else error
-        return image_reservation, result.get("reservation"), None
-    return image_reservation, None, None
-
-
-async def _release_generation_quotas(runtime: Runtime, image_reservation: object | None, video_reservation: object | None) -> str | None:
-    """Release reservations when command dispatch never started, video first."""
-    quota_bridge = (runtime.context or {}).get("__quota_runtime_bridge")
-    if quota_bridge is None:
-        return "Error: Generation quota service is unavailable."
-    errors: list[str] = []
-    if video_reservation is not None:
-        try:
-            await quota_bridge.release_video_generations(video_reservation)
-        except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
-            errors.append(f"Error: Failed to release unused video generation quota: {exc}")
-    if image_reservation is not None:
-        try:
-            await quota_bridge.release_image_generations(image_reservation)
-        except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
-            errors.append(f"Error: Failed to release unused image generation quota: {exc}")
-    return "\n".join(errors) if errors else None
-
-
 @tool("bash", parse_docstring=True)
 def bash_tool(runtime: Runtime, description: str, command: str) -> str:
     """Execute a bash command in a Linux environment.
@@ -1597,11 +1469,16 @@ def bash_tool(runtime: Runtime, description: str, command: str) -> str:
         description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         command: The bash command to execute. Always use absolute paths for files and directories.
     """
-    image_generation_count = _image_generation_invocation_count(command)
-    video_generation_count = _video_generation_invocation_count(command)
-    if quota_error := _sync_generation_quota_error(runtime, image_generation_count, video_generation_count):
+    lifecycle = _generation_quota_lifecycle(runtime)
+    analysis = lifecycle.analyze(command)
+    if quota_error := lifecycle.sync_error(analysis):
         return quota_error
-    return _execute_bash_tool(runtime, command, image_generation_count, video_generation_count)[0]
+    return _execute_bash_tool(
+        runtime,
+        command,
+        analysis.image_generation_count,
+        analysis.video_generation_count,
+    )[0]
 
 
 async def _bash_tool_async(runtime: Runtime, description: str, command: str) -> str:
@@ -1612,22 +1489,22 @@ async def _bash_tool_async(runtime: Runtime, description: str, command: str) -> 
     except Exception as exc:
         return f"Error: Unexpected error initializing sandbox: {_sanitize_error(exc, runtime)}"
 
-    image_generation_count = _image_generation_invocation_count(command)
-    video_generation_count = _video_generation_invocation_count(command)
-    image_reservation, video_reservation, quota_error = await _reserve_generation_quotas(runtime, image_generation_count, video_generation_count)
+    lifecycle = _generation_quota_lifecycle(runtime)
+    prepared, quota_error = await lifecycle.prepare(command)
     if quota_error:
         return quota_error
+    if prepared is None:
+        return "Error: Generation quota preparation failed."
 
     output, dispatched = await asyncio.to_thread(
         _execute_bash_tool,
         runtime,
-        command,
-        image_generation_count,
-        video_generation_count,
+        prepared.command,
+        prepared.analysis.image_generation_count,
+        prepared.analysis.video_generation_count,
     )
-    if (image_reservation is not None or video_reservation is not None) and not dispatched:
-        if release_error := await _release_generation_quotas(runtime, image_reservation, video_reservation):
-            return f"{output}\n{release_error}"
+    if finish_error := await lifecycle.finish(prepared, dispatched):
+        output = f"{output}\n{finish_error}"
     return output
 
 
@@ -1646,7 +1523,8 @@ def bash_background_tool(runtime: Runtime, description: str, command: str) -> st
         command: The bash command to execute in the background. Always use absolute paths for files and directories.
     """
     try:
-        if _image_generation_invocation_count(command) or _video_generation_invocation_count(command):
+        parsed_video_invocations = parse_video_invocations(command)
+        if count_image_invocations(command) or count_video_invocations(command) or has_unparsed_video_intent(command, parsed_video_invocations):
             return "Error: Image and video generation must use foreground bash so quota and execution can be recorded."
         sandbox = ensure_sandbox_initialized(runtime)
         if is_local_sandbox(runtime):

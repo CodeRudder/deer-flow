@@ -61,11 +61,7 @@ export type QuotaStatus =
   | "warning"
   | "exceeded"
   | "unlimited";
-export type SessionMetric =
-  | "tokens"
-  | "requests"
-  | "images"
-  | "videos";
+export type SessionMetric = "tokens" | "requests" | "images" | "videos";
 
 export interface PeriodInfo {
   period: string;
@@ -154,13 +150,28 @@ export interface QuotaMetric {
   remaining: number | null;
   ratio: number | null;
   status: Exclude<QuotaStatus, "all">;
+  /** Video points metrics expose reservations and their display unit. */
+  reserved?: number;
+  billing_mode?: "points";
+  unit?: "points";
+  scale?: number;
+}
+
+export interface QuotaMetricPolicy {
+  enforced: boolean;
+  limit: number | null;
+}
+
+export interface QuotaVideoMetricPolicy extends QuotaMetricPolicy {
+  billing_mode?: "points";
+  billing_rules?: Record<string, unknown>;
 }
 
 export interface QuotaScopePolicy {
   period_type: "weekly" | "monthly";
-  requests: { enforced: boolean; limit: number | null } | null;
-  images: { enforced: boolean; limit: number | null } | null;
-  videos: { enforced: boolean; limit: number | null } | null;
+  requests: QuotaMetricPolicy | null;
+  images: QuotaMetricPolicy | null;
+  videos: QuotaVideoMetricPolicy | null;
   policy_version: number;
 }
 
@@ -178,6 +189,7 @@ export interface QuotaScope {
   enabled: boolean;
   is_system: boolean;
   default_policy: QuotaScopePolicy;
+  video_billing_rules?: Record<string, unknown>;
   current_period_user_count: number;
   updated_at: string;
   updated_by: string | null;
@@ -284,9 +296,9 @@ export interface QuotaScopePayload {
   match_rules: { exact: string[]; prefix: string[] };
   default_policy: {
     period_type: "weekly" | "monthly";
-    requests: { enforced: boolean; limit: number | null } | null;
-    images: { enforced: boolean; limit: number | null } | null;
-    videos: { enforced: boolean; limit: number | null } | null;
+    requests: QuotaMetricPolicy | null;
+    images: QuotaMetricPolicy | null;
+    videos: QuotaVideoMetricPolicy | null;
   };
   enabled: boolean;
 }

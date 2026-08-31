@@ -45,11 +45,18 @@ class QuotaMetricPolicy(BaseModel):
     limit: int | None = Field(default=None, ge=0)
 
 
+class QuotaVideoMetricPolicy(QuotaMetricPolicy):
+    """Video policy also carries the optional point-rate JSON."""
+
+    limit: float | int | None = Field(default=None, ge=0)
+    billing_rules: dict[str, Any] = Field(default_factory=dict)
+
+
 class QuotaDefaultPolicy(BaseModel):
     period_type: Literal["weekly", "monthly"] = "weekly"
     requests: QuotaMetricPolicy | None = None
     images: QuotaMetricPolicy | None = None
-    videos: QuotaMetricPolicy | None = None
+    videos: QuotaVideoMetricPolicy | None = None
 
 
 class QuotaScopeCreateRequest(BaseModel):
@@ -59,6 +66,7 @@ class QuotaScopeCreateRequest(BaseModel):
     match_rules: dict[str, list[str]]
     default_policy: QuotaDefaultPolicy
     enabled: bool = True
+    video_billing_rules: dict[str, Any] | None = None
 
 
 class QuotaScopeUpdateRequest(BaseModel):
@@ -66,12 +74,13 @@ class QuotaScopeUpdateRequest(BaseModel):
     match_rules: dict[str, list[str]] = Field(default_factory=dict)
     default_policy: QuotaDefaultPolicy
     enabled: bool = True
+    video_billing_rules: dict[str, Any] | None = None
 
 
 class QuotaOverrideRequest(BaseModel):
     requests: QuotaMetricPolicy | None = None
     images: QuotaMetricPolicy | None = None
-    videos: QuotaMetricPolicy | None = None
+    videos: QuotaVideoMetricPolicy | None = None
     reason: str | None = Field(default=None, max_length=512)
 
 
@@ -116,6 +125,10 @@ def _scope_payload(body: QuotaScopeCreateRequest | QuotaScopeUpdateRequest) -> d
         video_enforced=videos.enforced if videos else False,
         video_limit=videos.limit if videos else None,
     )
+    if videos is not None:
+        payload["video_billing_rules"] = body.video_billing_rules if body.video_billing_rules is not None else videos.billing_rules
+    elif body.video_billing_rules is not None:
+        payload["video_billing_rules"] = body.video_billing_rules
     return payload
 
 

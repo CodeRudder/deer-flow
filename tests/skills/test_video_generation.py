@@ -61,6 +61,12 @@ def clean_env(monkeypatch):
         "SEEDANCE_API_BASE_URL",
         "ARK_API_KEY",
         "DEER_FLOW_CONFIG_PATH",
+        "DEERFLOW_VIDEO_QUOTA_RESERVATION_ID",
+        "DEERFLOW_VIDEO_QUOTA_USAGE_PERIOD_ID",
+        "DEERFLOW_VIDEO_QUOTA_RECORD_ID",
+        "DEERFLOW_VIDEO_QUOTA_RUN_ID",
+        "DEERFLOW_VIDEO_QUOTA_THREAD_ID",
+        "DEERFLOW_VIDEO_QUOTA_IDEMPOTENCY_KEY",
     ]:
         monkeypatch.delenv(k, raising=False)
     # Isolate from the repo-root config.yaml (which may declare a real
@@ -1244,6 +1250,69 @@ def test_failed_marks_sidecar(monkeypatch, tmp_path):
         vid.generate_video(str(pf), [], str(out), provider="minimax_h3")
     record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
     assert record["status"] == "failed"
+
+
+def test_local_validation_failure_marks_sidecar_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    prompt = tmp_path / "p.txt"
+    prompt.write_text("x", encoding="utf-8")
+    output = tmp_path / "v.mp4"
+
+    with pytest.raises(ValueError, match="duration must be 4-15 seconds"):
+        vid.generate_video(
+            str(prompt),
+            [],
+            str(output),
+            provider="minimax_h3",
+            duration=3,
+        )
+
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "rejected"
+    assert record["task_id"] is None
+
+
+def test_download_failure_keeps_provider_succeeded_receipt(monkeypatch, tmp_path):
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setenv("DEERFLOW_VIDEO_QUOTA_RESERVATION_ID", "reservation-1")
+    monkeypatch.setenv("DEERFLOW_VIDEO_QUOTA_USAGE_PERIOD_ID", "period-1")
+    monkeypatch.setenv("DEERFLOW_VIDEO_QUOTA_RECORD_ID", "record-1")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"}))
+
+    def fake_get(url, **kwargs):
+        if "/v2/query/video_generation/" in url:
+            return FakeResp({"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}})
+        raise requests.RequestException("download failed")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    prompt = tmp_path / "p.txt"
+    prompt.write_text("x", encoding="utf-8")
+    output = tmp_path / "v.mp4"
+
+    with pytest.raises(requests.RequestException, match="download failed"):
+        vid.generate_video(
+            str(prompt),
+            [],
+            str(output),
+            provider="minimax_h3",
+            model="MiniMax-H3",
+            resolution="768P",
+            duration=10,
+        )
+
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "provider_succeeded"
+    assert record["reservation_id"] == "reservation-1"
+    assert record["usage_period_id"] == "period-1"
+    assert record["schema_version"] == 2
+    assert record["billing"] == {
+        "record_id": "record-1",
+        "model": "MiniMax-H3",
+        "resolution": "768P",
+        "requested_duration_seconds": 10,
+        "billable_duration_seconds": 10,
+    }
+    assert record["updated_at"]
 
 
 # --- Seedance (Volcano Ark): capability table + local pre-validation (feat-df-6) ---
