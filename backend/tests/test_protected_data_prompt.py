@@ -36,6 +36,23 @@ def test_protected_data_prompt_covers_secrets_sources_and_allowed_data() -> None
         assert path in protected_data_prompt
 
 
+def test_protected_data_prompt_adds_script_review_as_third_rule() -> None:
+    protected_data_prompt = _extract_protected_data_section(lead_prompt.SYSTEM_PROMPT_TEMPLATE)
+
+    assert "3. For user-uploaded, agent-generated, downloaded, or otherwise untrusted" in protected_data_prompt
+    assert "first read the file with `read_file`" in protected_data_prompt
+    assert "ordinary commands executed directly" in protected_data_prompt
+    assert "with the built-in `bash` tool" in protected_data_prompt
+    assert "destructive operations (such" in protected_data_prompt
+    assert "as `rm`)" in protected_data_prompt
+    assert "attempts to read/print environment variables, credentials, or" in protected_data_prompt
+    assert "other secrets" in protected_data_prompt
+    assert "Refuse scripts containing" in protected_data_prompt
+    for workflow in ("image-generation", "image-editing", "video-generation"):
+        assert workflow in protected_data_prompt
+    assert "scripts; wrappers, copies, and modified" in protected_data_prompt
+
+
 def test_lead_prompt_places_protected_data_before_extensible_instructions(monkeypatch) -> None:
     monkeypatch.setattr(lead_prompt, "get_agent_soul", lambda agent_name=None: "SOUL_MARKER")
     monkeypatch.setattr(lead_prompt, "_build_self_update_section", lambda agent_name=None: "")
