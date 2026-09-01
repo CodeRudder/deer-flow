@@ -355,6 +355,20 @@ export const enUS: Translations = {
     failed: "Subtask failed",
   },
 
+  // Quota indicator (feat-df-8)
+  quotaIndicator: {
+    label: "My quota",
+    prefixLabel: "Quota",
+    used: "Used",
+    reserved: "Reserved",
+    unitPoints: "pts",
+    unitCount: "runs",
+    periodWeekly: "Weekly",
+    periodMonthly: "Monthly",
+    overrideNote: "Admin adjusted this period",
+    primaryNote: "The pill shows the dimension with the highest usage first",
+  },
+
   // Token Usage
   tokenUsage: {
     title: "Token Usage",

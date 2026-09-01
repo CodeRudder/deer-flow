@@ -275,6 +275,20 @@ export interface Translations {
     failed: string;
   };
 
+  // Quota indicator (feat-df-8)
+  quotaIndicator: {
+    label: string;
+    prefixLabel: string;
+    used: string;
+    reserved: string;
+    unitPoints: string;
+    unitCount: string;
+    periodWeekly: string;
+    periodMonthly: string;
+    overrideNote: string;
+    primaryNote: string;
+  };
+
   // Token Usage
   tokenUsage: {
     title: string;

@@ -24,6 +24,7 @@ from app.gateway.routers import (
     mcp,
     memory,
     models,
+    quota,
     runs,
     skills,
     suggestions,
@@ -451,6 +452,7 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Include routers
     # Admin dashboard and quota-control API is mounted at /api/admin
     app.include_router(admin.router)
+    app.include_router(quota.router)
 
     # Models API is mounted at /api/models
     app.include_router(models.router)

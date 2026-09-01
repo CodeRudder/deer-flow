@@ -18,6 +18,7 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { QuotaIndicator } from "@/components/workspace/quota-indicator";
 import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
@@ -207,6 +208,7 @@ export default function ChatPage() {
                   setLocalSettings("tokenUsage", preferences)
                 }
               />
+              {!isMock && <QuotaIndicator isThreadBusy={thread.isLoading} />}
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />
             </div>
