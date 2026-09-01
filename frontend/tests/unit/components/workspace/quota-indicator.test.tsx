@@ -1,12 +1,12 @@
+import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
 
 import { QuotaIndicator } from "@/components/workspace/quota-indicator";
 import type { QuotaScopeItem } from "@/core/quotas/types";
 
-vi.mock("@/core/i18n/hooks", () => ({
+rs.mock("@/core/i18n/hooks", () => ({
   useI18n: () => ({
     t: {
       quotaIndicator: {
@@ -25,8 +25,8 @@ vi.mock("@/core/i18n/hooks", () => ({
   }),
 }));
 
-const fetchQuotaMe = vi.hoisted(() => vi.fn());
-vi.mock("@/core/quotas/api", () => ({ fetchQuotaMe }));
+const fetchQuotaMe = rs.hoisted(() => rs.fn());
+rs.mock("@/core/quotas/api", () => ({ fetchQuotaMe }));
 
 function videoItem(overrides: Partial<QuotaScopeItem> = {}): QuotaScopeItem {
   return {
@@ -131,7 +131,7 @@ function renderIndicator(items: QuotaScopeItem[], isThreadBusy = false) {
     items,
   });
   const client = new QueryClient();
-  const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+  const invalidateSpy = rs.spyOn(client, "invalidateQueries");
   const view = render(
     <QueryClientProvider client={client}>
       <QuotaIndicator isThreadBusy={isThreadBusy} />
@@ -141,6 +141,8 @@ function renderIndicator(items: QuotaScopeItem[], isThreadBusy = false) {
 }
 
 describe("QuotaIndicator", () => {
+  afterEach(cleanup);
+
   it("renders the pill for configured dimensions", async () => {
     renderIndicator([videoItem()]);
     expect(await screen.findByLabelText("我的额度")).toBeTruthy();
@@ -152,7 +154,7 @@ describe("QuotaIndicator", () => {
   it("renders nothing when no dimensions are configured", async () => {
     const { container } = renderIndicator([]);
     await waitFor(() => expect(fetchQuotaMe).toHaveBeenCalled());
-    expect(container).toBeEmptyDOMElement();
+    expect(container.innerHTML).toBe("");
   });
 
   it("shows a warning tone for exceeded status", async () => {
