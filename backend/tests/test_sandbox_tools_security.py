@@ -6,7 +6,15 @@ from unittest.mock import patch
 import pytest
 
 from deerflow.sandbox.exceptions import SandboxError
-from deerflow.sandbox.generation_quota import count_image_invocations, count_video_invocations
+from deerflow.sandbox.generation_quota import (
+    GenerationCommand,
+    GenerationQuotaLifecycle,
+    PreparedGenerationCommand,
+    VideoGenerationInvocation,
+    count_image_invocations,
+    count_video_invocations,
+    parse_video_invocations,
+)
 from deerflow.sandbox.tools import (
     VIRTUAL_PATH_PREFIX,
     _apply_cwd_prefix,
@@ -866,6 +874,173 @@ VIDEO_SCRIPT = "python /mnt/skills/public/video-generation/scripts/generate.py -
 )
 def test_video_generation_invocation_count_only_matches_execution(command: str, expected: int) -> None:
     assert count_video_invocations(command) == expected
+
+
+VIDEO_CONTINUATION_ARGS = (
+    "--prompt-file /mnt/user-data/workspace/jlc-intro-10s.txt",
+    "--output-file /mnt/user-data/outputs/jlc-intro-10s.mp4",
+    "--model doubao-seedance-2-5-260628",
+    "--resolution 720p",
+    "--duration 10",
+)
+
+
+def _continuation_command(script: str, args: tuple[str, ...], newline: str) -> str:
+    lines = [f"python {script}"] + [f"  {arg}" for arg in args]
+    return f" \\{newline}".join(lines)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_video_invocation_parse_joins_bash_line_continuations(newline: str) -> None:
+    command = _continuation_command(
+        "/mnt/skills/public/video-generation/scripts/generate.py",
+        VIDEO_CONTINUATION_ARGS,
+        newline,
+    )
+
+    invocations = parse_video_invocations(command)
+
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.operation == "generate"
+    assert invocation.model == "doubao-seedance-2-5-260628"
+    assert invocation.resolution == "720p"
+    assert invocation.duration_seconds == 10
+    assert invocation.output_file == "/mnt/user-data/outputs/jlc-intro-10s.mp4"
+    assert count_video_invocations(command) == 1
+
+
+def test_video_query_under_line_continuation_is_not_billable() -> None:
+    command = _continuation_command(
+        "/mnt/skills/public/video-generation/scripts/generate.py",
+        ("--query task-123", "--output-file /mnt/user-data/outputs/a.mp4"),
+        "\r\n",
+    )
+
+    assert count_video_invocations(command) == 0
+
+
+def test_video_continuation_segments_still_split_on_separators() -> None:
+    first = _continuation_command(
+        "/mnt/skills/public/video-generation/scripts/generate.py",
+        ("--model m --resolution 720p --duration 5 --output-file a.mp4",),
+        "\r\n",
+    )
+    second = "python /mnt/skills/public/video-generation/scripts/generate.py --model m --resolution 720p --duration 5 --output-file b.mp4"
+
+    assert count_video_invocations(f"{first} && {second}") == 2
+
+
+def test_image_invocation_count_joins_crlf_line_continuations() -> None:
+    command = _continuation_command(
+        "/mnt/skills/public/image-generation/scripts/generate.py",
+        ("--aspect-ratio 16:9", "--output /mnt/user-data/outputs/a.png"),
+        "\r\n",
+    )
+
+    assert count_image_invocations(command) == 1
+
+
+def test_video_command_after_escaped_backslash_line_stays_billable() -> None:
+    # 行尾偶数个反斜杠是转义反斜杠而非续行，换行后是独立命令，须正常解析计费
+    command = "echo done \\\\\npython /mnt/skills/public/video-generation/scripts/generate.py --model m --resolution 720p --duration 5 --output-file a.mp4"
+
+    assert count_video_invocations(command) == 1
+
+
+def test_image_command_after_escaped_backslash_line_stays_billable() -> None:
+    command = "echo done \\\\\npython /mnt/skills/public/image-generation/scripts/generate.py --aspect-ratio 16:9 --output /mnt/user-data/outputs/a.png"
+
+    assert count_image_invocations(command) == 1
+
+
+def test_video_cancel_is_not_billable() -> None:
+    command = "python /mnt/skills/public/video-generation/scripts/generate.py --cancel task-123 --output-file /mnt/user-data/outputs/a.mp4"
+
+    assert count_video_invocations(command) == 0
+
+
+@pytest.mark.asyncio
+async def test_async_bash_missing_billing_params_hints_command_format(monkeypatch) -> None:
+    # 行尾反斜杠后紧跟空格会把后续 flag 粘成 " --model"，解析不到任何参数
+    command = "python /mnt/skills/public/video-generation/scripts/generate.py \\ --model m --resolution 720p --duration 10 --output-file y.mp4"
+
+    runtime = SimpleNamespace(
+        state={},
+        context={"__quota_runtime_bridge": object(), "__quota_enforcement_required": True},
+    )
+
+    async def initialized(_runtime):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized_async", initialized)
+    monkeypatch.setattr(
+        "deerflow.sandbox.tools._execute_bash_tool",
+        lambda *_args: pytest.fail("missing-param video command must not dispatch"),
+    )
+
+    result = await _bash_tool_async(runtime, "generate video", command)
+
+    assert "反斜杠续行" in result
+
+
+def _video_prepared(output_file: str = "y.mp4") -> tuple[PreparedGenerationCommand, VideoGenerationInvocation]:
+    invocation = VideoGenerationInvocation(
+        operation="generate",
+        model="m",
+        resolution="720p",
+        duration_seconds=10,
+        output_file=output_file,
+    )
+    analysis = GenerationCommand(command="c", image_generation_count=0, video_invocations=(invocation,))
+    reservation = SimpleNamespace(
+        reservation_id="res-1",
+        usage_period_id="period-1",
+        record_id="record-1",
+        reserved_minor_units=1510,
+    )
+    prepared = PreparedGenerationCommand(command="c", analysis=analysis, image_reservation=None, video_reservation=reservation)
+    return prepared, invocation
+
+
+@pytest.mark.asyncio
+async def test_finish_releases_reservation_when_receipt_lacks_provider_task() -> None:
+    """收据存在但 task_id 为空时 provider 调用结果不明确，释放以避免预占无限挂起。"""
+    released: list[str | None] = []
+
+    class Bridge:
+        async def release_video_points(self, reservation, *, usage_period_id=None, reason=None):
+            released.append(reason)
+
+    receipt = {"status": "pending", "task_id": None, "reservation_id": "res-1", "usage_period_id": "period-1"}
+    prepared, invocation = _video_prepared()
+    runtime = SimpleNamespace(context={"__quota_runtime_bridge": Bridge()})
+    lifecycle = GenerationQuotaLifecycle(runtime, lambda output_file: receipt if output_file == invocation.output_file else None)
+
+    error = await lifecycle.finish(prepared, dispatched=True)
+
+    assert error is None
+    assert released == ["no_provider_task"]
+
+
+@pytest.mark.asyncio
+async def test_finish_keeps_reservation_pending_when_provider_task_exists() -> None:
+    """有 provider 任务但状态未终态（仍在生成）时保持挂起等对账。"""
+    pending: list[str | None] = []
+
+    class Bridge:
+        async def mark_video_points_pending(self, reservation, **kwargs):
+            pending.append(kwargs.get("reason"))
+
+    receipt = {"status": "running", "task_id": "T1", "reservation_id": "res-1", "usage_period_id": "period-1"}
+    prepared, invocation = _video_prepared()
+    runtime = SimpleNamespace(context={"__quota_runtime_bridge": Bridge()})
+    lifecycle = GenerationQuotaLifecycle(runtime, lambda output_file: receipt if output_file == invocation.output_file else None)
+
+    error = await lifecycle.finish(prepared, dispatched=True)
+
+    assert error is None
+    assert pending == ["running"]
 
 
 def test_bash_background_rejects_video_generation_before_dispatch(monkeypatch) -> None:

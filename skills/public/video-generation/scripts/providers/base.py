@@ -230,7 +230,7 @@ class BaseVideoProvider:
         warn_ignored(self.name, params, self.supported_params)
 
         # Persist the reservation before contacting the provider. If task
-        # creation becomes ambiguous, the runtime keeps the points pending.
+        # creation fails without a task id, the runtime releases the points.
         write_task_record(
             output_file,
             {

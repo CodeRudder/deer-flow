@@ -25,6 +25,7 @@ _VIDEO_GENERATION_COMMAND_MARKERS = (
 
 _VIDEO_FAILURE_STATUSES = {"failed", "rejected", "cancelled", "canceled", "expired"}
 _VIDEO_SUCCESS_STATUSES = {"succeeded", "provider_succeeded"}
+_BILLING_REQUIRED_FLAGS = ("--model", "--resolution", "--duration", "--output-file")
 
 SidecarLoader = Callable[[str | None], dict[str, object] | None]
 
@@ -43,6 +44,7 @@ class GenerationQuotaBridge(Protocol):
         idempotency_key: str,
         provider: str | None,
         output_file: str | None,
+        operation: str = "generation",
     ) -> object: ...
 
     async def release_video_points(
@@ -134,6 +136,13 @@ def _has_option(args: list[str], name: str) -> bool:
     return any(arg == name or arg.startswith(f"{name}=") for arg in args)
 
 
+def _normalize_bash_lines(command: str) -> str:
+    """Join bash ``\\`` line continuations (LF/CRLF) so argument lines stay attached to their command."""
+    command = command.replace("\r\n", "\n")
+    # 行尾反斜杠连续段为奇数才是续行；偶数个是转义反斜杠，换行为命令结束
+    return re.sub(r"((?<!\\)(?:\\\\)*)\\\n", r"\1 ", command)
+
+
 def _video_invocation_from_segment(segment: list[str]) -> VideoGenerationInvocation | None:
     """Parse a single shell segment that invokes the video script."""
     if not segment:
@@ -180,7 +189,7 @@ def _video_invocation_from_segment(segment: list[str]) -> VideoGenerationInvocat
 def parse_video_invocations(command: str) -> list[VideoGenerationInvocation]:
     """Enumerate statically visible video script calls in *command*."""
     try:
-        lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=";&|")
+        lexer = shlex.shlex(_normalize_bash_lines(command).replace("\n", ";"), posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
@@ -223,7 +232,7 @@ def parse_video_invocations(command: str) -> list[VideoGenerationInvocation]:
 def _generation_invocation_count(command: str, markers: tuple[str, ...]) -> int:
     """Count billable generation-script invocations matching *markers*."""
     try:
-        lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=";&|")
+        lexer = shlex.shlex(_normalize_bash_lines(command).replace("\n", ";"), posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
@@ -412,6 +421,8 @@ class GenerationQuotaLifecycle:
         if missing:
             release_error = await self._release(image_reservation, None)
             error = f"Error: 视频积分计费要求明确的 {', '.join(missing)} 参数"
+            if all(flag in analysis.command for flag in _BILLING_REQUIRED_FLAGS):
+                error += "；命令中已检测到这些参数，可能是反斜杠续行/换行符破坏了解析，请调整命令格式后重试"
             return None, None, f"{error}\n{release_error}" if release_error else error
         try:
             result = await quota_bridge.reserve_video_generation(
@@ -421,6 +432,8 @@ class GenerationQuotaLifecycle:
                 idempotency_key=self._video_idempotency_key(invocation, analysis.command),
                 provider=invocation.provider if _static_video_value(invocation.provider) else None,
                 output_file=invocation.output_file,
+                # 升格（--upscale-video）走 regeneration 端点，按重生成费率计价
+                operation="regeneration" if invocation.upscale_video else "generation",
             )
         except Exception as exc:  # noqa: BLE001 - tool boundary converts failures to text
             release_error = await self._release(image_reservation, None)
@@ -537,6 +550,14 @@ class GenerationQuotaLifecycle:
                     usage_period_id=period_id,
                     reason=status or "provider_failed",
                 )
+            except Exception as exc:  # noqa: BLE001
+                return f"Error: Failed to release video points: {exc}"
+            return None
+        if sidecar is not None and not provider_task_id:
+            # 收据存在但未拿到 provider 任务 ID：provider 调用结果不明确（未提交或响应丢失），
+            # 为避免预占永久挂起，直接释放而不是无限等待
+            try:
+                await quota_bridge.release_video_points(reservation, usage_period_id=period_id, reason="no_provider_task")
             except Exception as exc:  # noqa: BLE001
                 return f"Error: Failed to release video points: {exc}"
             return None
