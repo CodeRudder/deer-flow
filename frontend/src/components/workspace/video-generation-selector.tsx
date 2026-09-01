@@ -21,6 +21,10 @@ import {
 import { useI18n } from "@/core/i18n/hooks";
 import { ModelProviderLogo } from "@/core/models/logo";
 import { useVideoGenerationProviders } from "@/core/video-generation";
+import {
+  videoRatePerSecond,
+  videoRateRangeLabel,
+} from "@/core/video-generation/rate";
 import { cn } from "@/lib/utils";
 
 type VideoGenerationSelection = {
@@ -83,7 +87,7 @@ export function VideoGenerationSelector({
         </TooltipTrigger>
         <TooltipContent>{t.inputBox.videoGeneration}</TooltipContent>
       </Tooltip>
-      <PromptInputActionMenuContent className="w-56">
+      <PromptInputActionMenuContent className="w-72">
         <DropdownMenuGroup>
           <PromptInputActionMenuItem
             className={cn(
@@ -129,6 +133,12 @@ export function VideoGenerationSelector({
             entries.map(({ provider, model, configured }) => {
               const isSelected =
                 selection.video_generation_model === model.name;
+              const rate = model.billing
+                ? videoRatePerSecond(model.billing)
+                : null;
+              const hasRate = Boolean(configured && rate);
+
+              const hasDetail = Boolean(model.description ?? model.billing);
 
               const item = (
                 <PromptInputActionMenuItem
@@ -160,19 +170,28 @@ export function VideoGenerationSelector({
                   <span className="min-w-0 truncate font-medium">
                     {model.display_name}
                   </span>
+                  {hasRate && (
+                    <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">
+                      {t.inputBox.videoRateFromLabel(
+                        videoRateRangeLabel(rate!.min, rate!.min),
+                      )}
+                    </span>
+                  )}
                   {!configured ? (
                     <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
                       {t.inputBox.videoGenerationNotConfigured}
                     </span>
                   ) : isSelected ? (
-                    <CheckIcon className="ml-auto size-4" />
+                    <CheckIcon
+                      className={cn("size-4", !hasRate && "ml-auto")}
+                    />
                   ) : (
-                    <div className="ml-auto size-4" />
+                    <div className={cn("size-4", !hasRate && "ml-auto")} />
                   )}
                 </PromptInputActionMenuItem>
               );
 
-              return model.description ? (
+              return hasDetail ? (
                 <Tooltip key={`${provider.name}:${model.name}`}>
                   <TooltipTrigger asChild>{item}</TooltipTrigger>
                   <TooltipContent
@@ -181,6 +200,30 @@ export function VideoGenerationSelector({
                     className="max-w-72 leading-relaxed whitespace-normal"
                   >
                     {model.description}
+                    {model.billing && (
+                      <div className="text-muted-foreground mt-1.5 border-t pt-1.5">
+                        {model.billing.resolutions.map((rate) => (
+                          <div key={rate.resolution}>
+                            {rate.resolution}：
+                            {videoRateRangeLabel(
+                              rate.yuan_per_second_min,
+                              rate.yuan_per_second_max,
+                            )}{" "}
+                            {t.inputBox.videoPointsPerSecond}
+                          </div>
+                        ))}
+                        {model.billing.min_duration_seconds != null && (
+                          <div>
+                            {t.inputBox.videoDurationRange}
+                            {model.billing.min_duration_seconds}
+                            {model.billing.max_duration_seconds != null
+                              ? `~${model.billing.max_duration_seconds}`
+                              : ""}
+                            {t.inputBox.videoDurationSeconds}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </TooltipContent>
                 </Tooltip>
               ) : (

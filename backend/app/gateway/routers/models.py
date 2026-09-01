@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.gateway.admin.quota_service import QuotaService
 from app.gateway.deps import get_config
 from deerflow.config.app_config import AppConfig
 from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
-from deerflow.models.video_generation import VideoGenerationProvidersResponse, get_video_generation_providers
+from deerflow.models.video_generation import VideoGenerationModel, VideoGenerationProvider, VideoGenerationProvidersResponse, get_video_generation_providers
+from deerflow.persistence.engine import get_session_factory
 
 router = APIRouter(prefix="/api", tags=["models"])
 
@@ -161,15 +163,69 @@ async def get_model(model_name: str, config: AppConfig = Depends(get_config)) ->
     )
 
 
+class VideoResolutionRate(BaseModel):
+    """单个分辨率的视频积分费率（元/秒区间；无按秒覆盖时 min == max）。"""
+
+    resolution: str = Field(..., description="Resolution name as configured in the billing rules")
+    yuan_per_second_min: float = Field(..., description="Lowest CNY-per-second rate for this resolution")
+    yuan_per_second_max: float = Field(..., description="Highest CNY-per-second rate for this resolution")
+
+
+class VideoModelBilling(BaseModel):
+    """用户侧价目摘要（由管理员费率规则推导，key 为小写模型名）。"""
+
+    resolutions: list[VideoResolutionRate] = Field(default_factory=list)
+    min_duration_seconds: int | None = Field(None, description="Minimum supported duration across resolutions")
+    max_duration_seconds: int | None = Field(None, description="Maximum supported duration across resolutions")
+
+
+class VideoGenerationModelWithBilling(VideoGenerationModel):
+    billing: VideoModelBilling | None = Field(None, description="User-facing rate summary; None when no video quota scope is configured")
+
+
+class VideoGenerationProviderWithBilling(VideoGenerationProvider):
+    models: list[VideoGenerationModelWithBilling] = Field(default_factory=list)
+
+
+class VideoGenerationProvidersWithBilling(VideoGenerationProvidersResponse):
+    providers: list[VideoGenerationProviderWithBilling] = Field(default_factory=list)
+
+
+def _attach_video_billing(
+    response: VideoGenerationProvidersResponse,
+    summary: dict | None,
+) -> VideoGenerationProvidersWithBilling:
+    """按小写模型名把价目摘要合并进 providers 响应；无摘要时 billing 保持 None。"""
+    summary = summary or {}
+    enriched_providers = []
+    for provider in response.providers:
+        models = [
+            VideoGenerationModelWithBilling(
+                **model.model_dump(),
+                billing=summary.get(model.name.lower()),
+            )
+            for model in provider.models
+        ]
+        provider_data = provider.model_dump()
+        provider_data["models"] = models
+        enriched_providers.append(VideoGenerationProviderWithBilling(**provider_data))
+    return VideoGenerationProvidersWithBilling(skill_enabled=response.skill_enabled, providers=enriched_providers)
+
+
 @router.get(
     "/video-generation/providers",
-    response_model=VideoGenerationProvidersResponse,
+    response_model=VideoGenerationProvidersWithBilling,
     tags=["video-generation"],
     summary="List Video Generation Providers",
-    description="Retrieve video generation providers exposed by the built-in video-generation skill.",
+    description="Retrieve video generation providers exposed by the built-in video-generation skill, enriched with user-facing point rates when a video quota scope is configured.",
 )
-async def list_video_generation_providers() -> VideoGenerationProvidersResponse:
-    return get_video_generation_providers()
+async def list_video_generation_providers() -> VideoGenerationProvidersWithBilling:
+    base = get_video_generation_providers()
+    session_factory = get_session_factory()
+    summary = None
+    if session_factory is not None:
+        summary = await QuotaService(session_factory).get_video_billing_summary()
+    return _attach_video_billing(base, summary)
 
 
 @router.get(

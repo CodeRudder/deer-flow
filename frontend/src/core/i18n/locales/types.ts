@@ -87,6 +87,10 @@ export interface Translations {
     videoGenerationNotConfigured: string;
     videoGenerationSkillDisabled: string;
     videoGenerationLoadFailed: string;
+    videoPointsPerSecond: string;
+    videoRateFromLabel: (rate: string) => string;
+    videoDurationRange: string;
+    videoDurationSeconds: string;
     chatModel: string;
     visionModel: string;
     defaultVisionModel: string;

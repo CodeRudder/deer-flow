@@ -238,6 +238,69 @@ def _validate_video_billing_rules(value: Any) -> dict[str, Any]:
     return value
 
 
+def _resolution_rate_range(resolution_config: Any) -> tuple[float, float] | None:
+    """分辨率费率区间（元/秒），兼容直接单价与按秒覆盖（durations 取区间）两种写法。"""
+    if isinstance(resolution_config, dict) and isinstance(resolution_config.get("durations"), dict):
+        minors = []
+        for entry in resolution_config["durations"].values():
+            try:
+                minor = _price_to_minor(entry)
+            except HTTPException:
+                continue
+            minors.append(minor)
+        if not minors:
+            return None
+        return min(minors) / _VIDEO_MINOR_UNIT_SCALE, max(minors) / _VIDEO_MINOR_UNIT_SCALE
+    try:
+        minor = _price_to_minor(resolution_config)
+    except HTTPException:
+        return None
+    if minor is None:
+        return None
+    value = minor / _VIDEO_MINOR_UNIT_SCALE
+    return value, value
+
+
+def _video_billing_summary(rules: Any) -> dict[str, Any]:
+    """从费率规则构建模型价目摘要（key 为小写模型名），供用户侧价目展示。"""
+    summary: dict[str, Any] = {}
+    for model_name, model_config in _video_rule_models(rules).items():
+        if not isinstance(model_config, dict):
+            continue
+        resolutions_map = model_config.get("resolutions", model_config)
+        if not isinstance(resolutions_map, dict):
+            continue
+        resolutions = []
+        min_seconds: int | None = None
+        max_seconds: int | None = None
+        for resolution, config in resolutions_map.items():
+            rate_range = _resolution_rate_range(config)
+            if rate_range is None:
+                continue
+            resolutions.append(
+                {
+                    "resolution": str(resolution),
+                    "yuan_per_second_min": rate_range[0],
+                    "yuan_per_second_max": rate_range[1],
+                }
+            )
+            if isinstance(config, dict):
+                low = config.get("min_duration", config.get("min_seconds"))
+                high = config.get("max_duration", config.get("max_seconds"))
+                if low is not None:
+                    min_seconds = int(low) if min_seconds is None else min(min_seconds, int(low))
+                if high is not None:
+                    max_seconds = int(high) if max_seconds is None else max(max_seconds, int(high))
+        if not resolutions:
+            continue
+        summary[str(model_name).lower()] = {
+            "resolutions": resolutions,
+            "min_duration_seconds": min_seconds,
+            "max_duration_seconds": max_seconds,
+        }
+    return summary
+
+
 def _video_metric(enforced: bool, limit_minor: int | None, used_minor: int, reserved_minor: int) -> dict[str, Any]:
     limit = _minor_to_points(limit_minor)
     used = _minor_to_points(used_minor) or 0.0
@@ -1524,6 +1587,20 @@ class QuotaService:
                 "status": status,
                 "items": items,
             }
+
+    async def get_video_billing_summary(self) -> dict[str, Any] | None:
+        """启用中的视频额度范围价目摘要（小写模型名 → 分辨率元/秒 + 时长范围），未配置返回 None。"""
+        async with self._sf() as session:
+            scope = (
+                await session.execute(
+                    select(QuotaScopeRow)
+                    .where(QuotaScopeRow.resource_type == "video_generation", QuotaScopeRow.enabled.is_(True))
+                    .order_by(QuotaScopeRow.id)
+                )
+            ).scalars().first()
+            if scope is None or not scope.video_billing_rules:
+                return None
+            return _video_billing_summary(scope.video_billing_rules)
 
     async def _page_quota_users(
         self,
