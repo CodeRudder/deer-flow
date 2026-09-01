@@ -1142,11 +1142,28 @@ function QuotaUsageCell({
     quotaProgressColors[
       quotaProgressTone(metric.enforced, metric.used, metric.limit)
     ];
+  const reserved =
+    metric.reserved != null && metric.reserved > 0 ? metric.reserved : null;
   return (
     <div className="min-w-40">
       <div className="flex justify-between text-xs">
         <span>
-          {formatNumber(metric.used)} {unit}
+          {reserved != null ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-default underline decoration-dotted underline-offset-2">
+                  {formatNumber(metric.used)} {unit}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                预占 {formatNumber(reserved)} {unit}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <>
+              {formatNumber(metric.used)} {unit}
+            </>
+          )}
         </span>
         <span className="text-muted-foreground">
           {metric.enforced && metric.limit != null
@@ -1156,11 +1173,6 @@ function QuotaUsageCell({
               : "仅记录"}
         </span>
       </div>
-      {metric.reserved != null && metric.reserved > 0 ? (
-        <div className="text-muted-foreground mt-1 text-[11px]">
-          预占 {formatNumber(metric.reserved)} {unit}
-        </div>
-      ) : null}
       <div
         className={`mt-2 h-2 overflow-hidden rounded-full ${colors.track}`}
         role="progressbar"
@@ -1388,16 +1400,29 @@ function UserQuotaItemEditor({
                 : "已用生图"}
           </div>
           <div className="mt-1 text-xl font-semibold tabular-nums">
-            {formatExactNumber(metric?.used ?? 0)}
-            <span className="text-muted-foreground ml-1 text-xs font-normal">
-              {metricUnit}
-            </span>
+            {isVideoScope && metric?.reserved ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default underline decoration-dotted underline-offset-2">
+                    {formatExactNumber(metric.used)}
+                    <span className="text-muted-foreground ml-1 text-xs font-normal">
+                      积分
+                    </span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  预占 {formatExactNumber(metric.reserved)} 积分
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <>
+                {formatExactNumber(metric?.used ?? 0)}
+                <span className="text-muted-foreground ml-1 text-xs font-normal">
+                  {metricUnit}
+                </span>
+              </>
+            )}
           </div>
-          {isVideoScope && metric?.reserved ? (
-            <div className="text-muted-foreground mt-1 text-xs">
-              预占 {formatExactNumber(metric.reserved)} 积分
-            </div>
-          ) : null}
         </div>
         {isModelScope ? (
           <div className="border-t px-4 py-3 sm:border-t-0 sm:border-l">
