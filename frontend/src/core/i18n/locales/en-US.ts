@@ -108,6 +108,7 @@ export const enUS: Translations = {
     videoGenerationLoadFailed: "Failed to load video generation models",
     videoPointsPerSecond: "pts/s",
     videoRateFromLabel: (rate: string) => `from ${rate} pts/s`,
+    videoRegenerationLabel: "768p->2k",
     videoDurationRange: "Duration ",
     videoDurationSeconds: "s",
     chatModel: "Chat model",

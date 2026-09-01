@@ -177,6 +177,7 @@ class VideoModelBilling(BaseModel):
     resolutions: list[VideoResolutionRate] = Field(default_factory=list)
     min_duration_seconds: int | None = Field(None, description="Minimum supported duration across resolutions")
     max_duration_seconds: int | None = Field(None, description="Maximum supported duration across resolutions")
+    regeneration_yuan_per_second: float | None = Field(None, description="CNY-per-second rate for regeneration (upscale) calls; None when not configured")
 
 
 class VideoGenerationModelWithBilling(VideoGenerationModel):

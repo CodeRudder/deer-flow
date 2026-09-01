@@ -159,6 +159,15 @@ def _mapping_value(mapping: dict[str, Any], key: str) -> Any:
     return None
 
 
+def _model_resolutions(model_config: dict[str, Any]) -> dict[str, Any]:
+    """分辨率费率映射；扁平写法下剔除 sibling 的 regeneration 字段。"""
+    if "resolutions" in model_config:
+        resolutions = model_config["resolutions"]
+    else:
+        resolutions = {key: value for key, value in model_config.items() if key != "regeneration"}
+    return resolutions if isinstance(resolutions, dict) else {}
+
+
 def _price_to_minor(value: Any) -> int | None:
     if isinstance(value, dict):
         if "price_fen_per_second" in value:
@@ -192,7 +201,7 @@ def _lookup_video_price(rules: Any, model: str, resolution: str, duration_second
     model_config = _mapping_value(models, model)
     if not isinstance(model_config, dict):
         raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置模型 {model} 的视频费率"})
-    resolutions = model_config.get("resolutions", model_config)
+    resolutions = _model_resolutions(model_config)
     if not isinstance(resolutions, dict):
         raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置模型 {model} 的分辨率费率"})
     resolution_config = _mapping_value(resolutions, resolution)
@@ -215,6 +224,18 @@ def _lookup_video_price(rules: Any, model: str, resolution: str, duration_second
     return price
 
 
+def _lookup_regeneration_price(rules: Any, model: str) -> int:
+    """重生成（升格）专用费率；未配置即 fail-closed 拒绝，不回落分辨率整价。"""
+    models = _video_rule_models(rules)
+    model_config = _mapping_value(models, model)
+    if not isinstance(model_config, dict):
+        raise HTTPException(status_code=400, detail={"code": "video_billing_rule_not_found", "message": f"未配置模型 {model} 的视频费率"})
+    regeneration = _mapping_value(model_config, "regeneration")
+    if regeneration is None:
+        raise HTTPException(status_code=400, detail={"code": "video_regeneration_rate_not_found", "message": f"未配置模型 {model} 的重生成费率，请在额度管控费率 JSON 中为该模型添加 regeneration 字段"})
+    return _positive_price_to_minor(regeneration)
+
+
 def _validate_video_billing_rules(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not _video_rule_models(value):
         raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "积分模式必须配置 models 费率 JSON"})
@@ -224,9 +245,11 @@ def _validate_video_billing_rules(value: Any) -> dict[str, Any]:
     for model_config in _video_rule_models(value).values():
         if not isinstance(model_config, dict):
             raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "models 配置格式无效"})
-        resolutions = model_config.get("resolutions", model_config)
-        if not isinstance(resolutions, dict) or not resolutions:
+        resolutions = _model_resolutions(model_config)
+        if not resolutions:
             raise HTTPException(status_code=400, detail={"code": "invalid_video_billing_rules", "message": "每个模型至少需要一个分辨率费率"})
+        if "regeneration" in model_config:
+            _positive_price_to_minor(model_config["regeneration"])
         for resolution_config in resolutions.values():
             if isinstance(resolution_config, dict) and isinstance(resolution_config.get("durations"), dict):
                 entries = resolution_config["durations"].values()
@@ -267,8 +290,8 @@ def _video_billing_summary(rules: Any) -> dict[str, Any]:
     for model_name, model_config in _video_rule_models(rules).items():
         if not isinstance(model_config, dict):
             continue
-        resolutions_map = model_config.get("resolutions", model_config)
-        if not isinstance(resolutions_map, dict):
+        resolutions_map = _model_resolutions(model_config)
+        if not resolutions_map:
             continue
         resolutions = []
         min_seconds: int | None = None
@@ -293,11 +316,18 @@ def _video_billing_summary(rules: Any) -> dict[str, Any]:
                     max_seconds = int(high) if max_seconds is None else max(max_seconds, int(high))
         if not resolutions:
             continue
-        summary[str(model_name).lower()] = {
+        entry: dict[str, Any] = {
             "resolutions": resolutions,
             "min_duration_seconds": min_seconds,
             "max_duration_seconds": max_seconds,
         }
+        # 重生成费率随价目下发（仅展示；解析层已校验，异常价跳过）
+        if isinstance(model_config.get("regeneration"), (int, float, str)):
+            try:
+                entry["regeneration_yuan_per_second"] = _positive_price_to_minor(model_config["regeneration"]) / _VIDEO_MINOR_UNIT_SCALE
+            except HTTPException:
+                pass
+        summary[str(model_name).lower()] = entry
     return summary
 
 
@@ -1034,6 +1064,7 @@ class QuotaService:
         run_id: str | None = None,
         thread_id: str | None = None,
         output_file: str | None = None,
+        operation: str = "generation",
         at: datetime | None = None,
     ) -> VideoPointsReservation:
         """Reserve one point-billed generation."""
@@ -1047,6 +1078,7 @@ class QuotaService:
             run_id=run_id,
             thread_id=thread_id,
             output_file=output_file,
+            operation=operation,
             at=at,
         )
 
@@ -1120,9 +1152,14 @@ class QuotaService:
         run_id: str | None = None,
         thread_id: str | None = None,
         output_file: str | None = None,
+        operation: str = "generation",
         at: datetime | None = None,
     ) -> VideoPointsReservation:
-        """按模型、分辨率和时长预占视频积分（内部单位为人民币分）。"""
+        """按模型、分辨率和时长预占视频积分（内部单位为人民币分）。
+
+        operation="regeneration" 时按该模型的重生成费率（regeneration 字段）计价，
+        用于 768P→2K 升格等 regeneration 端点调用；未配置即拒绝。
+        """
         seconds = duration_seconds if duration_seconds is not None else duration
         try:
             seconds = int(seconds) if seconds is not None else 0
@@ -1130,6 +1167,7 @@ class QuotaService:
             raise HTTPException(status_code=400, detail={"code": "invalid_video_duration", "message": "视频时长必须是整数秒"}) from exc
         if seconds < 4:
             raise HTTPException(status_code=400, detail={"code": "invalid_video_duration", "message": "视频最短时长为 4 秒"})
+        operation = "regeneration" if operation == "regeneration" else "generation"
         model = str(model or "").strip()
         resolution = str(resolution or "").strip()
         if not model or not resolution:
@@ -1145,7 +1183,10 @@ class QuotaService:
             ).scalar_one_or_none()
             if scope is None:
                 raise HTTPException(status_code=409, detail={"code": "video_billing_unavailable", "message": "视频积分额度尚未配置"})
-            price = _lookup_video_price(scope.video_billing_rules, model, resolution, seconds)
+            if operation == "regeneration":
+                price = _lookup_regeneration_price(scope.video_billing_rules, model)
+            else:
+                price = _lookup_video_price(scope.video_billing_rules, model, resolution, seconds)
             amount = price * seconds
             row = await self._ensure_usage_period(session, user_id, scope, at=at)
             # Production uses PostgreSQL; serialize reserve/settle transitions
@@ -1156,7 +1197,12 @@ class QuotaService:
             existing = self._video_record_for(records, idempotency_key=key)
             if existing is not None:
                 _, old_record = existing
-                if str(old_record.get("model")) != model or str(old_record.get("resolution")) != resolution or int(old_record.get("requested_duration_seconds") or 0) != seconds:
+                if (
+                    str(old_record.get("model")) != model
+                    or str(old_record.get("resolution")) != resolution
+                    or str(old_record.get("operation") or "generation") != operation
+                    or int(old_record.get("requested_duration_seconds") or 0) != seconds
+                ):
                     raise HTTPException(status_code=409, detail={"code": "video_billing_idempotency_conflict", "message": "重复请求的计费参数不一致"})
                 return self._video_reservation_from_record(
                     old_record,
@@ -1198,6 +1244,7 @@ class QuotaService:
                 "provider": provider,
                 "model": model,
                 "resolution": resolution,
+                "operation": operation,
                 "requested_duration_seconds": seconds,
                 "billable_duration_seconds": None,
                 "price_fen_per_second": price,
@@ -1591,13 +1638,7 @@ class QuotaService:
     async def get_video_billing_summary(self) -> dict[str, Any] | None:
         """启用中的视频额度范围价目摘要（小写模型名 → 分辨率元/秒 + 时长范围），未配置返回 None。"""
         async with self._sf() as session:
-            scope = (
-                await session.execute(
-                    select(QuotaScopeRow)
-                    .where(QuotaScopeRow.resource_type == "video_generation", QuotaScopeRow.enabled.is_(True))
-                    .order_by(QuotaScopeRow.id)
-                )
-            ).scalars().first()
+            scope = (await session.execute(select(QuotaScopeRow).where(QuotaScopeRow.resource_type == "video_generation", QuotaScopeRow.enabled.is_(True)).order_by(QuotaScopeRow.id))).scalars().first()
             if scope is None or not scope.video_billing_rules:
                 return None
             return _video_billing_summary(scope.video_billing_rules)

@@ -212,6 +212,16 @@ export function VideoGenerationSelector({
                             {t.inputBox.videoPointsPerSecond}
                           </div>
                         ))}
+                        {model.billing.regeneration_yuan_per_second != null && (
+                          <div>
+                            {t.inputBox.videoRegenerationLabel}：
+                            {videoRateRangeLabel(
+                              model.billing.regeneration_yuan_per_second,
+                              model.billing.regeneration_yuan_per_second,
+                            )}{" "}
+                            {t.inputBox.videoPointsPerSecond}
+                          </div>
+                        )}
                         {model.billing.min_duration_seconds != null && (
                           <div>
                             {t.inputBox.videoDurationRange}

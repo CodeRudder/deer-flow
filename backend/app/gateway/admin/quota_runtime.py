@@ -92,6 +92,7 @@ class QuotaRuntimeBridge:
         idempotency_key: str | None,
         output_file: str | None = None,
         provider: str | None = None,
+        operation: str = "generation",
     ) -> dict[str, Any]:
         """Reserve one point-billed video request."""
         try:
@@ -103,6 +104,7 @@ class QuotaRuntimeBridge:
                     duration_seconds=duration_seconds,
                     idempotency_key=idempotency_key,
                     provider=provider,
+                    operation=operation,
                     run_id=self._run_id,
                     thread_id=self._thread_id,
                     output_file=output_file,

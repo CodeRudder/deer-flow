@@ -106,6 +106,7 @@ export const zhCN: Translations = {
     videoGenerationLoadFailed: "视频生成模型加载失败",
     videoPointsPerSecond: "积分/秒",
     videoRateFromLabel: (rate: string) => `${rate}积分/秒起`,
+    videoRegenerationLabel: "768p->2k",
     videoDurationRange: "时长 ",
     videoDurationSeconds: " 秒",
     chatModel: "对话模型",

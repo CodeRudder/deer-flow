@@ -9,6 +9,8 @@ export interface VideoModelBilling {
   resolutions: VideoResolutionRate[];
   min_duration_seconds?: number | null;
   max_duration_seconds?: number | null;
+  /** 重生成（升格）费率；未配置时缺失。 */
+  regeneration_yuan_per_second?: number | null;
 }
 
 export interface VideoGenerationModel {

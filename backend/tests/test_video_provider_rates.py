@@ -21,6 +21,7 @@ _RULES = {
                 "768P": 2,
                 "2K": {"price_yuan_per_second": 4, "min_duration": 5, "max_duration": 10},
             },
+            "regeneration": 0.3,
         },
         "Seedance": {"resolutions": {"1080p": {"durations": {"4": 3.5, "15": 3.0}}}},
     },
@@ -44,10 +45,13 @@ def test_video_billing_summary_shapes():
     assert by_resolution["2K"]["yuan_per_second_min"] == 4
     assert minimax["min_duration_seconds"] == 5
     assert minimax["max_duration_seconds"] == 10
+    assert minimax["regeneration_yuan_per_second"] == 0.3
     # durations-only 配置取覆盖价区间，模型 key 小写
     seedance = summary["seedance"]
     assert seedance["resolutions"][0]["yuan_per_second_min"] == 3.0
     assert seedance["resolutions"][0]["yuan_per_second_max"] == 3.5
+    # 无 regeneration 字段的模型不下发该键
+    assert "regeneration_yuan_per_second" not in seedance
 
 
 async def _service_with_scope(tmp_path, rules) -> QuotaService:

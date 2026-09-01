@@ -89,6 +89,7 @@ export interface Translations {
     videoGenerationLoadFailed: string;
     videoPointsPerSecond: string;
     videoRateFromLabel: (rate: string) => string;
+    videoRegenerationLabel: string;
     videoDurationRange: string;
     videoDurationSeconds: string;
     chatModel: string;

@@ -1799,13 +1799,19 @@ function QuotaScopeEditor({
                         <code>{' "durations": {"4": 3.5, "10": 3.2}'}</code>
                         ，并覆盖允许生成的时长。
                       </li>
+                      <li>
+                        可选 <code>regeneration</code>
+                        字段：768P→2K 升格等重生成调用按该价计费（如
+                        <code>{' "regeneration": 0.3'}</code>
+                        ）；未配置时重生成会被拒绝。
+                      </li>
                     </ul>
                     <pre className="bg-muted overflow-x-auto rounded border p-2 font-mono text-[11px] leading-4">
                       {`{
   "currency": "CNY",
   "point_to_yuan": 1,
   "models": {
-    "MiniMax-H3": { "768P": 2, "2K": 4 },
+    "MiniMax-H3": { "768P": 2, "2K": 4, "regeneration": 0.3 },
     "doubao-seedance-2-5-260628": {
       "720p": 2.5,
       "1080p": 3.5

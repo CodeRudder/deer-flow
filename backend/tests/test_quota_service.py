@@ -581,3 +581,146 @@ async def test_user_list_returns_correct_page_and_total(tmp_path):
         assert [item["user_id"] for item in response["items"]] == ["user-2", "user-3"]
     finally:
         await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_regeneration_uses_dedicated_rate(tmp_path):
+    """升格（regeneration）按 regeneration 费率计价，而非分辨率整价。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await service.create_scope(
+            {
+                "code": "video_generation",
+                "name": "视频资源",
+                "resource_type": "video_generation",
+                "match_rules": {"exact": [], "prefix": []},
+                "period_type": "weekly",
+                "video_enforced": True,
+                "video_limit": 100,
+                "video_billing_rules": {
+                    "currency": "CNY",
+                    "point_to_yuan": 1,
+                    "models": {
+                        "minimax-h3": {
+                            "resolutions": {"768P": 0.5, "2K": 0.8},
+                            "regeneration": 0.3,
+                        },
+                    },
+                },
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+
+        regeneration = await service.reserve_video_generation(
+            "user-1",
+            model="minimax-h3",
+            resolution="2K",
+            duration_seconds=10,
+            operation="regeneration",
+        )
+        # 重生成 0.3 元/秒 × 10s = 300 分，而非 2K 整价 0.8 元/秒 = 800 分
+        assert regeneration.reserved_minor_units == 300
+
+        generation = await service.reserve_video_generation(
+            "user-2",
+            model="minimax-h3",
+            resolution="2K",
+            duration_seconds=10,
+        )
+        assert generation.reserved_minor_units == 800
+
+        async with sf() as session:
+            rows = (await session.execute(select(UserQuotaUsagePeriodRow))).scalars().all()
+        records = [record for row in rows for record in row.video_billing_records["items"].values()]
+        assert {record["operation"] for record in records} == {"regeneration", "generation"}
+        assert {record["price_fen_per_second"] for record in records} == {30, 80}
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_regeneration_conflicts_on_operation_mismatch(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await service.create_scope(
+            {
+                "code": "video_generation",
+                "name": "视频资源",
+                "resource_type": "video_generation",
+                "match_rules": {"exact": [], "prefix": []},
+                "period_type": "weekly",
+                "video_enforced": True,
+                "video_limit": 100,
+                "video_billing_rules": {
+                    "currency": "CNY",
+                    "point_to_yuan": 1,
+                    "models": {"minimax-h3": {"768P": 0.5, "2K": 0.8, "regeneration": 0.3}},
+                },
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        key = "idem-operation-mismatch"
+        await service.reserve_video_generation(
+            "user-1",
+            model="minimax-h3",
+            resolution="2K",
+            duration_seconds=5,
+            idempotency_key=key,
+            operation="regeneration",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await service.reserve_video_generation(
+                "user-1",
+                model="minimax-h3",
+                resolution="2K",
+                duration_seconds=5,
+                idempotency_key=key,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "video_billing_idempotency_conflict"
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_regeneration_fails_closed_without_rate(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.reserve_video_generation(
+                "user-1",
+                model="seedance-2.5",
+                resolution="1080p",
+                duration_seconds=5,
+                operation="regeneration",
+            )
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == "video_regeneration_rate_not_found"
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+def test_video_billing_rules_validate_regeneration_price():
+    from app.gateway.admin.quota_service import _validate_video_billing_rules
+
+    # 扁平写法下 regeneration 不被当作分辨率，且价格合法性被校验
+    rules = {
+        "currency": "CNY",
+        "point_to_yuan": 1,
+        "models": {"minimax-h3": {"768P": 0.5, "2K": 0.8, "regeneration": 0.3}},
+    }
+    validated = _validate_video_billing_rules(rules)
+    assert "regeneration" not in validated["models"]["minimax-h3"].get("resolutions", {})
+
+    with pytest.raises(HTTPException):
+        _validate_video_billing_rules(
+            {
+                "currency": "CNY",
+                "point_to_yuan": 1,
+                "models": {"minimax-h3": {"768P": 0.5, "regeneration": -1}},
+            }
+        )
