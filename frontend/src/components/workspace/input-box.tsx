@@ -94,10 +94,6 @@ import {
 import { ImageGenerationSelector } from "./image-generation-selector";
 import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
-import {
-  ModelOptionContent,
-  modelOptionRowClassName,
-} from "./model-menu";
 import { Tooltip } from "./tooltip";
 import { VideoGenerationSelector } from "./video-generation-selector";
 
@@ -1347,33 +1343,47 @@ export function InputBox({
                       ? models.map((m) => (
                           <ModelSelectorItem
                             key={m.name}
-                            className={modelOptionRowClassName(
-                              m.name === selectedModel?.name,
+                            className={cn(
+                              "h-10 gap-3",
+                              m.name === selectedModel?.name
+                                ? "text-accent-foreground"
+                                : "text-muted-foreground/75",
                             )}
                             value={`chat:${m.name} ${m.display_name}`}
                             onSelect={() => handleModelSelect(m.name)}
                           >
-                            <ModelOptionContent
-                              label={m.display_name}
-                              logo={<ModelProviderLogo model={m} />}
-                              selected={m.name === selectedModel?.name}
-                            />
+                            <ModelProviderLogo model={m} />
+                            <ModelSelectorName className="text-sm font-medium">
+                              {m.display_name}
+                            </ModelSelectorName>
+                            {m.name === selectedModel?.name ? (
+                              <CheckIcon className="ml-auto size-4" />
+                            ) : (
+                              <div className="ml-auto size-4" />
+                            )}
                           </ModelSelectorItem>
                         ))
                       : visionModels.map((m) => (
                           <ModelSelectorItem
                             key={m.name}
-                            className={modelOptionRowClassName(
-                              m.name === selectedVisionModel?.name,
+                            className={cn(
+                              "h-10 gap-3",
+                              m.name === selectedVisionModel?.name
+                                ? "text-accent-foreground"
+                                : "text-muted-foreground/75",
                             )}
                             value={`vision:${m.name} ${m.display_name ?? ""}`}
                             onSelect={() => handleVisionModelSelect(m.name)}
                           >
-                            <ModelOptionContent
-                              label={m.display_name ?? m.name}
-                              logo={<ModelProviderLogo model={m} />}
-                              selected={m.name === selectedVisionModel?.name}
-                            />
+                            <ModelProviderLogo model={m} />
+                            <ModelSelectorName className="text-sm font-medium">
+                              {m.display_name ?? m.name}
+                            </ModelSelectorName>
+                            {m.name === selectedVisionModel?.name ? (
+                              <CheckIcon className="ml-auto size-4" />
+                            ) : (
+                              <div className="ml-auto size-4" />
+                            )}
                           </ModelSelectorItem>
                         ))}
                   </ModelSelectorList>

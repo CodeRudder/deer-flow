@@ -1,12 +1,13 @@
 "use client";
 
-import { ImageIcon } from "lucide-react";
+import { CheckIcon, ImageIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import {
   PromptInputActionMenu,
   PromptInputActionMenuContent,
   PromptInputActionMenuItem,
+  PromptInputActionMenuTrigger,
 } from "@/components/ai-elements/prompt-input";
 import {
   DropdownMenuGroup,
@@ -20,12 +21,7 @@ import {
 import { useI18n } from "@/core/i18n/hooks";
 import { useImageGenerationProviders } from "@/core/image-generation";
 import { ModelProviderLogo } from "@/core/models/logo";
-
-import {
-  ModelMenuTrigger,
-  ModelOptionContent,
-  modelOptionRowClassName,
-} from "./model-menu";
+import { cn } from "@/lib/utils";
 
 type ImageGenerationSelection = {
   image_generation_model?: string;
@@ -71,25 +67,47 @@ export function ImageGenerationSelector({
 
   return (
     <PromptInputActionMenu>
-      <ModelMenuTrigger
-        icon={ImageIcon}
-        label={t.inputBox.imageGeneration}
-        selectedLabel={hasSelection ? triggerLabel : undefined}
-      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PromptInputActionMenuTrigger
+            aria-label={t.inputBox.imageGeneration}
+            className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
+          >
+            <ImageIcon
+              className={cn("size-3", hasSelection && "text-[#2aa7c9]")}
+            />
+            {hasSelection && (
+              <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
+                {triggerLabel}
+              </span>
+            )}
+          </PromptInputActionMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{t.inputBox.imageGeneration}</TooltipContent>
+      </Tooltip>
       <PromptInputActionMenuContent className="w-56">
         <DropdownMenuGroup>
           <PromptInputActionMenuItem
-            className={modelOptionRowClassName(!hasSelection)}
+            className={cn(
+              "h-9",
+              !hasSelection
+                ? "text-accent-foreground"
+                : "text-muted-foreground/65",
+            )}
             onSelect={() =>
               onSelectionChange({
                 image_generation_model: undefined,
               })
             }
           >
-            <ModelOptionContent
-              label={t.inputBox.imageGenerationDefault}
-              selected={!hasSelection}
-            />
+            <span className="min-w-0 truncate font-medium">
+              {t.inputBox.imageGenerationDefault}
+            </span>
+            {!hasSelection ? (
+              <CheckIcon className="ml-auto size-4" />
+            ) : (
+              <div className="ml-auto size-4" />
+            )}
           </PromptInputActionMenuItem>
           <DropdownMenuSeparator />
           {isLoading && (
@@ -120,7 +138,13 @@ export function ImageGenerationSelector({
                   // data-disabled kills pointer events, leaving the description
                   // tooltip unreachable. aria-disabled keeps hover/focus; onSelect blocks selection.
                   aria-disabled={!configured || undefined}
-                  className={modelOptionRowClassName(isSelected, configured)}
+                  className={cn(
+                    "h-9",
+                    !configured && "opacity-50",
+                    isSelected
+                      ? "text-accent-foreground"
+                      : "text-muted-foreground/75",
+                  )}
                   onSelect={(event) => {
                     if (!configured) {
                       event.preventDefault();
@@ -131,18 +155,22 @@ export function ImageGenerationSelector({
                     });
                   }}
                 >
-                  <ModelOptionContent
-                    configured={configured}
-                    label={model.display_name}
-                    logo={
-                      <ModelProviderLogo
-                        name={model.name}
-                        displayName={model.display_name}
-                      />
-                    }
-                    notConfiguredLabel={t.inputBox.imageGenerationNotConfigured}
-                    selected={isSelected}
+                  <ModelProviderLogo
+                    name={model.name}
+                    displayName={model.display_name}
                   />
+                  <span className="min-w-0 truncate font-medium">
+                    {model.display_name}
+                  </span>
+                  {!configured ? (
+                    <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
+                      {t.inputBox.imageGenerationNotConfigured}
+                    </span>
+                  ) : isSelected ? (
+                    <CheckIcon className="ml-auto size-4" />
+                  ) : (
+                    <div className="ml-auto size-4" />
+                  )}
                 </PromptInputActionMenuItem>
               );
 

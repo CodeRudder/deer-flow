@@ -1,12 +1,18 @@
 "use client";
 
-import { type ComponentProps, type ReactNode } from "react";
+import { SparklesIcon } from "lucide-react";
+import { type ComponentProps, type ReactNode, useState } from "react";
 
 import {
   Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
+  CommandShortcut,
 } from "@/components/ui/command";
 import {
   Dialog,
@@ -15,6 +21,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { getModelLogoPath } from "@/core/models/logo";
 import { cn } from "@/lib/utils";
 
 export type ModelSelectorProps = ComponentProps<typeof Dialog>;
@@ -50,6 +57,12 @@ export const ModelSelectorContent = ({
   </DialogContent>
 );
 
+export type ModelSelectorDialogProps = ComponentProps<typeof CommandDialog>;
+
+export const ModelSelectorDialog = (props: ModelSelectorDialogProps) => (
+  <CommandDialog {...props} />
+);
+
 export type ModelSelectorInputProps = ComponentProps<typeof CommandInput>;
 
 export const ModelSelectorInput = ({
@@ -65,10 +78,155 @@ export const ModelSelectorList = (props: ModelSelectorListProps) => (
   <CommandList {...props} />
 );
 
+export type ModelSelectorEmptyProps = ComponentProps<typeof CommandEmpty>;
+
+export const ModelSelectorEmpty = (props: ModelSelectorEmptyProps) => (
+  <CommandEmpty {...props} />
+);
+
+export type ModelSelectorGroupProps = ComponentProps<typeof CommandGroup>;
+
+export const ModelSelectorGroup = (props: ModelSelectorGroupProps) => (
+  <CommandGroup {...props} />
+);
+
 export type ModelSelectorItemProps = ComponentProps<typeof CommandItem>;
 
 export const ModelSelectorItem = (props: ModelSelectorItemProps) => (
   <CommandItem {...props} />
+);
+
+export type ModelSelectorShortcutProps = ComponentProps<typeof CommandShortcut>;
+
+export const ModelSelectorShortcut = (props: ModelSelectorShortcutProps) => (
+  <CommandShortcut {...props} />
+);
+
+export type ModelSelectorSeparatorProps = ComponentProps<
+  typeof CommandSeparator
+>;
+
+export const ModelSelectorSeparator = (props: ModelSelectorSeparatorProps) => (
+  <CommandSeparator {...props} />
+);
+
+export type ModelSelectorLogoProps = Omit<
+  ComponentProps<"img">,
+  "src" | "alt"
+> & {
+  provider:
+    | "moonshotai-cn"
+    | "lucidquery"
+    | "moonshotai"
+    | "zai-coding-plan"
+    | "alibaba"
+    | "xai"
+    | "vultr"
+    | "nvidia"
+    | "upstage"
+    | "groq"
+    | "github-copilot"
+    | "mistral"
+    | "vercel"
+    | "nebius"
+    | "deepseek"
+    | "alibaba-cn"
+    | "google-vertex-anthropic"
+    | "venice"
+    | "chutes"
+    | "cortecs"
+    | "github-models"
+    | "togetherai"
+    | "azure"
+    | "baseten"
+    | "huggingface"
+    | "opencode"
+    | "fastrouter"
+    | "google"
+    | "google-vertex"
+    | "cloudflare-workers-ai"
+    | "inception"
+    | "wandb"
+    | "openai"
+    | "zhipuai-coding-plan"
+    | "perplexity"
+    | "openrouter"
+    | "zenmux"
+    | "v0"
+    | "iflowcn"
+    | "synthetic"
+    | "deepinfra"
+    | "zhipuai"
+    | "submodel"
+    | "zai"
+    | "inference"
+    | "requesty"
+    | "morph"
+    | "lmstudio"
+    | "anthropic"
+    | "aihubmix"
+    | "fireworks-ai"
+    | "modelscope"
+    | "llama"
+    | "scaleway"
+    | "amazon-bedrock"
+    | "cerebras"
+    | (string & {});
+};
+
+export const ModelSelectorLogo = ({
+  provider,
+  className,
+  onError,
+  ...props
+}: ModelSelectorLogoProps) => {
+  const logoPath = getModelLogoPath(provider);
+  const [failedLogoPath, setFailedLogoPath] = useState<string | null>(null);
+
+  if (!logoPath || failedLogoPath === logoPath) {
+    return (
+      <span
+        aria-label={`${provider} logo`}
+        className={cn(
+          "inline-flex size-3 items-center justify-center text-[#f59e0b]",
+          className,
+        )}
+        role="img"
+      >
+        <SparklesIcon className="size-full" />
+      </span>
+    );
+  }
+
+  return (
+    <img
+      {...props}
+      alt={`${provider} logo`}
+      className={cn("size-3 dark:invert", className)}
+      height={12}
+      onError={(event) => {
+        setFailedLogoPath(logoPath);
+        onError?.(event);
+      }}
+      src={logoPath}
+      width={12}
+    />
+  );
+};
+
+export type ModelSelectorLogoGroupProps = ComponentProps<"div">;
+
+export const ModelSelectorLogoGroup = ({
+  className,
+  ...props
+}: ModelSelectorLogoGroupProps) => (
+  <div
+    className={cn(
+      "[&>img]:bg-background dark:[&>img]:bg-foreground flex shrink-0 items-center -space-x-1 [&>img]:rounded-full [&>img]:p-px [&>img]:ring-1",
+      className,
+    )}
+    {...props}
+  />
 );
 
 export type ModelSelectorNameProps = ComponentProps<"span">;

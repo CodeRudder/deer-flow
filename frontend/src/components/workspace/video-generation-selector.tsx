@@ -1,12 +1,13 @@
 "use client";
 
-import { VideoIcon } from "lucide-react";
+import { CheckIcon, VideoIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import {
   PromptInputActionMenu,
   PromptInputActionMenuContent,
   PromptInputActionMenuItem,
+  PromptInputActionMenuTrigger,
 } from "@/components/ai-elements/prompt-input";
 import {
   DropdownMenuGroup,
@@ -24,12 +25,7 @@ import {
   videoRatePerSecond,
   videoRateRangeLabel,
 } from "@/core/video-generation/rate";
-
-import {
-  ModelMenuTrigger,
-  ModelOptionContent,
-  modelOptionRowClassName,
-} from "./model-menu";
+import { cn } from "@/lib/utils";
 
 type VideoGenerationSelection = {
   video_generation_model?: string;
@@ -73,25 +69,47 @@ export function VideoGenerationSelector({
 
   return (
     <PromptInputActionMenu>
-      <ModelMenuTrigger
-        icon={VideoIcon}
-        label={t.inputBox.videoGeneration}
-        selectedLabel={hasSelection ? triggerLabel : undefined}
-      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PromptInputActionMenuTrigger
+            aria-label={t.inputBox.videoGeneration}
+            className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
+          >
+            <VideoIcon
+              className={cn("size-3", hasSelection && "text-[#2aa7c9]")}
+            />
+            {hasSelection && (
+              <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
+                {triggerLabel}
+              </span>
+            )}
+          </PromptInputActionMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{t.inputBox.videoGeneration}</TooltipContent>
+      </Tooltip>
       <PromptInputActionMenuContent className="w-72">
         <DropdownMenuGroup>
           <PromptInputActionMenuItem
-            className={modelOptionRowClassName(!hasSelection)}
+            className={cn(
+              "h-9",
+              !hasSelection
+                ? "text-accent-foreground"
+                : "text-muted-foreground/65",
+            )}
             onSelect={() =>
               onSelectionChange({
                 video_generation_model: undefined,
               })
             }
           >
-            <ModelOptionContent
-              label={t.inputBox.videoGenerationDefault}
-              selected={!hasSelection}
-            />
+            <span className="min-w-0 truncate font-medium">
+              {t.inputBox.videoGenerationDefault}
+            </span>
+            {!hasSelection ? (
+              <CheckIcon className="ml-auto size-4" />
+            ) : (
+              <div className="ml-auto size-4" />
+            )}
           </PromptInputActionMenuItem>
           <DropdownMenuSeparator />
           {isLoading && (
@@ -128,7 +146,13 @@ export function VideoGenerationSelector({
                   // data-disabled kills pointer events, leaving the description
                   // tooltip unreachable. aria-disabled keeps hover/focus; onSelect blocks selection.
                   aria-disabled={!configured || undefined}
-                  className={modelOptionRowClassName(isSelected, configured)}
+                  className={cn(
+                    "h-9",
+                    !configured && "opacity-50",
+                    isSelected
+                      ? "text-accent-foreground"
+                      : "text-muted-foreground/75",
+                  )}
                   onSelect={(event) => {
                     if (!configured) {
                       event.preventDefault();
@@ -139,27 +163,31 @@ export function VideoGenerationSelector({
                     });
                   }}
                 >
-                  <ModelOptionContent
-                    configured={configured}
-                    label={model.display_name}
-                    logo={
-                      <ModelProviderLogo
-                        name={model.name}
-                        displayName={model.display_name}
-                      />
-                    }
-                    meta={
-                      hasRate && rate ? (
-                        <span className="text-muted-foreground text-[11px]">
-                          {t.inputBox.videoRateFromLabel(
-                            videoRateRangeLabel(rate.min, rate.min),
-                          )}
-                        </span>
-                      ) : undefined
-                    }
-                    notConfiguredLabel={t.inputBox.videoGenerationNotConfigured}
-                    selected={isSelected}
+                  <ModelProviderLogo
+                    name={model.name}
+                    displayName={model.display_name}
                   />
+                  <span className="min-w-0 truncate font-medium">
+                    {model.display_name}
+                  </span>
+                  {hasRate && (
+                    <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">
+                      {t.inputBox.videoRateFromLabel(
+                        videoRateRangeLabel(rate!.min, rate!.min),
+                      )}
+                    </span>
+                  )}
+                  {!configured ? (
+                    <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
+                      {t.inputBox.videoGenerationNotConfigured}
+                    </span>
+                  ) : isSelected ? (
+                    <CheckIcon
+                      className={cn("size-4", !hasRate && "ml-auto")}
+                    />
+                  ) : (
+                    <div className={cn("size-4", !hasRate && "ml-auto")} />
+                  )}
                 </PromptInputActionMenuItem>
               );
 
