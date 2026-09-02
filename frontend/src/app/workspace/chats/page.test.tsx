@@ -35,19 +35,29 @@ vi.mock("@/components/ui/input", () => ({
 }));
 
 vi.mock("@/components/ui/scroll-area", () => ({
-  ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ScrollArea: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
 }));
 
 vi.mock("@/components/workspace/workspace-container", () => ({
-  WorkspaceBody: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  WorkspaceContainer: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  WorkspaceBody: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  WorkspaceContainer: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   WorkspaceHeader: () => <div />,
 }));
 
 vi.mock("next/link", () => ({
-  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
-    <a href={href}>{children}</a>
-  ),
+  default: ({
+    href,
+    children,
+  }: {
+    href: string;
+    children: React.ReactNode;
+  }) => <a href={href}>{children}</a>,
 }));
 
 vi.mock("next/navigation", () => ({

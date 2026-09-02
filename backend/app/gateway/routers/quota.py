@@ -20,6 +20,17 @@ router = APIRouter(prefix="/api/quotas", tags=["quotas"])
 _DISPLAY_RESOURCE_TYPES = ("model", "image_generation", "video_generation")
 
 
+class QuotaDailyMetric(BaseModel):
+    enforced: bool
+    limit: float | None = None
+    used: float
+    reserved: float
+    remaining: float | None = None
+    ratio: float | None = None
+    status: str
+    period: dict[str, str]
+
+
 class QuotaMetric(BaseModel):
     enforced: bool
     limit: float | None = None
@@ -29,6 +40,7 @@ class QuotaMetric(BaseModel):
     ratio: float | None = None
     status: str
     unit: str
+    daily: QuotaDailyMetric | None = None
 
 
 class QuotaScopeItem(BaseModel):
@@ -51,6 +63,21 @@ class QuotaMeResponse(BaseModel):
     items: list[QuotaScopeItem]
 
 
+def _daily_view(daily: dict[str, Any] | None) -> QuotaDailyMetric | None:
+    if daily is None:
+        return None
+    return QuotaDailyMetric(
+        enforced=bool(daily.get("enforced")),
+        limit=daily.get("limit"),
+        used=float(daily.get("used") or 0.0),
+        reserved=float(daily.get("reserved") or 0.0),
+        remaining=daily.get("remaining"),
+        ratio=daily.get("ratio"),
+        status=str(daily.get("status") or "unlimited"),
+        period=daily.get("period") or {},
+    )
+
+
 def _metric_view(metric: dict[str, Any] | None, *, unit: str) -> QuotaMetric | None:
     if metric is None:
         return None
@@ -63,6 +90,7 @@ def _metric_view(metric: dict[str, Any] | None, *, unit: str) -> QuotaMetric | N
         ratio=metric.get("ratio"),
         status=str(metric.get("status") or "unlimited"),
         unit=unit,
+        daily=_daily_view(metric.get("daily")),
     )
 
 

@@ -272,7 +272,9 @@ function ArtifactFileCard({
             </div>
           )}
         </CardTitle>
-        <CardDescription className={cn("min-w-0 text-xs", !imageFile && "pl-8")}>
+        <CardDescription
+          className={cn("min-w-0 text-xs", !imageFile && "pl-8")}
+        >
           {getFileExtensionDisplayName(file)} file
         </CardDescription>
         <CardAction className="row-span-1 self-center">

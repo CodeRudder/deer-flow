@@ -11,7 +11,11 @@ import {
 } from "../threads/static-demo";
 import type { AgentThreadState } from "../threads/types";
 
-import { fetch as fetchWithAuth, isStateChangingMethod, readCsrfCookie } from "./fetcher";
+import {
+  fetch as fetchWithAuth,
+  isStateChangingMethod,
+  readCsrfCookie,
+} from "./fetcher";
 import { sanitizeRunStreamOptions } from "./stream-mode";
 
 /**

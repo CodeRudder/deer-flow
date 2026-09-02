@@ -37,7 +37,9 @@ export function getModelLogoPath(provider: string): string | undefined {
   return MODEL_LOGO_PATHS[resolvedProvider as ModelLogoProvider];
 }
 
-const PROVIDER_KEYWORD_RULES: Array<[keywords: string[], provider: ModelLogoProvider]> = [
+const PROVIDER_KEYWORD_RULES: Array<
+  [keywords: string[], provider: ModelLogoProvider]
+> = [
   [["kimi", "moonshot"], "moonshotai-cn"],
   [["doubao", "volcengine", "volcano", "seed"], "doubao"],
   [["gpt", "openai"], "openai"],
@@ -99,7 +101,7 @@ export function ModelProviderLogo({
       <span
         aria-label="model logo"
         className={cn(
-          "inline-flex size-6 shrink-0 items-center justify-center rounded-md border bg-background",
+          "bg-background inline-flex size-6 shrink-0 items-center justify-center rounded-md border",
           className,
         )}
         role="img"
@@ -117,7 +119,7 @@ export function ModelProviderLogo({
   return (
     <span
       className={cn(
-        "flex size-6 shrink-0 items-center justify-center rounded-md border bg-background",
+        "bg-background flex size-6 shrink-0 items-center justify-center rounded-md border",
         className,
       )}
       {...props}

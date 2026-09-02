@@ -1331,25 +1331,36 @@ function UserQuotaItemEditor({
   const restoreQuota = useRestoreUserCurrentPeriod();
   const [enforced, setEnforced] = useState(metric?.enforced ?? false);
   const [limit, setLimit] = useState<number | null>(metric?.limit ?? null);
+  const [dailyEnforced, setDailyEnforced] = useState(
+    metric?.daily?.enforced ?? false,
+  );
+  const [dailyLimit, setDailyLimit] = useState<number | null>(
+    metric?.daily?.limit ?? null,
+  );
   const [reason, setReason] = useState("");
 
   useEffect(() => {
     setEnforced(metric?.enforced ?? false);
     setLimit(metric?.limit ?? null);
-  }, [metric?.enforced, metric?.limit]);
+    setDailyEnforced(metric?.daily?.enforced ?? false);
+    setDailyLimit(metric?.daily?.limit ?? null);
+  }, [metric?.enforced, metric?.limit, metric?.daily]);
 
   const save = async () => {
+    const daily = { enforced: dailyEnforced, limit: dailyLimit };
     await overrideQuota.mutateAsync({
       userId,
       scopeId: item.scope.id,
       payload: {
         requests:
-          item.scope.resource_type === "model" ? { enforced, limit } : null,
+          item.scope.resource_type === "model"
+            ? { enforced, limit, daily }
+            : null,
         images:
           item.scope.resource_type === "image_generation"
-            ? { enforced, limit }
+            ? { enforced, limit, daily }
             : null,
-        videos: isVideoScope ? { enforced, limit } : null,
+        videos: isVideoScope ? { enforced, limit, daily } : null,
         reason: reason || undefined,
       },
     });
@@ -1469,12 +1480,19 @@ function UserQuotaItemEditor({
             />
           </label>
           <label className="text-muted-foreground text-xs">
-            调额原因
+            日上限
             <Input
               className="mt-1"
-              value={reason}
-              placeholder="可选"
-              onChange={(event) => setReason(event.target.value)}
+              type="number"
+              min={0}
+              disabled={!dailyEnforced}
+              value={dailyLimit ?? ""}
+              placeholder="不限额"
+              onChange={(event) =>
+                setDailyLimit(
+                  event.target.value === "" ? null : Number(event.target.value),
+                )
+              }
             />
           </label>
           <Button
@@ -1485,6 +1503,30 @@ function UserQuotaItemEditor({
           >
             保存本周期
           </Button>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">日额度拦截</span>
+            <Switch
+              checked={dailyEnforced}
+              onCheckedChange={setDailyEnforced}
+            />
+            {metric?.daily ? (
+              <span className="text-muted-foreground">
+                今日已用 {formatExactNumber(metric.daily.used)}
+                {isVideoScope ? " 积分" : " 次"}
+              </span>
+            ) : null}
+          </label>
+          <label className="text-muted-foreground text-xs">
+            调额原因
+            <Input
+              className="mt-1"
+              value={reason}
+              placeholder="可选"
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
         </div>
       </div>
       {item.source === "temporary_override" ? (
@@ -1566,6 +1608,8 @@ function QuotaScopeEditor({
   const [periodType, setPeriodType] = useState<"weekly" | "monthly">("weekly");
   const [enforced, setEnforced] = useState(false);
   const [limit, setLimit] = useState<number | null>(null);
+  const [dailyEnforced, setDailyEnforced] = useState(false);
+  const [dailyLimit, setDailyLimit] = useState<number | null>(null);
   const [videoBillingRules, setVideoBillingRules] = useState("{}");
   const [enabled, setEnabled] = useState(true);
 
@@ -1583,6 +1627,8 @@ function QuotaScopeEditor({
       null;
     setEnforced(policy?.enforced ?? false);
     setLimit(policy?.limit ?? null);
+    setDailyEnforced(policy?.daily?.enforced ?? false);
+    setDailyLimit(policy?.daily?.limit ?? null);
     const rules =
       scope?.default_policy.videos?.billing_rules ??
       scope?.video_billing_rules ??
@@ -1599,6 +1645,7 @@ function QuotaScopeEditor({
 
   const save = async () => {
     const isModel = resourceType === "model";
+    const daily = { enforced: dailyEnforced, limit: dailyLimit };
     let parsedVideoBillingRules: Record<string, unknown> = {};
     if (resourceType === "video_generation") {
       try {
@@ -1626,15 +1673,18 @@ function QuotaScopeEditor({
         : { exact: [], prefix: [] },
       default_policy: {
         period_type: periodType,
-        requests: isModel ? { enforced, limit } : null,
+        requests: isModel ? { enforced, limit, daily } : null,
         images:
-          resourceType === "image_generation" ? { enforced, limit } : null,
+          resourceType === "image_generation"
+            ? { enforced, limit, daily }
+            : null,
         videos:
           resourceType === "video_generation"
             ? {
                 enforced,
                 limit,
                 billing_rules: parsedVideoBillingRules,
+                daily,
               }
             : null,
       },
@@ -1757,6 +1807,36 @@ function QuotaScopeEditor({
                 }
               />
             </label>
+            <label className="block text-sm">
+              每日上限
+              <Input
+                className="mt-1"
+                type="number"
+                min={0}
+                disabled={!dailyEnforced}
+                value={dailyLimit ?? ""}
+                placeholder="不限额"
+                onChange={(event) =>
+                  setDailyLimit(
+                    event.target.value === ""
+                      ? null
+                      : Number(event.target.value),
+                  )
+                }
+              />
+            </label>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div>
+              <div className="text-sm font-medium">日额度拦截</div>
+              <div className="text-muted-foreground text-xs">
+                按自然日（东八区）单独限额，与周/月额度独立生效
+              </div>
+            </div>
+            <Switch
+              checked={dailyEnforced}
+              onCheckedChange={setDailyEnforced}
+            />
           </div>
           {resourceType === "video_generation" ? (
             <div className="text-sm">

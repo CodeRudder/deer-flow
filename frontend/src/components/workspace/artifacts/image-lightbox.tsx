@@ -75,10 +75,7 @@ export function ImageLightbox({
         event.preventDefault();
         event.stopPropagation();
         const zoomFactor = Math.exp(-event.deltaY * 0.0007);
-        const nextScale = Math.min(
-          6,
-          Math.max(1, scale * zoomFactor),
-        );
+        const nextScale = Math.min(6, Math.max(1, scale * zoomFactor));
 
         setScale(nextScale);
         if (nextScale === 1) {
@@ -155,7 +152,7 @@ export function ImageLightbox({
           src={src}
           alt={alt}
           draggable={false}
-          className="max-h-[92vh] max-w-[92vw] select-none object-contain"
+          className="max-h-[92vh] max-w-[92vw] object-contain select-none"
           style={{
             cursor: scale > 1 ? "grab" : "zoom-in",
             transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,

@@ -43,6 +43,14 @@ _ADMIN_REQUIRED_DETAIL = "Admin privileges required to access admin dashboard."
 class QuotaMetricPolicy(BaseModel):
     enforced: bool
     limit: int | None = Field(default=None, ge=0)
+    daily: QuotaDailyMetricPolicy | None = None
+
+
+class QuotaDailyMetricPolicy(BaseModel):
+    """Optional daily cap riding on a metric policy."""
+
+    enforced: bool
+    limit: float | int | None = Field(default=None, ge=0)
 
 
 class QuotaVideoMetricPolicy(QuotaMetricPolicy):
@@ -127,8 +135,15 @@ def _scope_payload(body: QuotaScopeCreateRequest | QuotaScopeUpdateRequest) -> d
     )
     if videos is not None:
         payload["video_billing_rules"] = body.video_billing_rules if body.video_billing_rules is not None else videos.billing_rules
+        if videos.daily is not None:
+            payload["videos_daily"] = {"enforced": videos.daily.enforced, "limit": videos.daily.limit}
     elif body.video_billing_rules is not None:
         payload["video_billing_rules"] = body.video_billing_rules
+    # Absent daily keeps the stored policy on update; provided replaces it.
+    if requests is not None and requests.daily is not None:
+        payload["requests_daily"] = {"enforced": requests.daily.enforced, "limit": requests.daily.limit}
+    if images is not None and images.daily is not None:
+        payload["images_daily"] = {"enforced": images.daily.enforced, "limit": images.daily.limit}
     return payload
 
 
@@ -431,10 +446,13 @@ async def override_user_quota(
         scope_id,
         request_enforced=body.requests.enforced if body.requests else None,
         request_limit=body.requests.limit if body.requests else None,
+        request_daily={"enforced": body.requests.daily.enforced, "limit": body.requests.daily.limit} if body.requests and body.requests.daily else None,
         image_enforced=body.images.enforced if body.images else None,
         image_limit=body.images.limit if body.images else None,
+        image_daily={"enforced": body.images.daily.enforced, "limit": body.images.daily.limit} if body.images and body.images.daily else None,
         video_enforced=body.videos.enforced if body.videos else None,
         video_limit=body.videos.limit if body.videos else None,
+        video_daily={"enforced": body.videos.daily.enforced, "limit": body.videos.daily.limit} if body.videos and body.videos.daily else None,
         reason=body.reason,
         updated_by=str(getattr(user, "id", "")) or None,
     )

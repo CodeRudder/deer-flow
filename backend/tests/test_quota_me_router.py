@@ -4,7 +4,9 @@
 本人隔离、无鉴权 default 用户空账本、无数据库 503、泄漏断言（评审 P1-2）。
 """
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -55,21 +57,23 @@ async def _create_scopes(
     *,
     video_enforced: bool = True,
     video_limit: int | float | None = 100,
+    daily: dict | None = None,
+    model_daily: dict | None = None,
 ) -> dict:
     """建 model/image/video 三个 scope，返回 video scope 配置。"""
-    await service.create_scope(
-        {
-            "code": "claude_advanced",
-            "name": "Claude 高级模型",
-            "resource_type": "model",
-            "match_rules": {"exact": [], "prefix": ["claude-"]},
-            "period_type": "weekly",
-            "request_enforced": True,
-            "request_limit": 2,
-            "enabled": True,
-        },
-        updated_by="admin-1",
-    )
+    model_payload = {
+        "code": "claude_advanced",
+        "name": "Claude 高级模型",
+        "resource_type": "model",
+        "match_rules": {"exact": [], "prefix": ["claude-"]},
+        "period_type": "weekly",
+        "request_enforced": True,
+        "request_limit": 2,
+        "enabled": True,
+    }
+    if model_daily is not None:
+        model_payload["requests_daily"] = model_daily
+    await service.create_scope(model_payload, updated_by="admin-1")
     await service.create_scope(
         {
             "code": "image_generation",
@@ -83,24 +87,24 @@ async def _create_scopes(
         },
         updated_by="admin-1",
     )
-    return await service.create_scope(
-        {
-            "code": "video_generation",
-            "name": "视频资源",
-            "resource_type": "video_generation",
-            "match_rules": {"exact": [], "prefix": []},
-            "period_type": "weekly",
-            "video_enforced": video_enforced,
-            "video_limit": video_limit,
-            "video_billing_rules": {
-                "currency": "CNY",
-                "point_to_yuan": 1,
-                "models": {"seedance-2.5": {"1080p": 3.5}},
-            },
-            "enabled": True,
+    video_payload = {
+        "code": "video_generation",
+        "name": "视频资源",
+        "resource_type": "video_generation",
+        "match_rules": {"exact": [], "prefix": []},
+        "period_type": "weekly",
+        "video_enforced": video_enforced,
+        "video_limit": video_limit,
+        "video_billing_rules": {
+            "currency": "CNY",
+            "point_to_yuan": 1,
+            "models": {"seedance-2.5": {"1080p": 3.5}},
         },
-        updated_by="admin-1",
-    )
+        "enabled": True,
+    }
+    if daily is not None:
+        video_payload["videos_daily"] = daily
+    return await service.create_scope(video_payload, updated_by="admin-1")
 
 
 def _patch_factory(monkeypatch, sf) -> None:
@@ -383,5 +387,72 @@ async def test_quota_me_reflects_admin_override(tmp_path, monkeypatch):
         assert video_item.videos is not None
         assert video_item.videos.limit == 7.0
         assert video_item.source == "temporary_override"
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_quota_me_returns_video_daily_metrics(tmp_path, monkeypatch):
+    """视频日指标随 /me 透传（feat30）；请求/生图维度不带 daily。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_user(sf, "user-1", "user-1@example.com")
+        await _create_scopes(service, daily={"enforced": True, "limit": 20})
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="me-1")
+        expected_label = datetime.now(UTC).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+        _patch_factory(monkeypatch, sf)
+        token = _acting_user("user-1")
+        try:
+            result = await quota_router.get_my_quota()
+        finally:
+            user_context.reset_current_user(token)
+
+        video_item = next(item for item in result.items if item.resource_type == "video_generation")
+        daily = video_item.videos.daily
+        assert daily is not None
+        assert daily.enforced is True
+        assert daily.limit == 20.0
+        assert daily.used == 0.0
+        assert daily.reserved == 14.0
+        assert daily.remaining == 6.0
+        assert daily.status == "normal"
+        assert daily.period["period_type"] == "daily"
+        assert daily.period["label"] == expected_label
+        model_item = next(item for item in result.items if item.resource_type == "model")
+        assert model_item.requests.daily is None
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_quota_me_returns_request_daily_metrics(tmp_path, monkeypatch):
+    """模型组日指标随 /me 透传；未配置日限额的模型组不带 daily。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_user(sf, "user-1", "user-1@example.com")
+        await _create_scopes(service, model_daily={"enforced": True, "limit": 3})
+        await service.reserve_model_request("user-1", "claude-sonnet-4")
+        expected_label = datetime.now(UTC).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+        _patch_factory(monkeypatch, sf)
+        token = _acting_user("user-1")
+        try:
+            result = await quota_router.get_my_quota()
+        finally:
+            user_context.reset_current_user(token)
+
+        model_item = next(item for item in result.items if item.resource_type == "model")
+        daily = model_item.requests.daily
+        assert daily is not None
+        assert daily.enforced is True
+        assert daily.limit == 3.0
+        assert daily.used == 1.0
+        assert daily.remaining == 2.0
+        assert daily.status == "normal"
+        assert daily.period["period_type"] == "daily"
+        assert daily.period["label"] == expected_label
+        image_item = next(item for item in result.items if item.resource_type == "image_generation")
+        assert image_item.images.daily is None
     finally:
         await service._test_engine.dispose()  # type: ignore[attr-defined]

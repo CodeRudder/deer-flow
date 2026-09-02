@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test, rs } from "@rstest/core";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  rs,
+} from "@rstest/core";
 
 async function loadFreshLoader() {
   rs.resetModules();

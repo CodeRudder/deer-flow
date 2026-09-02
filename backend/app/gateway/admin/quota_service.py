@@ -45,6 +45,11 @@ class QuotaExceeded:
     unit: str = "count"
     scale: int = 1
     requested: int | None = None
+    dimension: str = "period"
+    daily_used: int = 0
+    daily_reserved: int = 0
+    daily_limit: int | None = None
+    daily_label: str | None = None
 
 
 class QuotaExceededError(Exception):
@@ -62,6 +67,7 @@ class ModelQuotaReservation:
     usage_period_id: str | None
     request_reserved: bool
     request_used: int
+    usage_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ class ImageQuotaReservation:
     usage_period_id: str | None
     count: int
     image_used: int
+    usage_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,10 +123,18 @@ class ModelScopeSnapshot:
     image_limit: int | None = None
     video_enforced: bool = False
     video_limit: int | None = None
+    daily_enforced: bool = False
+    daily_limit: int | None = None
 
 
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _usage_date(at: datetime | None = None) -> str:
+    """Daily bucket key: the Asia/Shanghai local date of the instant (feat30)."""
+    instant = _as_utc(at) if at is not None else datetime.now(UTC)
+    return instant.astimezone(APP_TZ).date().isoformat()
 
 
 def _points_to_minor(value: Any) -> int:
@@ -137,6 +152,28 @@ def _minor_to_points(value: int | None) -> float | None:
     if value is None:
         return None
     return float(Decimal(int(value)) / _VIDEO_MINOR_UNIT_SCALE)
+
+
+def _parse_daily_policy(policy: Any, *, minor_units: bool) -> tuple[bool, int | None] | None:
+    """Parse an optional daily policy; None when absent so updates keep stored values.
+
+    Video limits are points converted to fen; model/image limits are plain counts.
+    """
+    if not isinstance(policy, dict):
+        return None
+    enforced = bool(policy.get("enforced", False))
+    raw = policy.get("limit")
+    if raw is None:
+        return enforced, None
+    if minor_units:
+        return enforced, _points_to_minor(raw)
+    try:
+        count = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_daily_limit", "message": "日限额必须是整数"}) from exc
+    if count < 0:
+        raise HTTPException(status_code=400, detail={"code": "invalid_daily_limit", "message": "日限额不能为负数"})
+    return enforced, count
 
 
 def _video_rule_models(rules: Any) -> dict[str, Any]:
@@ -356,6 +393,38 @@ def _video_metric(enforced: bool, limit_minor: int | None, used_minor: int, rese
         "remaining": max(0.0, limit - effective),
         "ratio": ratio,
         "status": status,
+    }
+
+
+def _video_daily_metric(enforced: bool, limit_minor: int | None, used_minor: int, reserved_minor: int, label: str) -> dict[str, Any]:
+    """Daily-window video metric in API points; shape mirrors `_video_metric` + period."""
+    limit = _minor_to_points(limit_minor)
+    used = _minor_to_points(used_minor) or 0.0
+    reserved = _minor_to_points(reserved_minor) or 0.0
+    effective = used + reserved
+    period = {"period_type": "daily", "label": label, "timezone": "Asia/Shanghai"}
+    if not enforced or limit is None:
+        return {
+            "enforced": bool(enforced),
+            "limit": limit,
+            "used": used,
+            "reserved": reserved,
+            "remaining": None if limit is None else max(0.0, limit - effective),
+            "ratio": None,
+            "status": "unlimited",
+            "period": period,
+        }
+    ratio = None if limit == 0 else effective / limit
+    status = "exceeded" if effective >= limit else "warning" if ratio is not None and ratio >= 0.8 else "normal"
+    return {
+        "enforced": True,
+        "limit": limit,
+        "used": used,
+        "reserved": reserved,
+        "remaining": max(0.0, limit - effective),
+        "ratio": ratio,
+        "status": status,
+        "period": period,
     }
 
 
@@ -605,6 +674,8 @@ class QuotaService:
         enabled = bool(payload.get("enabled", True))
         video_billing_rules: dict[str, Any] = {}
         video_enforced = False
+        daily_enforced = False
+        daily_limit: int | None = None
         video_limit = payload.get("video_limit") if resource_type == "video_generation" else None
         if resource_type == "video_generation":
             video_enforced = bool(payload.get("video_enforced", False))
@@ -613,6 +684,13 @@ class QuotaService:
             # is entered; generation remains blocked until rates are present.
             video_billing_rules = {} if not raw_video_rules and not video_enforced else _validate_video_billing_rules(raw_video_rules)
             video_limit = _points_to_minor(video_limit) if video_limit is not None else None
+            parsed_daily = _parse_daily_policy(payload.get("videos_daily"), minor_units=True)
+        elif resource_type == "image_generation":
+            parsed_daily = _parse_daily_policy(payload.get("images_daily"), minor_units=False)
+        else:
+            parsed_daily = _parse_daily_policy(payload.get("requests_daily"), minor_units=False)
+        if parsed_daily is not None:
+            daily_enforced, daily_limit = parsed_daily
         async with self._sf() as session:
             if (await session.execute(select(QuotaScopeRow.id).where(QuotaScopeRow.code == code))).scalar_one_or_none():
                 raise HTTPException(status_code=409, detail={"code": "quota_scope_code_exists", "message": "Scope code already exists"})
@@ -642,6 +720,8 @@ class QuotaService:
                 video_enforced=video_enforced if resource_type == "video_generation" else False,
                 video_limit=video_limit,
                 video_billing_rules=video_billing_rules,
+                daily_enforced=daily_enforced,
+                daily_limit=daily_limit,
                 policy_version=1,
                 created_at=now,
                 updated_at=now,
@@ -669,30 +749,50 @@ class QuotaService:
                     video_billing_rules = {} if not raw_video_rules and not video_enforced else _validate_video_billing_rules(raw_video_rules)
                     raw_video_limit = payload.get("video_limit", _minor_to_points(scope.video_limit))
                     video_limit = _points_to_minor(raw_video_limit) if raw_video_limit is not None else None
+                    parsed_daily = _parse_daily_policy(payload.get("videos_daily"), minor_units=True)
+                    if parsed_daily is not None:
+                        daily_enforced, daily_limit = parsed_daily
+                    else:
+                        daily_enforced, daily_limit = scope.daily_enforced, scope.daily_limit
                     policy_changed = (
                         scope.period_type,
                         scope.video_enforced,
                         scope.video_limit,
                         getattr(scope, "video_billing_rules", {}),
+                        scope.daily_enforced,
+                        scope.daily_limit,
                     ) != (
                         period_type,
                         video_enforced,
                         video_limit,
                         video_billing_rules,
+                        daily_enforced,
+                        daily_limit,
                     )
                     scope.video_enforced = video_enforced
                     scope.video_limit = video_limit
                     scope.video_billing_rules = video_billing_rules
+                    scope.daily_enforced = daily_enforced
+                    scope.daily_limit = daily_limit
                 else:
                     image_enforced = bool(payload.get("image_enforced", scope.image_enforced))
                     image_limit = payload.get("image_limit", scope.image_limit)
-                    policy_changed = (scope.period_type, scope.image_enforced, scope.image_limit) != (
+                    parsed_daily = _parse_daily_policy(payload.get("images_daily"), minor_units=False)
+                    if parsed_daily is not None:
+                        daily_enforced, daily_limit = parsed_daily
+                    else:
+                        daily_enforced, daily_limit = scope.daily_enforced, scope.daily_limit
+                    policy_changed = (scope.period_type, scope.image_enforced, scope.image_limit, scope.daily_enforced, scope.daily_limit) != (
                         period_type,
                         image_enforced,
                         image_limit,
+                        daily_enforced,
+                        daily_limit,
                     )
                     scope.image_enforced = image_enforced
                     scope.image_limit = image_limit
+                    scope.daily_enforced = daily_enforced
+                    scope.daily_limit = daily_limit
                 scope.name = name
                 scope.enabled = enabled
                 scope.period_type = period_type
@@ -704,15 +804,22 @@ class QuotaService:
                 period_type = str(payload.get("period_type") or "weekly")
                 request_enforced = bool(payload.get("request_enforced", False))
                 request_limit = payload.get("request_limit")
+                parsed_daily = _parse_daily_policy(payload.get("requests_daily"), minor_units=False)
+                if parsed_daily is not None:
+                    daily_enforced, daily_limit = parsed_daily
+                else:
+                    daily_enforced, daily_limit = scope.daily_enforced, scope.daily_limit
                 definition_changed = (scope.name, _normalize_rules(scope.match_rules), scope.enabled) != (
                     name,
                     rules,
                     enabled,
                 )
-                policy_changed = (scope.period_type, scope.request_enforced, scope.request_limit) != (
+                policy_changed = (scope.period_type, scope.request_enforced, scope.request_limit, scope.daily_enforced, scope.daily_limit) != (
                     period_type,
                     request_enforced,
                     request_limit,
+                    daily_enforced,
+                    daily_limit,
                 )
                 scope.name = name
                 scope.match_rules = rules
@@ -720,6 +827,8 @@ class QuotaService:
                 scope.period_type = period_type
                 scope.request_enforced = request_enforced
                 scope.request_limit = request_limit
+                scope.daily_enforced = daily_enforced
+                scope.daily_limit = daily_limit
             if scope.period_type not in {"weekly", "monthly"}:
                 raise HTTPException(status_code=400, detail={"code": "invalid_quota_period", "message": "Invalid period type"})
             if not definition_changed and not policy_changed:
@@ -741,16 +850,22 @@ class QuotaService:
                     values.update(
                         request_enforced_snapshot=scope.request_enforced,
                         request_limit_snapshot=scope.request_limit,
+                        daily_enforced_snapshot=scope.daily_enforced,
+                        daily_limit_snapshot=scope.daily_limit,
                     )
                 elif scope.resource_type == "video_generation":
                     values.update(
                         video_enforced_snapshot=scope.video_enforced,
                         video_limit_snapshot=scope.video_limit,
+                        daily_enforced_snapshot=scope.daily_enforced,
+                        daily_limit_snapshot=scope.daily_limit,
                     )
                 else:
                     values.update(
                         image_enforced_snapshot=scope.image_enforced,
                         image_limit_snapshot=scope.image_limit,
+                        daily_enforced_snapshot=scope.daily_enforced,
+                        daily_limit_snapshot=scope.daily_limit,
                     )
                 await session.execute(
                     update(UserQuotaUsagePeriodRow)
@@ -761,6 +876,10 @@ class QuotaService:
                     )
                     .values(**values)
                 )
+                if scope.resource_type == "video_generation":
+                    # Rebuild daily buckets from billing records so enabling the
+                    # daily limit cannot miss reservations that predate it.
+                    await self._rebuild_daily_usage(session, scope, window)
             await session.commit()
             await session.refresh(scope)
             return await self._scope_response(session, scope)
@@ -826,12 +945,32 @@ class QuotaService:
             "is_system": bool(scope.is_system),
             "default_policy": {
                 "period_type": scope.period_type,
-                "requests": ({"enforced": bool(scope.request_enforced), "limit": scope.request_limit} if scope.resource_type == "model" else None),
-                "images": ({"enforced": bool(scope.image_enforced), "limit": scope.image_limit} if scope.resource_type == "image_generation" else None),
+                "requests": (
+                    {
+                        "enforced": bool(scope.request_enforced),
+                        "limit": scope.request_limit,
+                        "daily": {"enforced": bool(scope.daily_enforced), "limit": scope.daily_limit},
+                    }
+                    if scope.resource_type == "model"
+                    else None
+                ),
+                "images": (
+                    {
+                        "enforced": bool(scope.image_enforced),
+                        "limit": scope.image_limit,
+                        "daily": {"enforced": bool(scope.daily_enforced), "limit": scope.daily_limit},
+                    }
+                    if scope.resource_type == "image_generation"
+                    else None
+                ),
                 "videos": (
                     {
                         "enforced": bool(scope.video_enforced),
                         "limit": _minor_to_points(scope.video_limit),
+                        "daily": {
+                            "enforced": bool(getattr(scope, "daily_enforced", False)),
+                            "limit": _minor_to_points(getattr(scope, "daily_limit", None)),
+                        },
                         "billing_mode": _VIDEO_BILLING_MODE,
                         "unit": "points",
                         "scale": _VIDEO_MINOR_UNIT_SCALE,
@@ -882,6 +1021,8 @@ class QuotaService:
                             request_enforced=bool(scope.request_enforced),
                             request_limit=scope.request_limit,
                             policy_version=scope.policy_version,
+                            daily_enforced=bool(scope.daily_enforced),
+                            daily_limit=scope.daily_limit,
                         )
                     )
                 self._model_scope_snapshots = tuple(snapshots)
@@ -932,6 +1073,9 @@ class QuotaService:
             "video_used": 0,
             "video_reserved": 0,
             "video_billing_records": {},
+            "daily_enforced_snapshot": getattr(scope, "daily_enforced", False),
+            "daily_limit_snapshot": getattr(scope, "daily_limit", None),
+            "daily_usage": {},
             "is_overridden": False,
             "created_at": now,
             "updated_at": now,
@@ -959,6 +1103,11 @@ class QuotaService:
             if scope is None:
                 return ModelQuotaReservation(str(uuid.uuid4()), user_id, model, None, None, False, 0)
             row = await self._ensure_usage_period(session, user_id, scope, at=at)
+            # A configured daily policy moves the row onto the lock path so the
+            # JSON bucket stays exact; otherwise the atomic update stands alone.
+            daily_configured = bool(row.daily_enforced_snapshot) or row.daily_limit_snapshot is not None
+            if daily_configured:
+                row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == row.id).with_for_update())).scalar_one()
             result = await session.execute(
                 update(UserQuotaUsagePeriodRow)
                 .where(
@@ -979,8 +1128,28 @@ class QuotaService:
             if used is None:
                 await session.refresh(row)
                 raise QuotaExceededError(self._exceeded(scope, row, "model_requests", model=model))
+            usage_date = ""
+            if daily_configured:
+                usage_date = _usage_date(at)
+                daily_used, daily_reserved, daily_limit = self._daily_bucket_state(row, usage_date)
+                if row.daily_enforced_snapshot and daily_limit is not None and daily_used + daily_reserved + 1 > int(daily_limit):
+                    raise QuotaExceededError(
+                        self._exceeded(
+                            scope,
+                            row,
+                            "model_requests",
+                            model=model,
+                            requested=1,
+                            dimension="daily",
+                            daily_used=daily_used,
+                            daily_reserved=daily_reserved,
+                            daily_limit=int(daily_limit),
+                            daily_label=usage_date,
+                        )
+                    )
+                self._write_daily_bucket(row, usage_date, used=daily_used + 1, reserved=daily_reserved)
             await session.commit()
-            return ModelQuotaReservation(str(uuid.uuid4()), user_id, model, scope.id, row.id, True, int(used))
+            return ModelQuotaReservation(str(uuid.uuid4()), user_id, model, scope.id, row.id, True, int(used), usage_date=usage_date)
 
     async def record_model_tokens(self, reservation: ModelQuotaReservation, total_tokens: int) -> None:
         amount = max(0, int(total_tokens))
@@ -1001,6 +1170,11 @@ class QuotaService:
         if not reservation.request_reserved or not reservation.usage_period_id:
             return
         async with self._sf() as session:
+            if reservation.usage_date:
+                row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == reservation.usage_period_id).with_for_update())).scalar_one_or_none()
+                if row is not None:
+                    daily_used, daily_reserved, _ = self._daily_bucket_state(row, reservation.usage_date)
+                    self._write_daily_bucket(row, reservation.usage_date, used=max(0, daily_used - 1), reserved=daily_reserved)
             await session.execute(
                 update(UserQuotaUsagePeriodRow)
                 .where(UserQuotaUsagePeriodRow.id == reservation.usage_period_id)
@@ -1036,6 +1210,9 @@ class QuotaService:
             if scope is None:
                 return ImageQuotaReservation(str(uuid.uuid4()), user_id, None, None, 0, 0)
             row = await self._ensure_usage_period(session, user_id, scope, at=at)
+            daily_configured = bool(row.daily_enforced_snapshot) or row.daily_limit_snapshot is not None
+            if daily_configured:
+                row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == row.id).with_for_update())).scalar_one()
             result = await session.execute(
                 update(UserQuotaUsagePeriodRow)
                 .where(
@@ -1056,13 +1233,37 @@ class QuotaService:
             if used is None:
                 await session.refresh(row)
                 raise QuotaExceededError(self._exceeded(scope, row, "image_generations"))
+            usage_date = ""
+            if daily_configured:
+                usage_date = _usage_date(at)
+                daily_used, daily_reserved, daily_limit = self._daily_bucket_state(row, usage_date)
+                if row.daily_enforced_snapshot and daily_limit is not None and daily_used + daily_reserved + count > int(daily_limit):
+                    raise QuotaExceededError(
+                        self._exceeded(
+                            scope,
+                            row,
+                            "image_generations",
+                            requested=count,
+                            dimension="daily",
+                            daily_used=daily_used,
+                            daily_reserved=daily_reserved,
+                            daily_limit=int(daily_limit),
+                            daily_label=usage_date,
+                        )
+                    )
+                self._write_daily_bucket(row, usage_date, used=daily_used + count, reserved=daily_reserved)
             await session.commit()
-            return ImageQuotaReservation(str(uuid.uuid4()), user_id, scope.id, row.id, count, int(used))
+            return ImageQuotaReservation(str(uuid.uuid4()), user_id, scope.id, row.id, count, int(used), usage_date=usage_date)
 
     async def release_image_generations(self, reservation: ImageQuotaReservation) -> None:
         if not reservation.usage_period_id or reservation.count <= 0:
             return
         async with self._sf() as session:
+            if reservation.usage_date:
+                row = (await session.execute(select(UserQuotaUsagePeriodRow).where(UserQuotaUsagePeriodRow.id == reservation.usage_period_id).with_for_update())).scalar_one_or_none()
+                if row is not None:
+                    daily_used, daily_reserved, _ = self._daily_bucket_state(row, reservation.usage_date)
+                    self._write_daily_bucket(row, reservation.usage_date, used=max(0, daily_used - reservation.count), reserved=daily_reserved)
             await session.execute(
                 update(UserQuotaUsagePeriodRow)
                 .where(UserQuotaUsagePeriodRow.id == reservation.usage_period_id)
@@ -1163,6 +1364,74 @@ class QuotaService:
             reused=True,
         )
 
+    @staticmethod
+    def _daily_usage_map(row: UserQuotaUsagePeriodRow) -> dict[str, Any]:
+        """Return a mutable copy of the parent row's per-date usage buckets."""
+        raw = row.daily_usage
+        return copy.deepcopy(raw) if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _daily_bucket_state(row: UserQuotaUsagePeriodRow, usage_date: str) -> tuple[int, int, int | None]:
+        """(used, reserved, limit) of one date bucket on the locked row."""
+        bucket = (row.daily_usage or {}).get(usage_date) or {}
+        return int(bucket.get("used") or 0), int(bucket.get("reserved") or 0), row.daily_limit_snapshot
+
+    @classmethod
+    def _write_daily_bucket(cls, row: UserQuotaUsagePeriodRow, usage_date: str, *, used: int, reserved: int) -> None:
+        """Replace one date bucket; callers hold the parent row lock."""
+        daily_map = cls._daily_usage_map(row)
+        daily_map[usage_date] = {"used": used, "reserved": reserved}
+        row.daily_usage = daily_map
+        row.updated_at = datetime.now(UTC)
+
+    @staticmethod
+    def _record_usage_date(record: dict[str, Any]) -> str:
+        """Bucket date of a billing record; legacy records fall back to created_at."""
+        usage_date = record.get("usage_date")
+        if isinstance(usage_date, str) and usage_date:
+            return usage_date
+        created_at = record.get("created_at")
+        if isinstance(created_at, str) and created_at:
+            try:
+                return _usage_date(datetime.fromisoformat(created_at))
+            except ValueError:
+                pass
+        return _usage_date()
+
+    @classmethod
+    def _rebuild_buckets(cls, records: dict[str, Any]) -> dict[str, dict[str, int]]:
+        """Recompute per-date buckets from billing records (source of truth)."""
+        buckets: dict[str, dict[str, int]] = {}
+        for record in (records.get("items") or {}).values():
+            if not isinstance(record, dict):
+                continue
+            status = str(record.get("status") or "reserved")
+            if status == "released":
+                continue
+            bucket = buckets.setdefault(cls._record_usage_date(record), {"used": 0, "reserved": 0})
+            if status == "settled":
+                bucket["used"] += int(record.get("settled_minor_units") or 0)
+            else:  # reserved / pending keep holding their reservation
+                bucket["reserved"] += int(record.get("reserved_minor_units") or 0)
+        return buckets
+
+    async def _rebuild_daily_usage(self, session: AsyncSession, scope: QuotaScopeRow, window: PeriodWindow) -> None:
+        """Rebuild daily buckets for current-window rows of a video scope."""
+        rows = list(
+            (
+                await session.execute(
+                    select(UserQuotaUsagePeriodRow).where(
+                        UserQuotaUsagePeriodRow.quota_scope_id == scope.id,
+                        UserQuotaUsagePeriodRow.period_start == window.period_start,
+                        UserQuotaUsagePeriodRow.is_overridden.is_(False),
+                    )
+                )
+            ).scalars()
+        )
+        for row in rows:
+            row.daily_usage = self._rebuild_buckets(self._video_records(row))
+            row.updated_at = datetime.now(UTC)
+
     async def reserve_video_points(
         self,
         user_id: str,
@@ -1251,6 +1520,26 @@ class QuotaService:
                         scale=_VIDEO_MINOR_UNIT_SCALE,
                     )
                 )
+            usage_date = _usage_date(at)
+            daily_used, daily_reserved, daily_limit = self._daily_bucket_state(row, usage_date)
+            if row.daily_enforced_snapshot and daily_limit is not None and daily_used + daily_reserved + amount > int(daily_limit):
+                raise QuotaExceededError(
+                    self._exceeded(
+                        scope,
+                        row,
+                        "video_generations",
+                        model=model,
+                        requested=amount,
+                        reserved=daily_reserved,
+                        unit="points",
+                        scale=_VIDEO_MINOR_UNIT_SCALE,
+                        dimension="daily",
+                        daily_used=daily_used,
+                        daily_reserved=daily_reserved,
+                        daily_limit=int(daily_limit),
+                        daily_label=usage_date,
+                    )
+                )
             reservation_id = str(uuid.uuid4())
             record_id = str(uuid.uuid4())
             now = datetime.now(UTC).isoformat()
@@ -1260,6 +1549,7 @@ class QuotaService:
                 "reservation_id": reservation_id,
                 "idempotency_key": key,
                 "usage_period_id": row.id,
+                "usage_date": usage_date,
                 "status": "reserved",
                 "user_id": user_id,
                 "run_id": run_id,
@@ -1280,9 +1570,9 @@ class QuotaService:
                 "updated_at": now,
             }
             records["items"][record_id] = record
+            self._write_daily_bucket(row, usage_date, used=daily_used, reserved=daily_reserved + amount)
             row.video_reserved = current_reserved + amount
             row.video_billing_records = records
-            row.updated_at = datetime.now(UTC)
             await session.commit()
             return VideoPointsReservation(
                 reservation_id=reservation_id,
@@ -1351,6 +1641,14 @@ class QuotaService:
             reserved = int(record.get("reserved_minor_units") or 0)
             row.video_reserved = max(0, int(row.video_reserved or 0) - reserved)
             row.video_used = int(row.video_used or 0) + amount
+            # Settle against the reservation's original date bucket, not today's.
+            usage_date = self._record_usage_date(record)
+            daily_map = self._daily_usage_map(row)
+            daily_bucket = dict(daily_map.get(usage_date) or {})
+            daily_bucket["reserved"] = max(0, int(daily_bucket.get("reserved") or 0) - reserved)
+            daily_bucket["used"] = int(daily_bucket.get("used") or 0) + amount
+            daily_map[usage_date] = daily_bucket
+            row.daily_usage = daily_map
             record.update(
                 status="settled",
                 billable_duration_seconds=int(seconds),
@@ -1396,6 +1694,13 @@ class QuotaService:
                 return {"transitioned": False, "record": record}
             reserved = int(record.get("reserved_minor_units") or 0)
             row.video_reserved = max(0, int(row.video_reserved or 0) - reserved)
+            # Release against the reservation's original date bucket, not today's.
+            usage_date = self._record_usage_date(record)
+            daily_map = self._daily_usage_map(row)
+            daily_bucket = dict(daily_map.get(usage_date) or {"used": 0, "reserved": 0})
+            daily_bucket["reserved"] = max(0, int(daily_bucket.get("reserved") or 0) - reserved)
+            daily_map[usage_date] = daily_bucket
+            row.daily_usage = daily_map
             record.update(status="released", release_reason=reason, settled_minor_units=0, updated_at=datetime.now(UTC).isoformat())
             records["items"][key] = record
             row.video_billing_records = records
@@ -1451,13 +1756,26 @@ class QuotaService:
         reserved: int | None = None,
         unit: str | None = None,
         scale: int | None = None,
+        dimension: str = "period",
+        daily_used: int = 0,
+        daily_reserved: int = 0,
+        daily_limit: int | None = None,
+        daily_label: str | None = None,
     ) -> QuotaExceeded:
-        if metric == "model_requests":
+        if dimension == "daily":
+            used, limit = int(daily_used) + int(daily_reserved), int(daily_limit or 0)
+        elif metric == "model_requests":
             used, limit = int(row.request_used), int(row.request_limit_snapshot or 0)
         elif metric == "video_generations":
             used, limit = int(row.video_used) + int(getattr(row, "video_reserved", 0) or 0), int(row.video_limit_snapshot or 0)
         else:
             used, limit = int(row.image_used), int(row.image_limit_snapshot or 0)
+        if dimension == "daily":
+            reserved_value = int(daily_reserved)
+        elif metric == "video_generations":
+            reserved_value = int(getattr(row, "video_reserved", 0) or 0) if reserved is None else int(reserved)
+        else:
+            reserved_value = 0
         return QuotaExceeded(
             metric=metric,
             used=used,
@@ -1469,10 +1787,15 @@ class QuotaService:
             scope_code=scope.code,
             scope_name=scope.name,
             model=model,
-            reserved=(int(getattr(row, "video_reserved", 0) or 0) if reserved is None else int(reserved)) if metric == "video_generations" else 0,
+            reserved=reserved_value,
             unit=unit or ("points" if metric == "video_generations" else "count"),
             scale=scale or (_VIDEO_MINOR_UNIT_SCALE if metric == "video_generations" else 1),
             requested=requested,
+            dimension=dimension,
+            daily_used=int(daily_used),
+            daily_reserved=int(daily_reserved),
+            daily_limit=daily_limit,
+            daily_label=daily_label,
         )
 
     async def override_user_current_period(
@@ -1487,8 +1810,11 @@ class QuotaService:
         reason: str | None,
         updated_by: str | None,
         at: datetime | None = None,
+        request_daily: dict[str, Any] | None = None,
+        image_daily: dict[str, Any] | None = None,
         video_enforced: bool | None = None,
         video_limit: int | None = None,
+        video_daily: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async with self._sf() as session:
             user = await session.get(UserRow, user_id)
@@ -1505,16 +1831,22 @@ class QuotaService:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "requests is required"})
                 row.request_enforced_snapshot = request_enforced
                 row.request_limit_snapshot = request_limit
+                parsed_daily = _parse_daily_policy(request_daily, minor_units=False)
             elif scope.resource_type == "video_generation":
                 if video_enforced is None:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "videos is required"})
                 row.video_enforced_snapshot = video_enforced
                 row.video_limit_snapshot = _points_to_minor(video_limit) if video_limit is not None else None
+                parsed_daily = _parse_daily_policy(video_daily, minor_units=True)
             else:
                 if image_enforced is None:
                     raise HTTPException(status_code=400, detail={"code": "invalid_quota_policy", "message": "images is required"})
                 row.image_enforced_snapshot = image_enforced
                 row.image_limit_snapshot = image_limit
+                parsed_daily = _parse_daily_policy(image_daily, minor_units=False)
+            # Daily rides with its dimension's override; absent daily keeps the row's snapshot.
+            if parsed_daily is not None:
+                row.daily_enforced_snapshot, row.daily_limit_snapshot = parsed_daily
             row.is_overridden = True
             row.overridden_at = datetime.now(UTC)
             row.overridden_by = updated_by
@@ -1556,6 +1888,8 @@ class QuotaService:
             row.image_limit_snapshot = scope.image_limit
             row.video_enforced_snapshot = scope.video_enforced
             row.video_limit_snapshot = scope.video_limit
+            row.daily_enforced_snapshot = scope.daily_enforced
+            row.daily_limit_snapshot = scope.daily_limit
             row.is_overridden = False
             row.overridden_at = None
             row.overridden_by = None
@@ -1566,12 +1900,43 @@ class QuotaService:
             await session.refresh(row)
             return self._usage_item(scope, row, at=at)
 
+    def _daily_item(
+        self,
+        scope: QuotaScopeRow,
+        row: UserQuotaUsagePeriodRow | None,
+        *,
+        at: datetime | None,
+    ) -> dict[str, Any] | None:
+        """当天日指标；父行不覆盖查询日（历史行）时返回 None，不下发。"""
+        ref_instant = _as_utc(at) if at is not None else datetime.now(UTC)
+        if row is not None and not (_as_utc(row.period_start) <= ref_instant < _as_utc(row.period_end)):
+            return None
+        ref_date = ref_instant.astimezone(APP_TZ).date().isoformat()
+        daily_enforced = bool(row.daily_enforced_snapshot) if row else bool(scope.daily_enforced)
+        daily_limit = row.daily_limit_snapshot if row else scope.daily_limit
+        bucket = (row.daily_usage or {}).get(ref_date) if row else None
+        if scope.resource_type == "video_generation":
+            return _video_daily_metric(
+                daily_enforced,
+                daily_limit,
+                int((bucket or {}).get("used") or 0),
+                int((bucket or {}).get("reserved") or 0),
+                ref_date,
+            )
+        # 计数维度配置后才下发；开启前无历史可回溯，从配置时刻起计数。
+        if not daily_enforced and daily_limit is None:
+            return None
+        metric = _metric(daily_enforced, daily_limit, int((bucket or {}).get("used") or 0))
+        metric["period"] = {"period_type": "daily", "label": ref_date, "timezone": "Asia/Shanghai"}
+        return metric
+
     def _usage_item(
         self,
         scope: QuotaScopeRow,
         row: UserQuotaUsagePeriodRow | None,
         *,
         at: datetime | None = None,
+        include_daily: bool = True,
     ) -> dict[str, Any]:
         window = quota_period_window(scope.period_type, at)
         request_enforced = bool(row.request_enforced_snapshot) if row else bool(scope.request_enforced)
@@ -1591,6 +1956,12 @@ class QuotaService:
             videos["billing_mode"] = _VIDEO_BILLING_MODE
             videos["unit"] = "points"
             videos["scale"] = _VIDEO_MINOR_UNIT_SCALE
+        if include_daily:
+            daily = self._daily_item(scope, row, at=at)
+            if daily is not None:
+                target = requests or images or videos
+                if target is not None:
+                    target["daily"] = daily
         status = (requests or images or videos or {"status": "unlimited"})["status"]
         overridden = bool(row and row.is_overridden)
         return {
@@ -1852,7 +2223,7 @@ class QuotaService:
             return {
                 "user_id": user_id,
                 "scope": {"id": scope.id, "code": scope.code, "name": scope.name},
-                "items": [self._usage_item(scope, row, at=_as_utc(row.period_start)) for row in page_rows],
+                "items": [self._usage_item(scope, row, at=_as_utc(row.period_start), include_daily=False) for row in page_rows],
                 "next_cursor": _as_utc(page_rows[-1].period_start).isoformat() if has_more and page_rows else None,
             }
 
@@ -1865,6 +2236,7 @@ def quota_exceeded_payload(exceeded: QuotaExceeded) -> dict[str, Any]:
         "scope": {"id": exceeded.scope_id, "code": exceeded.scope_code, "name": exceeded.scope_name},
         "metric": exceeded.metric,
         "model": exceeded.model,
+        "dimension": exceeded.dimension,
         "period": {
             "period_type": exceeded.period_type,
             "period_start": exceeded.period_start.isoformat(),
@@ -1875,6 +2247,12 @@ def quota_exceeded_payload(exceeded: QuotaExceeded) -> dict[str, Any]:
         "limit": exceeded.limit,
         "retryable": False,
     }
+    if exceeded.dimension == "daily":
+        payload["daily_period"] = {
+            "period_type": "daily",
+            "label": exceeded.daily_label,
+            "timezone": "Asia/Shanghai",
+        }
     if points_mode:
         # Keep the legacy used/limit keys in internal units for compatibility,
         # while exposing human-facing point values for new video callers.
@@ -1893,7 +2271,13 @@ def quota_exceeded_payload(exceeded: QuotaExceeded) -> dict[str, Any]:
         requested = _minor_to_points(exceeded.requested)
         remaining = _minor_to_points(max(0, exceeded.limit - exceeded.used))
         if requested is not None and remaining is not None:
-            payload["message"] = f"视频生成预计需要 {requested:g} 积分，当前仅剩余 {remaining:g} 积分"
+            if exceeded.dimension == "daily":
+                payload["message"] = f"今日视频积分额度已用尽，本次需要 {requested:g} 积分，今日仅剩余 {remaining:g} 积分"
+            else:
+                payload["message"] = f"视频生成预计需要 {requested:g} 积分，当前仅剩余 {remaining:g} 积分"
+    elif exceeded.dimension == "daily" and exceeded.requested is not None:
+        remaining = max(0, exceeded.limit - exceeded.used)
+        payload["message"] = f"今日额度已用尽，本次需要 {exceeded.requested:g} 次，今日仅剩余 {remaining:g} 次"
     return payload
 
 

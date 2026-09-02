@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.gateway.admin.quota_service import QuotaExceededError, QuotaService
+from app.gateway.admin.quota_service import QuotaExceededError, QuotaService, VideoPointsReservation, quota_exceeded_payload
 from deerflow.persistence.base import Base
 from deerflow.persistence.quota.model import QuotaScopeRow, UserQuotaUsagePeriodRow
 from deerflow.persistence.user.model import UserRow
@@ -22,57 +22,57 @@ async def _quota_service(tmp_path) -> tuple[QuotaService, async_sessionmaker]:
     return service, sf
 
 
-async def _create_claude_scope(service: QuotaService, *, limit: int = 2) -> dict:
-    return await service.create_scope(
-        {
-            "code": "claude_advanced",
-            "name": "Claude 高级模型",
-            "resource_type": "model",
-            "match_rules": {"exact": [], "prefix": ["claude-"]},
-            "period_type": "weekly",
-            "request_enforced": True,
-            "request_limit": limit,
-            "enabled": True,
+async def _create_claude_scope(service: QuotaService, *, limit: int = 2, daily: dict | None = None) -> dict:
+    payload = {
+        "code": "claude_advanced",
+        "name": "Claude 高级模型",
+        "resource_type": "model",
+        "match_rules": {"exact": [], "prefix": ["claude-"]},
+        "period_type": "weekly",
+        "request_enforced": True,
+        "request_limit": limit,
+        "enabled": True,
+    }
+    if daily is not None:
+        payload["requests_daily"] = daily
+    return await service.create_scope(payload, updated_by="admin-1")
+
+
+async def _create_image_scope(service: QuotaService, *, limit: int = 2, daily: dict | None = None) -> dict:
+    payload = {
+        "code": "image_generation",
+        "name": "生图资源",
+        "resource_type": "image_generation",
+        "match_rules": {"exact": [], "prefix": []},
+        "period_type": "weekly",
+        "image_enforced": True,
+        "image_limit": limit,
+        "enabled": True,
+    }
+    if daily is not None:
+        payload["images_daily"] = daily
+    return await service.create_scope(payload, updated_by="admin-1")
+
+
+async def _create_video_scope(service: QuotaService, *, limit: int | float = 100, daily: dict | None = None) -> dict:
+    payload = {
+        "code": "video_generation",
+        "name": "视频资源",
+        "resource_type": "video_generation",
+        "match_rules": {"exact": [], "prefix": []},
+        "period_type": "weekly",
+        "video_enforced": True,
+        "video_limit": limit,
+        "video_billing_rules": {
+            "currency": "CNY",
+            "point_to_yuan": 1,
+            "models": {"seedance-2.5": {"1080p": 3.5}},
         },
-        updated_by="admin-1",
-    )
-
-
-async def _create_image_scope(service: QuotaService, *, limit: int = 2) -> dict:
-    return await service.create_scope(
-        {
-            "code": "image_generation",
-            "name": "生图资源",
-            "resource_type": "image_generation",
-            "match_rules": {"exact": [], "prefix": []},
-            "period_type": "weekly",
-            "image_enforced": True,
-            "image_limit": limit,
-            "enabled": True,
-        },
-        updated_by="admin-1",
-    )
-
-
-async def _create_video_scope(service: QuotaService, *, limit: int | float = 100) -> dict:
-    return await service.create_scope(
-        {
-            "code": "video_generation",
-            "name": "视频资源",
-            "resource_type": "video_generation",
-            "match_rules": {"exact": [], "prefix": []},
-            "period_type": "weekly",
-            "video_enforced": True,
-            "video_limit": limit,
-            "video_billing_rules": {
-                "currency": "CNY",
-                "point_to_yuan": 1,
-                "models": {"seedance-2.5": {"1080p": 3.5}},
-            },
-            "enabled": True,
-        },
-        updated_by="admin-1",
-    )
+        "enabled": True,
+    }
+    if daily is not None:
+        payload["videos_daily"] = daily
+    return await service.create_scope(payload, updated_by="admin-1")
 
 
 @pytest.mark.asyncio
@@ -808,5 +808,505 @@ async def test_user_quota_items_are_display_ordered(tmp_path):
             ("image_generation", "生图资源"),
             ("video_generation", "视频资源"),
         ]
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+async def _usage_row(sf) -> UserQuotaUsagePeriodRow:
+    async with sf() as session:
+        return (await session.execute(select(UserQuotaUsagePeriodRow))).scalar_one()
+
+
+# 2026-09-02 04:00 UTC == 上海时间 2026-09-02 12:00；所有日桶日期由此固定。
+_SHANGHAI_NOON = datetime(2026, 9, 2, 4, 0, tzinfo=UTC)
+_SHANGHAI_LATE_NIGHT = datetime(2026, 9, 2, 15, 30, tzinfo=UTC)  # 上海 23:30，仍是 09-02
+_SHANGHAI_PAST_MIDNIGHT = datetime(2026, 9, 2, 16, 30, tzinfo=UTC)  # 上海 09-03 00:30
+_NEXT_WEEK = datetime(2026, 9, 10, 4, 0, tzinfo=UTC)  # 下一个自然周
+
+
+@pytest.mark.asyncio
+async def test_video_daily_limit_blocks_while_period_quota_remains(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+        first = await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="d-1", at=_SHANGHAI_NOON)
+        assert first.reserved_minor_units == 1400
+
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="d-2", at=_SHANGHAI_NOON)
+
+        exceeded = exc_info.value.exceeded
+        assert exceeded.dimension == "daily"
+        assert exceeded.used == 1400
+        assert exceeded.limit == 2000
+        payload = quota_exceeded_payload(exceeded)
+        assert payload["dimension"] == "daily"
+        assert payload["daily_period"] == {"period_type": "daily", "label": "2026-09-02", "timezone": "Asia/Shanghai"}
+        assert payload["used_points"] == 14.0
+        assert payload["limit_points"] == 20.0
+        assert "今日" in payload["message"]
+
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"] == {"used": 0, "reserved": 1400}
+        assert row.video_used == 0
+        assert row.video_reserved == 1400
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_period_limit_blocks_while_daily_quota_remains(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=20, daily={"enforced": True, "limit": 100})
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="p-1", at=_SHANGHAI_NOON)
+
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="p-2", at=_SHANGHAI_NOON)
+
+        exceeded = exc_info.value.exceeded
+        assert exceeded.dimension == "period"
+        # used = 已用 + 已预占（1400），本次请求量 1400 导致越限。
+        assert exceeded.used == 1400
+        assert exceeded.requested == 1400
+        assert exceeded.limit == 2000
+        assert "daily_period" not in quota_exceeded_payload(exceeded)
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"]["reserved"] == 1400
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_daily_replay_is_idempotent_on_daily_bucket(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+        first = await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="same", at=_SHANGHAI_NOON)
+        replay = await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="same", at=_SHANGHAI_NOON)
+        assert replay.reused is True
+        assert replay.reservation_id == first.reservation_id
+
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"]["reserved"] == 1400
+
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="other", at=_SHANGHAI_NOON)
+        assert exc_info.value.exceeded.dimension == "daily"
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"]["reserved"] == 1400
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_daily_buckets_follow_shanghai_local_date(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 100})
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="late", at=_SHANGHAI_LATE_NIGHT)
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="next-day", at=_SHANGHAI_PAST_MIDNIGHT)
+
+        row = await _usage_row(sf)
+        assert set(row.daily_usage) == {"2026-09-02", "2026-09-03"}
+        assert row.daily_usage["2026-09-02"]["reserved"] == 1400
+        assert row.daily_usage["2026-09-03"]["reserved"] == 1400
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_settle_and_release_keep_original_date_bucket(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 100})
+        first = await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="s-1", at=_SHANGHAI_NOON)
+        # 结算发生在“今天”，但必须回写预占日 09-02 的桶。
+        await service.settle_video_points(first)
+        second = await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="s-2", at=_SHANGHAI_PAST_MIDNIGHT)
+        await service.release_video_points(second)
+
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"] == {"used": 1400, "reserved": 0}
+        assert row.daily_usage["2026-09-03"] == {"used": 0, "reserved": 0}
+        assert row.video_used == 1400
+        assert row.video_reserved == 0
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_daily_concurrent_reserves_do_not_corrupt_buckets(tmp_path):
+    """SQLite 没有父行锁、并发表现为末写胜出；严格上限由 PostgreSQL 行锁保证。
+
+    这里断言并发不产生负数或脏桶、被拒请求均为日维度拒绝；顺序场景的
+    严格拦截由 test_video_daily_limit_blocks_while_period_quota_remains 覆盖。
+    """
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+
+        results = await asyncio.gather(
+            *(service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key=f"c-{index}", at=_SHANGHAI_NOON) for index in range(3)),
+            return_exceptions=True,
+        )
+        assert all(isinstance(item, (VideoPointsReservation, QuotaExceededError)) for item in results)
+        assert all(item.exceeded.dimension == "daily" for item in results if isinstance(item, QuotaExceededError))
+
+        row = await _usage_row(sf)
+        bucket = row.daily_usage["2026-09-02"]
+        assert bucket["used"] >= 0 and bucket["reserved"] >= 0
+        assert row.video_used >= 0 and row.video_reserved >= 0
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_daily_new_period_starts_with_fresh_buckets(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="w-1", at=_SHANGHAI_NOON)
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="w-2", at=_NEXT_WEEK)
+
+        async with sf() as session:
+            rows = {row.period_start.isoformat(): row for row in (await session.execute(select(UserQuotaUsagePeriodRow))).scalars()}
+        assert len(rows) == 2
+        buckets = list(rows.values())
+        assert {"2026-09-02": {"used": 0, "reserved": 1400}} in [row.daily_usage for row in buckets]
+        assert {"2026-09-10": {"used": 0, "reserved": 1400}} in [row.daily_usage for row in buckets]
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_scope_update_enables_daily_and_rebuilds_legacy_records(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        scope = await _create_video_scope(service, limit=100)
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="r-1", at=_SHANGHAI_NOON)
+        async with sf() as session:
+            row = (await session.execute(select(UserQuotaUsagePeriodRow))).scalar_one()
+            # 重建外层 dict，确保 SQLAlchemy 标记 JSON 列为脏并落库。
+            records = dict(row.video_billing_records)
+            records["items"] = dict(records.get("items") or {})
+            records["items"]["legacy-1"] = {
+                "record_id": "legacy-1",
+                "record_type": "generation",
+                "reservation_id": "legacy-1",
+                "status": "settled",
+                "reserved_minor_units": 700,
+                "settled_minor_units": 700,
+                "created_at": "2026-09-01T10:00:00+00:00",
+            }
+            row.video_billing_records = records
+            await session.commit()
+
+        await service.update_scope(
+            scope["id"],
+            {"name": "视频资源", "enabled": True, "period_type": "weekly", "videos_daily": {"enforced": True, "limit": 20}},
+            updated_by="admin-1",
+        )
+
+        row = await _usage_row(sf)
+        assert row.daily_enforced_snapshot is True
+        assert row.daily_limit_snapshot == 2000
+        assert row.daily_usage == {
+            "2026-09-01": {"used": 700, "reserved": 0},
+            "2026-09-02": {"used": 0, "reserved": 1400},
+        }
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="r-2", at=_SHANGHAI_NOON)
+        assert exc_info.value.exceeded.dimension == "daily"
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_scope_update_keeps_daily_policy_when_daily_absent(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        scope = await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+        assert scope["default_policy"]["videos"]["daily"] == {"enforced": True, "limit": 20.0}
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="k-0", at=_SHANGHAI_NOON)
+
+        await service.update_scope(scope["id"], {"name": "视频资源", "enabled": True, "period_type": "weekly"}, updated_by="admin-1")
+        async with sf() as session:
+            refreshed = await session.get(QuotaScopeRow, scope["id"])
+        assert refreshed.daily_enforced is True
+        assert refreshed.daily_limit == 2000
+
+        await service.update_scope(
+            scope["id"],
+            {"name": "视频资源", "enabled": True, "period_type": "weekly", "videos_daily": {"enforced": False, "limit": None}},
+            updated_by="admin-1",
+        )
+        row = await _usage_row(sf)
+        assert row.daily_enforced_snapshot is False
+        assert row.daily_limit_snapshot is None
+
+        # 日限额关闭后只走父周期校验，28 积分 < 100 积分，正常预占。
+        reservation = await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="k-1", at=_SHANGHAI_NOON)
+        assert reservation.reserved_minor_units == 1400
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_override_and_restore_sync_daily_snapshots(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        scope = await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        await service.override_user_current_period(
+            "user-1",
+            scope["id"],
+            request_enforced=None,
+            request_limit=None,
+            image_enforced=None,
+            image_limit=None,
+            video_enforced=True,
+            video_limit=50,
+            video_daily={"enforced": True, "limit": 10},
+            reason="临时调整",
+            updated_by="admin-1",
+            at=_SHANGHAI_NOON,
+        )
+        row = await _usage_row(sf)
+        assert row.video_limit_snapshot == 5000
+        assert row.daily_limit_snapshot == 1000
+        assert row.is_overridden is True
+
+        await service.restore_user_current_period("user-1", scope["id"], updated_by="admin-1", at=_SHANGHAI_NOON)
+        row = await _usage_row(sf)
+        assert row.video_limit_snapshot == 10000
+        assert row.daily_enforced_snapshot is True
+        assert row.daily_limit_snapshot == 2000
+        assert row.is_overridden is False
+
+        await service.override_user_current_period(
+            "user-1",
+            scope["id"],
+            request_enforced=None,
+            request_limit=None,
+            image_enforced=None,
+            image_limit=None,
+            video_enforced=True,
+            video_limit=60,
+            video_daily=None,
+            reason=None,
+            updated_by="admin-1",
+            at=_SHANGHAI_NOON,
+        )
+        row = await _usage_row(sf)
+        assert row.video_limit_snapshot == 6000
+        assert row.daily_limit_snapshot == 2000
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_video_usage_item_daily_metric_and_history_omission(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        scope = await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        await service.reserve_video_generation("user-1", model="seedance-2.5", resolution="1080p", duration_seconds=4, idempotency_key="u-1", at=_SHANGHAI_NOON)
+
+        detail = await service.get_user_quota("user-1", at=_SHANGHAI_NOON)
+        videos = next(item for item in detail["items"] if item["scope"]["id"] == scope["id"])["videos"]
+        assert videos["daily"]["period"]["label"] == "2026-09-02"
+        assert videos["daily"]["used"] == 0.0
+        assert videos["daily"]["reserved"] == 14.0
+        assert videos["daily"]["remaining"] == 6.0
+        assert videos["daily"]["status"] == "normal"
+        assert videos["daily"]["period"] == {"period_type": "daily", "label": "2026-09-02", "timezone": "Asia/Shanghai"}
+
+        history = await service.list_usage_periods("user-1", scope["id"])
+        assert "daily" not in history["items"][0]["videos"]
+
+        override = await service.override_user_current_period(
+            "user-1",
+            scope["id"],
+            request_enforced=None,
+            request_limit=None,
+            image_enforced=None,
+            image_limit=None,
+            video_enforced=True,
+            video_limit=100,
+            video_daily=None,
+            reason=None,
+            updated_by="admin-1",
+            at=_SHANGHAI_NOON,
+        )
+        assert override["videos"]["daily"]["limit"] == 20.0
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_model_request_daily_limit_blocks_and_release_returns_bucket(tmp_path):
+    """模型组日拦截：日维度拒绝、释放回扣当日桶，计数单位文案。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        scope = await _create_claude_scope(service, limit=10, daily={"enforced": True, "limit": 3})
+
+        reservations = [await service.reserve_model_request("user-1", "claude-sonnet-4", at=_SHANGHAI_NOON) for _ in range(3)]
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_model_request("user-1", "claude-sonnet-4", at=_SHANGHAI_NOON)
+
+        exceeded = exc_info.value.exceeded
+        assert exceeded.dimension == "daily"
+        assert exceeded.used == 3
+        assert exceeded.limit == 3
+        assert exceeded.requested == 1
+        payload = quota_exceeded_payload(exceeded)
+        assert payload["daily_period"] == {"period_type": "daily", "label": "2026-09-02", "timezone": "Asia/Shanghai"}
+        assert "今日额度已用尽" in payload["message"]
+        assert "1 次" in payload["message"] and "仅剩余 0 次" in payload["message"]
+
+        await service.release_undispatched_model_request(reservations[0])
+
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"] == {"used": 2, "reserved": 0}
+        assert row.request_used == 2
+        assert row.daily_enforced_snapshot is True
+        assert row.daily_limit_snapshot == 3
+        detail = await service.get_user_quota("user-1", at=_SHANGHAI_NOON)
+        item = next(item for item in detail["items"] if item["scope"]["id"] == scope["id"])
+        assert item["requests"]["daily"]["used"] == 2
+        assert item["requests"]["daily"]["limit"] == 3
+        assert item["requests"]["daily"]["remaining"] == 1
+        assert item["requests"]["daily"]["status"] == "normal"
+        assert item["requests"]["daily"]["period"]["label"] == "2026-09-02"
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_image_daily_limit_blocks_and_release_restores_bucket(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        await _create_image_scope(service, limit=10, daily={"enforced": True, "limit": 2})
+
+        first = await service.reserve_image_generations("user-1", count=1, at=_SHANGHAI_NOON)
+        await service.reserve_image_generations("user-1", count=1, at=_SHANGHAI_NOON)
+        with pytest.raises(QuotaExceededError) as exc_info:
+            await service.reserve_image_generations("user-1", count=1, at=_SHANGHAI_NOON)
+
+        exceeded = exc_info.value.exceeded
+        assert exceeded.metric == "image_generations"
+        assert exceeded.dimension == "daily"
+        assert exceeded.used == 2
+
+        await service.release_image_generations(first)
+
+        row = await _usage_row(sf)
+        assert row.daily_usage["2026-09-02"] == {"used": 1, "reserved": 0}
+        assert row.image_used == 1
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_model_daily_unconfigured_scope_has_no_daily_metric(tmp_path):
+    """未配置日限额的模型组保持原样：无日桶、无 daily 字段、无锁路径开销。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        scope = await _create_claude_scope(service, limit=10)
+
+        await service.reserve_model_request("user-1", "claude-sonnet-4", at=_SHANGHAI_NOON)
+
+        row = await _usage_row(sf)
+        assert row.daily_usage == {}
+        detail = await service.get_user_quota("user-1", at=_SHANGHAI_NOON)
+        item = next(item for item in detail["items"] if item["scope"]["id"] == scope["id"])
+        assert "daily" not in item["requests"]
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_model_daily_new_period_starts_fresh(tmp_path):
+    service, sf = await _quota_service(tmp_path)
+    try:
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        await _create_claude_scope(service, limit=10, daily={"enforced": True, "limit": 3})
+
+        await service.reserve_model_request("user-1", "claude-sonnet-4", at=_SHANGHAI_NOON)
+        await service.reserve_model_request("user-1", "claude-sonnet-4", at=_NEXT_WEEK)
+
+        async with sf() as session:
+            rows = {row.period_start.isoformat(): row for row in (await session.execute(select(UserQuotaUsagePeriodRow))).scalars()}
+        assert len(rows) == 2
+        assert {"2026-09-02": {"used": 1, "reserved": 0}} in [row.daily_usage for row in rows.values()]
+        assert {"2026-09-10": {"used": 1, "reserved": 0}} in [row.daily_usage for row in rows.values()]
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_model_daily_override_and_restore_sync_snapshots(tmp_path):
+    """日限额跟随 requests 覆盖调整；restore 回到 scope 默认。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        scope = await _create_claude_scope(service, limit=10, daily={"enforced": True, "limit": 3})
+
+        await service.override_user_current_period(
+            "user-1",
+            scope["id"],
+            request_enforced=True,
+            request_limit=50,
+            image_enforced=None,
+            image_limit=None,
+            request_daily={"enforced": True, "limit": 5},
+            reason="临时调整",
+            updated_by="admin-1",
+            at=_SHANGHAI_NOON,
+        )
+        row = await _usage_row(sf)
+        assert row.request_limit_snapshot == 50
+        assert row.daily_limit_snapshot == 5
+        assert row.is_overridden is True
+
+        restored = await service.restore_user_current_period("user-1", scope["id"], at=_SHANGHAI_NOON)
+        assert restored["requests"]["limit"] == 10
+        row = await _usage_row(sf)
+        assert row.daily_enforced_snapshot is True
+        assert row.daily_limit_snapshot == 3
+        assert row.is_overridden is False
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_scope_response_exposes_daily_policy_for_all_resource_types(tmp_path):
+    service, _ = await _quota_service(tmp_path)
+    try:
+        model_scope = await _create_claude_scope(service, limit=10, daily={"enforced": True, "limit": 3})
+        image_scope = await _create_image_scope(service, limit=10, daily={"enforced": True, "limit": 5})
+        video_scope = await _create_video_scope(service, limit=100, daily={"enforced": True, "limit": 20})
+
+        assert model_scope["default_policy"]["requests"]["daily"] == {"enforced": True, "limit": 3}
+        assert image_scope["default_policy"]["images"]["daily"] == {"enforced": True, "limit": 5}
+        assert video_scope["default_policy"]["videos"]["daily"] == {"enforced": True, "limit": 20.0}
     finally:
         await service._test_engine.dispose()  # type: ignore[attr-defined]

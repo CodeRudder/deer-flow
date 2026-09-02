@@ -28,6 +28,8 @@ class QuotaScopeRow(Base):
     image_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     video_enforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     video_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    daily_enforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    daily_limit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Video generation uses points (RMB-equivalent) exclusively.
     video_billing_rules: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     policy_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text("1"))
@@ -41,6 +43,7 @@ class QuotaScopeRow(Base):
         CheckConstraint("request_limit IS NULL OR request_limit >= 0", name="ck_quota_scope_request_limit"),
         CheckConstraint("image_limit IS NULL OR image_limit >= 0", name="ck_quota_scope_image_limit"),
         CheckConstraint("video_limit IS NULL OR video_limit >= 0", name="ck_quota_scope_video_limit"),
+        CheckConstraint("daily_limit IS NULL OR daily_limit >= 0", name="ck_quota_scope_daily_limit"),
         CheckConstraint("policy_version >= 1", name="ck_quota_scope_policy_version"),
     )
 
@@ -67,6 +70,9 @@ class UserQuotaUsagePeriodRow(Base):
     video_used: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default=text("0"))
     video_reserved: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default=text("0"))
     video_billing_records: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
+    daily_enforced_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    daily_limit_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    daily_usage: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     is_overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     overridden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     overridden_by: Mapped[str | None] = mapped_column(String(64), nullable=True)

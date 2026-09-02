@@ -155,9 +155,29 @@ export interface QuotaMetric {
   billing_mode?: "points";
   unit?: "points";
   scale?: number;
+  /** Per-day usage metric, present only when a daily cap is configured. */
+  daily?: QuotaDailyMetric | null;
+}
+
+export interface QuotaDailyMetric {
+  enforced: boolean;
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  ratio: number | null;
+  status: Exclude<QuotaStatus, "all">;
+  reserved?: number;
+  period: { period_type: "daily"; label: string; timezone: string };
 }
 
 export interface QuotaMetricPolicy {
+  enforced: boolean;
+  limit: number | null;
+  /** Optional per-day cap riding on this metric; absent means unconfigured. */
+  daily?: QuotaDailyMetricPolicy | null;
+}
+
+export interface QuotaDailyMetricPolicy {
   enforced: boolean;
   limit: number | null;
 }
@@ -304,9 +324,9 @@ export interface QuotaScopePayload {
 }
 
 export interface QuotaOverridePayload {
-  requests?: { enforced: boolean; limit: number | null } | null;
-  images?: { enforced: boolean; limit: number | null } | null;
-  videos?: { enforced: boolean; limit: number | null } | null;
+  requests?: QuotaMetricPolicy | null;
+  images?: QuotaMetricPolicy | null;
+  videos?: QuotaVideoMetricPolicy | null;
   reason?: string;
 }
 
