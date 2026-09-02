@@ -277,6 +277,83 @@ async def test_quota_me_isolated_to_calling_user(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_quota_me_items_are_display_ordered(tmp_path, monkeypatch):
+    """展示顺序由后端固定（模型组通用→高级 → 生图 → 视频），前端按返回顺序渲染。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        await _create_user(sf, "user-1", "user-1@example.com")
+        await service.create_scope(
+            {
+                "code": "video_generation",
+                "name": "视频资源",
+                "resource_type": "video_generation",
+                "match_rules": {"exact": [], "prefix": []},
+                "period_type": "weekly",
+                "video_enforced": True,
+                "video_limit": 100,
+                "video_billing_rules": {"currency": "CNY", "point_to_yuan": 1, "models": {"seedance-2.5": {"1080p": 3.5}}},
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        await service.create_scope(
+            {
+                "code": "claude_advanced",
+                "name": "高级模型",
+                "resource_type": "model",
+                "match_rules": {"exact": [], "prefix": ["claude-"]},
+                "period_type": "weekly",
+                "request_enforced": True,
+                "request_limit": 2,
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        await service.create_scope(
+            {
+                "code": "image_generation",
+                "name": "生图资源",
+                "resource_type": "image_generation",
+                "match_rules": {"exact": [], "prefix": []},
+                "period_type": "weekly",
+                "image_enforced": True,
+                "image_limit": 5,
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        await service.create_scope(
+            {
+                "code": "general_model",
+                "name": "通用模型",
+                "resource_type": "model",
+                "match_rules": {"exact": [], "prefix": ["qwen", "doubao-"]},
+                "period_type": "weekly",
+                "request_enforced": True,
+                "request_limit": 10,
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+
+        _patch_factory(monkeypatch, sf)
+        token = _acting_user("user-1")
+        try:
+            result = await quota_router.get_my_quota()
+        finally:
+            user_context.reset_current_user(token)
+
+        assert [item.scope_code for item in result.items] == [
+            "general_model",
+            "claude_advanced",
+            "image_generation",
+            "video_generation",
+        ]
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_quota_me_reflects_admin_override(tmp_path, monkeypatch):
     service, sf = await _quota_service(tmp_path)
     try:

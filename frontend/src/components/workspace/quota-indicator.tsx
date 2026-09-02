@@ -4,7 +4,6 @@ import {
   BotIcon,
   ChevronDownIcon,
   ImageIcon,
-  TriangleAlertIcon,
   VideoIcon,
   WalletIcon,
 } from "lucide-react";
@@ -16,7 +15,6 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Progress } from "@/components/ui/progress";
 import { useI18n } from "@/core/i18n/hooks";
 import { ModelProviderLogo } from "@/core/models/logo";
 import { formatPoints } from "@/core/quotas/format";
@@ -30,6 +28,7 @@ type QuotaIndicatorProps = {
   className?: string;
 };
 
+/** 胶囊警示色取响应顶层 status（后端已按全维度取最严状态）。 */
 const PILL_TONES: Record<string, string> = {
   warning: "text-amber-600 dark:text-amber-400",
   exceeded: "text-red-600 dark:text-rose-400",
@@ -58,22 +57,6 @@ function DimensionIcon({
   return <Icon className={className} />;
 }
 
-/** 主显维度：已用比例最高优先（剩余比例最少；同级视频优先，全部无比例时视频优先）。 */
-function pickPrimaryItem(items: QuotaScopeItem[]): QuotaScopeItem | null {
-  const withRatio = items.filter((item) => metricOf(item)?.ratio != null);
-  const candidates = withRatio.length > 0 ? withRatio : items;
-  return (
-    [...candidates].sort((a, b) => {
-      const ratioGap = (metricOf(b)?.ratio ?? 0) - (metricOf(a)?.ratio ?? 0);
-      if (ratioGap !== 0) return ratioGap;
-      return (
-        (a.resource_type === "video_generation" ? 0 : 1) -
-        (b.resource_type === "video_generation" ? 0 : 1)
-      );
-    })[0] ?? null
-  );
-}
-
 function QuotaItemRow({ item }: { item: QuotaScopeItem }) {
   const { t } = useI18n();
   const metric = metricOf(item);
@@ -84,46 +67,51 @@ function QuotaItemRow({ item }: { item: QuotaScopeItem }) {
     metric.unit === "points"
       ? t.quotaIndicator.unitPoints
       : t.quotaIndicator.unitCount;
-  const limit = metric.limit;
+  // 仅限额维度展示 / limit；不限额只显示实际用量
+  const limit =
+    metric.enforced && metric.limit != null
+      ? `/${formatPoints(metric.limit)}`
+      : "";
   const reserved = isVideo ? (metric.reserved ?? 0) : 0;
+  const periodLabel =
+    item.period_type === "monthly"
+      ? t.quotaIndicator.periodMonthly
+      : t.quotaIndicator.periodWeekly;
 
   return (
-    <div className="space-y-1">
-      <div className="text-muted-foreground flex items-center gap-1.5">
-        {item.resource_type === "model" ? (
-          // 固定映射：claude_model 用 Anthropic 品牌 logo，其余模型组走组件兜底
-          <ModelProviderLogo
-            name={item.scope_code === "claude_model" ? "claude" : ""}
-            className="size-4"
-          />
-        ) : (
-          <DimensionIcon
-            resourceType={item.resource_type}
-            className="size-3.5"
-          />
-        )}
-        <span>
-          <span className="text-foreground">{item.scope_name}</span>
-          {" - "}
-          {t.quotaIndicator.used} {formatPoints(metric.used)}
-          {limit != null ? ` / ${formatPoints(limit)}` : ""} {unitLabel}
-        </span>
-      </div>
-      {reserved > 0 && (
-        <div className="text-muted-foreground">
-          {t.quotaIndicator.reserved} {formatPoints(reserved)} {unitLabel}
+    <div className="space-y-0.5">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <div className="text-muted-foreground flex min-w-0 items-center gap-1.5">
+          {item.resource_type === "model" ? (
+            // 固定映射：claude_model 用 Anthropic 品牌 logo，其余模型组走组件兜底
+            <ModelProviderLogo
+              name={item.scope_code === "claude_model" ? "claude" : ""}
+              className="size-4"
+            />
+          ) : (
+            <DimensionIcon
+              resourceType={item.resource_type}
+              className="size-3.5"
+            />
+          )}
+          <span className="text-foreground truncate">{item.scope_name}</span>
         </div>
-      )}
-      {metric.ratio != null && (
-        <Progress className="h-1.5" value={metric.ratio * 100} />
-      )}
-      <div className="text-muted-foreground flex items-center justify-between gap-4">
-        <span>
-          {item.period_type === "monthly"
-            ? t.quotaIndicator.periodMonthly
-            : t.quotaIndicator.periodWeekly}
+        <span className="text-muted-foreground whitespace-nowrap">
+          <span className="font-mono">
+            {formatPoints(metric.used)}
+            {limit}
+          </span>{" "}
+          {unitLabel}
+          {reserved > 0
+            ? ` (${t.quotaIndicator.reserved} ${formatPoints(reserved)})`
+            : null}
         </span>
-        <span>{item.period.label}</span>
+        <span
+          className="text-muted-foreground/70 justify-self-end text-[10px]"
+          title={`${periodLabel} ${item.period.label}`}
+        >
+          {periodLabel}
+        </span>
       </div>
       {item.source === "temporary_override" && (
         <div className="text-muted-foreground">
@@ -146,18 +134,6 @@ export function QuotaIndicator({
     return null;
   }
 
-  const primary = pickPrimaryItem(data.items);
-  if (!primary) return null;
-  const primaryMetric = metricOf(primary);
-  if (!primaryMetric) return null;
-
-  const unitLabel =
-    primaryMetric.unit === "points"
-      ? t.quotaIndicator.unitPoints
-      : t.quotaIndicator.unitCount;
-  const hasLimit = primaryMetric.limit != null;
-  const pillTone = PILL_TONES[primaryMetric.status] ?? "";
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -167,36 +143,23 @@ export function QuotaIndicator({
           aria-label={t.quotaIndicator.label}
           className={cn(
             "text-muted-foreground bg-background/70 hover:bg-background/90 flex h-auto items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-normal",
-            pillTone,
+            PILL_TONES[data.status] ?? "",
             className,
           )}
         >
           <WalletIcon size={14} />
           <span className="hidden sm:inline">
-            {t.quotaIndicator.prefixLabel}：
+            {t.quotaIndicator.prefixLabel}
           </span>
-          <span className="hidden sm:inline">{primary.scope_name}</span>
-          {primaryMetric.status === "exceeded" && (
-            <TriangleAlertIcon className="size-3.5" />
-          )}
-          <span className="font-mono">
-            {hasLimit
-              ? `${Math.round((primaryMetric.ratio ?? 0) * 100)}%`
-              : formatPoints(primaryMetric.used)}
-          </span>
-          {!hasLimit && <span className="hidden sm:inline">{unitLabel}</span>}
           <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="bottom" align="end" className="w-80">
         <DropdownMenuLabel>{t.quotaIndicator.label}</DropdownMenuLabel>
-        <div className="space-y-3 px-2 py-1 text-xs">
+        <div className="space-y-2.5 px-2 py-1 text-xs">
           {data.items.map((item) => (
             <QuotaItemRow key={item.scope_id} item={item} />
           ))}
-          <div className="text-muted-foreground/70 text-[11px]">
-            {t.quotaIndicator.primaryNote}
-          </div>
         </div>
       </DropdownMenuContent>
     </DropdownMenu>

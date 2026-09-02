@@ -12,14 +12,12 @@ rs.mock("@/core/i18n/hooks", () => ({
       quotaIndicator: {
         label: "我的额度",
         prefixLabel: "额度",
-        used: "已用",
         reserved: "预占",
         unitPoints: "积分",
         unitCount: "次",
         periodWeekly: "每周",
         periodMonthly: "每月",
         overrideNote: "管理员已调整本期额度",
-        primaryNote: "默认展示已用比例最高的额度",
       },
     },
   }),
@@ -124,10 +122,14 @@ function modelItem(overrides: Partial<QuotaScopeItem> = {}): QuotaScopeItem {
   };
 }
 
-function renderIndicator(items: QuotaScopeItem[], isThreadBusy = false) {
+function renderIndicator(
+  items: QuotaScopeItem[],
+  isThreadBusy = false,
+  status = "normal",
+) {
   fetchQuotaMe.mockResolvedValue({
     user_id: "user-1",
-    status: "normal",
+    status,
     items,
   });
   const client = new QueryClient();
@@ -143,12 +145,13 @@ function renderIndicator(items: QuotaScopeItem[], isThreadBusy = false) {
 describe("QuotaIndicator", () => {
   afterEach(cleanup);
 
-  it("renders the pill for configured dimensions", async () => {
+  it("renders a compact pill without per-dimension details", async () => {
     renderIndicator([videoItem()]);
     expect(await screen.findByLabelText("我的额度")).toBeTruthy();
-    // 主显维度名 + 已用百分比（ratio 接口下发）
-    expect(screen.getByText("视频资源")).toBeTruthy();
-    expect(screen.getByText("12%")).toBeTruthy();
+    expect(screen.getByText("额度")).toBeTruthy();
+    // 胶囊只放图标 + 额度 + 下拉箭头：维度名与百分比收进下拉
+    expect(screen.queryByText("视频资源")).toBeNull();
+    expect(screen.queryByText("12%")).toBeNull();
   });
 
   it("renders nothing when no dimensions are configured", async () => {
@@ -158,21 +161,25 @@ describe("QuotaIndicator", () => {
   });
 
   it("shows a warning tone for exceeded status", async () => {
-    const { container } = renderIndicator([
-      videoItem({
-        status: "exceeded",
-        videos: {
-          enforced: true,
-          limit: 100,
-          used: 100,
-          reserved: 0,
-          remaining: 0,
-          ratio: 1,
+    const { container } = renderIndicator(
+      [
+        videoItem({
           status: "exceeded",
-          unit: "points",
-        },
-      }),
-    ]);
+          videos: {
+            enforced: true,
+            limit: 100,
+            used: 100,
+            reserved: 0,
+            remaining: 0,
+            ratio: 1,
+            status: "exceeded",
+            unit: "points",
+          },
+        }),
+      ],
+      false,
+      "exceeded",
+    );
     await screen.findByLabelText("我的额度");
     expect(container.querySelector(".text-red-600")).toBeTruthy();
   });
@@ -194,39 +201,73 @@ describe("QuotaIndicator", () => {
       }),
     ]);
     await screen.findByLabelText("我的额度");
-    // 仅记录态主显"已用"而非剩余
-    expect(screen.getByText("5")).toBeTruthy();
     expect(container.querySelector(".text-red-600")).toBeNull();
+    // 不再有进度条
+    expect(container.querySelector("[role='progressbar']")).toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("我的额度"));
+    expect(await screen.findByText("5")).toBeTruthy();
   });
 
-  it("prefers the more severe dimension as primary", async () => {
-    renderIndicator([
-      videoItem(),
-      imageItem({
-        status: "exceeded",
-        images: {
-          enforced: true,
-          limit: 5,
+  it("hides limit display for record-only dimensions with a configured limit", async () => {
+    const { container } = renderIndicator([
+      videoItem({
+        status: "unlimited",
+        videos: {
+          enforced: false,
+          limit: 50,
           used: 5,
           reserved: null,
-          remaining: 0,
-          ratio: 1,
-          status: "exceeded",
-          unit: "count",
+          remaining: 45,
+          ratio: null,
+          status: "unlimited",
+          unit: "points",
         },
       }),
     ]);
     await screen.findByLabelText("我的额度");
-    // 生图已超额：主显生图 100%，而非视频 12%
-    expect(screen.getByText("100%")).toBeTruthy();
-    expect(screen.queryByText("12%")).toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("我的额度"));
+    expect(await screen.findByText("5")).toBeTruthy();
+    // 不限额只显示实际用量，不显示 / limit
+    expect(screen.queryByText("5/50")).toBeNull();
+    expect(container.querySelector("[role='progressbar']")).toBeNull();
+  });
+
+  it("renders dimensions in backend order with per-row period badges", async () => {
+    // 后端已按 模型组 → 生图 → 视频 排序，前端按返回顺序渲染
+    renderIndicator([modelItem(), imageItem(), videoItem()]);
+    await screen.findByLabelText("我的额度");
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("我的额度"));
+
+    const model = screen.getByText("高级模型");
+    const image = screen.getByText("生图资源");
+    const video = screen.getByText("视频资源");
+    expect(
+      model.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      image.compareDocumentPosition(video) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // 限额维度展示 used/limit
+    expect(screen.getByText("12/200")).toBeTruthy();
+
+    // 周期徽标在行尾，完整区间在 title 提示里
+    expect(screen.getAllByText("每周")).toHaveLength(2);
+    expect(screen.getAllByText("每月")).toHaveLength(1);
+    const [firstWeekly] = screen.getAllByText("每周");
+    expect(firstWeekly?.getAttribute("title")).toBe(
+      "每周 2026-09-01~2026-09-07",
+    );
   });
 
   it("lists model dimensions in the dropdown with matching icons", async () => {
     renderIndicator([videoItem(), modelItem()]);
     await screen.findByLabelText("我的额度");
-    // 已用比例最高优先：视频 12% > 高级模型 6%，主显视频
-    expect(screen.getByText("12%")).toBeTruthy();
 
     // 模型组维度收在下拉中：名称未命中品牌时按 scope_code 命中——claude_model → Anthropic logo
     const user = userEvent.setup();

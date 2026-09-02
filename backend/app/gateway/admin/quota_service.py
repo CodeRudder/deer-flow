@@ -427,6 +427,30 @@ def _rules_overlap(left: dict[str, list[str]], right: dict[str, list[str]]) -> b
     return any(a.startswith(b) or b.startswith(a) for a in left.get("prefix", []) for b in right.get("prefix", []))
 
 
+_RESOURCE_DISPLAY_ORDER = {"model": 0, "image_generation": 1, "video_generation": 2}
+_PREMIUM_MODEL_HINTS = ("claude", "gpt")
+
+
+def _model_scope_tier(match_rules: Any) -> int:
+    """模型组展示档位：0=通用，1=高级（exact/prefix 任一条目含 claude/gpt，大小写不敏感）。"""
+    rules = match_rules if isinstance(match_rules, dict) else {}
+    for key in ("exact", "prefix"):
+        raw = rules.get(key)
+        if not isinstance(raw, list):
+            continue
+        for entry in raw:
+            lowered = str(entry).lower()
+            if any(hint in lowered for hint in _PREMIUM_MODEL_HINTS):
+                return 1
+    return 0
+
+
+def _scope_display_rank(scope: QuotaScopeRow) -> tuple[int, int]:
+    """用户侧展示排序 key：模型组（通用在前）→ 生图 → 视频，同档保持稳定顺序。"""
+    tier = _model_scope_tier(scope.match_rules) if scope.resource_type == "model" else 0
+    return (_RESOURCE_DISPLAY_ORDER.get(scope.resource_type, 99), tier)
+
+
 def _metric(enforced: bool, limit: int | None, used: int) -> dict[str, Any]:
     if not enforced or limit is None:
         return {
@@ -1613,7 +1637,7 @@ class QuotaService:
             if user is None:
                 raise HTTPException(status_code=404, detail={"code": "user_not_found", "message": "User not found"})
             scopes = list((await session.execute(select(QuotaScopeRow).where(QuotaScopeRow.enabled.is_(True)))).scalars())
-            items = []
+            ranked: list[tuple[tuple[int, int], dict[str, Any]]] = []
             for scope in scopes:
                 window = quota_period_window(scope.period_type, at)
                 row = (
@@ -1625,7 +1649,9 @@ class QuotaService:
                         )
                     )
                 ).scalar_one_or_none()
-                items.append(self._usage_item(scope, row, at=at))
+                ranked.append((_scope_display_rank(scope), self._usage_item(scope, row, at=at)))
+            ranked.sort(key=lambda pair: pair[0])
+            items = [item for _, item in ranked]
             status = max((item["status"] for item in items), key=lambda value: _STATUS_ORDER[value], default="unlimited")
             return {
                 "user": {"user_id": str(user.id), "email": user.email, "role": user.system_role},

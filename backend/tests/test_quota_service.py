@@ -724,3 +724,89 @@ def test_video_billing_rules_validate_regeneration_price():
                 "models": {"minimax-h3": {"768P": 0.5, "regeneration": -1}},
             }
         )
+
+
+def test_model_scope_tier_detects_premium_hints():
+    from app.gateway.admin.quota_service import _model_scope_tier
+
+    assert _model_scope_tier({"exact": [], "prefix": ["claude-"]}) == 1
+    assert _model_scope_tier({"exact": ["GPT-4o"], "prefix": []}) == 1
+    assert _model_scope_tier({"exact": ["qwen-max"], "prefix": ["doubao-"]}) == 0
+    assert _model_scope_tier({"exact": [], "prefix": []}) == 0
+    assert _model_scope_tier({}) == 0
+    assert _model_scope_tier(None) == 0
+    assert _model_scope_tier({"exact": "not-a-list", "prefix": 42}) == 0
+
+
+@pytest.mark.asyncio
+async def test_user_quota_items_are_display_ordered(tmp_path):
+    """get_user_quota 固定展示顺序：模型组（通用→高级）→ 生图 → 视频，与创建顺序无关。"""
+    service, sf = await _quota_service(tmp_path)
+    try:
+        async with sf() as session:
+            session.add(UserRow(id="user-1", email="one@example.com", system_role="user"))
+            await session.commit()
+        await service.create_scope(
+            {
+                "code": "video_generation",
+                "name": "视频资源",
+                "resource_type": "video_generation",
+                "match_rules": {"exact": [], "prefix": []},
+                "period_type": "weekly",
+                "video_enforced": True,
+                "video_limit": 100,
+                "video_billing_rules": {"currency": "CNY", "point_to_yuan": 1, "models": {"seedance-2.5": {"1080p": 3.5}}},
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        await service.create_scope(
+            {
+                "code": "claude_advanced",
+                "name": "高级模型",
+                "resource_type": "model",
+                "match_rules": {"exact": [], "prefix": ["claude-"]},
+                "period_type": "weekly",
+                "request_enforced": True,
+                "request_limit": 2,
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        await service.create_scope(
+            {
+                "code": "image_generation",
+                "name": "生图资源",
+                "resource_type": "image_generation",
+                "match_rules": {"exact": [], "prefix": []},
+                "period_type": "weekly",
+                "image_enforced": True,
+                "image_limit": 5,
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+        await service.create_scope(
+            {
+                "code": "general_model",
+                "name": "通用模型",
+                "resource_type": "model",
+                "match_rules": {"exact": [], "prefix": ["qwen", "doubao-"]},
+                "period_type": "weekly",
+                "request_enforced": True,
+                "request_limit": 10,
+                "enabled": True,
+            },
+            updated_by="admin-1",
+        )
+
+        detail = await service.get_user_quota("user-1")
+
+        assert [(item["scope"]["code"], item["scope"]["name"]) for item in detail["items"]] == [
+            ("general_model", "通用模型"),
+            ("claude_advanced", "高级模型"),
+            ("image_generation", "生图资源"),
+            ("video_generation", "视频资源"),
+        ]
+    finally:
+        await service._test_engine.dispose()  # type: ignore[attr-defined]

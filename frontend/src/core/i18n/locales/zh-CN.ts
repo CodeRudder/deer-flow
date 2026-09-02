@@ -349,14 +349,12 @@ export const zhCN: Translations = {
   quotaIndicator: {
     label: "我的额度",
     prefixLabel: "额度",
-    used: "已用",
     reserved: "预占",
     unitPoints: "积分",
     unitCount: "次",
     periodWeekly: "每周",
     periodMonthly: "每月",
     overrideNote: "管理员已调整本期额度",
-    primaryNote: "默认展示已用比例最高的额度",
   },
 
   // Token Usage
