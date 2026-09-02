@@ -2,8 +2,8 @@
 
 import {
   BotIcon,
-  ChevronDownIcon,
   ImageIcon,
+  SparklesIcon,
   VideoIcon,
   WalletIcon,
 } from "lucide-react";
@@ -16,7 +16,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useI18n } from "@/core/i18n/hooks";
-import { ModelProviderLogo } from "@/core/models/logo";
 import { formatPoints } from "@/core/quotas/format";
 import { useInvalidateQuotaOnRunEnd, useQuotaMe } from "@/core/quotas/hooks";
 import type { QuotaMetric, QuotaScopeItem } from "@/core/quotas/types";
@@ -45,16 +44,35 @@ const DIMENSION_ICONS = {
   video_generation: VideoIcon,
 } as const;
 
+/** 维度图标配色：通用模型蓝、生图绿、视频紫，高级模型为琥珀星标。 */
+const DIMENSION_TONES = {
+  model: "text-sky-600 dark:text-sky-400",
+  image_generation: "text-emerald-600 dark:text-emerald-400",
+  video_generation: "text-violet-600 dark:text-violet-400",
+} as const;
+
 function DimensionIcon({
   resourceType,
+  scopeCode,
   className,
 }: {
   resourceType: string;
+  scopeCode: string;
   className?: string;
 }) {
+  // 高级模型组（scope_code 含 claude/gpt）用星标与通用模型的 bot 图标区分
+  if (resourceType === "model" && /claude|gpt/i.test(scopeCode)) {
+    return (
+      <SparklesIcon
+        className={cn("text-amber-600 dark:text-amber-400", className)}
+      />
+    );
+  }
   const Icon =
     DIMENSION_ICONS[resourceType as keyof typeof DIMENSION_ICONS] ?? BotIcon;
-  return <Icon className={className} />;
+  const tone =
+    DIMENSION_TONES[resourceType as keyof typeof DIMENSION_TONES] ?? "";
+  return <Icon className={cn(tone, className)} />;
 }
 
 function QuotaItemRow({ item }: { item: QuotaScopeItem }) {
@@ -82,18 +100,11 @@ function QuotaItemRow({ item }: { item: QuotaScopeItem }) {
     <div className="space-y-0.5">
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
         <div className="text-muted-foreground flex min-w-0 items-center gap-1.5">
-          {item.resource_type === "model" ? (
-            // 固定映射：claude_model 用 Anthropic 品牌 logo，其余模型组走组件兜底
-            <ModelProviderLogo
-              name={item.scope_code === "claude_model" ? "claude" : ""}
-              className="size-4"
-            />
-          ) : (
-            <DimensionIcon
-              resourceType={item.resource_type}
-              className="size-3.5"
-            />
-          )}
+          <DimensionIcon
+            resourceType={item.resource_type}
+            scopeCode={item.scope_code}
+            className="size-3.5"
+          />
           <span className="text-foreground truncate">{item.scope_name}</span>
         </div>
         <span className="text-muted-foreground whitespace-nowrap">
@@ -151,7 +162,6 @@ export function QuotaIndicator({
           <span className="hidden sm:inline">
             {t.quotaIndicator.prefixLabel}
           </span>
-          <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="bottom" align="end" className="w-80">

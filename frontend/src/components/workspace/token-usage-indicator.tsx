@@ -1,7 +1,7 @@
 "use client";
 
 import type { Message } from "@langchain/langgraph-sdk";
-import { ChevronDownIcon, CoinsIcon } from "lucide-react";
+import { CoinsIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -86,7 +86,6 @@ export function TokenUsageIndicator({
                 : "-"
               : t.tokenUsage.presets[presetKeyToTranslationKey(preset)]}
           </span>
-          <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="bottom" align="end" className="w-80">

@@ -149,7 +149,7 @@ describe("QuotaIndicator", () => {
     renderIndicator([videoItem()]);
     expect(await screen.findByLabelText("我的额度")).toBeTruthy();
     expect(screen.getByText("额度")).toBeTruthy();
-    // 胶囊只放图标 + 额度 + 下拉箭头：维度名与百分比收进下拉
+    // 胶囊只放图标 + 额度：维度名与百分比收进下拉
     expect(screen.queryByText("视频资源")).toBeNull();
     expect(screen.queryByText("12%")).toBeNull();
   });
@@ -269,13 +269,27 @@ describe("QuotaIndicator", () => {
     renderIndicator([videoItem(), modelItem()]);
     await screen.findByLabelText("我的额度");
 
-    // 模型组维度收在下拉中：名称未命中品牌时按 scope_code 命中——claude_model → Anthropic logo
+    // 彩色图标区分维度；高级模型组（scope_code 含 claude/gpt）用星标
     const user = userEvent.setup();
     await user.click(screen.getByLabelText("我的额度"));
     expect(await screen.findByText("高级模型")).toBeTruthy();
-    expect(document.querySelector("[style*='anthropic']")).toBeTruthy();
+    expect(document.querySelector("[class*='lucide-sparkles']")).toBeTruthy();
     expect(document.querySelector("[class*='lucide-video']")).toBeTruthy();
     expect(document.querySelector("[class*='lucide-image']")).toBeNull();
+    expect(document.querySelector("[class*='lucide-bot']")).toBeNull();
+  });
+
+  it("uses the bot icon for general model groups", async () => {
+    renderIndicator([
+      modelItem({ scope_code: "general_model", scope_name: "通用模型" }),
+    ]);
+    await screen.findByLabelText("我的额度");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("我的额度"));
+    expect(await screen.findByText("通用模型")).toBeTruthy();
+    expect(document.querySelector("[class*='lucide-bot']")).toBeTruthy();
+    expect(document.querySelector("[class*='lucide-sparkles']")).toBeNull();
   });
 
   it("invalidates the quota cache when a thread run ends", async () => {
