@@ -1,0 +1,92 @@
+"use client";
+
+import { CheckIcon, type LucideIcon } from "lucide-react";
+import { type ReactNode } from "react";
+
+import { PromptInputActionMenuTrigger } from "@/components/ai-elements/prompt-input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+
+// Shared visual language for all model pickers (chat/vision dialog, image and
+// video generation menus): one row height, one selection color, one
+// check/unconfigured slot layout.
+
+/** Item class for a model row: shared height + selection tone (+ dimmed when unconfigured). */
+export function modelOptionRowClassName(selected: boolean, configured = true) {
+  return cn(
+    "h-9",
+    selected ? "text-accent-foreground" : "text-muted-foreground/75",
+    !configured && "opacity-50",
+  );
+}
+
+type ModelOptionContentProps = {
+  /** Leading logo; omit for logo-less rows (e.g. the "default" row). */
+  logo?: ReactNode;
+  label: ReactNode;
+  selected: boolean;
+  /** Unconfigured rows swap the check slot for a label and stay dimmed. */
+  configured?: boolean;
+  notConfiguredLabel?: ReactNode;
+  /** Extra info placed before the check slot (e.g. video point rate). */
+  meta?: ReactNode;
+};
+
+export function ModelOptionContent({
+  logo,
+  label,
+  selected,
+  configured = true,
+  notConfiguredLabel,
+  meta,
+}: ModelOptionContentProps) {
+  return (
+    <>
+      {logo}
+      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+      <span className="flex shrink-0 items-center gap-2">
+        {meta}
+        {!configured ? (
+          <span className="text-muted-foreground/60 text-xs">
+            {notConfiguredLabel}
+          </span>
+        ) : selected ? (
+          <CheckIcon className="size-4" />
+        ) : (
+          <span className="size-4" />
+        )}
+      </span>
+    </>
+  );
+}
+
+/** Trigger button for generation-model menus: icon plus the selected model name. */
+export function ModelMenuTrigger({
+  icon: Icon,
+  label,
+  selectedLabel,
+}: {
+  icon: LucideIcon;
+  label: string;
+  selectedLabel?: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <PromptInputActionMenuTrigger aria-label={label} className="gap-1! px-2!">
+          <Icon className="size-3" />
+          {selectedLabel && (
+            <span className="max-w-28 truncate text-xs font-normal">
+              {selectedLabel}
+            </span>
+          )}
+        </PromptInputActionMenuTrigger>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
