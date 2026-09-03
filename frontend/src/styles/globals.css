@@ -367,7 +367,8 @@
   --container-width-lg: calc(var(--spacing) * 256);
 }
 
-/* 小尺寸 lucide 线条图标加粗：≤14px 下默认 2/24 描边发虚，提升至 2.5 */
+/* 小尺寸 lucide 线条图标加粗：≤14px 下默认 2/24 描边发虚，提升至 2.5。
+   特异性刻意高于 stroke-* 工具类做整体覆盖；个别图标需回退时用更大尺寸，勿依赖工具类 */
 svg.lucide.size-2,
 svg.lucide.size-2\.5,
 svg.lucide.size-3,

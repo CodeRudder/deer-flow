@@ -74,7 +74,7 @@ function renderSelector(
 
 async function openMenu() {
   const user = userEvent.setup();
-  await user.click(screen.getByLabelText("视频生成"));
+  await user.click(screen.getByLabelText(/视频生成/));
   await screen.findByRole("menuitem", { name: /MiniMax H3/ });
   return user;
 }
@@ -86,9 +86,21 @@ describe("VideoGenerationSelector", () => {
 
     // 跨分辨率最低价：0.5 积分/秒起；无显式选择时触发按钮显示默认真实模型
     expect(screen.getByText("低至0.5积分/秒")).toBeTruthy();
-    expect(screen.getByLabelText("视频生成").textContent).toContain(
+    expect(screen.getByLabelText(/视频生成/).textContent).toContain(
       "MiniMax H3",
     );
+    // 无显式选择时默认模型行打勾
+    expect(document.querySelectorAll(".lucide-check").length).toBe(1);
+  });
+
+  it("repins a stale persisted selection to the default model", () => {
+    const { onSelectionChange } = renderSelector({
+      video_generation_model: "deleted-model",
+    });
+    // 持久化选择指向已下线模型：自动归一化回默认模型，显示与发送值一致
+    expect(onSelectionChange).toHaveBeenCalledWith({
+      video_generation_model: "minimax-h3",
+    });
   });
 
   it("emits the model name on selection", async () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import { ImageIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import {
   PromptInputActionMenu,
@@ -69,15 +69,27 @@ export function ImageGenerationSelector({
   );
   const effectiveModel = selectedModel ?? defaultModel;
   const isUnavailable = data?.skill_enabled === false;
-  const triggerLabel =
-    effectiveModel?.model.display_name ?? t.inputBox.imageGeneration;
+
+  // A persisted selection can point at a model that no longer exists (dropped
+  // from the backend list); repin to the default so what the menu shows and
+  // what gets sent stay the same.
+  useEffect(() => {
+    if (selection.image_generation_model && !selectedModel && defaultModel) {
+      onSelectionChange({ image_generation_model: defaultModel.model.name });
+    }
+  }, [
+    selection.image_generation_model,
+    selectedModel,
+    defaultModel,
+    onSelectionChange,
+  ]);
 
   return (
     <PromptInputActionMenu>
       <ModelMenuTrigger
         icon={ImageIcon}
         label={t.inputBox.imageGeneration}
-        selectedLabel={triggerLabel}
+        selectedLabel={effectiveModel?.model.display_name}
         iconClassName="text-emerald-600 dark:text-emerald-400"
       />
       <ModelMenuContent className="w-56">

@@ -94,10 +94,7 @@ import {
 import { ImageGenerationSelector } from "./image-generation-selector";
 import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
-import {
-  ModelOptionContent,
-  modelOptionRowClassName,
-} from "./model-menu";
+import { ModelOptionContent, modelOptionRowClassName } from "./model-menu";
 import { Tooltip } from "./tooltip";
 import { VideoGenerationSelector } from "./video-generation-selector";
 
@@ -1009,9 +1006,11 @@ export function InputBox({
                     : "flash"
                 }
               >
-                <PromptInputActionMenuTrigger className="min-w-0 shrink max-w-28 gap-1! px-2! sm:max-w-none">
+                <PromptInputActionMenuTrigger className="max-w-28 min-w-0 shrink gap-1! px-2! sm:max-w-none">
                   <div>
-                    {context.mode === "flash" && <ZapIcon className="size-3.5" />}
+                    {context.mode === "flash" && (
+                      <ZapIcon className="size-3.5" />
+                    )}
                     {context.mode === "thinking" && (
                       <LightbulbIcon className="size-3.5" />
                     )}
@@ -1304,7 +1303,7 @@ export function InputBox({
               onOpenChange={setModelDialogOpen}
             >
               <ModelSelectorTrigger asChild>
-                <PromptInputButton className="min-w-0 shrink max-w-40 sm:max-w-56">
+                <PromptInputButton className="max-w-40 min-w-0 shrink sm:max-w-56">
                   {selectedModel && (
                     <ModelProviderLogo
                       className="size-4"
@@ -1368,10 +1367,12 @@ export function InputBox({
                           >
                             <ModelOptionContent
                               label={m.display_name}
-                              logo={<ModelProviderLogo
-                              className="size-4"
-                              model={m}
-                            />}
+                              logo={
+                                <ModelProviderLogo
+                                  className="size-4"
+                                  model={m}
+                                />
+                              }
                               selected={m.name === selectedModel?.name}
                             />
                           </ModelSelectorItem>
@@ -1387,10 +1388,12 @@ export function InputBox({
                           >
                             <ModelOptionContent
                               label={m.display_name ?? m.name}
-                              logo={<ModelProviderLogo
-                              className="size-4"
-                              model={m}
-                            />}
+                              logo={
+                                <ModelProviderLogo
+                                  className="size-4"
+                                  model={m}
+                                />
+                              }
                               selected={m.name === selectedVisionModel?.name}
                             />
                           </ModelSelectorItem>

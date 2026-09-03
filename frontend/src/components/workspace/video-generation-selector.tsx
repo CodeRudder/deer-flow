@@ -1,7 +1,7 @@
 "use client";
 
 import { VideoIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import {
   PromptInputActionMenu,
@@ -71,15 +71,27 @@ export function VideoGenerationSelector({
   );
   const effectiveModel = selectedModel ?? defaultModel;
   const isUnavailable = data?.skill_enabled === false;
-  const triggerLabel =
-    effectiveModel?.model.display_name ?? t.inputBox.videoGeneration;
+
+  // A persisted selection can point at a model that no longer exists (dropped
+  // from the backend list); repin to the default so what the menu shows and
+  // what gets sent stay the same.
+  useEffect(() => {
+    if (selection.video_generation_model && !selectedModel && defaultModel) {
+      onSelectionChange({ video_generation_model: defaultModel.model.name });
+    }
+  }, [
+    selection.video_generation_model,
+    selectedModel,
+    defaultModel,
+    onSelectionChange,
+  ]);
 
   return (
     <PromptInputActionMenu>
       <ModelMenuTrigger
         icon={VideoIcon}
         label={t.inputBox.videoGeneration}
-        selectedLabel={triggerLabel}
+        selectedLabel={effectiveModel?.model.display_name}
         iconClassName="text-violet-600 dark:text-violet-400"
       />
       <ModelMenuContent className="w-72">

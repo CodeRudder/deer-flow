@@ -2,27 +2,27 @@
 // drags in @lobehub/ui via the Avatar/Combine features, whose emoji-data JSON
 // import Node ESM cannot load when the test runner externalizes it. The bare
 // Mono/Color component files only depend on style helpers and react.
-import AlibabaColor from "@lobehub/icons/es/alibaba/components/Color";
-import AlibabaMono from "@lobehub/icons/es/alibaba/components/Mono";
-import ClaudeColor from "@lobehub/icons/es/claude/components/Color";
-import ClaudeMono from "@lobehub/icons/es/claude/components/Mono";
-import DeepSeekColor from "@lobehub/icons/es/deepseek/components/Color";
-import DeepSeekMono from "@lobehub/icons/es/deepseek/components/Mono";
-import DoubaoColor from "@lobehub/icons/es/doubao/components/Color";
-import DoubaoMono from "@lobehub/icons/es/doubao/components/Mono";
-import GoogleColor from "@lobehub/icons/es/google/components/Color";
-import GoogleMono from "@lobehub/icons/es/google/components/Mono";
-import MetaColor from "@lobehub/icons/es/meta/components/Color";
-import MetaMono from "@lobehub/icons/es/meta/components/Mono";
-import MinimaxColor from "@lobehub/icons/es/minimax/components/Color";
-import MinimaxMono from "@lobehub/icons/es/minimax/components/Mono";
-import MistralColor from "@lobehub/icons/es/mistral/components/Color";
-import MistralMono from "@lobehub/icons/es/mistral/components/Mono";
-import MoonshotMono from "@lobehub/icons/es/moonshot/components/Mono";
-import OpenAIMono from "@lobehub/icons/es/openai/components/Mono";
+import AlibabaColor from "@lobehub/icons/es/Alibaba/components/Color";
+import AlibabaMono from "@lobehub/icons/es/Alibaba/components/Mono";
+import ClaudeColor from "@lobehub/icons/es/Claude/components/Color";
+import ClaudeMono from "@lobehub/icons/es/Claude/components/Mono";
+import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color";
+import DeepSeekMono from "@lobehub/icons/es/DeepSeek/components/Mono";
+import DoubaoColor from "@lobehub/icons/es/Doubao/components/Color";
+import DoubaoMono from "@lobehub/icons/es/Doubao/components/Mono";
+import GoogleColor from "@lobehub/icons/es/Google/components/Color";
+import GoogleMono from "@lobehub/icons/es/Google/components/Mono";
+import MetaColor from "@lobehub/icons/es/Meta/components/Color";
+import MetaMono from "@lobehub/icons/es/Meta/components/Mono";
+import MinimaxColor from "@lobehub/icons/es/Minimax/components/Color";
+import MinimaxMono from "@lobehub/icons/es/Minimax/components/Mono";
+import MistralColor from "@lobehub/icons/es/Mistral/components/Color";
+import MistralMono from "@lobehub/icons/es/Mistral/components/Mono";
+import MoonshotMono from "@lobehub/icons/es/Moonshot/components/Mono";
+import OpenAIMono from "@lobehub/icons/es/OpenAI/components/Mono";
 import XiaomiMimoMono from "@lobehub/icons/es/XiaomiMiMo/components/Mono";
-import ZhipuColor from "@lobehub/icons/es/zhipu/components/Color";
-import ZhipuMono from "@lobehub/icons/es/zhipu/components/Mono";
+import ZhipuColor from "@lobehub/icons/es/Zhipu/components/Color";
+import ZhipuMono from "@lobehub/icons/es/Zhipu/components/Mono";
 import { SparklesIcon } from "lucide-react";
 import { type ComponentProps, type ComponentType } from "react";
 
@@ -72,7 +72,8 @@ const PROVIDER_KEYWORD_RULES: Array<
   [["claude", "anthropic"], "anthropic"],
   [["gemini", "google"], "google"],
   [["deepseek"], "deepseek"],
-  [["qwen", "wan", "alibaba"], "alibaba-cn"],
+  // wan 收窄为 wan2/wanx 前缀，避免裸 "wan" 子串误伤无关模型名
+  [["qwen", "wan2", "wanx", "alibaba"], "alibaba-cn"],
   [["zhipu", "glm"], "zhipuai"],
   [["mimo"], "xiaomi"],
   [["minimax"], "minimax"],

@@ -79,14 +79,13 @@ Image and video generation keep their workspace pickers, and both selectors are
 flat single-level menus showing model names directly (no provider submenu),
 reusing the shared `model-menu` row language with borderless logos. There is no
 "默认" placeholder row — with no pinned model the first configured provider's
-first model is the default (mirroring the backend `_first_configured_provider`
-chain), shown checked in the menu and on the trigger. The video selector
-enriches each row with the user-facing point rate
-(`X 积分/秒`,
-range across resolutions) sourced from the billing rules via
+first model is the default (mirroring the generation skill scripts'
+`_first_configured_provider` chain), shown checked in the menu and on the
+trigger. The video selector enriches each row with the user-facing point rate
+(`X 积分/秒`, range across resolutions) sourced from the billing rules via
 `GET /api/video-generation/providers`, with per-resolution detail and supported
-duration in the row tooltip. Only
-`image_generation_model` / `video_generation_model` are sent as thread context —
+duration in the row tooltip. Only `image_generation_model` /
+`video_generation_model` are sent as thread context —
 the provider is resolved from the model name by the backend. `/providers` still
 returns provider groups with `configured`, which the selectors use for labels
 and disabled states without transmitting the provider. Image editing is

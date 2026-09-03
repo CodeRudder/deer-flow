@@ -19,4 +19,6 @@ test("resolves providers from model names and display names", () => {
 
 test("returns null for unknown providers", () => {
   expect(resolveProviderFromModelName("unconfigured-provider")).toBeNull();
+  // 裸 "wan" 已收窄为 wan2/wanx 前缀，无关子串不误映射
+  expect(resolveProviderFromModelName("swan-1.5")).toBeNull();
 });

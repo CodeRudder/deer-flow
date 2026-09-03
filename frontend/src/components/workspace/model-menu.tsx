@@ -70,7 +70,7 @@ export function ModelOptionContent({
 }
 
 /** Trigger button for generation-model menus: generic icon plus the selected
- * model name; min-w-0 lets the button shrink so the toolbar row never wraps. */
+ * model name; shrink + min-w-0 let the button collapse so the toolbar row never wraps. */
 export function ModelMenuTrigger({
   icon: Icon,
   label,
@@ -86,8 +86,8 @@ export function ModelMenuTrigger({
     <Tooltip>
       <TooltipTrigger asChild>
         <PromptInputActionMenuTrigger
-          aria-label={label}
-          className="min-w-0 gap-1! px-2! data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+          aria-label={selectedLabel ? `${label}: ${selectedLabel}` : label}
+          className="data-[state=open]:bg-accent data-[state=open]:text-accent-foreground min-w-0 shrink gap-1! px-2!"
         >
           <Icon className={cn("size-3.5", iconClassName)} />
           {selectedLabel && (
