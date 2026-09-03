@@ -7,10 +7,7 @@ import {
   PromptInputActionMenu,
   PromptInputActionMenuItem,
 } from "@/components/ai-elements/prompt-input";
-import {
-  DropdownMenuGroup,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenuGroup } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -66,43 +63,26 @@ export function VideoGenerationSelector({
       ),
     [entries, selection.video_generation_model],
   );
-  const hasSelection = Boolean(selection.video_generation_model);
+  // No pinned model: mirror the backend default (first configured provider's
+  // first model) so the menu and the trigger show the real default model.
+  const defaultModel = useMemo(
+    () => entries.find((entry) => entry.configured),
+    [entries],
+  );
+  const effectiveModel = selectedModel ?? defaultModel;
   const isUnavailable = data?.skill_enabled === false;
   const triggerLabel =
-    selectedModel?.model.display_name ?? t.inputBox.videoGenerationDefault;
+    effectiveModel?.model.display_name ?? t.inputBox.videoGeneration;
 
   return (
     <PromptInputActionMenu>
       <ModelMenuTrigger
         icon={VideoIcon}
         label={t.inputBox.videoGeneration}
-        selectedLabel={hasSelection ? triggerLabel : undefined}
-        selectedLogo={
-          selectedModel ? (
-            <ModelProviderLogo
-              className="size-4 border-0"
-              displayName={selectedModel.model.display_name}
-              name={selectedModel.model.name}
-            />
-          ) : undefined
-        }
+        selectedLabel={triggerLabel}
       />
       <ModelMenuContent className="w-72">
         <DropdownMenuGroup>
-          <PromptInputActionMenuItem
-            className={modelOptionRowClassName(!hasSelection)}
-            onSelect={() =>
-              onSelectionChange({
-                video_generation_model: undefined,
-              })
-            }
-          >
-            <ModelOptionContent
-              label={t.inputBox.videoGenerationDefault}
-              selected={!hasSelection}
-            />
-          </PromptInputActionMenuItem>
-          <DropdownMenuSeparator />
           {isLoading && (
             <PromptInputActionMenuItem disabled>
               {t.common.loading}
@@ -122,8 +102,7 @@ export function VideoGenerationSelector({
             !error &&
             !isUnavailable &&
             entries.map(({ provider, model, configured }) => {
-              const isSelected =
-                selection.video_generation_model === model.name;
+              const isSelected = effectiveModel?.model.name === model.name;
               const rate = model.billing
                 ? videoRatePerSecond(model.billing)
                 : null;
@@ -153,6 +132,7 @@ export function VideoGenerationSelector({
                     label={model.display_name}
                     logo={
                       <ModelProviderLogo
+                        className="size-4 border-0"
                         name={model.name}
                         displayName={model.display_name}
                       />

@@ -12,7 +12,6 @@ rs.mock("@/core/i18n/hooks", () => ({
       common: { loading: "加载中" },
       inputBox: {
         videoGeneration: "视频生成",
-        videoGenerationDefault: "默认",
         videoGenerationNotConfigured: "未配置",
         videoGenerationSkillDisabled: "视频生成技能未启用",
         videoGenerationLoadFailed: "加载失败",
@@ -85,8 +84,11 @@ describe("VideoGenerationSelector", () => {
     renderSelector();
     await openMenu();
 
-    // 跨分辨率最低价：0.5 积分/秒起
+    // 跨分辨率最低价：0.5 积分/秒起；无显式选择时触发按钮显示默认真实模型
     expect(screen.getByText("低至0.5积分/秒")).toBeTruthy();
+    expect(screen.getByLabelText("视频生成").textContent).toContain(
+      "MiniMax H3",
+    );
   });
 
   it("emits the model name on selection", async () => {

@@ -97,12 +97,10 @@ export const enUS: Translations = {
     ultraModeDescription:
       "Pro mode with subagents to divide work; best for complex multi-step tasks",
     imageGeneration: "Image generation model",
-    imageGenerationDefault: "Default",
     imageGenerationNotConfigured: "API key not configured",
     imageGenerationSkillDisabled: "image-generation skill is disabled",
     imageGenerationLoadFailed: "Failed to load image generation models",
     videoGeneration: "Video generation model",
-    videoGenerationDefault: "Default",
     videoGenerationNotConfigured: "API key not configured",
     videoGenerationSkillDisabled: "video-generation skill is disabled",
     videoGenerationLoadFailed: "Failed to load video generation models",

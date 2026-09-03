@@ -1368,7 +1368,10 @@ export function InputBox({
                           >
                             <ModelOptionContent
                               label={m.display_name}
-                              logo={<ModelProviderLogo model={m} />}
+                              logo={<ModelProviderLogo
+                              className="size-4 border-0"
+                              model={m}
+                            />}
                               selected={m.name === selectedModel?.name}
                             />
                           </ModelSelectorItem>
@@ -1384,7 +1387,10 @@ export function InputBox({
                           >
                             <ModelOptionContent
                               label={m.display_name ?? m.name}
-                              logo={<ModelProviderLogo model={m} />}
+                              logo={<ModelProviderLogo
+                              className="size-4 border-0"
+                              model={m}
+                            />}
                               selected={m.name === selectedVisionModel?.name}
                             />
                           </ModelSelectorItem>

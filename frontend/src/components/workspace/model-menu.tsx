@@ -69,19 +69,16 @@ export function ModelOptionContent({
   );
 }
 
-/** Trigger button for generation-model menus: icon plus the selected model name.
- * When selected, the caller-passed (borderless) model logo replaces the generic
- * icon; min-w-0 lets the button shrink so the toolbar row never wraps. */
+/** Trigger button for generation-model menus: generic icon plus the selected
+ * model name; min-w-0 lets the button shrink so the toolbar row never wraps. */
 export function ModelMenuTrigger({
   icon: Icon,
   label,
   selectedLabel,
-  selectedLogo,
 }: {
   icon: LucideIcon;
   label: string;
   selectedLabel?: string;
-  selectedLogo?: ReactNode;
 }) {
   return (
     <Tooltip>
@@ -90,11 +87,7 @@ export function ModelMenuTrigger({
           aria-label={label}
           className="min-w-0 gap-1! px-2! data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
         >
-          {selectedLabel && selectedLogo ? (
-            selectedLogo
-          ) : (
-            <Icon className="size-3" />
-          )}
+          <Icon className="size-3" />
           {selectedLabel && (
             <span className="hidden max-w-28 truncate text-xs font-normal sm:inline">
               {selectedLabel}

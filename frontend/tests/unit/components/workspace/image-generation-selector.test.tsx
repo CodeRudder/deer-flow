@@ -12,7 +12,6 @@ rs.mock("@/core/i18n/hooks", () => ({
       common: { loading: "加载中" },
       inputBox: {
         imageGeneration: "图像生成",
-        imageGenerationDefault: "默认",
         imageGenerationNotConfigured: "未配置",
         imageGenerationSkillDisabled: "图像生成技能未启用",
         imageGenerationLoadFailed: "加载失败",
@@ -66,13 +65,16 @@ async function openMenu() {
 }
 
 describe("ImageGenerationSelector", () => {
-  it("renders the default row as selected and model rows with logos", async () => {
+  it("treats the first configured model as default and shows it on the trigger", async () => {
     renderSelector();
     await openMenu();
 
-    // 无选择时默认行打勾；模型行带品牌 logo
+    // 无显式选择时，默认真实模型行打勾，触发按钮显示其名称
     expect(document.querySelectorAll(".lucide-check").length).toBe(1);
     expect(document.querySelector("[style*='minimax.svg']")).toBeTruthy();
+    expect(screen.getByLabelText("图像生成").textContent).toContain(
+      "MiniMax H3",
+    );
   });
 
   it("marks the selected model row and emits its name on click", async () => {
@@ -96,21 +98,13 @@ describe("ImageGenerationSelector", () => {
     ).toBe(false);
   });
 
-  it("shows the selected model logo on the trigger", () => {
+  it("keeps the generic icon on the trigger when a model is selected", () => {
     renderSelector({ image_generation_model: "minimax-h3" });
-    expect(document.querySelectorAll("[style*='minimax.svg']").length).toBe(1);
-  });
-
-  it("clears the selection via the default row", async () => {
-    const { onSelectionChange } = renderSelector({
-      image_generation_model: "minimax-h3",
-    });
-    const user = await openMenu();
-
-    await user.click(screen.getByRole("menuitem", { name: "默认" }));
-    expect(onSelectionChange).toHaveBeenCalledWith({
-      image_generation_model: undefined,
-    });
+    // 触发按钮保持通用图像图标，品牌 logo 只出现在菜单行里
+    expect(document.querySelector("[style*='minimax.svg']")).toBeNull();
+    expect(
+      screen.getByLabelText("图像生成").querySelector(".lucide-image"),
+    ).toBeTruthy();
   });
 
   it("keeps unconfigured providers visible but unselectable", async () => {

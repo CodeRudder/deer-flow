@@ -76,8 +76,13 @@ vision model is pinned, the backend falls back to the first configured
 `vision.models[]` entry.
 
 Image and video generation keep their workspace pickers, and both selectors are
-flat single-level menus showing model names directly (no provider submenu). The
-video selector enriches each row with the user-facing point rate (`X 积分/秒`,
+flat single-level menus showing model names directly (no provider submenu),
+reusing the shared `model-menu` row language with borderless logos. There is no
+"默认" placeholder row — with no pinned model the first configured provider's
+first model is the default (mirroring the backend `_first_configured_provider`
+chain), shown checked in the menu and on the trigger. The video selector
+enriches each row with the user-facing point rate
+(`X 积分/秒`,
 range across resolutions) sourced from the billing rules via
 `GET /api/video-generation/providers`, with per-resolution detail and supported
 duration in the row tooltip. Only
