@@ -26,9 +26,17 @@ first+last modes. Output ONE structured plain-text prompt: the instruction line
 1. The prompt file contains ONLY the instruction line (keyframe modes), one
    blank line, then the three fields with exact lowercase names followed by a
    colon. No preamble, no explanation, no markdown fences.
-2. Write everything in English. EXCEPTIONS: dialogue/lyrics inside `<d>` and
-   visible on-screen text keep their original language verbatim.
-3. All timestamps use MM:SS.mmm, are strictly increasing, and fall within the
+2. Write all free-form content (scene, action, style, sound, speaker identity,
+   delivery) in Chinese by default; use English for the whole content ONLY
+   when the user explicitly requests an English prompt. EXCEPTIONS (always
+   original language, verbatim): dialogue/lyrics inside `<d>` and visible
+   on-screen text.
+3. Protocol tokens stay in English exactly as specified below and are never
+   translated: field names, the instruction lines (copied exactly), `[Shot N]`
+   with the `At MM:SS.mmm` opener, cut verbs, the natural English
+   camera-motion clause, speaker IDs `(S1)`, `<d>` tags, language tags
+   (`[Chinese]`, `[English]`, …), and `N/A`.
+4. All timestamps use MM:SS.mmm, are strictly increasing, and fall within the
    duration. Where S.SS appears, format the duration to exactly two decimals
    (e.g. 8 s → 8.00).
 
@@ -64,14 +72,14 @@ singing, and diegetic audio in playback order. Rules below.
 
 ### `overall_soundscape`
 
-1–4 English sentences, one paragraph: ambience + physical action sounds +
+1–4 sentences, one paragraph: ambience + physical action sounds +
 non-verbal human sounds across the FULL video. No dialogue/singing/diegetic
 music here (those belong in the shot description). `N/A` only for explicit
 total silence.
 
 ### `non_diegetic_music`
 
-1–3 English sentences about score the CHARACTERS CANNOT hear: instrumentation,
+1–3 sentences about score the CHARACTERS CANNOT hear: instrumentation,
 tempo, rhythm, dynamics only — no mood words. Music audible to characters
 (radio, singing, phone) is diegetic and belongs in the shot description. `N/A`
 when there is no score.
@@ -93,9 +101,9 @@ still deserves a full description.
 ### Timeline syntax
 
 - `[Shot 1]` has NO timestamp and MUST open with the overall style + initial
-  composition. Styles: cinematic live-action, 2D animation, 3D CG, claymation,
-  watercolor, vintage film… For keyframe modes derive style from the frame
-  image; for t2va from the brief.
+  composition. Styles (write in the content language, e.g. 真人实拍、2D 动画、
+  3D CG、黏土动画、水彩、复古胶片). For keyframe modes derive style from the
+  frame image; for t2va from the brief.
 - Later shots: `[Shot N] At MM:SS.mmm, the camera cuts to …` — strictly
   increasing cut times.
 - Cut verbs: "the camera cuts to", "the shot cuts/transitions/changes/switches
@@ -130,7 +138,9 @@ still deserves a full description.
 - Amplitude: "with small amplitude" / "with large amplitude" (omit if medium).
 - Speed: "at slow speed" / "at fast speed" (omit if normal).
 
-Write it as natural English, not stacked labels:
+The camera-motion clause stays a natural English sentence (protocol — ONE
+complete clause with type + amplitude + speed + target, embedded as-is in the
+Chinese shot description; never stacked labels):
 `The camera pushes in with small amplitude at slow speed toward the folded letter in her hands.`
 
 ### Speakers, dialogue, singing
@@ -139,15 +149,15 @@ Write it as natural English, not stacked labels:
   event and reused at EVERY later vocal event; group speech (S1,S2).
   Characters who never vocalize get NO ID.
 - First appearance: identity anchors (type, age, gender, on/off-screen, pitch,
-  timbre, rate, accent).
+  timbre, rate, accent) written in the content language.
 - Format: identifying phrase + ID + delivery OUTSIDE `<d>`; inside `<d>` ONLY
   the language tag and the exact words:
-  `The young woman with a quiet, breathy voice (S1) says: <d>[English] I get off at the next station.</d>`
+  `一位嗓音轻柔、略带气息感的年轻女子 (S1) 说道: <d>[Chinese] 我在下一站下车。</d>`
   — preserve the user's words and punctuation verbatim; never translate or
   rewrite.
-- Voiceover: use the exact phrase "says in an off-screen voiceover" and
-  immediately state the on-screen lips stay closed: "…while his lips remain
-  completely closed."
+- Voiceover: keep the exact English phrases (protocol): use "says in an
+  off-screen voiceover" and immediately state the on-screen lips stay closed:
+  "…while his lips remain completely closed."
 - Dialogue crossing a cut: `<d>` tags at the connecting points in both parts +
   an explicit continuity statement ("continues seamlessly across the cut",
   "carries over from the previous shot"). Speech cut off by the video end:
@@ -155,9 +165,10 @@ Write it as natural English, not stacked labels:
 
 ### On-screen text
 
-Visible banners/signs/labels/subtitles/neon in English double quotation marks,
-verbatim, no translation:
-`A red neon sign reading "营业中" glows above the doorway.`
+Visible banners/signs/labels/subtitles/neon in English-style double quotation
+marks ("…" — quote style, not language), verbatim in their original language,
+no translation:
+`门上方一块红色霓虹灯牌亮着 "营业中"。`
 
 ## Per-mode body strategy
 
@@ -186,7 +197,7 @@ verbatim, no translation:
   explain in the file.
 - Avoid named third-party IP, real celebrities, trademarked characters —
   describe generically.
-- When the brief omits the dialogue language, default to `[English]`.
+- When the brief omits the dialogue language, default to `[Chinese]`.
 
 ## Worked example (t2va, 5 s, two shots)
 
@@ -194,9 +205,9 @@ Request: "Make a short clip of a cat stretching on a windowsill in the
 morning." (defaults: 768P · 5 s · 16:9)
 
 ```
-integrated_multimodal_description: [Shot 1] Live-action, cinematic. A medium wide shot frames a ginger cat stretching on a sunlit wooden windowsill beside a potted plant, arching its back and extending one paw toward the pot. Morning golden-hour light streams through sheer curtains, casting soft volumetric rays across its fur. The camera pushes in with small amplitude at slow speed from the medium shot toward the cat. [Shot 2] At 00:03.000, the camera cuts to a close-up of the paw reaching the pot's rim, dust motes drifting through the light beam, while the stretch's lazy contentment carries over from the previous shot.
+integrated_multimodal_description: [Shot 1] 真人实拍，电影感。中景宽镜头框住一只姜黄色猫，在洒满晨光的木质窗台上舒展身体，旁边立着一盆绿植；猫弓起背，一只前爪伸向花盆。清晨黄金时刻的光线透过纱帘照入，在猫的毛发间形成柔和的体积光。The camera pushes in with small amplitude at slow speed toward the cat. [Shot 2] At 00:03.000, the camera cuts to 近景：前爪搭上花盆边缘，光柱里尘埃缓缓漂浮，上一镜头中慵懒满足的状态自然延续。
 
-overall_soundscape: Gentle birdsong outside, the soft rustle of curtains in a light breeze, a faint creak of the wooden sill under the cat's weight, and a low contented purr.
+overall_soundscape: 窗外传来轻柔的鸟鸣，微风拂动窗帘的沙沙声，木窗台在猫的身下发出轻微的吱呀声，以及一阵低低的满足呼噜声。
 
 non_diegetic_music: N/A
 ```

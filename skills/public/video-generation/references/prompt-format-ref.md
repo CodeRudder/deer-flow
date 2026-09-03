@@ -26,10 +26,19 @@ these exact lowercase field names followed by a colon.
 
 1. Output ONLY the six sections below, in order, with exact lowercase field
    names followed by a colon. No preamble, no explanation, no markdown fences.
-2. Write every section in English. EXCEPTIONS: dialogue/lyrics inside `<d>`
-   and text visibly present in the scene keep their original language
-   verbatim.
-3. Never invent reference labels beyond those defined in
+2. Write all free-form content (definitions, summary, retention features,
+   description, soundscape, music) in Chinese by default; use English for the
+   whole content ONLY when the user explicitly requests an English prompt.
+   EXCEPTIONS (always original language, verbatim): dialogue/lyrics inside
+   `<d>` and text visibly present in the scene.
+3. Protocol tokens stay in English exactly as specified below and are never
+   translated: field names, `<Picture N>` / `<Subject N>` labels, summary
+   prefixes (`[reference generation]`, `[keyframe completion]`), retention
+   markers (`fully_preserved` …), the `(appears in [Shot N])` skeleton,
+   `[Shot N]` with the `At MM:SS.mmm` opener, cut verbs, the natural English
+   camera-motion clause, speaker IDs `(S1)`, `<d>` tags, language tags
+   (`[Chinese]`, …), the exact voiceover phrases, and `N/A`.
+4. Never invent reference labels beyond those defined in
    `subject_definitions`. A label keeps one fixed meaning across all sections.
 
 ## Section 1 — `subject_definitions`
@@ -42,7 +51,7 @@ this skill (image-only input):
   styles, actions, expressions, poses. State what it is, which picture(s) it
   comes from, and the concrete features to preserve (face, hairstyle,
   garments, accessories, palette). One subject may combine assets:
-  `<Subject 1> is the man whose face comes from <Picture 1> and whose outfit comes from <Picture 2>.`
+  `<Subject 1> 是一名男子，脸部来自 <Picture 1>，衣着来自 <Picture 2>。`
 - **`<Picture N>`** — use ONLY when the image itself is a concrete
   frame/composition anchor (opening frame, keyframe, closing frame,
   storyboard). If an image merely defines a character/scene/style, cite it
@@ -88,8 +97,8 @@ markers:
 Format:
 
 ```
-<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - <which features are retained>.
-<Picture 1> (appears in [Shot 1]): fully_preserved - <which features are retained>.
+<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - <保留的特征，中文>.
+<Picture 1> (appears in [Shot 1]): fully_preserved - <保留的特征，中文>.
 ```
 
 Newly added actions, backgrounds, or plot are NOT losses of reference
@@ -97,40 +106,42 @@ fidelity. Never write `(Sx)` speaker IDs in this section.
 
 ## Section 4 — `detailed_description` (main body)
 
-- **Length**: 350–500 English words for generation tasks. Dialogue-dense
+- **Length**: 500–800 Chinese characters for generation tasks. Dialogue-dense
   content prioritizes the complete spoken timeline over word count.
-- **Opening**: the overall style in 1–2 English sentences BEFORE `[Shot 1]`
-  ("The target video uses a cinematic live-action style with soft lighting."),
-  never inside `[Shot 1]`.
+- **Opening**: the overall style in 1–2 sentences (content language) BEFORE
+  `[Shot 1]` ("目标视频采用电影实拍风格，光线柔和。"), never inside
+  `[Shot 1]`.
 - **Shots**: `[Shot 1]` has NO timestamp; later shots `[Shot N] At MM:SS.mmm,
   …` with strictly increasing cut times inside the duration. Cut verbs: "the
   camera cuts to", "the shot cuts/transitions/changes/switches to". A cut must
   add NEW information; if only distance or angle changes, use camera motion.
   Cross-dissolve/fade/wipe only if the user explicitly asked.
-- **Camera motion**: type + amplitude + speed as natural English (same
-  grammar as the base format: Zoom/Push/Pull/Pan/Truck/Tilt/Pedestal/Arc/
-  Tracking/Static/Shake/POV/Roll; "with small/large amplitude"; "at slow/fast
-  speed").
+- **Camera motion**: type + amplitude + speed as a natural English clause
+  (protocol — same grammar as the base format: Zoom/Push/Pull/Pan/Truck/Tilt/
+  Pedestal/Arc/Tracking/Static/Shake/POV/Roll; "with small/large amplitude";
+  "at slow/fast speed"), embedded as-is in the Chinese description.
 - **Reference labels**: insert at each label's first appearance and wherever
-  its role applies; reuse without redefining. Natural anchor phrasing: "the
-  shot begins from `<Picture 1>`".
+  its role applies; reuse without redefining. Natural anchor phrasing:
+  "镜头从 <Picture 1> 画面开始".
 - **Speakers**: stable IDs (S1), (S2)… assigned in order of actual vocal
   events, reused at every later vocal event; group speech (S1,S2); characters
   who never vocalize get NO ID. At first appearance give identity anchors
   (type, age, gender, on/off-screen, pitch, timbre, rate, accent). When a
   referenced subject speaks, keep both labels:
-  `<Subject 1> (S1) turns and says, <d>[English] Wait for us!</d>`
+  `<Subject 1> (S1) 转过身来说道: <d>[Chinese] 等等我们！</d>`
 - **Dialogue format**: identifying phrase + ID + delivery OUTSIDE `<d>`;
   inside `<d>` ONLY the language tag and the exact spoken words. Preserve the
   user's words and punctuation verbatim — never translate or rewrite. Default
-  language when unspecified: `[English]`.
-- **Voiceover**: the exact phrase "says in an off-screen voiceover", then
-  immediately after `</d>`: "…while his lips remain completely closed."
+  language when unspecified: `[Chinese]`.
+- **Voiceover**: keep the exact English phrases (protocol) — "says in an
+  off-screen voiceover", then immediately after `</d>`: "…while his lips
+  remain completely closed."
 - **Dialogue crossing a cut**: `<d>` tags at the connecting points in both
   parts plus an explicit continuity statement. Speech truncated by the video
   end: `</d>`.
-- **On-screen text**: visible banners/signs/labels/subtitles/neon in English
-  double quotation marks, verbatim, no translation.
+- **On-screen text**: visible banners/signs/labels/subtitles/neon in
+  English-style double quotation marks ("…" — quote style, not language),
+  verbatim, no translation.
 - **Per-shot content**: describe only what is visible or audible; establish
   composition, subject appearance and position, environment and lighting,
   actions and state changes, camera movement, current sound, and where
@@ -139,14 +150,14 @@ fidelity. Never write `(Sx)` speaker IDs in this section.
 
 ## Section 5 — `overall_soundscape`
 
-1–4 English sentences, one paragraph: ambience, physical action sounds,
+1–4 sentences, one paragraph: ambience, physical action sounds,
 non-verbal human sounds across the FULL video. Do not repeat dialogue,
 singing, or shot-synced sound events here. `N/A` only if the user explicitly
 requests complete silence.
 
 ## Section 6 — `non_diegetic_music`
 
-1–3 English sentences about score the CHARACTERS CANNOT hear: instrumentation,
+1–3 sentences about score the CHARACTERS CANNOT hear: instrumentation,
 tempo, rhythm, dynamic changes only — no abstract mood words. Music audible
 to characters is diegetic and belongs in `detailed_description`. `N/A` when
 there is no score.
@@ -169,22 +180,22 @@ first). Defaults: 5 s.
 
 ```
 subject_definitions:
-<Subject 1> is the young man whose face comes from <Picture 1>, with short dark hair, warm brown eyes, and a friendly round face.
-<Subject 2> is the outfit from <Picture 2>: a light denim jacket over a white crew-neck t-shirt.
+<Subject 1> 是一位年轻男子，脸部来自 <Picture 1>：深色短发、温暖的棕色眼睛、友好的圆脸。
+<Subject 2> 是来自 <Picture 2> 的衣着：浅色牛仔夹克，内搭白色圆领 T 恤。
 
 summary:
-[reference generation] The target video shows <Subject 1>, dressed in <Subject 2>, standing in a bright modern studio and waving hello at the camera with a warm smile.
+[reference generation] 目标视频展示 <Subject 1>，身穿 <Subject 2>，站在明亮现代的摄影棚里，带着温暖的笑容向镜头挥手致意。
 
 retention_analysis:
-<Subject 1> (appears in [Shot 1]): fully_preserved - the man's facial identity, short dark hair, and friendly expression are retained.
-<Subject 2> (appears in [Shot 1]): fully_preserved - the light denim jacket and white t-shirt are retained exactly.
+<Subject 1> (appears in [Shot 1]): fully_preserved - 面部身份、深色短发与友好的表情完整保留。
+<Subject 2> (appears in [Shot 1]): fully_preserved - 浅色牛仔夹克与白色 T 恤完整保留。
 
 detailed_description:
-The target video uses a realistic photographic style with soft, even studio lighting and a clean light-grey backdrop.
-[Shot 1] A medium shot frames <Subject 1>, the young man with short dark hair and a friendly round face from <Picture 1>, wearing the light denim jacket and white crew-neck t-shirt from <Picture 2>. He stands relaxed, weight on his back foot, facing the camera. He raises his right hand to shoulder height and waves hello with a slow, open-palmed side-to-side motion, his smile broadening as he does. The camera holds a static shot for the first half of the clip, then pushes in with small amplitude at slow speed until the wave and the smile fill the frame.
+目标视频采用写实摄影风格，影棚布光柔和平匀，背景为干净的浅灰色。
+[Shot 1] 中景镜头框住 <Subject 1>——这位深色短发、圆脸友善的年轻男子来自 <Picture 1>，身穿来自 <Picture 2> 的浅色牛仔夹克与白色圆领 T 恤。他重心落在后脚，放松站立，面向镜头；随后抬起右手至肩高，手掌张开，缓慢地左右挥手致意，笑容随之展开。The camera holds a static shot for the first half of the clip, then pushes in with small amplitude at slow speed until the wave and the smile fill the frame.
 
 overall_soundscape:
-A quiet studio room tone with the soft rustle of the denim jacket as the arm raises, and a faint breath of a chuckle accompanying the smile.
+安静的摄影棚底噪，抬臂时牛仔夹克发出的轻微摩擦声，以及伴随笑容的一声轻短的呼气笑。
 
 non_diegetic_music:
 N/A

@@ -293,6 +293,13 @@ the spec owns the grammar — then write the prompt file in that format:
   segments, dialogue in quotes; reference mode may mix images + reference
   videos + reference audios as public URLs)
 
+Prompt content language: Chinese by default — switch to English only when the
+user explicitly requests an English prompt. Protocol tokens stay in English
+exactly as the loaded spec defines them (field names, `[Shot N]`, `<d>` tags,
+labels, instruction lines, the English camera-motion clause). Exceptions keep
+their original language verbatim: dialogue inside `<d>` and visible on-screen
+text.
+
 Write the result to `/mnt/user-data/workspace/{descriptive-name}.txt` — plain
 text whose content is the structured format (instruction line for keyframe
 modes, then the fields). The structured format is still plain text, never a raw
@@ -300,7 +307,8 @@ JSON blob.
 
 Other providers (`minimax_v1`) keep the prose methodology: subject + main
 action first, ONE main camera move, lighting, atmosphere, ~60–100 words for a
-single-beat clip (audio description is H3-only).
+single-beat clip (audio description is H3-only); same content-language rule —
+Chinese by default, English on explicit request.
 
 Ref2VA prompts must be written from the ACTUAL images — their real subjects,
 features, and `<Picture N>` order. When reference images are auto-collected,
