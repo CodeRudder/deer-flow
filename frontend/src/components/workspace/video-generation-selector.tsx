@@ -132,7 +132,7 @@ export function VideoGenerationSelector({
                     label={model.display_name}
                     logo={
                       <ModelProviderLogo
-                        className="size-4 border-0"
+                        className="size-4"
                         name={model.name}
                         displayName={model.display_name}
                       />

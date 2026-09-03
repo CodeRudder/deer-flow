@@ -11,9 +11,11 @@ export default defineConfig({
     },
   },
   output: {
-    // Streamdown imports KaTeX CSS as a side effect. Bundle these packages so
-    // Rsbuild processes that CSS import instead of Node trying to load it.
-    bundleDependencies: ["streamdown", "katex"],
+    // Streamdown imports KaTeX CSS as a side effect, and @lobehub/icons ships
+    // an es build with extensionless relative imports that Node ESM cannot
+    // load when externalized. Keep everything else externalized (a single
+    // React copy from node_modules) and bundle only the problem packages.
+    bundleDependencies: ["streamdown", "katex", /@lobehub[\\/]icons/],
   },
   include: ["tests/unit/**/*.test.{ts,tsx}"],
   testEnvironment: "jsdom",

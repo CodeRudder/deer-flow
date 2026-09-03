@@ -1,19 +1,19 @@
 import { expect, test } from "@rstest/core";
 
-import { getModelLogoPath } from "@/core/models/logo";
+import { resolveProviderFromModelName } from "@/core/models/logo";
 
-test("resolves bundled provider logos", () => {
-  expect(getModelLogoPath("zhipuai")).toBe("/logos/zhipuai.svg");
-  expect(getModelLogoPath("anthropic")).toBe("/logos/anthropic.svg");
-  expect(getModelLogoPath("deepseek")).toBe("/logos/deepseek.svg");
+test("resolves providers from model names and display names", () => {
+  expect(resolveProviderFromModelName("claude-sonnet-4")).toBe("anthropic");
+  expect(resolveProviderFromModelName("wan2.7-image-pro")).toBe("alibaba-cn");
+  expect(resolveProviderFromModelName("minimax-h3")).toBe("minimax");
+  expect(resolveProviderFromModelName("custom-model", "GLM-5.3")).toBe(
+    "zhipuai",
+  );
+  expect(resolveProviderFromModelName("kimi-k2")).toBe("moonshotai-cn");
+  expect(resolveProviderFromModelName("doubao-seed-1.6")).toBe("doubao");
+  expect(resolveProviderFromModelName("deepseek-v3")).toBe("deepseek");
 });
 
-test("normalizes supported provider aliases", () => {
-  expect(getModelLogoPath(" Google-Vertex ")).toBe("/logos/google.svg");
-  expect(getModelLogoPath("zai-coding-plan")).toBe("/logos/zhipuai.svg");
-});
-
-test("does not construct paths for unknown providers", () => {
-  expect(getModelLogoPath("unconfigured-provider")).toBeUndefined();
-  expect(getModelLogoPath("../../external-logo")).toBeUndefined();
+test("returns null for unknown providers", () => {
+  expect(resolveProviderFromModelName("unconfigured-provider")).toBeNull();
 });

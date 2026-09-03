@@ -1307,7 +1307,7 @@ export function InputBox({
                 <PromptInputButton className="min-w-0 shrink max-w-40 sm:max-w-56">
                   {selectedModel && (
                     <ModelProviderLogo
-                      className="size-4 border-0"
+                      className="size-4"
                       model={selectedModel}
                     />
                   )}
@@ -1369,7 +1369,7 @@ export function InputBox({
                             <ModelOptionContent
                               label={m.display_name}
                               logo={<ModelProviderLogo
-                              className="size-4 border-0"
+                              className="size-4"
                               model={m}
                             />}
                               selected={m.name === selectedModel?.name}
@@ -1388,7 +1388,7 @@ export function InputBox({
                             <ModelOptionContent
                               label={m.display_name ?? m.name}
                               logo={<ModelProviderLogo
-                              className="size-4 border-0"
+                              className="size-4"
                               model={m}
                             />}
                               selected={m.name === selectedVisionModel?.name}

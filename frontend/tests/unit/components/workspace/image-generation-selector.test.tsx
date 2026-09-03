@@ -71,7 +71,7 @@ describe("ImageGenerationSelector", () => {
 
     // 无显式选择时，默认真实模型行打勾，触发按钮显示其名称
     expect(document.querySelectorAll(".lucide-check").length).toBe(1);
-    expect(document.querySelector("[style*='minimax.svg']")).toBeTruthy();
+    expect(document.querySelector("[data-provider='minimax']")).toBeTruthy();
     expect(screen.getByLabelText("图像生成").textContent).toContain(
       "MiniMax H3",
     );
@@ -101,7 +101,7 @@ describe("ImageGenerationSelector", () => {
   it("keeps the generic icon on the trigger when a model is selected", () => {
     renderSelector({ image_generation_model: "minimax-h3" });
     // 触发按钮保持通用图像图标，品牌 logo 只出现在菜单行里
-    expect(document.querySelector("[style*='minimax.svg']")).toBeNull();
+    expect(document.querySelector("[data-provider='minimax']")).toBeNull();
     expect(
       screen.getByLabelText("图像生成").querySelector(".lucide-image"),
     ).toBeTruthy();
