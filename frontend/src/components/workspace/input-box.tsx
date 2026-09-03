@@ -987,7 +987,7 @@ export function InputBox({
           />
         </PromptInputBody>
         <PromptInputFooter className="flex flex-wrap gap-2 sm:flex-nowrap">
-          <PromptInputTools className="min-w-0 flex-1 flex-wrap">
+          <PromptInputTools className="min-w-0 flex-1 flex-nowrap">
             {/* TODO: Add more connectors here
           <PromptInputActionMenu>
             <PromptInputActionMenuTrigger className="px-2!" />
@@ -1009,7 +1009,7 @@ export function InputBox({
                     : "flash"
                 }
               >
-                <PromptInputActionMenuTrigger className="max-w-28 gap-1! px-2! sm:max-w-none">
+                <PromptInputActionMenuTrigger className="min-w-0 shrink max-w-28 gap-1! px-2! sm:max-w-none">
                   <div>
                     {context.mode === "flash" && <ZapIcon className="size-3" />}
                     {context.mode === "thinking" && (
@@ -1298,16 +1298,16 @@ export function InputBox({
               </PromptInputActionMenu>
             )}
           </PromptInputTools>
-          <PromptInputTools className="min-w-0 justify-end">
+          <PromptInputTools className="min-w-0 flex-nowrap justify-end">
             <ModelSelector
               open={modelDialogOpen}
               onOpenChange={setModelDialogOpen}
             >
               <ModelSelectorTrigger asChild>
-                <PromptInputButton className="max-w-40 min-w-0 sm:max-w-56">
+                <PromptInputButton className="min-w-0 shrink max-w-40 sm:max-w-56">
                   {selectedModel && (
                     <ModelProviderLogo
-                      className="size-5"
+                      className="size-4 border-0"
                       model={selectedModel}
                     />
                   )}

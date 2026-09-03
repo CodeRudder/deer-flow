@@ -80,7 +80,7 @@ export function VideoGenerationSelector({
         selectedLogo={
           selectedModel ? (
             <ModelProviderLogo
-              className="size-5"
+              className="size-4 border-0"
               displayName={selectedModel.model.display_name}
               name={selectedModel.model.name}
             />

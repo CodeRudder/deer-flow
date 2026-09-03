@@ -70,8 +70,8 @@ export function ModelOptionContent({
 }
 
 /** Trigger button for generation-model menus: icon plus the selected model name.
- * The selected model's logo replaces the generic icon; filled accent tone
- * appears only while the menu is open. */
+ * When selected, the caller-passed (borderless) model logo replaces the generic
+ * icon; min-w-0 lets the button shrink so the toolbar row never wraps. */
 export function ModelMenuTrigger({
   icon: Icon,
   label,
@@ -88,7 +88,7 @@ export function ModelMenuTrigger({
       <TooltipTrigger asChild>
         <PromptInputActionMenuTrigger
           aria-label={label}
-          className="gap-1! px-2! data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+          className="min-w-0 gap-1! px-2! data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
         >
           {selectedLabel && selectedLogo ? (
             selectedLogo
@@ -96,7 +96,7 @@ export function ModelMenuTrigger({
             <Icon className="size-3" />
           )}
           {selectedLabel && (
-            <span className="max-w-28 truncate text-xs font-normal">
+            <span className="hidden max-w-28 truncate text-xs font-normal sm:inline">
               {selectedLabel}
             </span>
           )}
