@@ -1,18 +1,13 @@
 "use client";
 
-import { CheckIcon, VideoIcon } from "lucide-react";
-import { useMemo } from "react";
+import { VideoIcon } from "lucide-react";
+import { useEffect, useMemo } from "react";
 
 import {
   PromptInputActionMenu,
-  PromptInputActionMenuContent,
   PromptInputActionMenuItem,
-  PromptInputActionMenuTrigger,
 } from "@/components/ai-elements/prompt-input";
-import {
-  DropdownMenuGroup,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenuGroup } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -25,7 +20,13 @@ import {
   videoRatePerSecond,
   videoRateRangeLabel,
 } from "@/core/video-generation/rate";
-import { cn } from "@/lib/utils";
+
+import {
+  ModelMenuContent,
+  ModelMenuTrigger,
+  ModelOptionContent,
+  modelOptionRowClassName,
+} from "./model-menu";
 
 type VideoGenerationSelection = {
   video_generation_model?: string;
@@ -62,56 +63,39 @@ export function VideoGenerationSelector({
       ),
     [entries, selection.video_generation_model],
   );
-  const hasSelection = Boolean(selection.video_generation_model);
+  // No pinned model: mirror the backend default (first configured provider's
+  // first model) so the menu and the trigger show the real default model.
+  const defaultModel = useMemo(
+    () => entries.find((entry) => entry.configured),
+    [entries],
+  );
+  const effectiveModel = selectedModel ?? defaultModel;
   const isUnavailable = data?.skill_enabled === false;
-  const triggerLabel =
-    selectedModel?.model.display_name ?? t.inputBox.videoGenerationDefault;
+
+  // A persisted selection can point at a model that no longer exists (dropped
+  // from the backend list); repin to the default so what the menu shows and
+  // what gets sent stay the same.
+  useEffect(() => {
+    if (selection.video_generation_model && !selectedModel && defaultModel) {
+      onSelectionChange({ video_generation_model: defaultModel.model.name });
+    }
+  }, [
+    selection.video_generation_model,
+    selectedModel,
+    defaultModel,
+    onSelectionChange,
+  ]);
 
   return (
     <PromptInputActionMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PromptInputActionMenuTrigger
-            aria-label={t.inputBox.videoGeneration}
-            className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
-          >
-            <VideoIcon
-              className={cn("size-3", hasSelection && "text-[#2aa7c9]")}
-            />
-            {hasSelection && (
-              <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
-                {triggerLabel}
-              </span>
-            )}
-          </PromptInputActionMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>{t.inputBox.videoGeneration}</TooltipContent>
-      </Tooltip>
-      <PromptInputActionMenuContent className="w-72">
+      <ModelMenuTrigger
+        icon={VideoIcon}
+        label={t.inputBox.videoGeneration}
+        selectedLabel={effectiveModel?.model.display_name}
+        iconClassName="text-violet-600 dark:text-violet-400"
+      />
+      <ModelMenuContent className="w-72">
         <DropdownMenuGroup>
-          <PromptInputActionMenuItem
-            className={cn(
-              "h-9",
-              !hasSelection
-                ? "text-accent-foreground"
-                : "text-muted-foreground/65",
-            )}
-            onSelect={() =>
-              onSelectionChange({
-                video_generation_model: undefined,
-              })
-            }
-          >
-            <span className="min-w-0 truncate font-medium">
-              {t.inputBox.videoGenerationDefault}
-            </span>
-            {!hasSelection ? (
-              <CheckIcon className="ml-auto size-4" />
-            ) : (
-              <div className="ml-auto size-4" />
-            )}
-          </PromptInputActionMenuItem>
-          <DropdownMenuSeparator />
           {isLoading && (
             <PromptInputActionMenuItem disabled>
               {t.common.loading}
@@ -131,8 +115,7 @@ export function VideoGenerationSelector({
             !error &&
             !isUnavailable &&
             entries.map(({ provider, model, configured }) => {
-              const isSelected =
-                selection.video_generation_model === model.name;
+              const isSelected = effectiveModel?.model.name === model.name;
               const rate = model.billing
                 ? videoRatePerSecond(model.billing)
                 : null;
@@ -146,13 +129,7 @@ export function VideoGenerationSelector({
                   // data-disabled kills pointer events, leaving the description
                   // tooltip unreachable. aria-disabled keeps hover/focus; onSelect blocks selection.
                   aria-disabled={!configured || undefined}
-                  className={cn(
-                    "h-9",
-                    !configured && "opacity-50",
-                    isSelected
-                      ? "text-accent-foreground"
-                      : "text-muted-foreground/75",
-                  )}
+                  className={modelOptionRowClassName(isSelected, configured)}
                   onSelect={(event) => {
                     if (!configured) {
                       event.preventDefault();
@@ -163,31 +140,28 @@ export function VideoGenerationSelector({
                     });
                   }}
                 >
-                  <ModelProviderLogo
-                    name={model.name}
-                    displayName={model.display_name}
+                  <ModelOptionContent
+                    configured={configured}
+                    label={model.display_name}
+                    logo={
+                      <ModelProviderLogo
+                        className="size-4"
+                        name={model.name}
+                        displayName={model.display_name}
+                      />
+                    }
+                    meta={
+                      hasRate && rate ? (
+                        <span className="text-muted-foreground text-[11px]">
+                          {t.inputBox.videoRateFromLabel(
+                            videoRateRangeLabel(rate.min, rate.min),
+                          )}
+                        </span>
+                      ) : undefined
+                    }
+                    notConfiguredLabel={t.inputBox.videoGenerationNotConfigured}
+                    selected={isSelected}
                   />
-                  <span className="min-w-0 truncate font-medium">
-                    {model.display_name}
-                  </span>
-                  {hasRate && (
-                    <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">
-                      {t.inputBox.videoRateFromLabel(
-                        videoRateRangeLabel(rate!.min, rate!.min),
-                      )}
-                    </span>
-                  )}
-                  {!configured ? (
-                    <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
-                      {t.inputBox.videoGenerationNotConfigured}
-                    </span>
-                  ) : isSelected ? (
-                    <CheckIcon
-                      className={cn("size-4", !hasRate && "ml-auto")}
-                    />
-                  ) : (
-                    <div className={cn("size-4", !hasRate && "ml-auto")} />
-                  )}
                 </PromptInputActionMenuItem>
               );
 
@@ -241,7 +215,7 @@ export function VideoGenerationSelector({
               );
             })}
         </DropdownMenuGroup>
-      </PromptInputActionMenuContent>
+      </ModelMenuContent>
     </PromptInputActionMenu>
   );
 }

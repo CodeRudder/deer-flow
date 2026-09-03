@@ -94,6 +94,7 @@ import {
 import { ImageGenerationSelector } from "./image-generation-selector";
 import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
+import { ModelOptionContent, modelOptionRowClassName } from "./model-menu";
 import { Tooltip } from "./tooltip";
 import { VideoGenerationSelector } from "./video-generation-selector";
 
@@ -175,9 +176,16 @@ type ModelLogoSource = {
   display_name?: string | null;
 };
 
-function ModelProviderLogo({ model }: { model: ModelLogoSource }) {
+function ModelProviderLogo({
+  model,
+  className,
+}: {
+  model: ModelLogoSource;
+  className?: string;
+}) {
   return (
     <ModelProviderLogoBase
+      className={className}
       displayName={model.display_name}
       name={[model.name, model.model].filter(Boolean).join(" ")}
     />
@@ -976,7 +984,7 @@ export function InputBox({
           />
         </PromptInputBody>
         <PromptInputFooter className="flex flex-wrap gap-2 sm:flex-nowrap">
-          <PromptInputTools className="min-w-0 flex-1 flex-wrap">
+          <PromptInputTools className="min-w-0 flex-1 flex-nowrap">
             {/* TODO: Add more connectors here
           <PromptInputActionMenu>
             <PromptInputActionMenuTrigger className="px-2!" />
@@ -998,17 +1006,19 @@ export function InputBox({
                     : "flash"
                 }
               >
-                <PromptInputActionMenuTrigger className="max-w-28 gap-1! px-2! sm:max-w-none">
+                <PromptInputActionMenuTrigger className="max-w-28 min-w-0 shrink gap-1! px-2! sm:max-w-none">
                   <div>
-                    {context.mode === "flash" && <ZapIcon className="size-3" />}
+                    {context.mode === "flash" && (
+                      <ZapIcon className="size-3.5" />
+                    )}
                     {context.mode === "thinking" && (
-                      <LightbulbIcon className="size-3" />
+                      <LightbulbIcon className="size-3.5" />
                     )}
                     {context.mode === "pro" && (
-                      <GraduationCapIcon className="size-3" />
+                      <GraduationCapIcon className="size-3.5" />
                     )}
                     {context.mode === "ultra" && (
-                      <RocketIcon className="size-3 text-[#dabb5e]" />
+                      <RocketIcon className="size-3.5 text-[#dabb5e]" />
                     )}
                   </div>
                   <div
@@ -1287,13 +1297,19 @@ export function InputBox({
               </PromptInputActionMenu>
             )}
           </PromptInputTools>
-          <PromptInputTools className="min-w-0 justify-end">
+          <PromptInputTools className="min-w-0 flex-nowrap justify-end">
             <ModelSelector
               open={modelDialogOpen}
               onOpenChange={setModelDialogOpen}
             >
               <ModelSelectorTrigger asChild>
-                <PromptInputButton className="max-w-40 min-w-0 sm:max-w-56">
+                <PromptInputButton className="max-w-40 min-w-0 shrink sm:max-w-56">
+                  {selectedModel && (
+                    <ModelProviderLogo
+                      className="size-4"
+                      model={selectedModel}
+                    />
+                  )}
                   <ModelSelectorName className="text-xs font-normal">
                     {selectedModel?.display_name}
                   </ModelSelectorName>
@@ -1338,52 +1354,48 @@ export function InputBox({
                       </div>
                     </div>
                   ) : null}
-                  <ModelSelectorList className="max-h-80">
+                  <ModelSelectorList className="max-h-80 p-1">
                     {modelSelectorCategory === "chat"
                       ? models.map((m) => (
                           <ModelSelectorItem
                             key={m.name}
-                            className={cn(
-                              "h-10 gap-3",
-                              m.name === selectedModel?.name
-                                ? "text-accent-foreground"
-                                : "text-muted-foreground/75",
+                            className={modelOptionRowClassName(
+                              m.name === selectedModel?.name,
                             )}
                             value={`chat:${m.name} ${m.display_name}`}
                             onSelect={() => handleModelSelect(m.name)}
                           >
-                            <ModelProviderLogo model={m} />
-                            <ModelSelectorName className="text-sm font-medium">
-                              {m.display_name}
-                            </ModelSelectorName>
-                            {m.name === selectedModel?.name ? (
-                              <CheckIcon className="ml-auto size-4" />
-                            ) : (
-                              <div className="ml-auto size-4" />
-                            )}
+                            <ModelOptionContent
+                              label={m.display_name}
+                              logo={
+                                <ModelProviderLogo
+                                  className="size-4"
+                                  model={m}
+                                />
+                              }
+                              selected={m.name === selectedModel?.name}
+                            />
                           </ModelSelectorItem>
                         ))
                       : visionModels.map((m) => (
                           <ModelSelectorItem
                             key={m.name}
-                            className={cn(
-                              "h-10 gap-3",
-                              m.name === selectedVisionModel?.name
-                                ? "text-accent-foreground"
-                                : "text-muted-foreground/75",
+                            className={modelOptionRowClassName(
+                              m.name === selectedVisionModel?.name,
                             )}
                             value={`vision:${m.name} ${m.display_name ?? ""}`}
                             onSelect={() => handleVisionModelSelect(m.name)}
                           >
-                            <ModelProviderLogo model={m} />
-                            <ModelSelectorName className="text-sm font-medium">
-                              {m.display_name ?? m.name}
-                            </ModelSelectorName>
-                            {m.name === selectedVisionModel?.name ? (
-                              <CheckIcon className="ml-auto size-4" />
-                            ) : (
-                              <div className="ml-auto size-4" />
-                            )}
+                            <ModelOptionContent
+                              label={m.display_name ?? m.name}
+                              logo={
+                                <ModelProviderLogo
+                                  className="size-4"
+                                  model={m}
+                                />
+                              }
+                              selected={m.name === selectedVisionModel?.name}
+                            />
                           </ModelSelectorItem>
                         ))}
                   </ModelSelectorList>
@@ -1513,7 +1525,7 @@ function AddAttachmentsButton({ className }: { className?: string }) {
         className={cn("px-2!", className)}
         onClick={() => attachments.openFileDialog()}
       >
-        <PaperclipIcon className="size-3" />
+        <PaperclipIcon className="size-3.5" />
       </PromptInputButton>
     </Tooltip>
   );

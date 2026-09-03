@@ -78,12 +78,10 @@ export interface Translations {
     ultraMode: string;
     ultraModeDescription: string;
     imageGeneration: string;
-    imageGenerationDefault: string;
     imageGenerationNotConfigured: string;
     imageGenerationSkillDisabled: string;
     imageGenerationLoadFailed: string;
     videoGeneration: string;
-    videoGenerationDefault: string;
     videoGenerationNotConfigured: string;
     videoGenerationSkillDisabled: string;
     videoGenerationLoadFailed: string;

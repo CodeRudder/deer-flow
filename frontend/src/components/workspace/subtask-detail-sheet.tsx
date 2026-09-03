@@ -295,7 +295,7 @@ function MainSessionMessages({ threadId }: { threadId: string }) {
           disabled={isLoading}
         >
           {isLoading ? (
-            <Loader2Icon className="size-3 animate-spin" />
+            <Loader2Icon className="size-3.5 animate-spin" />
           ) : (
             "加载更多消息..."
           )}

@@ -40,7 +40,7 @@ export function CitationLink({
             className="hover:bg-secondary/80 mx-0.5 cursor-pointer gap-1 rounded-full px-2 py-0.5 text-xs font-normal"
           >
             {displayText}
-            <ExternalLinkIcon className="size-3" />
+            <ExternalLinkIcon className="size-3.5" />
           </Badge>
         </a>
       </HoverCardTrigger>
@@ -65,7 +65,7 @@ export function CitationLink({
             className="text-primary mt-2 inline-flex items-center gap-1 text-xs hover:underline"
           >
             Visit source
-            <ExternalLinkIcon className="size-3" />
+            <ExternalLinkIcon className="size-3.5" />
           </a>
         </div>
       </HoverCardContent>

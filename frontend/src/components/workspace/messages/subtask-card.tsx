@@ -159,11 +159,11 @@ export function SubtaskCard({
   ]);
   const icon = useMemo(() => {
     if (task.status === "completed") {
-      return <CheckCircleIcon className="size-3" />;
+      return <CheckCircleIcon className="size-3.5" />;
     } else if (task.status === "failed") {
-      return <XCircleIcon className="size-3 text-red-500" />;
+      return <XCircleIcon className="size-3.5 text-red-500" />;
     } else if (task.status === "in_progress") {
-      return <Loader2Icon className="size-3 animate-spin" />;
+      return <Loader2Icon className="size-3.5 animate-spin" />;
     }
   }, [task.status]);
   return (
@@ -228,9 +228,9 @@ export function SubtaskCard({
                       }}
                     >
                       {cancelling ? (
-                        <Loader2Icon className="size-3 animate-spin" />
+                        <Loader2Icon className="size-3.5 animate-spin" />
                       ) : (
-                        <SquareIcon className="size-3" />
+                        <SquareIcon className="size-3.5" />
                       )}
                     </Button>
                   )}
@@ -246,9 +246,9 @@ export function SubtaskCard({
                       }}
                     >
                       {resuming ? (
-                        <Loader2Icon className="mr-1 size-3 animate-spin" />
+                        <Loader2Icon className="mr-1 size-3.5 animate-spin" />
                       ) : (
-                        <RotateCcwIcon className="mr-1 size-3" />
+                        <RotateCcwIcon className="mr-1 size-3.5" />
                       )}
                       恢复执行
                     </Button>

@@ -28,7 +28,7 @@ function TokenUsageSummary({
       )}
     >
       <span className="inline-flex items-center gap-1 font-medium">
-        <CoinsIcon className="size-3" />
+        <CoinsIcon className="size-3.5 text-amber-600 dark:text-amber-400" />
         {t.tokenUsage.label}
       </span>
       <span>
@@ -112,7 +112,7 @@ export function MessageTokenUsageDebugList({
           >
             <div className="min-w-0 flex-1 space-y-1">
               <div className="text-foreground flex items-center gap-2 text-xs font-medium">
-                <CoinsIcon className="text-muted-foreground size-3" />
+                <CoinsIcon className="size-3.5 text-amber-600 dark:text-amber-400" />
                 <span className="truncate">{step.label}</span>
               </div>
               {step.secondaryLabels.length > 0 && (

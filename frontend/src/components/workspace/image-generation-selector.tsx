@@ -1,18 +1,13 @@
 "use client";
 
-import { CheckIcon, ImageIcon } from "lucide-react";
-import { useMemo } from "react";
+import { ImageIcon } from "lucide-react";
+import { useEffect, useMemo } from "react";
 
 import {
   PromptInputActionMenu,
-  PromptInputActionMenuContent,
   PromptInputActionMenuItem,
-  PromptInputActionMenuTrigger,
 } from "@/components/ai-elements/prompt-input";
-import {
-  DropdownMenuGroup,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenuGroup } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -21,7 +16,13 @@ import {
 import { useI18n } from "@/core/i18n/hooks";
 import { useImageGenerationProviders } from "@/core/image-generation";
 import { ModelProviderLogo } from "@/core/models/logo";
-import { cn } from "@/lib/utils";
+
+import {
+  ModelMenuContent,
+  ModelMenuTrigger,
+  ModelOptionContent,
+  modelOptionRowClassName,
+} from "./model-menu";
 
 type ImageGenerationSelection = {
   image_generation_model?: string;
@@ -60,56 +61,39 @@ export function ImageGenerationSelector({
       ),
     [entries, selection.image_generation_model],
   );
-  const hasSelection = Boolean(selection.image_generation_model);
+  // No pinned model: mirror the backend default (first configured provider's
+  // first model) so the menu and the trigger show the real default model.
+  const defaultModel = useMemo(
+    () => entries.find((entry) => entry.configured),
+    [entries],
+  );
+  const effectiveModel = selectedModel ?? defaultModel;
   const isUnavailable = data?.skill_enabled === false;
-  const triggerLabel =
-    selectedModel?.model.display_name ?? t.inputBox.imageGenerationDefault;
+
+  // A persisted selection can point at a model that no longer exists (dropped
+  // from the backend list); repin to the default so what the menu shows and
+  // what gets sent stay the same.
+  useEffect(() => {
+    if (selection.image_generation_model && !selectedModel && defaultModel) {
+      onSelectionChange({ image_generation_model: defaultModel.model.name });
+    }
+  }, [
+    selection.image_generation_model,
+    selectedModel,
+    defaultModel,
+    onSelectionChange,
+  ]);
 
   return (
     <PromptInputActionMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PromptInputActionMenuTrigger
-            aria-label={t.inputBox.imageGeneration}
-            className={cn("gap-1! px-2!", hasSelection && "text-[#2aa7c9]")}
-          >
-            <ImageIcon
-              className={cn("size-3", hasSelection && "text-[#2aa7c9]")}
-            />
-            {hasSelection && (
-              <span className="max-w-28 truncate text-xs font-normal text-[#2aa7c9]">
-                {triggerLabel}
-              </span>
-            )}
-          </PromptInputActionMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>{t.inputBox.imageGeneration}</TooltipContent>
-      </Tooltip>
-      <PromptInputActionMenuContent className="w-56">
+      <ModelMenuTrigger
+        icon={ImageIcon}
+        label={t.inputBox.imageGeneration}
+        selectedLabel={effectiveModel?.model.display_name}
+        iconClassName="text-emerald-600 dark:text-emerald-400"
+      />
+      <ModelMenuContent className="w-56">
         <DropdownMenuGroup>
-          <PromptInputActionMenuItem
-            className={cn(
-              "h-9",
-              !hasSelection
-                ? "text-accent-foreground"
-                : "text-muted-foreground/65",
-            )}
-            onSelect={() =>
-              onSelectionChange({
-                image_generation_model: undefined,
-              })
-            }
-          >
-            <span className="min-w-0 truncate font-medium">
-              {t.inputBox.imageGenerationDefault}
-            </span>
-            {!hasSelection ? (
-              <CheckIcon className="ml-auto size-4" />
-            ) : (
-              <div className="ml-auto size-4" />
-            )}
-          </PromptInputActionMenuItem>
-          <DropdownMenuSeparator />
           {isLoading && (
             <PromptInputActionMenuItem disabled>
               {t.common.loading}
@@ -129,8 +113,7 @@ export function ImageGenerationSelector({
             !error &&
             !isUnavailable &&
             entries.map(({ provider, model, configured }) => {
-              const isSelected =
-                selection.image_generation_model === model.name;
+              const isSelected = effectiveModel?.model.name === model.name;
 
               const item = (
                 <PromptInputActionMenuItem
@@ -138,13 +121,7 @@ export function ImageGenerationSelector({
                   // data-disabled kills pointer events, leaving the description
                   // tooltip unreachable. aria-disabled keeps hover/focus; onSelect blocks selection.
                   aria-disabled={!configured || undefined}
-                  className={cn(
-                    "h-9",
-                    !configured && "opacity-50",
-                    isSelected
-                      ? "text-accent-foreground"
-                      : "text-muted-foreground/75",
-                  )}
+                  className={modelOptionRowClassName(isSelected, configured)}
                   onSelect={(event) => {
                     if (!configured) {
                       event.preventDefault();
@@ -155,22 +132,19 @@ export function ImageGenerationSelector({
                     });
                   }}
                 >
-                  <ModelProviderLogo
-                    name={model.name}
-                    displayName={model.display_name}
+                  <ModelOptionContent
+                    configured={configured}
+                    label={model.display_name}
+                    logo={
+                      <ModelProviderLogo
+                        className="size-4"
+                        name={model.name}
+                        displayName={model.display_name}
+                      />
+                    }
+                    notConfiguredLabel={t.inputBox.imageGenerationNotConfigured}
+                    selected={isSelected}
                   />
-                  <span className="min-w-0 truncate font-medium">
-                    {model.display_name}
-                  </span>
-                  {!configured ? (
-                    <span className="text-muted-foreground/60 ml-auto shrink-0 text-xs">
-                      {t.inputBox.imageGenerationNotConfigured}
-                    </span>
-                  ) : isSelected ? (
-                    <CheckIcon className="ml-auto size-4" />
-                  ) : (
-                    <div className="ml-auto size-4" />
-                  )}
                 </PromptInputActionMenuItem>
               );
 
@@ -190,7 +164,7 @@ export function ImageGenerationSelector({
               );
             })}
         </DropdownMenuGroup>
-      </PromptInputActionMenuContent>
+      </ModelMenuContent>
     </PromptInputActionMenu>
   );
 }
