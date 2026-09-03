@@ -20,6 +20,7 @@ import MistralColor from "@lobehub/icons/es/mistral/components/Color";
 import MistralMono from "@lobehub/icons/es/mistral/components/Mono";
 import MoonshotMono from "@lobehub/icons/es/moonshot/components/Mono";
 import OpenAIMono from "@lobehub/icons/es/openai/components/Mono";
+import XiaomiMimoMono from "@lobehub/icons/es/XiaomiMiMo/components/Mono";
 import ZhipuColor from "@lobehub/icons/es/zhipu/components/Color";
 import ZhipuMono from "@lobehub/icons/es/zhipu/components/Mono";
 import { SparklesIcon } from "lucide-react";
@@ -38,6 +39,7 @@ export type ModelLogoProvider =
   | "mistral"
   | "moonshotai-cn"
   | "openai"
+  | "xiaomi"
   | "zhipuai";
 
 type LobeIcon = ComponentType<{ size?: string | number }>;
@@ -57,6 +59,7 @@ const LOBE_PROVIDER_ICONS: Record<
   mistral: { color: MistralColor, mono: MistralMono },
   "moonshotai-cn": { mono: MoonshotMono },
   openai: { mono: OpenAIMono },
+  xiaomi: { mono: XiaomiMimoMono },
   zhipuai: { color: ZhipuColor, mono: ZhipuMono },
 };
 
@@ -71,6 +74,7 @@ const PROVIDER_KEYWORD_RULES: Array<
   [["deepseek"], "deepseek"],
   [["qwen", "wan", "alibaba"], "alibaba-cn"],
   [["zhipu", "glm"], "zhipuai"],
+  [["mimo"], "xiaomi"],
   [["minimax"], "minimax"],
   [["mistral"], "mistral"],
   [["llama", "meta"], "llama"],

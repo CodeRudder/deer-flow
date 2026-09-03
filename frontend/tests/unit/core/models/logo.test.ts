@@ -12,6 +12,9 @@ test("resolves providers from model names and display names", () => {
   expect(resolveProviderFromModelName("kimi-k2")).toBe("moonshotai-cn");
   expect(resolveProviderFromModelName("doubao-seed-1.6")).toBe("doubao");
   expect(resolveProviderFromModelName("deepseek-v3")).toBe("deepseek");
+  expect(resolveProviderFromModelName("mimo-v2.5-pro", "Mimo-V2.5-Pro")).toBe(
+    "xiaomi",
+  );
 });
 
 test("returns null for unknown providers", () => {

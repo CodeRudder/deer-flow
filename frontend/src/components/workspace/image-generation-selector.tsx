@@ -78,6 +78,7 @@ export function ImageGenerationSelector({
         icon={ImageIcon}
         label={t.inputBox.imageGeneration}
         selectedLabel={triggerLabel}
+        iconClassName="text-emerald-600 dark:text-emerald-400"
       />
       <ModelMenuContent className="w-56">
         <DropdownMenuGroup>

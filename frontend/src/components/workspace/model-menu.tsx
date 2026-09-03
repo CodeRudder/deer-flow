@@ -75,10 +75,12 @@ export function ModelMenuTrigger({
   icon: Icon,
   label,
   selectedLabel,
+  iconClassName,
 }: {
   icon: LucideIcon;
   label: string;
   selectedLabel?: string;
+  iconClassName?: string;
 }) {
   return (
     <Tooltip>
@@ -87,7 +89,7 @@ export function ModelMenuTrigger({
           aria-label={label}
           className="min-w-0 gap-1! px-2! data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
         >
-          <Icon className="size-3" />
+          <Icon className={cn("size-3.5", iconClassName)} />
           {selectedLabel && (
             <span className="hidden max-w-28 truncate text-xs font-normal sm:inline">
               {selectedLabel}

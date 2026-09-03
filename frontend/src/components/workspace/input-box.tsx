@@ -1011,15 +1011,15 @@ export function InputBox({
               >
                 <PromptInputActionMenuTrigger className="min-w-0 shrink max-w-28 gap-1! px-2! sm:max-w-none">
                   <div>
-                    {context.mode === "flash" && <ZapIcon className="size-3" />}
+                    {context.mode === "flash" && <ZapIcon className="size-3.5" />}
                     {context.mode === "thinking" && (
-                      <LightbulbIcon className="size-3" />
+                      <LightbulbIcon className="size-3.5" />
                     )}
                     {context.mode === "pro" && (
-                      <GraduationCapIcon className="size-3" />
+                      <GraduationCapIcon className="size-3.5" />
                     )}
                     {context.mode === "ultra" && (
-                      <RocketIcon className="size-3 text-[#dabb5e]" />
+                      <RocketIcon className="size-3.5 text-[#dabb5e]" />
                     )}
                   </div>
                   <div
@@ -1522,7 +1522,7 @@ function AddAttachmentsButton({ className }: { className?: string }) {
         className={cn("px-2!", className)}
         onClick={() => attachments.openFileDialog()}
       >
-        <PaperclipIcon className="size-3" />
+        <PaperclipIcon className="size-3.5" />
       </PromptInputButton>
     </Tooltip>
   );

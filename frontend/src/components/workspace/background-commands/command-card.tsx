@@ -76,7 +76,7 @@ export function CommandCard({
               disabled={killing}
               onClick={() => void handleKill()}
             >
-              <SquareIcon className="size-3" />
+              <SquareIcon className="size-3.5" />
             </Button>
           )}
           <Button

@@ -80,6 +80,7 @@ export function VideoGenerationSelector({
         icon={VideoIcon}
         label={t.inputBox.videoGeneration}
         selectedLabel={triggerLabel}
+        iconClassName="text-violet-600 dark:text-violet-400"
       />
       <ModelMenuContent className="w-72">
         <DropdownMenuGroup>
