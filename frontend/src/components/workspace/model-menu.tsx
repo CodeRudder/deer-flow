@@ -70,15 +70,18 @@ export function ModelOptionContent({
 }
 
 /** Trigger button for generation-model menus: icon plus the selected model name.
- * Filled accent tone appears only while the menu is open; selection shows as the label. */
+ * The selected model's logo replaces the generic icon; filled accent tone
+ * appears only while the menu is open. */
 export function ModelMenuTrigger({
   icon: Icon,
   label,
   selectedLabel,
+  selectedLogo,
 }: {
   icon: LucideIcon;
   label: string;
   selectedLabel?: string;
+  selectedLogo?: ReactNode;
 }) {
   return (
     <Tooltip>
@@ -87,7 +90,11 @@ export function ModelMenuTrigger({
           aria-label={label}
           className="gap-1! px-2! data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
         >
-          <Icon className="size-3" />
+          {selectedLabel && selectedLogo ? (
+            selectedLogo
+          ) : (
+            <Icon className="size-3" />
+          )}
           {selectedLabel && (
             <span className="max-w-28 truncate text-xs font-normal">
               {selectedLabel}

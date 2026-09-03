@@ -129,6 +129,23 @@ describe("ModelMenuTrigger", () => {
       trigger.classList.contains("data-[state=open]:bg-accent"),
     ).toBe(true);
   });
+
+  it("swaps the generic icon for the selected model logo", () => {
+    const { container } = render(
+      <PromptInputActionMenu>
+        <ModelMenuTrigger
+          icon={ImageIcon}
+          label="图像生成"
+          selectedLabel="MiniMax H3"
+          selectedLogo={<span data-testid="model-logo" />}
+        />
+      </PromptInputActionMenu>,
+    );
+    expect(
+      container.querySelector("[data-testid='model-logo']"),
+    ).toBeTruthy();
+    expect(container.querySelector(".lucide-image")).toBeNull();
+  });
 });
 
 describe("ModelMenuContent", () => {

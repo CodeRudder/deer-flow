@@ -77,6 +77,15 @@ export function VideoGenerationSelector({
         icon={VideoIcon}
         label={t.inputBox.videoGeneration}
         selectedLabel={hasSelection ? triggerLabel : undefined}
+        selectedLogo={
+          selectedModel ? (
+            <ModelProviderLogo
+              className="size-5"
+              displayName={selectedModel.model.display_name}
+              name={selectedModel.model.name}
+            />
+          ) : undefined
+        }
       />
       <ModelMenuContent className="w-72">
         <DropdownMenuGroup>

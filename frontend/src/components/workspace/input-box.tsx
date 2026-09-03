@@ -179,9 +179,16 @@ type ModelLogoSource = {
   display_name?: string | null;
 };
 
-function ModelProviderLogo({ model }: { model: ModelLogoSource }) {
+function ModelProviderLogo({
+  model,
+  className,
+}: {
+  model: ModelLogoSource;
+  className?: string;
+}) {
   return (
     <ModelProviderLogoBase
+      className={className}
       displayName={model.display_name}
       name={[model.name, model.model].filter(Boolean).join(" ")}
     />
@@ -1298,6 +1305,12 @@ export function InputBox({
             >
               <ModelSelectorTrigger asChild>
                 <PromptInputButton className="max-w-40 min-w-0 sm:max-w-56">
+                  {selectedModel && (
+                    <ModelProviderLogo
+                      className="size-5"
+                      model={selectedModel}
+                    />
+                  )}
                   <ModelSelectorName className="text-xs font-normal">
                     {selectedModel?.display_name}
                   </ModelSelectorName>

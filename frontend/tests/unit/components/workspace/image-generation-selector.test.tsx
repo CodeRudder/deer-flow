@@ -96,6 +96,11 @@ describe("ImageGenerationSelector", () => {
     ).toBe(false);
   });
 
+  it("shows the selected model logo on the trigger", () => {
+    renderSelector({ image_generation_model: "minimax-h3" });
+    expect(document.querySelectorAll("[style*='minimax.svg']").length).toBe(1);
+  });
+
   it("clears the selection via the default row", async () => {
     const { onSelectionChange } = renderSelector({
       image_generation_model: "minimax-h3",

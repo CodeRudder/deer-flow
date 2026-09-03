@@ -12,7 +12,7 @@ let waved = false;
 
 function WelcomeDescription({ children }: { children: string }) {
   return (
-    <p className="max-w-full text-wrap break-words whitespace-pre-line">
+    <p className="max-w-2xl text-pretty leading-relaxed break-words">
       {children}
     </p>
   );
@@ -40,7 +40,7 @@ export function Welcome({
   return (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-full flex-col items-center justify-center gap-2 px-4 py-4 text-center sm:px-8",
+        "mx-auto flex w-full max-w-full flex-col items-center justify-center gap-3 px-4 py-4 text-center sm:px-8",
         className,
       )}
     >

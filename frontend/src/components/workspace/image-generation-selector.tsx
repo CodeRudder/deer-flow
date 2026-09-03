@@ -75,6 +75,15 @@ export function ImageGenerationSelector({
         icon={ImageIcon}
         label={t.inputBox.imageGeneration}
         selectedLabel={hasSelection ? triggerLabel : undefined}
+        selectedLogo={
+          selectedModel ? (
+            <ModelProviderLogo
+              className="size-5"
+              displayName={selectedModel.model.display_name}
+              name={selectedModel.model.name}
+            />
+          ) : undefined
+        }
       />
       <ModelMenuContent className="w-56">
         <DropdownMenuGroup>
