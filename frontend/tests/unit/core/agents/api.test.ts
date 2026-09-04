@@ -26,7 +26,12 @@ rs.mock("@/core/config", () => ({
   getBackendBaseURL: () => "",
 }));
 
-import { AgentsApiDisabledError, checkAgentName } from "@/core/agents/api";
+import {
+  AgentLegacyLayoutError,
+  AgentsApiDisabledError,
+  checkAgentName,
+  updateAgent,
+} from "@/core/agents/api";
 import { fetch as fetcher } from "@/core/api/fetcher";
 
 const mockedFetch = rs.mocked(fetcher);
@@ -145,5 +150,64 @@ describe("checkAgentName", () => {
     await expect(checkAgentName("deal.agent")).rejects.not.toBeInstanceOf(
       AgentsApiDisabledError,
     );
+  });
+});
+
+describe("updateAgent", () => {
+  test("returns the updated agent payload on 200", async () => {
+    const agent = {
+      name: "editor",
+      description: "d",
+      model: "gpt-test",
+      tool_groups: null,
+      skills: null,
+      soul: "soul text",
+    };
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, agent));
+    const result = await updateAgent("editor", { soul: "soul text" });
+    expect(result).toEqual(agent);
+  });
+
+  test("classifies 403 agents_api disabled responses as AgentsApiDisabledError", async () => {
+    const detail =
+      "Custom-agent management API is disabled. Set agents_api.enabled=true to expose agent and user-profile routes over HTTP.";
+    mockedFetch.mockResolvedValueOnce(jsonResponse(403, { detail }));
+    await expect(
+      updateAgent("editor", { description: "x" }),
+    ).rejects.toBeInstanceOf(AgentsApiDisabledError);
+  });
+
+  test("classifies 409 legacy-layout responses as AgentLegacyLayoutError with backend detail", async () => {
+    const detail =
+      "Agent 'editor' only exists in the legacy shared layout and is not scoped to a user. Run scripts/migrate_user_isolation.py to move legacy agents into the per-user layout before updating.";
+    mockedFetch.mockResolvedValueOnce(jsonResponse(409, { detail }));
+    let caught: unknown;
+    try {
+      await updateAgent("editor", { description: "x" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AgentLegacyLayoutError);
+    expect((caught as AgentLegacyLayoutError).message).toBe(detail);
+  });
+
+  test("surfaces the backend 422 detail (unknown model) as a plain error", async () => {
+    const detail =
+      "Unknown model 'no-such-model'. Must match a model name in config.yaml's models section.";
+    mockedFetch.mockResolvedValueOnce(jsonResponse(422, { detail }));
+    await expect(
+      updateAgent("editor", { model: "no-such-model" }),
+    ).rejects.toMatchObject({ message: detail });
+  });
+
+  test("falls back to statusText when the backend returns no detail", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      new Response("", { status: 500, statusText: "Internal Server Error" }),
+    );
+    await expect(
+      updateAgent("editor", { description: "x" }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("Internal Server Error"),
+    });
   });
 });

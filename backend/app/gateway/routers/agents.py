@@ -4,6 +4,8 @@ import asyncio
 import logging
 import re
 import shutil
+import tempfile
+from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, HTTPException
@@ -11,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from deerflow.config.agents_api_config import get_agents_api_config
 from deerflow.config.agents_config import AgentConfig, list_custom_agents, load_agent_config, load_agent_soul
+from deerflow.config.app_config import get_app_config
 from deerflow.config.paths import get_paths
 from deerflow.runtime.user_context import get_effective_user_id
 
@@ -77,6 +80,24 @@ def _validate_agent_name(name: str) -> None:
 def _normalize_agent_name(name: str) -> str:
     """Normalize agent name to lowercase for filesystem storage."""
     return name.lower()
+
+
+def _stage_temp(path: Path, text: str) -> Path:
+    """Write ``text`` into a sibling temp file for the caller to rename into place.
+
+    Mirrors ``update_agent_tool._stage_temp`` so PUT writes are atomic per file
+    and a mid-write failure never leaves a truncated config.yaml / SOUL.md.
+    """
+    fd = tempfile.NamedTemporaryFile(mode="w", dir=path.parent, suffix=".tmp", delete=False, encoding="utf-8")
+    try:
+        fd.write(text)
+        fd.flush()
+        fd.close()
+        return Path(fd.name)
+    except BaseException:
+        fd.close()
+        Path(fd.name).unlink(missing_ok=True)
+        raise
 
 
 def _require_agents_api_enabled() -> None:
@@ -299,6 +320,15 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
 
+    # Reject an unknown ``model`` *before* touching the filesystem, matching the
+    # in-chat update_agent tool. Otherwise ``_resolve_model_name`` silently
+    # falls back to the default model at runtime with no user-facing error.
+    if request.model is not None and request.model != agent_cfg.model and get_app_config().get_model_config(request.model) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown model '{request.model}'. Must match a model name in config.yaml's models section.",
+        )
+
     paths = get_paths()
     agent_dir = paths.user_agent_dir(user_id, name)
     if not agent_dir.exists() and paths.agent_dir(name).exists():
@@ -306,6 +336,11 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
             status_code=409,
             detail=(f"Agent '{name}' only exists in the legacy shared layout and is not scoped to a user. Run scripts/migrate_user_isolation.py to move legacy agents into the per-user layout before updating."),
         )
+
+    # Stage every file we intend to rewrite into a temp sibling first; rename
+    # them into place only after all temps exist, so a failure cannot leave
+    # config.yaml updated while SOUL.md still holds stale content.
+    pending: list[tuple[Path, Path]] = []
 
     try:
         # Update config if any config fields changed
@@ -335,14 +370,17 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
             if new_skills is not None:
                 updated["skills"] = new_skills
 
-            config_file = agent_dir / "config.yaml"
-            with open(config_file, "w", encoding="utf-8") as f:
-                yaml.dump(updated, f, default_flow_style=False, allow_unicode=True)
+            config_target = agent_dir / "config.yaml"
+            yaml_text = yaml.dump(updated, default_flow_style=False, allow_unicode=True)
+            pending.append((_stage_temp(config_target, yaml_text), config_target))
 
         # Update SOUL.md if provided
         if request.soul is not None:
-            soul_path = agent_dir / "SOUL.md"
-            soul_path.write_text(request.soul, encoding="utf-8")
+            soul_target = agent_dir / "SOUL.md"
+            pending.append((_stage_temp(soul_target, request.soul), soul_target))
+
+        for tmp, target in pending:
+            tmp.replace(target)
 
         logger.info(f"Updated agent '{name}'")
 
@@ -352,6 +390,8 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
     except HTTPException:
         raise
     except Exception as e:
+        for tmp, _ in pending:
+            tmp.unlink(missing_ok=True)
         logger.error(f"Failed to update agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
 

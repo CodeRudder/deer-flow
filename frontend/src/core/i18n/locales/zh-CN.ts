@@ -230,6 +230,43 @@ export const zhCN: Translations = {
     agentCreated: "智能体已创建！",
     startChatting: "开始对话",
     backToGallery: "返回 Gallery",
+    edit: "编辑",
+    editTitle: "编辑智能体",
+    editDescription:
+      "查看并修改智能体的人设、描述与模型，保存后下一轮对话生效。",
+    descriptionLabel: "描述",
+    soulLabel: "SOUL.md（人设与行为守则）",
+    modelLabel: "模型",
+    modelDefault: "跟随默认模型",
+    capabilitiesLabel: "能力白名单（只读）",
+    skillsLabel: "技能",
+    toolGroupsLabel: "工具组",
+    skillsInheritAll: "继承全部启用技能",
+    skillsNone: "无技能",
+    toolGroupsInheritAll: "继承全部工具组",
+    toolGroupsNone: "无工具组",
+    dirtyConfirmTitle: "放弃未保存的修改？",
+    dirtyConfirmBody: "SOUL.md、描述或模型有未保存的修改，关闭后将丢失。",
+    dirtyConfirmDiscard: "放弃修改",
+    dirtyConfirmKeep: "继续编辑",
+    saveSuccess: "智能体已保存，下一轮对话生效",
+    apiDisabledError: "服务器未开启自定义智能体管理功能，请联系管理员。",
+    legacyOnlyError:
+      "该智能体仅存在于旧版共享目录，尚未迁移到当前用户名下，无法在此编辑。",
+    loadDetailFailed:
+      "加载智能体详情失败，当前展示列表数据，可能不是最新内容。",
+    createChoiceDescription: "选择创建方式",
+    createChoiceManualTitle: "手动创建",
+    createChoiceManualDescription:
+      "填写名称、描述、模型与 SOUL.md，直接创建智能体。",
+    createChoiceChatTitle: "对话式创建",
+    createChoiceChatDescription:
+      "描述你想要的智能体，DeerFlow 通过对话帮你设计并保存。",
+    createTitle: "手动创建智能体",
+    createDescription: "填写基础信息，创建后可随时在编辑面板修改。",
+    nameLabel: "名称",
+    createSoulPlaceholder: "可留空，创建后在编辑面板补充。",
+    createSuccess: "智能体已创建",
   },
 
   // Breadcrumb

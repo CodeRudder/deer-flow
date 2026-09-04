@@ -173,6 +173,38 @@ export interface Translations {
     agentCreated: string;
     startChatting: string;
     backToGallery: string;
+    edit: string;
+    editTitle: string;
+    editDescription: string;
+    descriptionLabel: string;
+    soulLabel: string;
+    modelLabel: string;
+    modelDefault: string;
+    capabilitiesLabel: string;
+    skillsLabel: string;
+    toolGroupsLabel: string;
+    skillsInheritAll: string;
+    skillsNone: string;
+    toolGroupsInheritAll: string;
+    toolGroupsNone: string;
+    dirtyConfirmTitle: string;
+    dirtyConfirmBody: string;
+    dirtyConfirmDiscard: string;
+    dirtyConfirmKeep: string;
+    saveSuccess: string;
+    apiDisabledError: string;
+    legacyOnlyError: string;
+    loadDetailFailed: string;
+    createChoiceDescription: string;
+    createChoiceManualTitle: string;
+    createChoiceManualDescription: string;
+    createChoiceChatTitle: string;
+    createChoiceChatDescription: string;
+    createTitle: string;
+    createDescription: string;
+    nameLabel: string;
+    createSoulPlaceholder: string;
+    createSuccess: string;
   };
 
   // Breadcrumb

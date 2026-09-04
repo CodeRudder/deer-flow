@@ -31,6 +31,18 @@ export class AgentsApiDisabledError extends Error {
   }
 }
 
+/**
+ * Raised when the target agent only exists in the legacy shared layout, which
+ * PUT refuses to modify (HTTP 409). The UI degrades to read-only and asks the
+ * operator to run the migration script.
+ */
+export class AgentLegacyLayoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentLegacyLayoutError";
+  }
+}
+
 function isAgentsApiDisabledDetail(detail: string | undefined): boolean {
   return typeof detail === "string" && detail.includes("agents_api.enabled");
 }
@@ -75,6 +87,15 @@ export async function updateAgent(
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { detail?: string };
+    if (res.status === 409) {
+      throw new AgentLegacyLayoutError(
+        err.detail ??
+          `Agent '${name}' only exists in the legacy shared layout and cannot be updated.`,
+      );
+    }
+    if (isAgentsApiDisabledDetail(err.detail)) {
+      throw new AgentsApiDisabledError(err.detail!);
+    }
     throw new Error(err.detail ?? `Failed to update agent: ${res.statusText}`);
   }
   return res.json() as Promise<Agent>;

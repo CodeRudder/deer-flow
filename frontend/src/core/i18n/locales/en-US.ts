@@ -243,6 +243,46 @@ export const enUS: Translations = {
     agentCreated: "Agent created!",
     startChatting: "Start chatting",
     backToGallery: "Back to Gallery",
+    edit: "Edit",
+    editTitle: "Edit Agent",
+    editDescription:
+      "View and update the agent's soul, description, and model. Changes take effect on the next turn.",
+    descriptionLabel: "Description",
+    soulLabel: "SOUL.md (personality & guardrails)",
+    modelLabel: "Model",
+    modelDefault: "Follow default model",
+    capabilitiesLabel: "Capability whitelists (read-only)",
+    skillsLabel: "Skills",
+    toolGroupsLabel: "Tool groups",
+    skillsInheritAll: "Inherits all enabled skills",
+    skillsNone: "No skills",
+    toolGroupsInheritAll: "Inherits all tool groups",
+    toolGroupsNone: "No tool groups",
+    dirtyConfirmTitle: "Discard unsaved changes?",
+    dirtyConfirmBody:
+      "Your SOUL.md, description, or model changes have not been saved. Closing now will discard them.",
+    dirtyConfirmDiscard: "Discard changes",
+    dirtyConfirmKeep: "Keep editing",
+    saveSuccess: "Agent saved. Takes effect on the next turn",
+    apiDisabledError:
+      "Custom agent management is not enabled on this server. Please contact your administrator.",
+    legacyOnlyError:
+      "This agent only exists in the legacy shared layout and is not scoped to your user, so it cannot be edited here.",
+    loadDetailFailed:
+      "Failed to load agent details. Showing the stale gallery data instead.",
+    createChoiceDescription: "Choose how to create your agent",
+    createChoiceManualTitle: "Create manually",
+    createChoiceManualDescription:
+      "Fill in the name, description, model, and SOUL.md to create an agent directly.",
+    createChoiceChatTitle: "Create through chat",
+    createChoiceChatDescription:
+      "Describe the agent you want — DeerFlow designs and saves it through conversation.",
+    createTitle: "Create Agent Manually",
+    createDescription:
+      "Fill in the basics — everything can be edited later in the edit panel.",
+    nameLabel: "Name",
+    createSoulPlaceholder: "Optional — fill it in later from the edit panel.",
+    createSuccess: "Agent created",
   },
 
   // Breadcrumb
