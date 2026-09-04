@@ -254,6 +254,13 @@ class BaseVideoProvider:
             # runtime can release the reservation instead of leaving it pending.
             set_task_status(output_file, None, "rejected")
             raise
+        except Exception as e:
+            # Provider 被调用且拒绝（如提交时审核 400）：sidecar 落 failed，
+            # 避免预检对着 task_id=null 的 pending 记录空等。
+            record = read_task_record(output_file) or {}
+            record.update(status=STATUS_FAILED, error=str(e)[:500])
+            write_task_record(output_file, record)
+            raise
         print(f"[create] provider={self.name} handle={handle}")
         record = read_task_record(output_file) or {}
         record.update(task_id=handle, updated_at=datetime.now(UTC).isoformat(timespec="seconds"))

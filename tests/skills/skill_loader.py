@@ -31,6 +31,10 @@ class FakeResp:
         self.content = content
         self.status_code = status_code
 
+    @property
+    def text(self):
+        return self.content.decode(errors="replace")
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.HTTPError(f"HTTP {self.status_code}")

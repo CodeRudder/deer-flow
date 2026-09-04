@@ -1750,3 +1750,67 @@ def test_seedance_cancel_never_deletes_non_queued(monkeypatch, status):
     msg = _sd().PROVIDER(model=None).cancel("cgt-1")
     assert calls["delete"] == []
     assert status in msg
+
+
+# --- sync create-task rejection carries the upstream error body (live-probed) ---
+
+
+def test_seedance_create_4xx_carries_upstream_reason(monkeypatch):
+    # Live probe (feat-df-6 follow-up): a real-person first frame is rejected
+    # synchronously with HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation;
+    # raise_for_status alone would discard that body and leave the agent
+    # guessing between moderation vs billing vs params.
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        captured["json"] = json
+        return FakeResp(
+            {
+                "error": {
+                    "code": "InputImageSensitiveContentDetected.PrivacyInformation",
+                    "message": "The request failed because the input image 'content[1]' may contain real person.",
+                }
+            },
+            status_code=400,
+        )
+
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    monkeypatch.setattr(requests, "post", fake_post)
+    p = _sd().PROVIDER(model=None)
+    with pytest.raises(requests.HTTPError, match="InputImageSensitiveContentDetected"):
+        p.create_task("x", ["https://cdn/a.png"], {})
+
+
+def test_seedance_create_4xx_non_json_body_falls_back_to_raw_text(monkeypatch):
+    def fake_post(url, headers=None, json=None, **kw):
+        return FakeResp(None, content=b"<html>gateway error</html>", status_code=400)
+
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    monkeypatch.setattr(requests, "post", fake_post)
+    p = _sd().PROVIDER(model=None)
+    with pytest.raises(requests.HTTPError, match="gateway error"):
+        p.create_task("x", ["https://cdn/a.png"], {})
+
+
+def test_create_4xx_marks_sidecar_failed_with_error(monkeypatch, tmp_path):
+    # A sync rejection means the provider was called and refused: the sidecar
+    # must land on failed (not pending) so the SKILL.md preflight does not
+    # wait on a task that will never run.
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: FakeResp(
+            {"error": {"code": "InputImageSensitiveContentDetected.PrivacyInformation", "message": "may contain real person"}},
+            status_code=400,
+        ),
+    )
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    with pytest.raises(requests.HTTPError):
+        vid.generate_video(str(pf), [], str(out), provider="seedance", model=SD_MINI)
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+    assert record["task_id"] is None
+    assert "InputImageSensitiveContentDetected" in record["error"]

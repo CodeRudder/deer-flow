@@ -252,7 +252,17 @@ class SeedanceProvider(BaseVideoProvider):
             json=body,
             timeout=60,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # 同步拒绝（如实人肖像审核 400）也要让 agent 看到 error.code/message，
+            # raise_for_status 会把响应体丢成一行状态。
+            try:
+                err = resp.json().get("error")
+            except ValueError:
+                err = None
+            detail = f"{err.get('code')}: {err.get('message')}" if isinstance(err, dict) else resp.text[:500]
+            raise requests.HTTPError(
+                f"provider=seedance create task: HTTP {resp.status_code} {detail}", response=resp
+            )
         payload = resp.json()
         task_id = payload.get("id")
         if not task_id:
