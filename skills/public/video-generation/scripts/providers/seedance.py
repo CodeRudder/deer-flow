@@ -12,7 +12,6 @@ ark.cn-beijing.volces.com (mini, 480p, 4 s T2V — see feat-df-6 survey 3.10).
 
 import json
 import os
-from dataclasses import dataclass
 
 import requests
 
@@ -24,87 +23,104 @@ from .base import (
     image_ref,
     set_task_status,
 )
+from .manifest import ImageSpec, ModelSpec, ProviderManifest
 
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_MODEL = "doubao-seedance-2-5-260628"
-# Keep in sync with the ratio row in SKILL.md's output-settings table.
-SUPPORTED_RATIOS = ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive")
 
+# Image roles this adapter accepts; Seedance has no single-tail-frame mode
+# (see _build_content). Consumed by --describe-provider rendering.
+IMAGE_ROLES = ("first_frame", "first_last", "reference")
 
-@dataclass(frozen=True)
-class _ModelSpec:
-    """Per-model value ranges (source: feat-df-6 survey, capability matrix)."""
-
-    duration_max: int
-    resolutions: tuple[str, ...]
-    max_ref_images: int
-    max_ref_videos: int
-    max_ref_audios: int
-    # Seedance 2.5 locks frame tasks to ratio=adaptive (the output follows the
-    # frame image). duration is NOT locked — only video-edit locks duration=-1
-    # (API Ref). The 2.0 family documents no such lock.
-    locks_frame_params: bool
-    # Only 2.5 accepts audio-only input (no image/video); the 2.0 family
-    # requires at least one reference image or video alongside audio (API Ref).
-    audio_only_ok: bool
-
-    @property
-    def duration_range(self) -> tuple[int, int]:
-        return (4, self.duration_max)
-
-
-MODEL_SPECS: dict[str, _ModelSpec] = {
-    "doubao-seedance-2-5-260628": _ModelSpec(
-        duration_max=30,
-        resolutions=("480p", "720p", "1080p"),
-        max_ref_images=30,
-        max_ref_videos=10,
-        max_ref_audios=10,
-        locks_frame_params=True,
-        audio_only_ok=True,
+# Capability manifest — the single source of truth for Seedance capability
+# data. Runtime validation, check_materials.py, and --describe-provider all
+# read from here; doc tables are projections, not sources.
+PROVIDER_MANIFEST = ProviderManifest(
+    name="seedance",
+    display_name="Seedance（火山方舟）",
+    description="火山方舟 doubao-seedance-2.x 系列，一个适配器服务四档模型",
+    api_key_envs=("SEEDANCE_VIDEO_API_KEY", "ARK_API_KEY"),
+    default_model=DEFAULT_MODEL,
+    supported_params=frozenset(
+        {"resolution", "duration", "ratio", "image_role", "reference_videos", "reference_audios"}
     ),
-    "doubao-seedance-2-0-260128": _ModelSpec(
-        duration_max=15,
-        resolutions=("480p", "720p", "1080p", "4k"),
-        max_ref_images=9,
-        max_ref_videos=3,
-        max_ref_audios=3,
-        locks_frame_params=False,
-        audio_only_ok=False,
+    ratios=("21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"),
+    prompt_format_files={
+        mode: "references/providers/seedance/prompt-format.md"
+        for mode in ("t2v", "first_frame", "last_frame", "first_last", "reference")
+    },
+    image_spec=ImageSpec(
+        side_min=300,
+        side_max=6000,
+        ratio_min=0.4,
+        ratio_max=2.5,
+        extensions=frozenset(
+            {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif", ".heic", ".heif"}
+        ),
+        label="Seedance",
     ),
-    "doubao-seedance-2-0-fast-260128": _ModelSpec(
-        duration_max=15,
-        resolutions=("480p", "720p"),
-        max_ref_images=9,
-        max_ref_videos=3,
-        max_ref_audios=3,
-        locks_frame_params=False,
-        audio_only_ok=False,
+    models=(
+        ModelSpec(
+            name="doubao-seedance-2-5-260628",
+            display_name="Seedance 2.5",
+            description="30秒长叙事+全模态参考(30图/10视频/10音频)，输出480p/720p/1080p(10bit)，时长4-30s",
+            default_resolution="720p",
+            resolutions=("480p", "720p", "1080p"),
+            duration_range=(4, 30),
+            max_ref_images=30,
+            max_ref_videos=10,
+            max_ref_audios=10,
+            # Seedance 2.5 locks frame tasks to ratio=adaptive (the output
+            # follows the frame image). duration is NOT locked — only the
+            # (upstream) video-edit task locks duration=-1. edit_duration_-1
+            # documents upstream semantics; this skill exposes no edit task.
+            locks=("frame_ratio_adaptive", "edit_duration_-1"),
+            audio_only_ok=True,
+        ),
+        ModelSpec(
+            name="doubao-seedance-2-0-260128",
+            display_name="Seedance 2.0",
+            description="唯一支持4k输出的版本(480p/720p/1080p/4k，唯一含4k)，时长4-15s，高清成片首选",
+            default_resolution="720p",
+            resolutions=("480p", "720p", "1080p", "4k"),
+            duration_range=(4, 15),
+            max_ref_images=9,
+            max_ref_videos=3,
+            max_ref_audios=3,
+        ),
+        ModelSpec(
+            name="doubao-seedance-2-0-fast-260128",
+            display_name="Seedance 2.0 Fast",
+            description="速度与成本折中，输出480p/720p，时长4-15s",
+            default_resolution="720p",
+            resolutions=("480p", "720p"),
+            duration_range=(4, 15),
+            max_ref_images=9,
+            max_ref_videos=3,
+            max_ref_audios=3,
+        ),
+        ModelSpec(
+            name="doubao-seedance-2-0-mini-260615",
+            display_name="Seedance 2.0 Mini",
+            description="最低成本(约为标准版一半)，输出480p/720p，批量出片首选",
+            default_resolution="720p",
+            resolutions=("480p", "720p"),
+            duration_range=(4, 15),
+            max_ref_images=9,
+            max_ref_videos=3,
+            max_ref_audios=3,
+        ),
     ),
-    "doubao-seedance-2-0-mini-260615": _ModelSpec(
-        duration_max=15,
-        resolutions=("480p", "720p"),
-        max_ref_images=9,
-        max_ref_videos=3,
-        max_ref_audios=3,
-        locks_frame_params=False,
-        audio_only_ok=False,
-    ),
-}
+)
+
+MODEL_SPECS: dict[str, ModelSpec] = {m.name: m for m in PROVIDER_MANIFEST.models}
 
 
 class SeedanceProvider(BaseVideoProvider):
     name = "seedance"
-    supported_params = {
-        "resolution",
-        "duration",
-        "ratio",
-        "image_role",
-        "reference_videos",
-        "reference_audios",
-    }
+    supported_params = PROVIDER_MANIFEST.supported_params
     default_model = DEFAULT_MODEL
-    api_key_envs = ("SEEDANCE_VIDEO_API_KEY", "ARK_API_KEY")
+    api_key_envs = PROVIDER_MANIFEST.api_key_envs
     known_models = tuple(MODEL_SPECS)
     poll_interval = 10
     poll_max_attempts = 180  # 30 min: headroom for 2.5 30s tasks (mini 4s took ~105s live)
@@ -118,14 +134,14 @@ class SeedanceProvider(BaseVideoProvider):
         # Overridable for the BytePlus international endpoint.
         return os.getenv("SEEDANCE_API_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 
-    def _model_and_spec(self) -> tuple[str, _ModelSpec]:
+    def _model_and_spec(self) -> tuple[str, ModelSpec]:
         model = self.model or os.getenv("SEEDANCE_VIDEO_MODEL", DEFAULT_MODEL)
         spec = MODEL_SPECS.get(model)
         if spec is None:
             raise ValueError(f"unknown Seedance model {model!r}; known: {', '.join(MODEL_SPECS)}")
         return model, spec
 
-    def _validate(self, model: str, spec: _ModelSpec, params: dict) -> None:
+    def _validate(self, model: str, spec: ModelSpec, params: dict) -> None:
         resolution = params.get("resolution")
         if resolution is not None and resolution not in spec.resolutions:
             raise ValueError(f"model {model} does not support resolution {resolution!r}; supported: {', '.join(spec.resolutions)}")
@@ -133,8 +149,8 @@ class SeedanceProvider(BaseVideoProvider):
         if duration is not None and duration != -1 and not (spec.duration_range[0] <= duration <= spec.duration_range[1]):
             raise ValueError(f"duration must be {spec.duration_range[0]}-{spec.duration_range[1]} or -1 (auto), got {duration}")
         ratio = params.get("ratio")
-        if ratio is not None and ratio not in SUPPORTED_RATIOS:
-            raise ValueError(f"unsupported aspect ratio {ratio!r}; expected one of {', '.join(SUPPORTED_RATIOS)}")
+        if ratio is not None and ratio not in PROVIDER_MANIFEST.ratios:
+            raise ValueError(f"unsupported aspect ratio {ratio!r}; expected one of {', '.join(PROVIDER_MANIFEST.ratios)}")
 
     def _build_content(
         self,
@@ -142,7 +158,7 @@ class SeedanceProvider(BaseVideoProvider):
         reference_images: list[str],
         image_role: str,
         model: str,
-        spec: _ModelSpec,
+        spec: ModelSpec,
         params: dict,
     ) -> tuple[list[dict], bool]:
         """Build the Ark content[] array. Returns (content, is_frame_mode).
@@ -222,7 +238,7 @@ class SeedanceProvider(BaseVideoProvider):
         audios = params.get("reference_audios") or []
         content, frame_mode = self._build_content(prompt_text, reference_images, image_role, model, spec, params)
         body: dict = {"model": model, "content": content}
-        if frame_mode and spec.locks_frame_params:
+        if frame_mode and "frame_ratio_adaptive" in spec.locks:
             # 2.5 frame tasks lock ratio=adaptive (the output follows the first
             # frame image's aspect ratio; an explicit non-adaptive ratio would
             # fail asynchronously upstream). duration is NOT frame-locked —
@@ -234,10 +250,10 @@ class SeedanceProvider(BaseVideoProvider):
             body["ratio"] = "adaptive"
             body["duration"] = params.get("duration") if params.get("duration") is not None else -1
             # resolution is not frame-locked either; carry the user's validated
-            # value or the 720p default so it is not silently dropped.
-            body["resolution"] = params.get("resolution") or "720p"
+            # value or the manifest default so it is not silently dropped.
+            body["resolution"] = params.get("resolution") or spec.default_resolution
         else:
-            body["resolution"] = params.get("resolution") or "720p"
+            body["resolution"] = params.get("resolution") or spec.default_resolution
             body["duration"] = params.get("duration") if params.get("duration") is not None else 5
             # T2V sends a concrete ratio (default 16:9); modes with materials
             # (reference or 2.0 frame) stay adaptive unless an explicit ratio is set.

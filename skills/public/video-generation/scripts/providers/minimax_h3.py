@@ -20,26 +20,61 @@ from .base import (
     set_task_status,
     video_ref,
 )
+from .manifest import ImageSpec, ModelSpec, ProviderManifest
 
 DEFAULT_HOST = "https://api.minimaxi.com"  # 国内站；国际站 https://api.minimax.io
 DEFAULT_MODEL = "MiniMax-H3"
-# Keep in sync with the aspect-ratio row in SKILL.md's output-settings table.
-SUPPORTED_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
-# H3 输入图片规格（官方：宽高 [256, 5760]px、比例 5:2~2:5、格式
-# JPG/JPEG/PNG/WEBP/HEIC/HEIF），与 scripts/check_materials.py 保持一致。
-H3_SIDE_MIN = 256
-H3_SIDE_MAX = 5760
-H3_RATIO_MIN = 0.4
-H3_RATIO_MAX = 2.5
-H3_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+
+# Image roles this adapter accepts (consumed by --describe-provider rendering).
+IMAGE_ROLES = ("first_frame", "last_frame", "first_last", "reference")
+
+# Capability manifest — single source of truth for H3 capability data
+# (runtime validation, check_materials.py, --describe-provider).
+PROVIDER_MANIFEST = ProviderManifest(
+    name="minimax_h3",
+    display_name="MiniMax H3",
+    description="MiniMax H3（V2 接口）：768P/2K、原生立体声、支持 2K 升格",
+    api_key_envs=("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY"),
+    default_model=DEFAULT_MODEL,
+    supported_params=frozenset({"resolution", "duration", "ratio", "image_role", "upscale_video"}),
+    ratios=("16:9", "9:16", "1:1", "4:3", "3:4", "21:9"),
+    prompt_format_files={
+        "t2v": "references/providers/minimax/prompt-format-base.md",
+        "first_frame": "references/providers/minimax/prompt-format-base.md",
+        "last_frame": "references/providers/minimax/prompt-format-base.md",
+        "first_last": "references/providers/minimax/prompt-format-base.md",
+        "reference": "references/providers/minimax/prompt-format-ref.md",
+    },
+    image_spec=ImageSpec(
+        side_min=256,
+        side_max=5760,
+        ratio_min=0.4,
+        ratio_max=2.5,
+        extensions=frozenset({".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}),
+        label="MiniMax-H3",
+    ),
+    models=(
+        ModelSpec(
+            name="MiniMax-H3",
+            display_name="MiniMax H3",
+            description="提供768P/2K+立体声的顶级视频生成能力(单次≤15s)，支持文生视频与首帧/尾帧/首尾帧/参考图生视频(参考图≤9张)",
+            default_resolution="768P",
+            resolutions=("768P", "2K"),
+            duration_range=(4, 15),
+            max_ref_images=9,
+        ),
+    ),
+)
+
+MODEL_SPECS: dict[str, ModelSpec] = {m.name: m for m in PROVIDER_MANIFEST.models}
 
 
 class MiniMaxH3Provider(BaseVideoProvider):
     name = "minimax_h3"
-    supported_params = {"resolution", "duration", "ratio", "image_role", "upscale_video"}
+    supported_params = PROVIDER_MANIFEST.supported_params
     default_model = DEFAULT_MODEL
-    api_key_envs = ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY")
-    known_models = (DEFAULT_MODEL,)
+    api_key_envs = PROVIDER_MANIFEST.api_key_envs
+    known_models = tuple(MODEL_SPECS)
 
     def api_key(self) -> str | None:
         # Video-dedicated key preferred; falls back to the shared MINIMAX_API_KEY
@@ -108,8 +143,11 @@ class MiniMaxH3Provider(BaseVideoProvider):
         return content, False  # frame modes: always adaptive
 
     def _validate_image_specs(self, reference_images: list[str]) -> None:
-        """本地拦截 H3 图片规格超限（宽高 [256, 5760]px、比例 [0.4, 2.5]），
+        """本地拦截 H3 图片规格超限（宽高/比例/格式取自 manifest image_spec），
         避免任务创建后 API 端报错扣生成次数。URL 图与无 PIL 环境跳过。"""
+        spec = PROVIDER_MANIFEST.image_spec
+        if spec is None:  # pragma: no cover - H3 always declares one
+            return
         try:
             from PIL import Image, ImageOps
         except ImportError:
@@ -118,10 +156,10 @@ class MiniMaxH3Provider(BaseVideoProvider):
             if path.startswith(("http://", "https://")):
                 continue
             ext = os.path.splitext(path)[1].lower()
-            if ext and ext not in H3_EXTENSIONS:
+            if ext and ext not in spec.extensions:
                 raise ValueError(
                     f"image {path} has unsupported format {ext}; MiniMax-H3 accepts "
-                    f"{', '.join(sorted(H3_EXTENSIONS))}. Run scripts/check_materials.py "
+                    f"{', '.join(sorted(spec.extensions))}. Run scripts/check_materials.py "
                     "to convert it, then resubmit"
                 )
             try:
@@ -132,14 +170,14 @@ class MiniMaxH3Provider(BaseVideoProvider):
                 continue
             ratio = w / h
             if not (
-                H3_SIDE_MIN <= w <= H3_SIDE_MAX
-                and H3_SIDE_MIN <= h <= H3_SIDE_MAX
-                and H3_RATIO_MIN <= ratio <= H3_RATIO_MAX
+                spec.side_min <= w <= spec.side_max
+                and spec.side_min <= h <= spec.side_max
+                and spec.ratio_min <= ratio <= spec.ratio_max
             ):
                 raise ValueError(
                     f"image {path} ({w}x{h}, ratio {ratio:.3f}) violates MiniMax-H3 "
-                    f"spec (side [{H3_SIDE_MIN},{H3_SIDE_MAX}]px, ratio "
-                    f"[{H3_RATIO_MIN},{H3_RATIO_MAX}]); run "
+                    f"spec (side [{spec.side_min},{spec.side_max}]px, ratio "
+                    f"[{spec.ratio_min},{spec.ratio_max}]); run "
                     "scripts/check_materials.py to fix it, then resubmit"
                 )
 
@@ -158,19 +196,23 @@ class MiniMaxH3Provider(BaseVideoProvider):
         content, send_ratio = self._build_content(
             prompt_text, reference_images, image_role, params.get("ratio")
         )
+        model = self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL)
+        # Unknown model names (e.g. a custom MINIMAX_VIDEO_MODEL) keep today's
+        # behavior: validated against the H3 spec below, never silently skipped.
+        spec = MODEL_SPECS.get(model, MODEL_SPECS[DEFAULT_MODEL])
         duration = params.get("duration")
-        if duration is not None and not (4 <= duration <= 15):
-            raise ValueError(f"duration must be 4-15 seconds, got {duration}")
+        if duration is not None and not (spec.duration_range[0] <= duration <= spec.duration_range[1]):
+            raise ValueError(f"duration must be {spec.duration_range[0]}-{spec.duration_range[1]} seconds, got {duration}")
         resolution = params.get("resolution")
-        if resolution is not None and resolution not in ("768P", "2K"):
-            raise ValueError(f"unsupported resolution {resolution!r}; expected 768P or 2K")
+        if resolution is not None and resolution not in spec.resolutions:
+            raise ValueError(f"unsupported resolution {resolution!r}; expected {' or '.join(spec.resolutions)}")
         ratio = params.get("ratio")
-        if ratio is not None and ratio not in SUPPORTED_RATIOS:
-            raise ValueError(f"unsupported aspect ratio {ratio!r}; expected one of {', '.join(SUPPORTED_RATIOS)}")
+        if ratio is not None and ratio not in PROVIDER_MANIFEST.ratios:
+            raise ValueError(f"unsupported aspect ratio {ratio!r}; expected one of {', '.join(PROVIDER_MANIFEST.ratios)}")
         body: dict = {
-            "model": self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL),
+            "model": model,
             "content": content,
-            "resolution": resolution if resolution is not None else "768P",
+            "resolution": resolution if resolution is not None else spec.default_resolution,
             # 5s (=120 frames) keeps the 2K-regeneration source floor (107
             # frames) reachable on the default draft.
             "duration": duration if duration is not None else 5,

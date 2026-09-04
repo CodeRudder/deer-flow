@@ -1814,3 +1814,22 @@ def test_create_4xx_marks_sidecar_failed_with_error(monkeypatch, tmp_path):
     assert record["status"] == "failed"
     assert record["task_id"] is None
     assert "InputImageSensitiveContentDetected" in record["error"]
+
+
+def test_seedance_create_200_non_json_body_marks_sidecar_failed(monkeypatch, tmp_path):
+    # HTTP 200 with a non-JSON body: JSONDecodeError subclasses ValueError, but
+    # the provider WAS called — the sidecar must land on failed, never rejected.
+    class NonJsonResp(FakeResp):
+        def json(self):
+            raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    monkeypatch.setenv("SEEDANCE_VIDEO_API_KEY", "s")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: NonJsonResp(None, status_code=200))
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    with pytest.raises(json.JSONDecodeError):
+        vid.generate_video(str(pf), [], str(out), provider="seedance", model=SD_MINI)
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+    assert record["task_id"] is None

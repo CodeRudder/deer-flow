@@ -5,6 +5,23 @@ All notable changes to DeerFlow are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+#### Skills
+- **video-generation:** Model capability data consolidated into a per-provider
+  manifest (`scripts/providers/manifest.py`) as the single source of truth —
+  runtime validation, `check_materials.py`, and the new
+  `generate.py --describe-provider` read-only renderer all read from it;
+  hand-written doc tables (model selection guide, provider constraints,
+  parameter compatibility) are replaced by the renderer. References are
+  reorganized per provider (`references/providers/{minimax,seedance}/`) with
+  spec/prompt-format/examples per folder; SKILL.md keeps the workflow plus a
+  handwritten provider→mode→format routing table guarded by parity tests.
+  Adding a model now means one manifest entry plus checklist items.
+
+
 ## [2.0.0] — 2026-06-15
 
 DeerFlow 2.0 is a ground-up rewrite around a "super agent" harness with

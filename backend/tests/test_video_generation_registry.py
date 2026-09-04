@@ -1,7 +1,53 @@
+import importlib
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.models.video_generation import registry
+
+# --- skill-side parity (refactor-df-4) ----------------------------------------
+# The video-generation skill is not a package; load its providers package by
+# path. Skill code uses intra-package relative imports, so it must be imported
+# as a package with the skill scripts dir on sys.path (same pattern as
+# tests/skills/test_video_generation.py). Purge cached `providers*` modules
+# first — the package name is generic and may collide across skills.
+_SKILL_SCRIPTS = Path(__file__).resolve().parents[2] / "skills" / "public" / "video-generation" / "scripts"
+
+# legacy minimax_v1 is intentionally absent from the registry (frontend does
+# not offer it; reachable via env fallback only).
+_REGISTRY_EXCLUDED_PROVIDERS = {"minimax_v1"}
+_REGISTRY_EXCLUDED_MODELS = {"MiniMax-Hailuo-2.3"}
+
+
+def _load_skill_providers():
+    for name in [m for m in sys.modules if m == "providers" or m.startswith("providers.")]:
+        del sys.modules[name]
+    sys.path.insert(0, str(_SKILL_SCRIPTS))
+    try:
+        return importlib.import_module("providers")
+    finally:
+        sys.path.remove(str(_SKILL_SCRIPTS))
+
+
+def _skill_models_by_provider():
+    providers = _load_skill_providers()
+    return {name: set(cls.known_models or (cls.default_model,)) for name, cls in providers.PROVIDERS.items()}
+
+
+def test_skill_provider_names_match_backend_registry():
+    skill_by_name = _skill_models_by_provider()
+    backend_by_name = {d.name for d in registry._PROVIDERS}
+
+    assert set(skill_by_name) - _REGISTRY_EXCLUDED_PROVIDERS == backend_by_name
+
+
+def test_skill_models_match_backend_registry_catalog():
+    skill_by_name = _skill_models_by_provider()
+    backend_by_name = {d.name: {m.name for m in d.models} for d in registry._PROVIDERS}
+
+    for name, backend_models in backend_by_name.items():
+        assert skill_by_name[name] - _REGISTRY_EXCLUDED_MODELS == backend_models
 
 
 def test_registry_returns_disabled_response_when_skill_disabled(monkeypatch):
@@ -317,3 +363,21 @@ def test_registry_supports_model_key_alias(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert [m.name for m in response.providers[0].models] == ["veo-custom"]
+
+
+def test_skill_known_models_derive_from_manifest():
+    # The routing/validation/describe surfaces must never split: known_models
+    # is the routing truth, manifest.models is the capability truth — bind them.
+    providers = _load_skill_providers()
+    for name, cls in providers.PROVIDERS.items():
+        manifest_names = tuple(m.name for m in providers.MANIFESTS[name].models)
+        assert tuple(cls.known_models or ()) == manifest_names
+
+
+def test_skill_model_descriptions_match_registry_catalog():
+    providers = _load_skill_providers()
+    backend = {d.name: {m.name: m.description for m in d.models} for d in registry._PROVIDERS}
+    for name, backend_models in backend.items():
+        manifest_by_name = {m.name: m.description for m in providers.MANIFESTS[name].models}
+        for model_name, desc in backend_models.items():
+            assert manifest_by_name[model_name] == desc, f"{name}/{model_name} catalog copy drifted"

@@ -21,7 +21,6 @@ import argparse
 import math
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -32,41 +31,17 @@ except ImportError:
 
 import requests
 
-# ── 图片规格表（per provider）───────────────────────────────────────────
-# 官方源：MiniMax H3（宽高 [256, 5760]px、比例 5:2~2:5）；
-# Seedance API Ref（宽高 [300, 6000]px、比例 [0.4, 2.5]）。
-# 不在 extensions 内的格式解码后转 PNG。
+from providers import MANIFESTS
+from providers.manifest import ImageSpec
+
+# ── 图片规格表（per provider，manifest 派生视图）────────────────────────
+# 单一事实源是各 provider 的 PROVIDER_MANIFEST.image_spec（refactor-df-4）；
+# 无 image_spec 的 provider（legacy minimax_v1）不做本地 preflight，自然排除。
 # base64 传输膨胀约 33%，请求体上限 64MB —— 本地图总大小软顶，超出提示改用公网 URL
 _REQUEST_BODY_SOFT_LIMIT = 45 * 1024 * 1024
 
-
-@dataclass(frozen=True)
-class _ImageSpec:
-    side_min: int
-    side_max: int
-    ratio_min: float
-    ratio_max: float
-    extensions: frozenset[str]
-    label: str
-
-
-IMAGE_SPECS: dict[str, _ImageSpec] = {
-    "minimax_h3": _ImageSpec(
-        side_min=256,
-        side_max=5760,
-        ratio_min=0.4,
-        ratio_max=2.5,
-        extensions=frozenset({".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}),
-        label="MiniMax-H3",
-    ),
-    "seedance": _ImageSpec(
-        side_min=300,
-        side_max=6000,
-        ratio_min=0.4,
-        ratio_max=2.5,
-        extensions=frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif", ".heic", ".heif"}),
-        label="Seedance",
-    ),
+IMAGE_SPECS: dict[str, ImageSpec] = {
+    name: manifest.image_spec for name, manifest in MANIFESTS.items() if manifest.image_spec is not None
 }
 
 
@@ -97,7 +72,7 @@ def _to_rgb(im):
     return im.convert("RGB")
 
 
-def fix_image(path: str, out_dir: str, spec: _ImageSpec) -> tuple[str, list[str]]:
+def fix_image(path: str, out_dir: str, spec: ImageSpec) -> tuple[str, list[str]]:
     """修复单张图，返回 (输出路径, 操作列表)；无修改时返回原路径。"""
     ops: list[str] = []
     im = Image.open(path)

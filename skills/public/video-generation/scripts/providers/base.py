@@ -249,14 +249,23 @@ class BaseVideoProvider:
         )
         try:
             handle = self.create_task(prompt_text, reference_images, params)
-        except ValueError:
-            # Local validation proves the Provider was never called, so the
-            # runtime can release the reservation instead of leaving it pending.
-            set_task_status(output_file, None, "rejected")
+        except ValueError as e:
+            if isinstance(e, json.JSONDecodeError):
+                # HTTP 200 with a non-JSON body (gateway/proxy truncation): the
+                # provider WAS called. JSONDecodeError subclasses ValueError,
+                # so it must land on failed — never the rejected branch below.
+                record = read_task_record(output_file) or {}
+                record.update(status=STATUS_FAILED, error=str(e)[:500])
+                write_task_record(output_file, record)
+            else:
+                # Local validation proves the Provider was never called, so the
+                # runtime can release the reservation instead of leaving it pending.
+                set_task_status(output_file, None, "rejected")
             raise
         except Exception as e:
-            # Provider 被调用且拒绝（如提交时审核 400）：sidecar 落 failed，
-            # 避免预检对着 task_id=null 的 pending 记录空等。
+            # Provider 被调用后同步失败（如提交时审核 400；也包括素材读取等
+            # HTTP 前错误）：sidecar 落 failed，避免预检对着 task_id=null 的
+            # pending 记录空等。
             record = read_task_record(output_file) or {}
             record.update(status=STATUS_FAILED, error=str(e)[:500])
             write_task_record(output_file, record)

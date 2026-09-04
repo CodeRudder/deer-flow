@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from providers import MODEL_PROVIDERS, PROVIDERS
+from providers import IMAGE_ROLES, MANIFESTS, MODEL_PROVIDERS, PROVIDERS
 from providers.base import STATUS_SUCCEEDED, set_task_status
 
 try:
@@ -264,6 +264,61 @@ def generate_video(
     return adapter.generate(prompt_text, reference_images, output_file, params, prompt_file=prompt_file)
 
 
+def describe_providers(selected: str | None) -> str:
+    """Render the capability manifest to text (refactor-df-4).
+
+    Read-only view of providers/manifest.py data: no credentials, no
+    config.yaml, no sidecars. SKILL.md points the agent here instead of doc
+    tables — the manifest is the source, doc tables are projections.
+    Rendering rules (degenerate values, (-1 auto) annotation, sorted params,
+    POSIX paths) live in providers/manifest.py.
+    """
+    if selected and selected not in MANIFESTS:
+        raise ValueError(f"unknown video provider: {selected!r}. Known: {', '.join(sorted(MANIFESTS))}")
+    lines: list[str] = []
+    for name in sorted(MANIFESTS):
+        if selected and name != selected:
+            continue
+        m = MANIFESTS[name]
+        fallback = f" (fallback: {', '.join(m.api_key_envs[1:])})" if len(m.api_key_envs) > 1 else ""
+        lines.append(f"provider: {m.name} ({m.display_name})")
+        lines.append(f"credential env: {m.api_key_envs[0]}{fallback}")
+        lines.append(f"aspect ratios: {', '.join(m.ratios)}" if m.ratios else "aspect ratios: not honored (model-side)")
+        roles = IMAGE_ROLES.get(name, ())
+        if "image_role" in m.supported_params:
+            lines.append(f"image roles: {', '.join(roles)}")
+        elif roles:
+            # e.g. legacy minimax_v1: the first frame is implicit (no flag),
+            # so the roles line must not invite --image-role usage.
+            lines.append(f"image roles: {', '.join(roles)} (implicit — --image-role flag not accepted)")
+        lines.append("models:")
+        for spec in m.models:
+            lines.append(f"  {spec.name}  {spec.display_name}")
+            lines.append(f"    best for: {spec.description}")
+            default = f" (default {spec.default_resolution})" if spec.default_resolution else ""
+            resolutions = "/".join(spec.resolutions) if spec.resolutions else "model defaults"
+            duration = f"{spec.duration_range[0]}-{spec.duration_range[1]}" if spec.duration_range else "model defaults"
+            auto = " (-1 auto)" if "frame_ratio_adaptive" in spec.locks else ""
+            lines.append(f"    resolution: {resolutions}{default}   duration: {duration}{auto}")
+            lines.append(f"    refs: {spec.max_ref_images} img / {spec.max_ref_videos} video / {spec.max_ref_audios} audio")
+            locks = f"locks: {', '.join(spec.locks)}   " if spec.locks else ""
+            lines.append(f"    {locks}audio-only input: {'yes' if spec.audio_only_ok else 'no'}")
+        if m.image_spec:
+            s = m.image_spec
+            lines.append(
+                f"image spec: side [{s.side_min},{s.side_max}]px, ratio [{s.ratio_min},{s.ratio_max}], "
+                f"formats: {'/'.join(sorted(s.extensions))}"
+            )
+        else:
+            lines.append("image spec: no local preflight")
+        honored = ", ".join(sorted(m.supported_params)) or "(none — model-side defaults)"
+        lines.append(f"params honored: {honored}")
+        if m.prompt_format_files:
+            lines.append("prompt format: " + "; ".join(sorted(set(m.prompt_format_files.values()))))
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def cancel_task(
     task_id: str,
     provider: str | None = None,
@@ -304,7 +359,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Generate videos using a configured provider")
-    parser.add_argument("--prompt-file", required=False, default=None, help="Absolute path to JSON prompt file")
+    parser.add_argument("--prompt-file", required=False, default=None, help="Absolute path to the prompt file: structured .txt (H3), @-tag .txt (Seedance), prose .txt, or a .json file with a top-level \"prompt\" string field (only that field is used)")
     parser.add_argument(
         "--reference-images",
         nargs="*",
@@ -358,8 +413,8 @@ if __name__ == "__main__":
         help=(
             "How to use --reference-images: first_frame (default, I2V), last_frame, "
             "first_last (first + last frame, exactly 2 images), or reference "
-            "(identity/style reference images; up to 9 on MiniMax H3 / Seedance 2.0 "
-            "family, 30 on Seedance 2.5). Frame and reference roles are mutually "
+            "(identity/style reference images; per-provider caps — run "
+            "--describe-provider). Frame and reference roles are mutually "
             "exclusive."
         ),
     )
@@ -367,6 +422,16 @@ if __name__ == "__main__":
         "--upscale-video",
         default=None,
         help=("Path/URL to an existing 768P output to regenerate as 2K (MiniMax H3 regeneration endpoint). Reuses --prompt-file/--reference-images/--image-role/--model from the original run; --output-file must be a NEW path."),
+    )
+    parser.add_argument(
+        "--describe-provider",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PROVIDER",
+        help=("Print the capability manifest (models, ratios, defaults, refs, locks, image spec, "
+              "supported params) and exit. Bare flag = all providers; pass a provider name for one. "
+              "Read-only — never contacts a provider."),
     )
     parser.add_argument(
         "--cancel",
@@ -383,7 +448,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        if args.cancel:
+        if args.describe_provider is not None:
+            if args.cancel or args.query:
+                raise ValueError(
+                    "--describe-provider cannot be combined with --cancel/--query; run them separately"
+                )
+            print(describe_providers(args.describe_provider or None))
+        elif args.cancel:
             print(cancel_task(args.cancel, args.provider, args.model, args.output_file))
         elif args.query:
             print(query_task(args.query, args.provider, args.model, args.output_file))
@@ -397,7 +468,7 @@ if __name__ == "__main__":
                 if not value
             ]
             if missing:
-                raise ValueError(f"{', '.join(missing)} is required unless --cancel/--query is used")
+                raise ValueError(f"{', '.join(missing)} is required unless --cancel/--query/--describe-provider is used")
             print(
                 generate_video(
                     args.prompt_file,
@@ -415,5 +486,5 @@ if __name__ == "__main__":
                 )
             )
     except Exception as e:
-        print(f"Error while generating video: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
