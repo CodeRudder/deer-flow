@@ -209,7 +209,7 @@ export const enUS: Translations = {
     deleteConfirm:
       "Are you sure you want to delete this agent? This action cannot be undone.",
     deleteSuccess: "Agent deleted",
-    newChat: "New chat",
+    newChat: "New chat with this agent",
     createPageTitle: "Design your Agent",
     createPageSubtitle:
       "Describe the agent you want — I'll help you create it through conversation.",

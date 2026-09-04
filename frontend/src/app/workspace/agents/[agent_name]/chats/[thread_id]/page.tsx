@@ -1,8 +1,10 @@
+// NOTE: Keep feature parity with src/app/workspace/chats/[thread_id]/page.tsx —
+// new header indicators / message-list features must be added to both pages.
 "use client";
 
 import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
@@ -17,6 +19,8 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { QuotaIndicator } from "@/components/workspace/quota-indicator";
+import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
@@ -64,8 +68,13 @@ export default function AgentChatPage() {
     isMock,
   });
   const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
+  const mountedRef = useRef(false);
 
   const { showNotification } = useNotification();
+
+  useEffect(() => {
+    mountedRef.current = true;
+  }, []);
 
   useEffect(() => {
     setIsWelcomeMode(isNewThread);
@@ -75,6 +84,7 @@ export default function AgentChatPage() {
     thread,
     pendingUsageMessages,
     sendMessage,
+    regenerateMessage,
     isUploading,
     isHistoryLoading,
     hasMoreHistory,
@@ -158,13 +168,19 @@ export default function AgentChatPage() {
     await thread.stop();
   }, [thread]);
 
+  const handleRegenerate = useCallback(
+    (messageId: string, supersededMessageIds: string[]) =>
+      regenerateMessage(threadId, messageId, supersededMessageIds),
+    [regenerateMessage, threadId],
+  );
+
   const tokenUsageInlineMode = tokenUsageEnabled
     ? localSettings.tokenUsage.inlineMode
     : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
 
   return (
-    <ThreadContext.Provider value={{ thread }}>
+    <ThreadContext.Provider value={{ thread, isMock }}>
       <ChatBox threadId={threadId}>
         <div className="relative flex size-full min-h-0 justify-between">
           <header
@@ -187,7 +203,7 @@ export default function AgentChatPage() {
             <div className="flex min-w-0 flex-1 items-center text-sm font-medium">
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
-            <div className="flex shrink-0 items-center sm:mr-4">
+            <div className="flex shrink-0 items-center gap-2 sm:mr-4">
               <Tooltip content={t.agents.newChat}>
                 <Button
                   className="px-2 sm:px-3"
@@ -201,6 +217,13 @@ export default function AgentChatPage() {
                   <span className="hidden sm:inline">{t.agents.newChat}</span>
                 </Button>
               </Tooltip>
+              {!isNewThread && !isMock && (
+                <SessionStatusButton
+                  threadId={threadId}
+                  enabled
+                  forcePolling={thread.isLoading}
+                />
+              )}
               <TokenUsageIndicator
                 threadId={isNewThread ? undefined : threadId}
                 backendUsage={backendTokenUsage}
@@ -212,6 +235,7 @@ export default function AgentChatPage() {
                   setLocalSettings("tokenUsage", preferences)
                 }
               />
+              {!isMock && <QuotaIndicator isThreadBusy={thread.isLoading} />}
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />
             </div>
@@ -228,6 +252,14 @@ export default function AgentChatPage() {
                 loadMoreHistory={loadMoreHistory}
                 isHistoryLoading={isHistoryLoading}
                 tokenUsageInlineMode={tokenUsageInlineMode}
+                canRegenerate={
+                  !isNewThread &&
+                  !isMock &&
+                  env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
+                  !isUploading &&
+                  !thread.isLoading
+                }
+                onRegenerateMessage={handleRegenerate}
               />
             </div>
 
@@ -269,35 +301,48 @@ export default function AgentChatPage() {
                   </div>
                 )}
 
-                <InputBox
-                  className={cn(
-                    "bg-background/5 w-full",
-                    isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
-                  )}
-                  isWelcomeMode={isWelcomeMode}
-                  threadId={threadId}
-                  autoFocus={isWelcomeMode}
-                  status={
-                    thread.error
-                      ? "error"
-                      : thread.isLoading
-                        ? "streaming"
-                        : "ready"
-                  }
-                  context={settings.context}
-                  extraHeader={
-                    isWelcomeMode && (
-                      <AgentWelcome agent={agent} agentName={agent_name} />
-                    )
-                  }
-                  disabled={
-                    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                    isUploading
-                  }
-                  onContextChange={(context) => setSettings("context", context)}
-                  onSubmit={handleSubmit}
-                  onStop={handleStop}
-                />
+                {mountedRef.current ? (
+                  <InputBox
+                    className={cn(
+                      "bg-background/5 w-full",
+                      isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
+                    )}
+                    isWelcomeMode={isWelcomeMode}
+                    threadId={threadId}
+                    autoFocus={isWelcomeMode}
+                    status={
+                      thread.error
+                        ? "error"
+                        : thread.isLoading
+                          ? "streaming"
+                          : "ready"
+                    }
+                    context={settings.context}
+                    extraHeader={
+                      isWelcomeMode && (
+                        <AgentWelcome agent={agent} agentName={agent_name} />
+                      )
+                    }
+                    disabled={
+                      isMock ||
+                      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                      isUploading
+                    }
+                    onContextChange={(context) =>
+                      setSettings("context", context)
+                    }
+                    onSubmit={handleSubmit}
+                    onStop={handleStop}
+                  />
+                ) : (
+                  <div
+                    aria-hidden="true"
+                    className={cn(
+                      "bg-background/5 h-32 w-full rounded-2xl",
+                      isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
+                    )}
+                  />
+                )}
                 {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
                   <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">
                     {t.common.notAvailableInDemoMode}

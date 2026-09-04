@@ -199,7 +199,7 @@ export const zhCN: Translations = {
     delete: "删除",
     deleteConfirm: "确定要删除该智能体吗？此操作不可撤销。",
     deleteSuccess: "智能体已删除",
-    newChat: "新对话",
+    newChat: "在此智能体开启新对话",
     createPageTitle: "设计你的智能体",
     createPageSubtitle: "描述你想要的智能体，我来帮你通过对话创建。",
     nameStepTitle: "给新智能体起个名字",

@@ -1,3 +1,5 @@
+// NOTE: Keep feature parity with src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx —
+// new header indicators / message-list features must be added to both pages.
 "use client";
 
 import { useRouter } from "next/navigation";
