@@ -455,7 +455,8 @@ Happy with it? I can: ① tweak the prompt ② change duration/resolution
 ```
 
 Append `④ upgrade this take to 2K (same content, refined details)` ONLY when
-all conditions hold: the result is a MiniMax H3 768P draft, its duration is at
+all conditions hold: the result is a MiniMax **H3** (not H3-Max) 768P draft,
+its duration is at
 least 5 s, and its source video is available to the regeneration endpoint.
 Never show the upgrade exit for a 4 s draft; offer only ①–③ so the user
 cannot enter an impossible upgrade flow. Prompt/setting changes return to

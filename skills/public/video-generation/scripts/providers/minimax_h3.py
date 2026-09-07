@@ -63,6 +63,19 @@ PROVIDER_MANIFEST = ProviderManifest(
             duration_range=(4, 15),
             max_ref_images=9,
         ),
+        ModelSpec(
+            name="MiniMax-H3-Max",
+            display_name="MiniMax H3 Max",
+            description="基于 H3 后训练的高速视频生成模型，输出 480P/768P 立体声视频(单次5~15s)，支持文生视频与首帧/尾帧图生视频；不支持参考生成与 2K，需要时请选 MiniMax H3",
+            default_resolution="768P",
+            resolutions=("480P", "768P"),
+            duration_range=(5, 15),
+            # H3-Max: T2V / first-frame / last-frame only — reference mode and
+            # the 2K regeneration endpoint are H3-exclusive (official gates
+            # fail asynchronously, so both are pre-checked locally).
+            supports_reference=False,
+            supports_regeneration=False,
+        ),
     ),
 )
 
@@ -181,25 +194,38 @@ class MiniMaxH3Provider(BaseVideoProvider):
                     "scripts/check_materials.py to fix it, then resubmit"
                 )
 
+    def _model_and_spec(self) -> tuple[str, ModelSpec]:
+        model = self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL)
+        spec = MODEL_SPECS.get(model)
+        if spec is None:
+            raise ValueError(f"unknown MiniMax model {model!r}; known: {', '.join(MODEL_SPECS)}")
+        return model, spec
+
     def create_task(
         self, prompt_text: str, reference_images: list[str], params: dict
     ) -> str:
         self._validate_image_specs(reference_images)
+        model, spec = self._model_and_spec()
         upscale_video = params.get("upscale_video")
         if upscale_video:
+            if not spec.supports_regeneration:
+                raise ValueError(
+                    f"model {model} does not support 2K regeneration (--upscale-video); "
+                    "H3-Max outputs cannot be upgraded — regenerate the take with MiniMax-H3 for a 2K-capable draft"
+                )
             return self._create_regeneration_task(
                 upscale_video, prompt_text, reference_images, params
             )
         image_role = params.get("image_role")
         if image_role is None:
             image_role = "first_frame"
+        if image_role == "reference" and not spec.supports_reference:
+            raise ValueError(
+                f"model {model} does not support reference-mode generation (Ref2VA); use MiniMax-H3"
+            )
         content, send_ratio = self._build_content(
             prompt_text, reference_images, image_role, params.get("ratio")
         )
-        model = self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL)
-        # Unknown model names (e.g. a custom MINIMAX_VIDEO_MODEL) keep today's
-        # behavior: validated against the H3 spec below, never silently skipped.
-        spec = MODEL_SPECS.get(model, MODEL_SPECS[DEFAULT_MODEL])
         duration = params.get("duration")
         if duration is not None and not (spec.duration_range[0] <= duration <= spec.duration_range[1]):
             raise ValueError(f"duration must be {spec.duration_range[0]}-{spec.duration_range[1]} seconds, got {duration}")

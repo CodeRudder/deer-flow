@@ -43,7 +43,7 @@ class ImageSpec:
 class ModelSpec:
     name: str
     display_name: str
-    description: str  # catalog copy (best-for guidance); registry.py keeps its own frontend copy, name-level parity only
+    description: str  # catalog copy (best-for guidance); registry.py keeps its own frontend copy, description-level parity enforced
     default_resolution: str | None = None  # None = model-side default (legacy minimax_v1)
     resolutions: tuple[str, ...] = ()  # () = model-side defaults
     duration_range: tuple[int, int] | None = None  # None = model-side defaults; -1 auto is interpreted by the adapter
@@ -52,6 +52,11 @@ class ModelSpec:
     max_ref_audios: int = 0
     locks: tuple[str, ...] = ()  # "frame_ratio_adaptive" / "edit_duration_-1" (upstream task semantics; edit tasks are not exposed by this skill)
     audio_only_ok: bool = False
+    # Model-level capability gates for params the provider accepts as a whole
+    # (e.g. minimax_h3 offers --upscale-video, but only H3 has it). Adapters
+    # pre-check these before submission; describe annotates them per model.
+    supports_reference: bool = True  # Ref2VA image-reference mode
+    supports_regeneration: bool = True  # 2K upgrade via --upscale-video
 
 
 @dataclass(frozen=True)

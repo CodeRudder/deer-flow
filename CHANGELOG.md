@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 #### Skills
+- **video-generation:** MiniMax-H3-Max model added to the `minimax_h3` provider — 480P/768P, 5–15 s, T2V/I2V only (reference mode and 2K regeneration are pre-checked locally with actionable errors); per-model value domains and capability gates now live in the manifest (`supports_reference`/`supports_regeneration`), rendered by `--describe-provider`.
 - **video-generation:** Model capability data consolidated into a per-provider
   manifest (`scripts/providers/manifest.py`) as the single source of truth —
   runtime validation, `check_materials.py`, and the new

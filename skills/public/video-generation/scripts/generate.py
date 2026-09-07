@@ -299,8 +299,16 @@ def describe_providers(selected: str | None) -> str:
             resolutions = "/".join(spec.resolutions) if spec.resolutions else "model defaults"
             duration = f"{spec.duration_range[0]}-{spec.duration_range[1]}" if spec.duration_range else "model defaults"
             auto = " (-1 auto)" if "frame_ratio_adaptive" in spec.locks else ""
-            lines.append(f"    resolution: {resolutions}{default}   duration: {duration}{auto}")
-            lines.append(f"    refs: {spec.max_ref_images} img / {spec.max_ref_videos} video / {spec.max_ref_audios} audio")
+            regen = (
+                " (2K regeneration not supported)"
+                if not spec.supports_regeneration and "upscale_video" in m.supported_params
+                else ""
+            )
+            lines.append(f"    resolution: {resolutions}{default}   duration: {duration}{auto}{regen}")
+            refs = f"    refs: {spec.max_ref_images} img / {spec.max_ref_videos} video / {spec.max_ref_audios} audio"
+            if not spec.supports_reference:
+                refs += " (reference mode not supported)"
+            lines.append(refs)
             locks = f"locks: {', '.join(spec.locks)}   " if spec.locks else ""
             lines.append(f"    {locks}audio-only input: {'yes' if spec.audio_only_ok else 'no'}")
         if m.image_spec:

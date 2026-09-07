@@ -341,7 +341,7 @@ def test_registry_ignores_non_list_models(monkeypatch):
 
     response = registry.get_video_generation_providers()
 
-    assert [m.name for m in response.providers[0].models] == ["MiniMax-H3"]
+    assert [m.name for m in response.providers[0].models] == ["MiniMax-H3", "MiniMax-H3-Max"]
 
 
 def test_registry_ignores_non_dict_video_generation_section(monkeypatch):

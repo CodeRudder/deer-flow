@@ -23,6 +23,12 @@ _RULES = {
             },
             "regeneration": 0.3,
         },
+        "MiniMax-H3-Max": {
+            "resolutions": {
+                "480P": 0.33,
+                "768P": 0.5,
+            },
+        },
         "Seedance": {"resolutions": {"1080p": {"durations": {"4": 3.5, "15": 3.0}}}},
     },
 }

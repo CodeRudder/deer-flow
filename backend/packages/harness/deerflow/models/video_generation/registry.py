@@ -54,6 +54,11 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
                 display_name="MiniMax H3",
                 description="提供768P/2K+立体声的顶级视频生成能力(单次≤15s)，支持文生视频与首帧/尾帧/首尾帧/参考图生视频(参考图≤9张)",
             ),
+            VideoGenerationModel(
+                name="MiniMax-H3-Max",
+                display_name="MiniMax H3 Max",
+                description="基于 H3 后训练的高速视频生成模型，输出 480P/768P 立体声视频(单次5~15s)，支持文生视频与首帧/尾帧图生视频；不支持参考生成与 2K，需要时请选 MiniMax H3",
+            ),
         ),
     ),
     _ProviderDefinition(

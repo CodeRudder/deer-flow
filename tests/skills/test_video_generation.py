@@ -574,6 +574,44 @@ def test_h3_duration_and_resolution_validated():
         p.create_task("x", [], {"resolution": "4K"})
 
 
+def test_h3_max_duration_and_resolution_matrix(monkeypatch):
+    # feat-df-9 AC-3: per-model value domains — H3 keeps 768P/2K · 4-15s,
+    # H3-Max is 480P/768P · 5-15s (4 s drafts rejected locally, never billed).
+    p = _h3().PROVIDER(model="MiniMax-H3-Max")
+    with pytest.raises(ValueError, match="unsupported resolution"):
+        p.create_task("x", [], {"resolution": "2K"})
+    with pytest.raises(ValueError, match="duration must be 5-15"):
+        p.create_task("x", [], {"duration": 4})
+    # H3-Max 480P/5s passes local validation (upstream mocked); H3 rejects 480P.
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "t1"}))
+    assert p.create_task("x", [], {"resolution": "480P", "duration": 5}) == "t1"
+    with pytest.raises(ValueError, match="unsupported resolution"):
+        _h3().PROVIDER(model="MiniMax-H3").create_task("x", [], {"resolution": "480P"})
+
+
+def test_h3_max_routes_to_minimax_h3():
+    # feat-df-9 AC-5: no config.yaml needed — the known-model routing table
+    # (MODEL_PROVIDERS from known_models) reaches H3-Max via credential fallback.
+    assert vid._resolve_target({}, None, "MiniMax-H3-Max") == ("minimax_h3", "MiniMax-H3-Max")
+
+
+def test_h3_max_capability_precheck():
+    # feat-df-9 AC-4: reference mode and 2K regeneration are H3-exclusive;
+    # official gates fail asynchronously, so both are pre-checked locally.
+    p = _h3().PROVIDER(model="MiniMax-H3-Max")
+    with pytest.raises(ValueError, match="does not support reference-mode"):
+        p.create_task("x", ["https://cdn/a.png"], {"image_role": "reference"})
+    with pytest.raises(ValueError, match="does not support 2K regeneration"):
+        p.create_task("x", [], {"upscale_video": "https://cdn/src.mp4"})
+
+
+def test_unknown_minimax_model_rejected():
+    # Unknown MINIMAX_VIDEO_MODEL values must not silently validate as H3
+    # (aligned with seedance: an invalid request never reaches the API).
+    with pytest.raises(ValueError, match="unknown MiniMax model"):
+        _h3().PROVIDER(model="MiniMax-H3-Unknown").create_task("x", [], {})
+
+
 def test_h3_aspect_ratio_validated():
     # P2-4 remainder: the ratio enum in SKILL.md's output-settings table was
     # documented but never enforced.
