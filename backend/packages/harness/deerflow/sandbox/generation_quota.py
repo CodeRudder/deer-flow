@@ -167,7 +167,11 @@ def _video_invocation_from_segment(segment: list[str]) -> VideoGenerationInvocat
     if script_index is None:
         return None
     script_args = args[script_index + 1 :] if script_index >= 0 else args
-    operation = "cancel" if _has_option(script_args, "--cancel") else "query" if _has_option(script_args, "--query") else "generate"
+    # --describe-provider is a read-only capability query: never billable and
+    # never sidecar-reconciled. It must be recognized here — otherwise it falls
+    # into the "generate" bucket and the reservation path demands billing
+    # params for a query.
+    operation = "describe" if _has_option(script_args, "--describe-provider") else "cancel" if _has_option(script_args, "--cancel") else "query" if _has_option(script_args, "--query") else "generate"
     duration_value = _option_value(script_args, "--duration")
     duration: int | None = None
     if duration_value is not None and not duration_value.startswith(("$", "`")):
@@ -573,7 +577,7 @@ class GenerationQuotaLifecycle:
         return None
 
     async def _reconcile_video_sidecar(self, invocation: VideoGenerationInvocation) -> str | None:
-        if invocation.operation == "generate":
+        if invocation.operation in ("generate", "describe"):
             return None
         quota_bridge = self._bridge()
         if quota_bridge is None:

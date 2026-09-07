@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -958,6 +959,39 @@ def test_video_cancel_is_not_billable() -> None:
     command = "python /mnt/skills/public/video-generation/scripts/generate.py --cancel task-123 --output-file /mnt/user-data/outputs/a.mp4"
 
     assert count_video_invocations(command) == 0
+
+
+def test_video_describe_provider_is_not_billable() -> None:
+    # The capability query is read-only: it must not be classified as a
+    # billable generate call even when full billing-looking params are present
+    # (real smoke hit: describe was rejected for missing model/resolution).
+    base = "python /mnt/skills/public/video-generation/scripts/generate.py"
+    for suffix in (
+        "",
+        " seedance",
+        "--model MiniMax-H3-Max --resolution 768P --duration 5 --output-file /mnt/user-data/outputs/a.mp4",
+    ):
+        invocations = parse_video_invocations(f"{base} --describe-provider {suffix}".strip())
+        assert len(invocations) == 1
+        assert invocations[0].operation == "describe"
+        assert count_video_invocations(f"{base} --describe-provider {suffix}".strip()) == 0
+
+
+def test_video_describe_provider_passes_quota_prepare_without_reservation() -> None:
+    command = "python /mnt/skills/public/video-generation/scripts/generate.py --describe-provider"
+
+    runtime = SimpleNamespace(
+        state={},
+        context={"__quota_runtime_bridge": object(), "__quota_enforcement_required": True},
+    )
+    lifecycle = GenerationQuotaLifecycle(runtime, lambda output_file: None)
+
+    prepared, error = asyncio.run(lifecycle.prepare(command))
+
+    assert error is None
+    assert prepared is not None
+    assert prepared.image_reservation is None
+    assert prepared.video_reservation is None
 
 
 @pytest.mark.asyncio

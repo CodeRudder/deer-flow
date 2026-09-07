@@ -456,6 +456,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
+        # NOTE: this dispatch enumerates every CLI mode of the script. The
+        # backend quota bridge (generation_quota.py) classifies invocations
+        # from the command TEXT — any new non-billable mode added here must be
+        # taught to that classifier too, or it lands in the billable bucket.
         if args.describe_provider is not None:
             if args.cancel or args.query:
                 raise ValueError(
