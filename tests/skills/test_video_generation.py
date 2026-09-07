@@ -1353,6 +1353,73 @@ def test_download_failure_keeps_provider_succeeded_receipt(monkeypatch, tmp_path
     assert record["updated_at"]
 
 
+# --- H3 sync create-task rejection carries the upstream error body (fix-df-6) ---
+
+
+def test_h3_create_4xx_carries_base_resp_reason(monkeypatch):
+    # MiniMax V2 puts the rejection reason in base_resp; raise_for_status alone
+    # would discard it and leave the agent guessing moderation vs billing vs
+    # params (cloud incident 2026-09-07: bare "HTTP 400 Bad Request").
+    def fake_post(url, headers=None, json=None, **kw):
+        return FakeResp(
+            {"base_resp": {"status_code": 2013, "status_msg": "invalid params"}},
+            status_code=400,
+        )
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", fake_post)
+    with pytest.raises(requests.HTTPError, match="2013: invalid params"):
+        _h3().PROVIDER(model=None).create_task("x", [], {})
+
+
+def test_h3_create_4xx_non_json_body_falls_back_to_raw_text(monkeypatch):
+    def fake_post(url, headers=None, json=None, **kw):
+        return FakeResp(None, content=b"<html>gateway error</html>", status_code=400)
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", fake_post)
+    with pytest.raises(requests.HTTPError, match="gateway error"):
+        _h3().PROVIDER(model=None).create_task("x", [], {})
+
+
+def test_h3_regeneration_4xx_carries_base_resp_reason(monkeypatch):
+    def fake_post(url, headers=None, json=None, **kw):
+        return FakeResp(
+            {"base_resp": {"status_code": 1027, "status_msg": "content is sensitive"}},
+            status_code=400,
+        )
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(requests, "post", fake_post)
+    with pytest.raises(requests.HTTPError, match="1027: content is sensitive"):
+        _h3().PROVIDER(model=None).create_task(
+            "x", [], {"upscale_video": "https://dl/draft.mp4"}
+        )
+
+
+def test_h3_create_4xx_marks_sidecar_failed_with_error(monkeypatch, tmp_path):
+    # Sync rejection means the provider was called and refused: the sidecar must
+    # land on failed (not pending), mirroring the seedance contract.
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: FakeResp(
+            {"base_resp": {"status_code": 2013, "status_msg": "invalid params"}},
+            status_code=400,
+        ),
+    )
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    out = tmp_path / "v.mp4"
+    with pytest.raises(requests.HTTPError):
+        vid.generate_video(str(pf), [], str(out), provider="minimax_h3")
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+    assert record["task_id"] is None
+    assert "2013: invalid params" in record["error"]
+
+
 # --- Seedance (Volcano Ark): capability table + local pre-validation (feat-df-6) ---
 
 SD_25 = "doubao-seedance-2-5-260628"

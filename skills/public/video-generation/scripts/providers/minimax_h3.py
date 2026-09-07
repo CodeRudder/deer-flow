@@ -82,6 +82,24 @@ PROVIDER_MANIFEST = ProviderManifest(
 MODEL_SPECS: dict[str, ModelSpec] = {m.name: m for m in PROVIDER_MANIFEST.models}
 
 
+def _raise_sync_rejection(resp: requests.Response, operation: str) -> None:
+    """提交被同步拒绝时透传 base_resp 错误码（raise_for_status 会把响应体丢成一行状态）；
+    非 JSON / 无 base_resp 回落原文截断。"""
+    if resp.status_code < 400:
+        return
+    try:
+        base = resp.json().get("base_resp") or {}
+    except ValueError:
+        base = {}
+    if base.get("status_code"):
+        detail = f"{base.get('status_code')}: {base.get('status_msg')}"
+    else:
+        detail = resp.text[:500]
+    raise requests.HTTPError(
+        f"provider=minimax_h3 {operation}: HTTP {resp.status_code} {detail}", response=resp
+    )
+
+
 class MiniMaxH3Provider(BaseVideoProvider):
     name = "minimax_h3"
     supported_params = PROVIDER_MANIFEST.supported_params
@@ -254,7 +272,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
             json=body,
             timeout=60,
         )
-        resp.raise_for_status()
+        _raise_sync_rejection(resp, "create task")
         payload = resp.json()
         task_id = payload.get("task_id")
         if not task_id:
@@ -296,7 +314,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
             json=body,
             timeout=60,
         )
-        resp.raise_for_status()
+        _raise_sync_rejection(resp, "regenerate task")
         payload = resp.json()
         task_id = payload.get("task_id")
         if not task_id:
