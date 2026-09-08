@@ -48,6 +48,16 @@ Put spoken lines in `{}` so they are voiced.
 
 ## Time / shot organization
 
+### Shot budget (provider-independent)
+
+Shared with the H3 format — use for shot planning and storyboard estimates:
+
+| Duration | Shot count |
+|---|---|
+| 4–6 s | 1–2 shots |
+| 7–10 s | 2–3 shots |
+| 11–15 s | 3–5 shots |
+
 ### Seedance 2.5
 
 Segment by seconds; one beat per ~5s is a good pace. Keep Chinese ≤500 chars
@@ -84,6 +94,30 @@ Use shot numbers only (exact timestamps are unstable):
   referencing `@imageN/@videoN/@audioN` → consistency clause.
 - **First frame / first+last**: `@image1 作为首帧。` as a standalone sentence;
   other materials declare "不改变首帧构图"; describe the motion between frames.
+
+### Storyboard design images (Seedance keyframe reference)
+
+The storyboard path (SKILL.md Step 2.5) passes one generated keyframe still
+per shot; 2.0 family binds by shot numbers (its time/shot section). On 2.5
+alignment is relatively strict (official keyframe reference); on 2.0 family
+the stills read as ordinary references (weaker — note it on the plan card).
+
+- **First sentence (mandatory, exact shape)**:
+  `以图片 1 至图片 N 的顺序作为关键帧。` (N = storyboard image count; if
+  original references ride along, keep the declaration scoped to the
+  storyboard images' numbers, e.g. `以图片 1 至图片 3 的顺序作为关键帧。`)
+- Then bind each image to its shot: `@image1 对应镜头1的画面构图。` /
+  `[0-10秒] 段落以 @image1 的画面开始…` — every storyboard image gets a
+  stated job; unused materials waste the reference budget.
+- Usage constraint sentence: `分镜关键帧仅参考构图与内容，不采用其画风与图内文字。`
+- Ordering is load-bearing: label order = `--reference-images` order
+  (storyboard images and original references — whichever order is chosen in
+  SKILL.md Step 2.5, the prompt numbering MUST match the CLI pass order).
+- The keyframe declaration keeps the task a normal reference task — do NOT
+  use frame-mode `--image-role` (mutually exclusive with reference mode), and
+  the forbidden-words rule applies as usual (no 编辑/延长/续写…).
+- Keyframe reference aligns composition relatively strictly but does not
+  lock output params; ratio comes from `--aspect-ratio` as usual.
 
 ## Task-type locks (2.5 only — API Ref)
 

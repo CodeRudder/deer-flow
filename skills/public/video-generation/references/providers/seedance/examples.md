@@ -53,3 +53,49 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --model doubao-seedance-2-5-260628 \
   --output-file /mnt/user-data/outputs/sd-fl.mp4
 ```
+
+## SD-4 — Seedance reference with storyboard design images
+
+User set Storyboard = 要, Images = 无图且不找, duration 15 s → 3 shots
+settled at the input table (cap check passes on 2.5 and 2.0 family alike).
+No user material, so shot 1 is the text-to-image fallback
+(`OPENAI_IMAGE_QUALITY=medium` inline; the input-table approval covers it —
+no extra confirmation); shots 2-3 chain from shot 1 via image-editing, one
+command per image:
+
+```bash
+OPENAI_IMAGE_QUALITY=medium python /mnt/skills/public/image-generation/scripts/generate.py \
+  --prompt-file /mnt/user-data/workspace/sd-sb-1.json \
+  --aspect-ratio 16:9 \
+  --output-file /mnt/user-data/outputs/sd-sb-1.png
+
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/outputs/sd-sb-1.png \
+  --prompt {shot-2 description: change framing/action/scene only; keep identity} \
+  --output-file /mnt/user-data/outputs/sd-sb-2.png \
+  --quality medium
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/outputs/sd-sb-1.png \
+  --prompt {shot-3 description} \
+  --output-file /mnt/user-data/outputs/sd-sb-3.png \
+  --quality medium
+```
+
+Prompt file (`sd-sb.txt`) opens with the mandatory keyframe declaration
+(see `prompt-format.md` storyboard section), then binds each image to its
+shot segment. Spec preflight, then the video call — storyboard images only
+(no original references in this case), in shot order:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/check_materials.py \
+  --images /mnt/user-data/outputs/sd-sb-1.png /mnt/user-data/outputs/sd-sb-2.png /mnt/user-data/outputs/sd-sb-3.png \
+  --out-dir /mnt/user-data/workspace --provider seedance
+python /mnt/skills/public/video-generation/scripts/generate.py \
+  --prompt-file /mnt/user-data/workspace/sd-sb.txt \
+  --reference-images /mnt/user-data/outputs/sd-sb-1.png /mnt/user-data/outputs/sd-sb-2.png /mnt/user-data/outputs/sd-sb-3.png \
+  --image-role reference \
+  --aspect-ratio 16:9 \
+  --duration 15 \
+  --model doubao-seedance-2-5-260628 \
+  --output-file /mnt/user-data/outputs/sd-sb.mp4
+```

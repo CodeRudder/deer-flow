@@ -62,3 +62,49 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --image-role reference \
   --output-file /mnt/user-data/outputs/wave.mp4
 ```
+
+## D-SB — reference with storyboard design images (MiniMax H3)
+
+User uploaded `face.jpg`, set Storyboard = 要, Images = 有图, duration 9 s
+→ 3 shots settled at the input table (limit check: 1 original + 3 storyboard
+= 4 ≤ 5 budget, ≤ 9 cap). After the prompt file (`wave-sb.txt`, six-section
+format with per-shot `<Picture N>` anchors and the `[keyframe completion]`
+prefix), generate the storyboard chain — one command per image:
+
+```bash
+# shot 1: user material as base (image-editing)
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/uploads/face.jpg \
+  --prompt {shot-1 description: framing, pose, scene; keep identity and style} \
+  --output-file /mnt/user-data/outputs/wave-sb-1.png \
+  --quality medium
+
+# shots 2-3: chain from shot 1 (separate commands, not &&-chained)
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/outputs/wave-sb-1.png \
+  --prompt {shot-2 description: change framing/action/scene only; keep identity} \
+  --output-file /mnt/user-data/outputs/wave-sb-2.png \
+  --quality medium
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/outputs/wave-sb-1.png \
+  --prompt {shot-3 description} \
+  --output-file /mnt/user-data/outputs/wave-sb-3.png \
+  --quality medium
+```
+
+Spec preflight, then the video call — storyboard images + original reference
+in prompt-numbering order (storyboard first here), explicit ratio (no
+adaptive on the storyboard path):
+
+```bash
+python /mnt/skills/public/video-generation/scripts/check_materials.py \
+  --images /mnt/user-data/outputs/wave-sb-1.png /mnt/user-data/outputs/wave-sb-2.png /mnt/user-data/outputs/wave-sb-3.png /mnt/user-data/uploads/face.jpg \
+  --out-dir /mnt/user-data/workspace
+python /mnt/skills/public/video-generation/scripts/generate.py \
+  --prompt-file /mnt/user-data/workspace/wave-sb.txt \
+  --reference-images /mnt/user-data/outputs/wave-sb-1.png /mnt/user-data/outputs/wave-sb-2.png /mnt/user-data/outputs/wave-sb-3.png /mnt/user-data/uploads/face.jpg \
+  --image-role reference \
+  --aspect-ratio 16:9 \
+  --duration 9 \
+  --output-file /mnt/user-data/outputs/wave-sb.mp4
+```

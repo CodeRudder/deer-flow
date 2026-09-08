@@ -82,6 +82,33 @@ One short paragraph. MUST begin with a square-bracketed task-type prefix
 `[audio reuse]`, `[audio reference]` — not reachable with image-only input;
 do not use them.) Use only labels defined in Section 1.
 
+### Storyboard design images (multi-shot keyframe anchoring)
+
+The storyboard path (SKILL.md Step 2.5) passes one generated keyframe still
+per shot. Multiple `<Picture N>` anchor lines are allowed — the format's
+"keyframe" role covers a storyboard (see Section 1), and this extends the
+official opening/closing-frame usage to per-shot anchors:
+
+- Give EACH storyboard image its own `<Picture N>` line in
+  `subject_definitions` (e.g. `<Picture 1> 是 [Shot 1] 的分镜关键帧：…构图、主体、景别。`).
+- In `detailed_description`, anchor each shot to its image at the shot's
+  opening ("[Shot 2] At 00:04.000, the camera cuts to 由 <Picture 2> 定格的画面：…").
+- `summary` prefix: `[keyframe completion]` when the storyboard images anchor
+  the shots; combine `+` with `[reference generation]` when original
+  character/style references ride along (e.g.
+  `[keyframe completion]+[reference generation]`).
+- `retention_analysis` lists every `<Picture N>` with its preserved traits.
+- Ordering is load-bearing: label order = `--reference-images` order. Number
+  storyboard images consecutively (either all storyboard images first, then
+  the original references, or the reverse — whichever, the prompt's numbering
+  MUST match the CLI pass order; see the storyboard section in SKILL.md
+  Step 2.5 for the chosen convention). For shot N's image, the label number
+  is whatever position it holds in that order.
+- Usage constraint sentence (content language), included when storyboard
+  images are present: 分镜关键帧仅用于构图与内容的对齐，不采用其画风与图内文字。
+- Soft anchor, not pixel-exact: shots start FROM each image's composition;
+  motion between anchors is driven by the prompt.
+
 ## Section 3 — `retention_analysis`
 
 One line per label from `subject_definitions`, using ONLY these fixed visual

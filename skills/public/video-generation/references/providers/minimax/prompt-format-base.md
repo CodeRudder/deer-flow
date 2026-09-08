@@ -88,6 +88,9 @@ when there is no score.
 
 ### Shot budget
 
+Provider-independent (Seedance's prompt format reuses this table for shot
+planning; SKILL.md input-table checks use it for storyboard estimates):
+
 | Duration | Shot count |
 |---|---|
 | 4–6 s | 1–2 shots |

@@ -12,26 +12,37 @@ This skill generates short videos through a **staged, confirmed workflow**:
 1. Parse every new video request into a fixed, prefilled **input information
    table** and wait for the user to continue or edit it. Only a theme is
    required — it may be vague or abstract; the skill decomposes it into
-   subject + action and completes everything else.
+   subject + action and completes everything else. The Storyboard row also
+   carries the **storyboard-image intent** (opt-in design stills, one per
+   shot — see Step 2.5); its limits are settled at this table.
 2. Route the confirmed inputs to one of five input modes (reference mode by
-   default) and perform only the necessary material checks.
+   default), perform only the necessary material checks, and collect missing
+   reference material BEFORE prompt writing when the user opted in.
 3. Write the prompt file — route by provider: MiniMax H3 uses the official
    **structured format** (`[Shot N]` timeline, three fields / six sections) from
    `references/providers/minimax/prompt-format-base.md` (T2V/frame modes) or `prompt-format-ref.md`
    (reference mode); Seedance uses the **@-tag + timeline format**
    (`@image1`/`@video1`/`@audio1` material tags, time-axis segments) from
-   `references/providers/seedance/prompt-format.md`; `minimax_v1` keeps natural-language prose.
-4. Show a fixed **generation plan** containing the mode, materials, output,
-   user-language prompt refinement, storyboard, change summary, and capability
-   note; then wait for confirmation.
+   `references/providers/seedance/prompt-format.md`; `minimax_v1` keeps natural-language prose. On the storyboard path the prompt declares the
+   per-shot design images before they exist.
+4. Generate the **storyboard design images** (opt-in path only — see
+   Step 2.5), then show
+   a fixed **generation plan** containing the mode, materials (original
+   references + actual storyboard files), output, user-language prompt
+   refinement, storyboard list, change summary, and capability note; then
+   wait for confirmation.
 5. Generate a draft-tier video (default resolution is the provider's draft
    tier — `--describe-provider`; MiniMax H3 drafts are upgradable
    to 2K via the official regeneration endpoint, Seedance has
    no upgrade path), present it, and offer structured next steps.
 
-Nothing is sent to the provider before the user has approved the latest plan.
+Nothing is sent to the video or image provider before the user has approved
+it at the applicable gate: the video plan requires the plan-card approval;
+storyboard design images (when the user opted in at the input table) require
+the input-table approval that stated the image-quota cost — both approvals
+must be on record before the corresponding provider call.
 
-Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Ref2VA — per-provider reference caps via `--describe-provider`, including reference videos/audios on Seedance); 2K upgrade (MiniMax H3); extended durations on Seedance 2.5; queued-task cancel; read-only task query; per-run sidecar (`outputs/{name}.task.json`). Async create → poll → download is handled by the script.
+Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Ref2VA — per-provider reference caps via `--describe-provider`, including reference videos/audios on Seedance); storyboard design images (opt-in per-shot keyframe stills, any reference-capable provider); 2K upgrade (MiniMax H3); extended durations on Seedance 2.5; queued-task cancel; read-only task query; per-run sidecar (`outputs/{name}.task.json`). Async create → poll → download is handled by the script.
 
 ## Input information table (always show before routing)
 
@@ -52,18 +63,18 @@ Prefill supplied values; do not make the user repeat them.
 | Camera | {user content / auto-complete} | no |
 | Mood | {user content / auto-complete} | no |
 | Sound | {user content / auto-complete} | no |
-| Storyboard | {user content / plan as needed} | no |
+| Storyboard | {user content / plan as needed — also carries the storyboard-image intent: 要 (yes, generate storyboard design images) / 不要 (no) / 未表态 (no signal, default no)} | no |
 | Duration | {user content / default 5 s; Seedance 2.5 frame tasks default to model-picked length (`-1`)} | no |
 | Aspect ratio | {user content / default 16:9 / frame ratio, adaptive for references} | no |
 | Resolution | {user content / default draft tier — from `--describe-provider`} | no |
-| Images (reference mode default) | {filenames and stated intent / none — will be auto-collected: search first; image generation only after user approval} | no |
+| Images (reference mode default) | {filenames and stated intent / one of: 有图 (user has images) / 无图帮我找 (no images — collect for me: search first; image generation only after approval) / 无图且不找 (no images and do NOT search — skip collection)} | no |
 
 Only a **theme** is required — it may be vague or abstract; the skill
 decomposes it into subject + action while writing the prompt. Tell the user:
 **anything left unfilled — including reference images — will be automatically
-completed and collected** (missing reference images are collected in Step 4 —
-search first, generation only after approval; rules in Choosing the mode).
-Only treat files the user supplied in this conversation as user-provided.
+completed and collected** (rules in Choosing the mode; the Images row's
+three-state collection intent overrides this default when stated). Only
+treat files the user supplied in this conversation as user-provided.
 Reply "continue" for defaults, or say what to add or change.
 
 - **The full table is ALWAYS shown in the first reply** — even when the theme
@@ -84,6 +95,33 @@ Reply "continue" for defaults, or say what to add or change.
   T2V needs none) and refresh the Images row accordingly.
 - Optional fields never block progress. The user confirms the table as a whole;
   do not interrogate field by field.
+- **Storyboard-image intent = 要 (one exception to no-field-interrogation)**:
+  when the user sets Storyboard to 要 (or asks for storyboard design images in
+  their words), the storyboard-image intent AND its limits must be settled at
+  THIS gate, before moving on — never deferred to the plan card:
+  1. **Cost note in the options/question text** (the only sanctioned place —
+     the plan card itself still never shows quota or cost notes): storyboard
+     images consume image-generation quota, one image per shot.
+  2. **Estimated shot count**: take the duration's shot-budget band ceiling
+     (shot budget table — provider-independent; 5 s default → 4–6 s band → 2
+     shots) and TELL the user the duration–shot linkage ("5 s supports at most
+     2 shots; storyboard work reads better at 7 s or longer").
+  3. **On-the-spot limit check** with the known inputs: user-supplied image
+     count + expected collection count (Images row: 无图帮我找 → the
+     collection-plan default; 有图/无图且不找 → 0) + estimated shots. Check
+     against the routed provider's reference cap (H3 9 / Seedance 2.5 30 via
+     `--describe-provider`; provider here is the predicted one — see Choosing
+     the mode for how the provider resolves) AND the H3 material budget
+     (storyboard images + original references ≤ 5 — H3 only; Seedance caps at
+     its reference cap). Over the limit → the user chooses on the spot:
+     fewer shots / drop materials / switch to a provider that supports the
+     plan / drop the storyboard intent. State the chosen resolution in the
+     Storyboard row and re-show the table.
+  4. The prompt-writing step (Step 2) re-checks the finalized shot count
+     against this settled budget; over → back to the user with the SAME
+     options (this is conversational adjustment — no gate, no card; holding
+     out has no "force through" exit: staying over the limit means dropping
+     the storyboard intent).
 - Creative-field precedence: explicit user input > image-determined values >
   semantic completion > fixed defaults. Preserve explicit executable settings
   when compatible with the mode. A frame image's physical ratio is a hard
@@ -135,14 +173,15 @@ request. Pick the mode from intent: is the image a moment *in* the video (frame)
 or a likeness to *imitate* (reference)?
 
 **When the user has not specified a mode, default to reference mode.**
-Reference mode needs images. If the user supplied none, do NOT call any
-provider yet — draft a **collection plan** (one line per image: purpose —
-face / outfit / scene / style, count, target ratio) for the plan card's
-Materials row: **three images by default**, adjusted up or down to fit the
-storyboard. Confirming that plan approves the **search** stage only. Then
-collect in Step 4 — **search first** (image search by purpose; only use
-results whose subject is clear and usable). When nothing suitable is found,
-do NOT silently fall back to image generation: it spends the image quota, so
+Reference mode needs images. If the user supplied none AND the Images row is
+not 无图且不找, do NOT call any provider yet — draft a **collection plan**
+(one line per image: purpose — face / outfit / scene / style, count, target
+ratio) for the plan card's Materials row: **three images by default**,
+adjusted up or down to fit the storyboard. Confirming that plan approves the
+**search** stage only. Then collect — **search first** (image search by
+purpose; only use results whose subject is clear and usable). When nothing
+suitable is found, do NOT silently
+fall back to image generation: it spends the image quota, so
 **ask the user first** (one question: allow generating the missing reference
 images — uses image quota / skip). Only generate after an explicit yes;
 otherwise stop and offer: user uploads / switch to pure T2V / revise the
@@ -154,6 +193,31 @@ when the user asks for text-only or the scene outranks consistency. Note:
 the default adds a collection stage (search always, image generation only
 with the user's approval) before video generation; choose T2V explicitly
 when visual freedom and a single call matter more.
+
+**Collection timing (storyboard path included):** for reference mode without
+user-supplied images, collection happens BEFORE prompt writing (Step 2), not
+after the plan card. The Images row's three-state intent drives routing:
+有图 → material checks on those images → prompt; 无图帮我找 → collection
+plan → collect (rules above) → collected-material checks → prompt;
+无图且不找 → skip collection — with storyboard intent 要, the storyboard
+images become the prompt's reference assets (first image generated
+text-to-image — Step 2.5); with 不要/未表态, a reference request without
+images has nothing to route on — ask the user: explicit T2V or upload.
+
+**Storyboard-image applicability (decide at routing time, not on the plan
+card):** when Storyboard = 要, resolve the provider NOW (same deterministic
+rules the script uses — `--model` declared in config, else first configured
+provider, else credential fallback; see `references/runtime.md`) and run
+`--describe-provider {provider}` (read-only, never billed). Every
+reference-capable provider supports storyboard images — the only checks are
+reference mode in the manifest (T2V / frame modes / H3-Max fail this) and
+the caps settled at the input table (reference cap + H3 budget). Seedance
+2.0 family lacks official storyboard guidance, so alignment there is weaker
+— note that on the plan card when routed there. Not applicable → tell the
+user IMMEDIATELY (before any prompt writing) and offer: switch providers /
+drop the storyboard intent. If the routed provider differs from the
+input-table prediction, re-run the limit check under its numbers and tell
+the user. Silent ignoring is forbidden.
 
 ### When the image role is ambiguous
 
@@ -190,8 +254,10 @@ label), so order matters — confirm it with the user when it isn't obvious:
 | `reference` | multiple, per-provider cap (run `--describe-provider`) | all treated as likeness references; Seedance reference mode also accepts reference videos/audios (URLs) |
 
 Do not pass more images than a mode uses — a 3rd image to `first_last`, or a 2nd
-to `first_frame`/`last_frame`, is dropped with a printed warning, so send only
-what the mode takes. For `reference`, name the images in your prompt in the same
+to `first_frame`/`last_frame`, is dropped with a printed warning (the adapter
+also hard-rejects reference images over the model's cap — e.g. 9 on H3 —
+instead of letting the API reject a billed task), so send only what the mode
+takes. For `reference`, name the images in your prompt in the same
 order you
 pass them (the Ref2VA format labels them `<Picture 1>`, `<Picture 2>`, … by
 position — see `references/providers/minimax/prompt-format-ref.md`).
@@ -248,7 +314,7 @@ only the provider-independent rules.
 
 | Setting | Rule | Default |
 |---|---|---|
-| Aspect ratio (`--aspect-ratio`) | T2V: optional; reference mode: optional, defaults to adaptive; frame modes: fixed by the image (do not pass); Seedance 2.5 frame modes force `adaptive` | `16:9` (T2V) / adaptive (reference) |
+| Aspect ratio (`--aspect-ratio`) | T2V: optional; reference mode: optional, defaults to adaptive — **storyboard path: pass the concrete ratio the storyboard images were generated at (default `16:9`; never adaptive)**; frame modes: fixed by the image (do not pass); Seedance 2.5 frame modes force `adaptive` | `16:9` (T2V) / adaptive (reference) |
 | Duration (`--duration`) | follow the shot budget in the selected prompt reference; 2+ shots: prefer 6 s or longer | `5` (Seedance 2.5 frame tasks: model-picked, `-1`) |
 | Resolution (`--resolution`) | per-model value domain and draft-tier default — run `--describe-provider` (rejected locally if unsupported) | provider draft tier from `--describe-provider` |
 
@@ -271,8 +337,9 @@ Guidance:
 Apply the input-table, mode-routing, precedence, and material-check rules
 above. Material checks run in two layers: **available-material checks** (the
 images the user supplied) before prompt writing; **collected-material
-checks** (auto-collected images: usable, subject clear) after collection in
-Step 4, before the final Ref2VA prompt is written. Both layers include the
+checks** (auto-collected images: usable, subject clear) after collection
+(happens before prompt writing — Choosing the mode, Collection timing),
+before the final Ref2VA prompt is written. Both layers include the
 spec preflight (`scripts/check_materials.py`). Never report material checks
 as "passed" while planned images do not exist yet.
 
@@ -309,10 +376,81 @@ action first, ONE main camera move, lighting, atmosphere, ~60–100 words for a
 single-beat clip (audio description is H3-only); same content-language rule —
 Chinese by default, English on explicit request.
 
-Ref2VA prompts must be written from the ACTUAL images — their real subjects,
-features, and `<Picture N>` order. When reference images are auto-collected,
-write this prompt only after collection and the collected-material check;
-never fill the word budget by describing planned-but-unseen images.
+Ref2VA prompts must be written from the ACTUAL user images — their real
+subjects, features, and `<Picture N>` order. When reference images are
+auto-collected, write this prompt only after collection and the
+collected-material check; never fill the word budget by describing
+planned-but-unseen images. **Storyboard-path exception:** the storyboard
+design images are the one planned-but-unseen asset the prompt MAY define in
+advance — the prompt is written BEFORE the storyboard images exist, declaring
+each image's shot role (format rules in the provider's storyboard section:
+`references/providers/{minimax|seedance}/prompt-format*.md`). User-supplied
+references must still come from actual files. The storyboard images are
+generated right after prompt writing (Step 2.5) and confirmed verbatim on
+the plan card.
+
+### Step 2.5: Generate storyboard design images (storyboard path only)
+
+Run this step ONLY when Storyboard = 要 passed all checks (input-table intent
++ routing-time applicability + limit check + shot-count re-check). Generated
+BEFORE the plan card so the card confirms real files.
+
+**Generation rules:**
+
+- **First shot** — by the Images row's collection intent:
+  - 有图 or 无图帮我找 (collected) → `image-editing` with the user's /
+    collected material as the base image (identity/consistency anchor):
+    ```bash
+    python /mnt/skills/public/image-editing/scripts/edit.py \
+      --image {base material path} \
+      --prompt {first-shot description: framing, subject pose/action, scene; keep identity, style, palette} \
+      --output-file /mnt/user-data/outputs/{name}-sb-1.png \
+      --quality medium
+    ```
+  - 无图且不找 → `image-generation` text-to-image fallback (the input-table
+    approval covers this; do NOT re-ask). Quality is pinned via env inline
+    (`OPENAI_IMAGE_QUALITY=medium` — the image-size map stays untouched; the
+    size drop is NOT done via `OPENAI_IMAGE_MODE=chat_completions`, which
+    changes the response protocol):
+    ```bash
+    OPENAI_IMAGE_QUALITY=medium python /mnt/skills/public/image-generation/scripts/generate.py \
+      --prompt-file /mnt/user-data/workspace/{name}-sb-1.json \
+      --aspect-ratio {target ratio, default 16:9} \
+      --output-file /mnt/user-data/outputs/{name}-sb-1.png
+    ```
+  In the fallback case the storyboard images are the ONLY reference assets
+  passed to the video call. One image per shot; subsequent shots chain from
+  the FIRST shot's image via `image-editing` (change only
+  景别/动作/机位/场景; identity, clothing, palette, style stay anchored to
+  shot 1). One bash command PER image — never `&&`-chain shots (a
+  short-circuit would still bill reserved calls); parallelize with separate
+  commands or `;`.
+- **Prompt-file JSON** (image-generation only): `{ "prompt": "..." }` — the
+  shot description verbatim (subject, framing, action, scene, style; no
+  storyboard jargon inside the image prompt).
+- **Ratio**: generate at the plan's output ratio (default 16:9, explicit user
+  ratio wins). image-editing has no ratio parameter — the output follows the
+  base image; if the base image's ratio conflicts with the target, the
+  storyboard image lands on the nearest in-spec ratio with the same
+  orientation (`check_materials.py` preflight still applies; it validates, it
+  never crops to a target). State the landed ratio on the plan card if it
+  differs from the target.
+- **Failure**: stop at the first failed image — report the error, do not
+  retry on your own (each attempt consumes image quota even on failure).
+  Wait for the user; a retried image costs one more image call.
+- **Resume**: on a new run with the storyboard half-generated, reuse existing
+  on-disk storyboard files (`{name}-sb-N.png`), generate only the missing
+  shots.
+- After all images exist, run the spec preflight (`check_materials.py` with
+  the routed provider) on them, then proceed to Step 3.
+
+**Plan-card integration:** the storyboard images appear in the plan card's
+Materials row alongside the original references (source-labeled), and the
+Storyboard row lists them shot-by-shot (shot no. ↔ timestamp ↔ path) plus the
+usage declaration: passed in shot order as reference images, for composition
+and content only — their art style and any in-image text are NOT adopted.
+The plan card is a PRODUCT check (look at the images, then approve) — intent
+and limits were already settled at the input table.
 
 ### Step 3: Build, self-check, and confirm the fixed plan card
 
@@ -338,15 +476,15 @@ language:
 [Video generation plan]
 
 - Mode: {T2V / first frame / last frame / first + last frame / reference}
-- Materials: {none / FULL paths with roles and order / collection plan: purpose, count, ratio per image — search first; image generation only after user approval}
-- Output: {duration} · {resolution} · {explicit ratio / frame-image ratio / adaptive}
+- Materials: {none / FULL paths with roles and order / storyboard path: original references + storyboard images (source-labeled) / collection plan: purpose, count, ratio per image — search first; image generation only after user approval}
+- Output: {duration} · {resolution} · {explicit ratio / frame-image ratio / adaptive — storyboard path: the concrete ratio the storyboard images were generated at}
 - Prompt file: {workspace path}
   Full prompt (verbatim, exactly as it will be submitted):
   {the complete content of the prompt file}
 - Refined prompt:
   {subject, action, setting, style/mood, camera, and sound as needed in the user's language}
 - Storyboard:
-  {None / concise storyboard in the user's language}
+  {None / concise storyboard in the user's language / storyboard path: shot-by-shot list — shot no. ↔ timestamp ↔ image path — plus the usage declaration (passed in shot order as reference images; composition and content only; art style and in-image text NOT adopted)}
 - Changes this round:
   {Initial plan / changes from the latest superseded plan}
 - Capability note:
@@ -379,10 +517,20 @@ Confirmation protocol (prevents loops and skips):
 - **Adjustment** reply → revise the prompt file, user-facing refinement,
   storyboard, settings, or materials as needed, then re-show the FULL fixed
   card with a change summary. No round limit; never advance without fresh
-  approval. Re-run material checks if images change.
+  approval. Re-run material checks if images change. **Storyboard-image
+  adjustments use affected-only regeneration**: regenerating one shot keeps
+  the other shots (each attempt costs one image call); changing the shot
+  count redoes only affected shots (fewer shots → discard the surplus
+  images; more shots → generate only the new ones); regenerating shot 1 or
+  changing the original materials invalidates every downstream shot derived
+  from them — regenerate the chain. Dropping the storyboard intent on the
+  card discards the storyboard images, reverts the prompt to the plain
+  reference formulation, re-routes, and re-shows the card.
 - **Resume across runs**: the gate ends the current run; the user's next
   message starts a new one. The LATEST plan card in history is the only live
-  one — execute only that approved plan, never an older card.
+  one — execute only that approved plan, never an older card. If a run ends
+  mid-storyboard-generation (before any card), the next run resumes that
+  generation (reuse on-disk storyboard files, generate only missing shots).
 - **Ambiguous or non-committal** reply (for example, "嗯" or "ok?") → remain at
   the gate and ask for an explicit confirmation. Never execute without one.
 
@@ -424,13 +572,14 @@ Parameters:
 [!NOTE]
 Do NOT read the python file, instead just call it with the parameters.
 
-Reference mode with an approved collection plan: **collect FIRST** under the
-search-first rules in Choosing the mode (search by purpose; ask before any
-image generation; at most two search rounds), then run the spec preflight
-(`scripts/check_materials.py`) on the collected images. Then re-show the
-video plan card (materials now name the actual files and their source:
-searched / generated), and generate the video only after that fresh
-confirmation.
+Reference mode with an approved collection plan: collection happens BEFORE
+prompt writing (Choosing the mode, Collection timing). By the plan card the
+collected images have passed the spec preflight and been named in the prompt.
+The card already showed them; generate the video directly on
+confirmation. **Storyboard path**: the storyboard images were generated in
+Step 2.5 and confirmed on the card — pass them (with the original
+references) in the order the prompt declares, `--aspect-ratio` = the card's
+concrete ratio, and generate immediately on confirmation.
 
 Before dispatching, check the sidecar for an unfinished duplicate. A local
 polling `timeout` is not an upstream terminal status — resolve it read-only
