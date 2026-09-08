@@ -106,13 +106,16 @@ the stills read as ordinary references (weaker — note it on the plan card).
   `以图片 1 至图片 N 的顺序作为关键帧。` (N = storyboard image count; if
   original references ride along, keep the declaration scoped to the
   storyboard images' numbers, e.g. `以图片 1 至图片 3 的顺序作为关键帧。`)
-- Then bind each image to its shot: `@image1 对应镜头1的画面构图。` /
-  `[0-10秒] 段落以 @image1 的画面开始…` — every storyboard image gets a
-  stated job; unused materials waste the reference budget.
+- **Per-segment binding (mandatory)**: every time segment in the shot script
+  must explicitly reference its OWN storyboard image —
+  `[0-10秒] 段落以 @image1 的画面开始：…` — so each shot anchors to its still.
+  A collapsed range note (`@image1至@imageN 分别对应镜头1至N 的构图`) alone
+  does NOT satisfy this; the model aligns per reference, not per range.
+  Unused materials waste the reference budget.
 - Usage constraint sentence: `分镜关键帧仅参考构图与内容，不采用其画风与图内文字。`
 - Ordering is load-bearing: label order = `--reference-images` order
-  (storyboard images and original references — whichever order is chosen in
-  SKILL.md Step 2.5, the prompt numbering MUST match the CLI pass order).
+  (storyboard images first by default; any attached originals follow in CLI
+  order — the prompt numbering MUST match the CLI pass order).
 - The keyframe declaration keeps the task a normal reference task — do NOT
   use frame-mode `--image-role` (mutually exclusive with reference mode), and
   the forbidden-words rule applies as usual (no 编辑/延长/续写…).

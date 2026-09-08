@@ -65,11 +65,13 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 ## D-SB — reference with storyboard design images (MiniMax H3)
 
-User uploaded `face.jpg`, set Storyboard = 要, Images = 有图, duration 9 s
-→ 3 shots settled at the input table (limit check: 1 original + 3 storyboard
-= 4 ≤ 5 budget, ≤ 9 cap). After the prompt file (`wave-sb.txt`, six-section
+User uploaded `face.jpg`, set Storyboard images = 是, Images = 有图, duration
+9 s → 3 shots settled at the input table (limit check: 3 storyboard images,
+0 attached originals — ≤ 5 budget, ≤ 9 cap). After the prompt file
+(`wave-sb.txt`, six-section
 format with per-shot `<Picture N>` anchors and the `[keyframe completion]`
-prefix), generate the storyboard chain — one command per image:
+prefix), generate the storyboard chain — shots 2-3 dispatched in parallel
+once shot 1 succeeds:
 
 ```bash
 # shot 1: user material as base (image-editing)
@@ -79,7 +81,7 @@ python /mnt/skills/public/image-editing/scripts/edit.py \
   --output-file /mnt/user-data/outputs/wave-sb-1.png \
   --quality medium
 
-# shots 2-3: chain from shot 1 (separate commands, not &&-chained)
+# shots 2-3: chain from shot 1 (parallel independent calls, not &&-chained)
 python /mnt/skills/public/image-editing/scripts/edit.py \
   --image /mnt/user-data/outputs/wave-sb-1.png \
   --prompt {shot-2 description: change framing/action/scene only; keep identity} \
@@ -92,17 +94,18 @@ python /mnt/skills/public/image-editing/scripts/edit.py \
   --quality medium
 ```
 
-Spec preflight, then the video call — storyboard images + original reference
-in prompt-numbering order (storyboard first here), explicit ratio (no
+Spec preflight, then the video call — storyboard images only by default
+(the original's identity is already burned into the stills; `face.jpg` rides
+along only when it carries info the stills don't cover), explicit ratio (no
 adaptive on the storyboard path):
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/check_materials.py \
-  --images /mnt/user-data/outputs/wave-sb-1.png /mnt/user-data/outputs/wave-sb-2.png /mnt/user-data/outputs/wave-sb-3.png /mnt/user-data/uploads/face.jpg \
+  --images /mnt/user-data/outputs/wave-sb-1.png /mnt/user-data/outputs/wave-sb-2.png /mnt/user-data/outputs/wave-sb-3.png \
   --out-dir /mnt/user-data/workspace
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/wave-sb.txt \
-  --reference-images /mnt/user-data/outputs/wave-sb-1.png /mnt/user-data/outputs/wave-sb-2.png /mnt/user-data/outputs/wave-sb-3.png /mnt/user-data/uploads/face.jpg \
+  --reference-images /mnt/user-data/outputs/wave-sb-1.png /mnt/user-data/outputs/wave-sb-2.png /mnt/user-data/outputs/wave-sb-3.png \
   --image-role reference \
   --aspect-ratio 16:9 \
   --duration 9 \

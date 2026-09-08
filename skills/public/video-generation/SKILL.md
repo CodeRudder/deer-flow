@@ -434,12 +434,16 @@ re-check). Generated BEFORE the plan card so the card confirms real files.
   the video call; original materials join only when they carry visual
   information the storyboard images don't cover or the user explicitly
   requires likeness to a specific photo (the card then lists them as
-  attached). One image per shot; subsequent shots chain from
-  the FIRST shot's image via `image-editing` (change only
+  attached). One image per shot; EVERY subsequent shot chains from the
+  FIRST shot's image via `image-editing` (change only
   景别/动作/机位/场景; identity, clothing, palette, style stay anchored to
-  shot 1). One bash command PER image — never `&&`-chain shots (a
-  short-circuit would still bill reserved calls); parallelize with separate
-  commands or `;`.
+  shot 1) — never from the previous shot (previous-shot chaining forces
+  serial generation and compounds drift). **Dispatch shots 2..N in
+  parallel**: once shot 1 succeeds, issue all remaining shots in the SAME
+  response as independent bash calls (or one call with `&` + `wait`) —
+  never one-by-one waiting for each. Never `&&`-chain shots (a
+  short-circuit would still bill reserved calls); `;` is sequential, not
+  parallel.
 - **Prompt-file JSON** (image-generation only): `{ "prompt": "..." }` — the
   shot description verbatim (subject, framing, action, scene, style; no
   storyboard jargon inside the image prompt).
