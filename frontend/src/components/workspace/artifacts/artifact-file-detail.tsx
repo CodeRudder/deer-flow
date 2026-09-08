@@ -377,12 +377,16 @@ export function ArtifactFileDetail({
               onClick={() => setLightboxOpen(true)}
             />
             <ImageLightbox
-              alt={getFileName(filepath)}
-              downloadUrl={artifactDownloadUrl}
+              images={[
+                {
+                  alt: getFileName(filepath),
+                  downloadUrl: artifactDownloadUrl,
+                  openUrl: artifactUrl,
+                  src: artifactUrl,
+                },
+              ]}
               onClose={() => setLightboxOpen(false)}
               open={lightboxOpen}
-              openUrl={artifactUrl}
-              src={artifactUrl}
             />
           </div>
         )}

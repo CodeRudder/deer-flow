@@ -23,6 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { useArtifacts } from "./context";
+import { ImageLightbox } from "./image-lightbox";
 
 export function ArtifactFileList({
   className,
@@ -38,6 +39,7 @@ export function ArtifactFileList({
   const { t } = useI18n();
   const { select: selectArtifact, setOpen } = useArtifacts();
   const [installingFile, setInstallingFile] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [failedPreviewFiles, setFailedPreviewFiles] = useState<Set<string>>(
     () => new Set(),
   );
@@ -92,13 +94,23 @@ export function ArtifactFileList({
     return (
       <div className={cn("flex w-full flex-col gap-3", className)}>
         {imageFiles.length > 0 && (
-          <div className="flex flex-col items-start gap-3">
-            {imageFiles.map((file) => (
+          // Multiple images shrink into one horizontally scrollable thumbnail
+          // strip (shared with the markdown gallery); a single image keeps the
+          // full-size preview.
+          <div
+            className={
+              imageFiles.length > 1
+                ? "md-image-gallery w-full"
+                : "flex flex-col items-start gap-3"
+            }
+          >
+            {imageFiles.map((file, imageIndex) => (
               <ArtifactImagePreview
                 key={file}
                 file={file}
                 threadId={threadId}
-                onClick={() => handleClick(file)}
+                onClick={() => setLightboxIndex(imageIndex)}
+                onFallbackClick={() => handleClick(file)}
                 onError={() => markPreviewFailed(file)}
                 previewFailed={failedPreviewFiles.has(file)}
               />
@@ -133,6 +145,23 @@ export function ArtifactFileList({
             ))}
           </ul>
         )}
+        {lightboxIndex !== null && (
+          <ImageLightbox
+            images={imageFiles.map((file) => ({
+              alt: getFileName(file),
+              downloadUrl: urlOfArtifact({
+                filepath: file,
+                threadId,
+                download: true,
+              }),
+              openUrl: urlOfArtifact({ filepath: file, threadId }),
+              src: urlOfArtifact({ filepath: file, threadId }),
+            }))}
+            initialIndex={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+            open
+          />
+        )}
       </div>
     );
   }
@@ -159,12 +188,16 @@ export function ArtifactFileList({
 function ArtifactImagePreview({
   file,
   onClick,
+  onFallbackClick,
   onError,
   previewFailed,
   threadId,
 }: {
   file: string;
   onClick: () => void;
+  // Preview failures render a file chip instead of an image; opening the
+  // artifacts panel there keeps download/detail access for the broken file.
+  onFallbackClick: () => void;
   onError: () => void;
   previewFailed: boolean;
   threadId: string;
@@ -176,7 +209,7 @@ function ArtifactImagePreview({
       <button
         type="button"
         className="border-border/50 bg-background text-muted-foreground flex max-w-full items-center gap-2 rounded-md border px-3 py-2 text-sm"
-        onClick={onClick}
+        onClick={onFallbackClick}
       >
         {getFileIcon(file, "size-4")}
         <span className="min-w-0 truncate">{getFileName(file)}</span>

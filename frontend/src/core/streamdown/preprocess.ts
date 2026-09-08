@@ -100,6 +100,79 @@ export function capMarkdownNesting(markdown: string): string {
   return capListNesting(capBlockquoteNesting(markdown));
 }
 
+// A markdown image alone on its line, e.g. `![alt](url)` or
+// `![alt](url "title")`. Leading indentation is deliberately rejected —
+// indented and list-marker lines are code-block / list territory that must
+// not be rewritten.
+const IMAGE_ONLY_LINE_RE = /^!\[[^\]]*\]\([^)]*\)\s*$/;
+const BLANK_LINE_RE = /^\s*$/;
+
+/**
+ * Merge runs of blank-line-separated image-only paragraphs into one paragraph.
+ *
+ * Streamdown splits markdown into blocks with marked and renders each block
+ * separately, so blank-line-separated images arrive as independent full-width
+ * paragraphs and stack until they fill the screen. Joining consecutive image
+ * lines into a single paragraph lets the rehype gallery grouping see them as
+ * one block. Text-level only: fenced code, indented code and any line that is
+ * not a bare image is passed through untouched; a run with a single image
+ * keeps its original spacing.
+ */
+export function groupConsecutiveImageBlocks(markdown: string): string {
+  if (!markdown.includes("![")) {
+    return markdown;
+  }
+
+  const output: string[] = [];
+  let insideFence = false;
+  // Bare image lines buffered for a possible merge; blanks seen since the
+  // last buffered image (restored verbatim unless a second image joins).
+  let imageLines: string[] = [];
+  let blanksAfter: string[] = [];
+
+  const flush = () => {
+    if (imageLines.length > 0) {
+      const merged =
+        imageLines.length > 1 ? [imageLines.join("\n")] : imageLines;
+      output.push(...merged, ...blanksAfter);
+    }
+    imageLines = [];
+    blanksAfter = [];
+  };
+
+  for (const line of markdown.split("\n")) {
+    if (CODE_FENCE_RE.test(line)) {
+      flush();
+      insideFence = !insideFence;
+      output.push(line);
+      continue;
+    }
+    if (BLANK_LINE_RE.test(line)) {
+      if (imageLines.length > 0) {
+        blanksAfter.push(line);
+      } else {
+        output.push(line);
+      }
+      continue;
+    }
+    if (insideFence || INDENTED_CODE_RE.test(line)) {
+      output.push(line);
+      continue;
+    }
+    if (IMAGE_ONLY_LINE_RE.test(line)) {
+      // Another image joins the run: drop the blanks between the two.
+      blanksAfter = [];
+      imageLines.push(line);
+      continue;
+    }
+    flush();
+    output.push(line);
+  }
+  flush();
+
+  return output.join("\n");
+}
+
 type MathDelimiter = {
   close: "\\)" | "\\]";
   replacement: "$" | "$$";

@@ -5,6 +5,7 @@ import {
   capListNesting,
   capMarkdownNesting,
   compactDisplayMathBlocks,
+  groupConsecutiveImageBlocks,
   normalizeStreamdownMathMarkdown,
   preprocessStreamdownMarkdown,
 } from "@/core/streamdown/preprocess";
@@ -246,4 +247,103 @@ test("normalizeStreamdownMathMarkdown requires matching backtick run to close co
   const input = "Use ``\\(literal\\)` and still code`` then \\(x\\)";
   const expected = "Use ``\\(literal\\)` and still code`` then $x$";
   expect(normalizeStreamdownMathMarkdown(input)).toBe(expected);
+});
+
+test("groupConsecutiveImageBlocks returns content without images unchanged", () => {
+  const input = "# Title\n\nsome text\n\n- a list item";
+  expect(groupConsecutiveImageBlocks(input)).toBe(input);
+});
+
+test("groupConsecutiveImageBlocks merges blank-line-separated images into one paragraph", () => {
+  const input = ["before", "", "![a](u1)", "", "![b](u2)", "", "after"].join(
+    "\n",
+  );
+  const expected = ["before", "", "![a](u1)", "![b](u2)", "", "after"].join(
+    "\n",
+  );
+  expect(groupConsecutiveImageBlocks(input)).toBe(expected);
+});
+
+test("groupConsecutiveImageBlocks merges three images and keeps trailing blanks", () => {
+  const input = [
+    "![a](u1)",
+    "",
+    "",
+    "![b](u2)",
+    "",
+    "![c](u3)",
+    "",
+    "text",
+  ].join("\n");
+  const expected = ["![a](u1)", "![b](u2)", "![c](u3)", "", "text"].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(expected);
+});
+
+test("groupConsecutiveImageBlocks keeps a single image with its original spacing", () => {
+  const input = ["text", "", "![a](u1)", "", "more"].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(input);
+});
+
+test("groupConsecutiveImageBlocks keeps text between images unmerged", () => {
+  const input = ["![a](u1)", "caption", "![b](u2)"].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(input);
+});
+
+test("groupConsecutiveImageBlocks leaves images inside fences untouched", () => {
+  const literal = "![a](u1)";
+  const input = [
+    "```text",
+    literal,
+    "",
+    "![b](u2)",
+    "```",
+    "",
+    "![c](u3)",
+    "",
+    "![d](u4)",
+  ].join("\n");
+  const expected = [
+    "```text",
+    literal,
+    "",
+    "![b](u2)",
+    "```",
+    "",
+    "![c](u3)",
+    "![d](u4)",
+  ].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(expected);
+});
+
+test("groupConsecutiveImageBlocks leaves indented and list lines untouched", () => {
+  const input = [
+    "    ![a](u1)",
+    "",
+    "- ![b](u2)",
+    "",
+    "![c](u3)",
+    "",
+    "![d](u4)",
+  ].join("\n");
+  const expected = [
+    "    ![a](u1)",
+    "",
+    "- ![b](u2)",
+    "",
+    "![c](u3)",
+    "![d](u4)",
+  ].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(expected);
+});
+
+test("groupConsecutiveImageBlocks tolerates trailing whitespace and titles", () => {
+  const input = ["![a](u1)  ", "", '![b](u2 "title")'].join("\n");
+  const expected = ["![a](u1)  ", '![b](u2 "title")'].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(expected);
+});
+
+test("groupConsecutiveImageBlocks ignores an incomplete streaming image line", () => {
+  const input = ["![a](u1)", "", "![b](u2"].join("\n");
+  const expected = ["![a](u1)", "", "![b](u2"].join("\n");
+  expect(groupConsecutiveImageBlocks(input)).toBe(expected);
 });

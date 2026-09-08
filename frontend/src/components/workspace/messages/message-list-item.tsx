@@ -45,6 +45,7 @@ import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { SafeReasoningContent } from "@/core/streamdown/components";
 import { cn } from "@/lib/utils";
 
+import { ImageLightbox } from "../artifacts/image-lightbox";
 import { CopyButton } from "../copy-button";
 
 import { MarkdownContent } from "./markdown-content";
@@ -307,6 +308,25 @@ function MessageContent_({
     return files as FileInMessage[];
   }, [message.additional_kwargs?.files, rawContent]);
 
+  // Uploaded images open in the shared lightbox; order here defines the
+  // lightbox navigation order, and RichFilesList indexes into it the same way.
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const lightboxImages = useMemo(() => {
+    if (!files) return [];
+    return files.filter(isLightboxImageFile);
+  }, [files]);
+
+  const handleImageClick = useCallback(
+    (file: FileInMessage) => {
+      if (!isLightboxImageFile(file)) return;
+      const index = lightboxImages.indexOf(file);
+      if (index !== -1) {
+        setLightboxIndex(index);
+      }
+    },
+    [lightboxImages],
+  );
+
   const contentToDisplay = useMemo(() => {
     if (isHuman) {
       return rawContent ? stripUploadedFilesTag(rawContent) : "";
@@ -316,7 +336,24 @@ function MessageContent_({
 
   const filesList =
     files && files.length > 0 ? (
-      <RichFilesList files={files} threadId={threadId} />
+      <RichFilesList
+        files={files}
+        threadId={threadId}
+        onImageClick={handleImageClick}
+      />
+    ) : null;
+
+  const lightbox =
+    lightboxIndex !== null && lightboxImages.length > 0 ? (
+      <ImageLightbox
+        images={lightboxImages.map((file) => ({
+          alt: file.filename,
+          src: resolveArtifactURL(file.path, threadId),
+        }))}
+        initialIndex={lightboxIndex}
+        onClose={() => setLightboxIndex(null)}
+        open
+      />
     ) : null;
 
   // Uploading state: mock AI message shown while files upload
@@ -372,6 +409,7 @@ function MessageContent_({
             </div>
           </AIElementMessageContent>
         )}
+        {lightbox}
       </div>
     );
   }
@@ -447,6 +485,16 @@ function isImageFile(filename: string): boolean {
   return IMAGE_EXTENSIONS.includes(getFileExt(filename));
 }
 
+// Uploaded image ready to show in the lightbox: image extension, already
+// uploaded (has a path), and not still in flight.
+function isLightboxImageFile(
+  file: FileInMessage,
+): file is FileInMessage & { path: string } {
+  return (
+    isImageFile(file.filename) && !!file.path && file.status !== "uploading"
+  );
+}
+
 /**
  * Format bytes to human-readable size string
  */
@@ -463,11 +511,23 @@ function formatBytes(bytes: number): string {
 function RichFilesList({
   files,
   threadId,
+  onImageClick,
 }: {
   files: FileInMessage[];
   threadId: string;
+  onImageClick?: (file: FileInMessage) => void;
 }) {
   if (files.length === 0) return null;
+
+  // Lightbox order = first-ready-image order, computed once here so the
+  // click index always matches MessageContent_'s lightboxImages array.
+  const lightboxIndexes = new Map<FileInMessage, number>();
+  for (const file of files) {
+    if (isLightboxImageFile(file)) {
+      lightboxIndexes.set(file, lightboxIndexes.size);
+    }
+  }
+
   return (
     <div className="mb-2 flex flex-wrap justify-end gap-2">
       {files.map((file, index) => (
@@ -475,6 +535,11 @@ function RichFilesList({
           key={`${file.filename}-${index}`}
           file={file}
           threadId={threadId}
+          onImageClick={
+            onImageClick && lightboxIndexes.has(file)
+              ? () => onImageClick(file)
+              : undefined
+          }
         />
       ))}
     </div>
@@ -487,9 +552,11 @@ function RichFilesList({
 function RichFileCard({
   file,
   threadId,
+  onImageClick,
 }: {
   file: FileInMessage;
   threadId: string;
+  onImageClick?: () => void;
 }) {
   const { t } = useI18n();
   const isUploading = file.status === "uploading";
@@ -527,17 +594,38 @@ function RichFileCard({
   const fileUrl = resolveArtifactURL(file.path, threadId);
 
   if (isImage) {
+    if (onImageClick) {
+      return (
+        // Named group scope: the message wrapper also carries a plain `group`,
+        // so an unnamed group-hover here would scale every card in the message
+        // at once.
+        <button
+          type="button"
+          className="group/file border-border/40 relative block cursor-zoom-in overflow-hidden rounded-lg border"
+          onClick={onImageClick}
+        >
+          <img
+            src={fileUrl}
+            alt={file.filename}
+            className="h-32 w-auto max-w-60 object-cover transition-transform group-hover/file:scale-105"
+          />
+        </button>
+      );
+    }
     return (
       <a
         href={fileUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="group border-border/40 relative block overflow-hidden rounded-lg border"
+        // Named group scope: the message wrapper also carries a plain `group`,
+        // so an unnamed group-hover here would scale every card in the message
+        // at once.
+        className="group/file border-border/40 relative block overflow-hidden rounded-lg border"
       >
         <img
           src={fileUrl}
           alt={file.filename}
-          className="h-32 w-auto max-w-60 object-cover transition-transform group-hover:scale-105"
+          className="h-32 w-auto max-w-60 object-cover transition-transform group-hover/file:scale-105"
         />
       </a>
     );

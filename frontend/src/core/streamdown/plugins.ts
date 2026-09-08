@@ -4,7 +4,10 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type { StreamdownProps } from "streamdown";
 
-import { rehypeSplitWordsIntoSpans } from "../rehype";
+import {
+  rehypeGroupImagesIntoGallery,
+  rehypeSplitWordsIntoSpans,
+} from "../rehype";
 
 const katexOptions = {
   output: "html",
@@ -20,6 +23,7 @@ export const streamdownPlugins = {
   rehypePlugins: [
     rehypeRaw,
     [rehypeKatex, katexOptions],
+    rehypeGroupImagesIntoGallery,
   ] as StreamdownProps["rehypePlugins"],
 };
 
@@ -30,6 +34,9 @@ export const streamdownPluginsWithWordAnimation = {
   ] as StreamdownProps["remarkPlugins"],
   rehypePlugins: [
     [rehypeKatex, katexOptions],
+    // Gallery grouping must run before word-splitting: split leaves
+    // whitespace-only spans inside the paragraph that would block detection.
+    rehypeGroupImagesIntoGallery,
     rehypeSplitWordsIntoSpans,
   ] as StreamdownProps["rehypePlugins"],
 };

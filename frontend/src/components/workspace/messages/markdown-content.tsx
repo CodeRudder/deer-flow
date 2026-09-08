@@ -5,6 +5,7 @@ import type { AnchorHTMLAttributes } from "react";
 
 import { type ClipboardSafeStreamdownProps } from "@/components/ai-elements/streamdown";
 import {
+  groupConsecutiveImageBlocks,
   preprocessStreamdownMarkdown,
   streamdownPluginsWithoutRawHtml,
 } from "@/core/streamdown";
@@ -36,7 +37,7 @@ export function MarkdownContent({
   components: componentsFromProps,
 }: MarkdownContentProps) {
   const normalizedContent = useMemo(
-    () => preprocessStreamdownMarkdown(content),
+    () => groupConsecutiveImageBlocks(preprocessStreamdownMarkdown(content)),
     [content],
   );
   const effectiveRehypePlugins = useMemo(() => {
