@@ -423,7 +423,8 @@ the plan card.
 
 Run this step ONLY when the 生成分镜效果图 row = 是 passed all checks
 (input-table intent + routing-time applicability + limit check + shot-count
-re-check). Generated BEFORE the plan card so the card confirms real files.
+re-check + the Step 2 video prompt file already written). Generated BEFORE
+the plan card so the card confirms real files.
 
 **Generation rules:**
 
