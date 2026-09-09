@@ -12,7 +12,7 @@ This skill generates short videos through a **staged, confirmed workflow**:
 1. Parse every new video request into a fixed, prefilled **input information
    table** and wait for the user to continue or edit it. Only a theme is
    required — it may be vague or abstract; the skill decomposes it into
-   subject + action and completes everything else. The dedicated **Storyboard images row** (next to Storyboard) carries
+   subject + action and completes everything else. The dedicated **生成分镜效果图 row** (next to 分镜) carries
    the opt-in intent for design stills (one per shot — see Step 2.5); its
    limits are settled at this table.
 2. Route the confirmed inputs to one of three user-facing input modes
@@ -49,63 +49,69 @@ Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Re
 
 ## Input information table (always show before routing)
 
-For **every new video request**, first parse everything the user already gave
-you, then call `ask_clarification` with the fixed **Markdown table** below,
-translated to the user's language. This gate is mandatory even when the theme
+For **every new video request**, resolve the provider first (same
+deterministic rules the script uses — `references/runtime.md`) and run
+`generate.py --describe-provider {provider}` once (read-only, never billed):
+its ratio/resolution lists fill the 画幅 / 分辨率 rows. Then parse everything
+the user already gave you and call `ask_clarification` with the fixed
+**Markdown table** below. This gate is mandatory even when the theme
 is already present — and the table is shown even when the theme is missing.
 Prefill supplied values; do not make the user repeat them.
 
-| Field | Prefilled value |
+| 字段 | 预填内容 |
 |---|---|
-| Theme* | {user content — may be vague or abstract / needs input} |
-| Mode | T2V / first+last frame (首尾帧) / reference [✓] — mark the inferred mode (default `reference`) |
-| Subject | {decomposed from the theme / user override} |
-| Action | {decomposed from the theme / user override} |
-| Setting | {user content / auto-complete} |
-| Style | {user content / auto-complete} |
-| Camera | {user content / auto-complete} |
-| Mood | {user content / auto-complete} |
-| Sound | {user content / auto-complete} |
-| Storyboard | {user content / plan as needed — text-only shot planning: how many shots, what happens in each; no image-generation intent} |
-| Storyboard images | 否 [✓] (default) / 是 — one design still per shot, consumes image-generation quota (cost noted in the option text; situational mention only for a multi-shot story with no materials) |
-| Duration | {user content / default 5 s; Seedance 2.5 frame tasks default to model-picked length (`-1`)} |
-| Aspect ratio | 16:9 / 9:16 / 1:1 / 21:9 / adaptive [✓] (default — T2V and the storyboard path render 16:9; reference stays adaptive) / other: {user value} |
-| Resolution | 480P / 720P / 768P / 1080P / 2K — [✓] marks the routed provider's draft tier (value domain via `--describe-provider`) |
-| Images | 有图 ({filenames and intent — user-provided, agent may supplement}) / 无图帮我找 [✓] (collect for me: search first; image generation only after approval) / 无图且不找 (skip collection) — preselect per the user's wording; unstated → 无图帮我找 |
+| 主题* | {用户内容——可以模糊或抽象 / 待输入} |
+| 模式 | 文生视频 / 首尾帧 / 参考图 [✓]——标注推断的模式（默认参考图） |
+| 主体 | {从主题拆解 / 用户指定} |
+| 动作 | {从主题拆解 / 用户指定} |
+| 场景 | {用户内容 / 自动补全} |
+| 风格 | {用户内容 / 自动补全} |
+| 运镜 | {用户内容 / 自动补全} |
+| 情绪 | {用户内容 / 自动补全} |
+| 声音 | {用户内容 / 自动补全} |
+| 分镜 | {用户内容 / 按需规划——纯文字镜头规划：镜头数与各镜头内容；不含生图意图} |
+| 生成分镜效果图 | 否 [✓]（默认）/ 是 — 每个镜头一张分镜图，消耗图像生成额度（费用写在选项文字里；仅多镜头且无素材时主动提及） |
+| 时长 | {用户内容 / 默认 5 秒} |
+| 画幅 | {manifest 画幅列表；文生视频/分镜路径标 `16:9` [✓]，参考图标 `自适应` [✓]——不列不支持的值} |
+| 分辨率 | {manifest 分辨率列表；草稿档标 [✓]——不列不支持的值} |
+| 素材 | 有图（列出文件名与用途）/ 无图帮我找 [✓]（默认：先搜索；生成需批准）/ 无图且不找（跳过采集）——按用户措辞预选；未提及 → 无图帮我找 |
 
 Only a **theme** is required — it may be vague or abstract; the skill
 decomposes it into subject + action while writing the prompt. Tell the user:
 **anything left unfilled — including reference images — will be automatically
-completed and collected** (rules in Choosing the mode; the Images row's
+completed and collected** (rules in Choosing the mode; the 素材 row's
 three-state collection intent overrides this default when stated). Only
 treat files the user supplied in this conversation as user-provided.
-Reply "continue" for defaults, or say what to add or change.
+Reply "继续用这些输入" for defaults, or say what to add or change.
 
 - **The full table is ALWAYS shown in the first reply** — even when the theme
   is missing (prefill the theme row with "needs input") — together with the
   auto-completion note. Never send a bare clarifying question without the
   table. The table must appear in the visible reply text **before** calling
   `ask_clarification`; the tool's `question` only carries the short confirm
-  prompt (e.g. "continue or edit?"), never the table itself.
+  prompt (e.g. "继续或修改？"), never the table itself.
 - `clarification_type`: `missing_info` if there is no theme at all (not even
   a vague one) — then ask for ONLY the theme in the question and do NOT offer
   a "continue" option (there is nothing to continue yet; the table is still
   shown with the theme row marked as missing); otherwise `approach_choice`.
-- `options` (theme present): `["Continue with these inputs", "I want to add
-  or change something"]`.
+- `options` (theme present): `["继续用这些输入", "我要补充或修改"]`.
 - If the user edits any field, update and re-show the complete table. A mode
   edit re-routes: confirm the new mode's material expectations (reference
   needs images — see the collection plan; frame modes need the frame image;
-  T2V needs none) and refresh the Images row accordingly.
+  T2V needs none) and refresh the 素材 row accordingly.
 - Optional fields never block progress. The user confirms the table as a whole;
   do not interrogate field by field.
-- **Selection rows render as option lists**: the enum/preset rows (Mode,
-  Storyboard images, Images, and the preset slots in Aspect ratio / Resolution)
-  show every option with the current choice marked `[✓]`, the rest listed bare —
-  the user switches by naming another option. `{...}` rows are free
-  text and keep plain prefills.
+- **Selection rows render as option lists**: 模式 / 生成分镜效果图 / 素材
+  show every workflow option with the current choice marked `[✓]`. 画幅 /
+  分辨率 use the routed provider/model's manifest values, mark the default
+  `[✓]`, and omit unsupported values. `{...}` rows are free text and keep
+  plain prefills.
+- **术语固定**：模板里的中文列名、选项串与方案卡标签就是规范写法，中文回复
+  原样使用；正文术语同样固定——分镜图 / 分镜路径 / 镜头 / 草稿档 / 升格 /
+  采集计划 / 规格预检。用户不读中文时，把标签、选项与固定串翻译为用户语言，
+  专有名词保留。
 - **Storyboard-image intent = 是 (one exception to no-field-interrogation)**:
-  when the user sets the Storyboard images row to 是 (or asks for storyboard
+  when the user sets the 生成分镜效果图 row to 是 (or asks for storyboard
   design images in their words), the intent AND its limits must be settled at
   THIS gate, before moving on — never deferred to the plan card:
   1. **Cost note in the options/question text** (the only sanctioned place —
@@ -127,7 +133,7 @@ Reply "continue" for defaults, or say what to add or change.
      H3 only; Seedance caps at its reference cap). Over the limit → the user
      chooses on the spot: fewer shots / drop attached originals / switch to a
      provider that supports the plan / drop the storyboard intent. State the
-     chosen resolution in the Storyboard images row and re-show the table.
+     chosen resolution in the 生成分镜效果图 row and re-show the table.
   4. The prompt-writing step (Step 2) re-checks the finalized shot count
      against this settled budget; over → back to the user with the SAME
      options (this is conversational adjustment — no gate, no card; holding
@@ -189,7 +195,7 @@ request. Pick the mode from intent: is the image a moment *in* the video (frame)
 or a likeness to *imitate* (reference)?
 
 **When the user has not specified a mode, default to reference mode.**
-Reference mode needs images. If the user supplied none AND the Images row is
+Reference mode needs images. If the user supplied none AND the 素材 row is
 not 无图且不找, do NOT call any provider yet — draft a **collection plan**
 (one line per image: purpose — face / outfit / scene / style, count, target
 ratio) for the plan card's Materials row: **three images by default**,
@@ -212,20 +218,18 @@ when visual freedom and a single call matter more.
 
 **Collection timing (storyboard path included):** for reference mode without
 user-supplied images, collection happens BEFORE prompt writing (Step 2), not
-after the plan card. The Images row's three-state intent drives routing:
+after the plan card. The 素材 row's three-state intent drives routing:
 有图 → material checks on those images → prompt; 无图帮我找 → collection
 plan → collect (rules above) → collected-material checks → prompt;
-无图且不找 → skip collection — with the Storyboard images row = 是, the
+无图且不找 → skip collection — with the 生成分镜效果图 row = 是, the
 storyboard images become the prompt's reference assets (first image
 generated text-to-image — Step 2.5); with 否 (default), a reference request
 without images has nothing to route on — ask the user: explicit T2V or
 upload.
 
 **Storyboard-image applicability (decide at routing time, not on the plan
-card):** when the Storyboard images row = 是, resolve the provider NOW (same deterministic
-rules the script uses — `--model` declared in config, else first configured
-provider, else credential fallback; see `references/runtime.md`) and run
-`--describe-provider {provider}` (read-only, never billed). Every
+card):** when the 生成分镜效果图 row = 是, reuse the input-table
+`--describe-provider` run (re-run if the routed provider changed). Every
 reference-capable provider supports storyboard images — the only checks are
 reference mode in the manifest (T2V / frame modes / H3-Max fail this) and
 the caps settled at the input table (reference cap + H3 budget). Seedance
@@ -416,13 +420,13 @@ the plan card.
 
 ### Step 2.5: Generate storyboard design images (storyboard path only)
 
-Run this step ONLY when the Storyboard images row = 是 passed all checks
+Run this step ONLY when the 生成分镜效果图 row = 是 passed all checks
 (input-table intent + routing-time applicability + limit check + shot-count
 re-check). Generated BEFORE the plan card so the card confirms real files.
 
 **Generation rules:**
 
-- **First shot** — by the Images row's collection intent:
+- **First shot** — by the 素材 row's collection intent:
   - 有图 or 无图帮我找 (collected) → `image-editing` with the user's /
     collected material as the base image (identity/consistency anchor;
     redraw workaround active → the design sheet replaces the photo as the
@@ -481,7 +485,7 @@ re-check). Generated BEFORE the plan card so the card confirms real files.
 **Plan-card integration:** the storyboard images appear in the plan card's
 Materials row (source-labeled; when originals are not passed the card notes
 "original materials used only to generate the storyboard images"), and the
-Storyboard row lists them shot-by-shot (shot no. ↔ timestamp ↔ path) plus the
+分镜 row lists them shot-by-shot (shot no. ↔ timestamp ↔ path) plus the
 usage declaration: passed in shot order as reference images, for composition
 and content only — their art style and any in-image text are NOT adopted.
 The plan card is a PRODUCT check (look at the images, then approve) — intent
@@ -504,27 +508,27 @@ copy of it. Preserve the subject, action, setting, style/mood, camera
 movement, and material role; add a short storyboard only when needed (`None`
 for a simple single-shot clip).
 
-Call `ask_clarification` with this fixed template, translated to the user's
-language:
+Call `ask_clarification` with this fixed template (user not reading Chinese →
+translate the labels and fixed strings, keep proper nouns):
 
 ```text
-[Video generation plan]
+[视频生成方案]
 
-- Mode: {T2V / first + last frame / reference}
-- Materials: {none / FULL paths with roles and order / storyboard path: storyboard images, one per shot (source-labeled; original materials used only to generate them are NOT passed) + originals attached only when they carry information the storyboard images don't cover / collection plan: purpose, count, ratio per image — search first; image generation only after user approval}
-- Output: {duration} · {resolution} · {explicit ratio / adaptive — storyboard path: the concrete ratio the storyboard images were generated at}
-- Prompt: {workspace path}
-  Refined description:
-  {subject, action, setting, style/mood, camera, and sound as needed in the user's language}
-- Storyboard:
-  {None / concise storyboard in the user's language / storyboard path: shot-by-shot list — shot no. ↔ timestamp ↔ image path — plus the usage declaration (passed in shot order as reference images; composition and content only; art style and in-image text NOT adopted)}
-- Changes this round:
-  {Initial plan / changes from the latest superseded plan}
-- Capability note:
-  {None / This 4 s draft cannot be upgraded to 2K; use 5 s or longer to keep the upgrade option}
+- 模式：{文生视频 / 首尾帧 / 参考图}
+- 素材：{无 / 完整路径 + 角色 + 顺序 / 分镜路径：分镜图逐镜头一张（来源标注；仅用于生成分镜图的原始素材不传入），原始素材仅在其携带分镜图未覆盖的信息时附加 / 采集计划：每张图的用途、数量、画幅——先搜索；图像生成需用户批准}
+- 输出：{时长} · {分辨率} · {具体画幅 / 自适应——分镜路径：分镜图实际生成的画幅}
+- 提示词：{workspace 路径}
+  精炼描述：
+  {按需以用户语言给出主题、动作、场景、风格/情绪、运镜、声音}
+- 分镜：
+  {无 / 简明分镜（用户语言）/ 分镜路径：逐镜头列表——镜头号 ↔ 时间 ↔ 图片路径——附用途声明（按镜头顺序作为参考图传入；仅参考构图与内容，不采用画风与图内文字）}
+- 本轮变更：
+  {初始方案 / 相对上一版方案的变更}
+- 能力提示：
+  {无 / 该 4 秒草稿无法升格 2K；选 5 秒及以上保留升格选项}
 
-Reply "confirm" to start, or tell me what to change.
-{Storyboard path only: not happy with a storyboard image? Say which shot and what to change — the affected images are regenerated in this conversation; video generation starts only after you confirm the storyboard images.}
+回复"确认并生成"开始，或告诉我要改什么。
+{仅分镜路径：对某张分镜图不满意？说明镜头号和修改点——受影响的图在本对话内重新生成；你确认分镜图后才开始生成视频。}
 ```
 
 The plan card is fully transparent about what will be submitted: materials
@@ -547,7 +551,7 @@ an AI re-enactment from them; the image-quota cost was declared at the
 per-material question and is not repeated on the card.
 
 - `clarification_type`: `approach_choice`.
-- `options`: `["Confirm and generate", "I want to adjust"]`.
+- `options`: `["确认并生成", "我要调整"]`.
 
 Confirmation protocol (prevents loops and skips):
 
