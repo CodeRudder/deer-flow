@@ -44,10 +44,8 @@ export function getMessageGroups(
   const groups: MessageGroup[] = [];
   const toolCallGroupMap = new Map<string, MessageGroup>();
 
-  // While the current turn is still loading, locate it by the last visible
-  // human message: AI messages after that point are still unresolved, because
-  // a provider may append tool-call chunks to the same message later (#4304).
-  // Hidden human inputs (e.g. structured replies) do not open a turn.
+  // While loading, AI messages after the last visible human message are
+  // still unresolved: providers may append tool-call chunks later (#4304).
   let currentTurnStartIndex = -1;
   if (isCurrentTurnLoading) {
     for (let index = messages.length - 1; index >= 0; index--) {
@@ -117,25 +115,16 @@ export function getMessageGroups(
     }
 
     if (message.type === "ai") {
-      // A content-only message is not necessarily the final answer while its
-      // turn is still streaming: providers can append tool-call chunks to the
-      // same message later. Keep that unresolved text in the processing group
-      // so it does not jump from an assistant bubble into the steps panel
-      // mid-turn (#4304). Only the current turn is treated this way: messages
-      // before the latest visible human input keep their existing
-      // classification, so scrollback and reloaded history look the same.
+      // Streaming text may still gain tool-call chunks later (#4304): keep
+      // it in the processing group until the turn settles.
       const isUnresolvedAssistantText =
         currentTurnStartIndex >= 0 &&
         messageIndex > currentTurnStartIndex &&
         hasContent(message) &&
         !hasToolCalls(message);
 
-      // A message that becomes its own assistant bubble (content, no tool
-      // calls) already renders its reasoning inside the bubble's <Reasoning>
-      // collapsible. It must NOT also feed the processing group, or the
-      // ChainOfThought panel above the bubble paints the identical reasoning
-      // a second time (#3868). Intermediate reasoning (no content) and
-      // tool-calling steps still belong in the processing group.
+      // Content-bearing bubbles own their reasoning; never also feed the
+      // processing group or the CoT panel paints it twice (#3868).
       const becomesAssistantBubble =
         hasContent(message) &&
         !hasToolCalls(message) &&

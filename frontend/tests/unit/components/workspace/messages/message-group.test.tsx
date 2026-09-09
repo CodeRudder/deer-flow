@@ -41,17 +41,13 @@ rs.mock("@/components/workspace/artifacts", () => ({
 afterEach(cleanup);
 
 function renderGroup(messages: Message[], isLoading = false) {
-  // The streaming rehype pipeline splits words into spans, so assert on
-  // textContent instead of innerHTML.
+  // Streaming rehype splits words into spans; assert on textContent.
   return render(<MessageGroup messages={messages} isLoading={isLoading} />)
     .container.textContent;
 }
 
 describe("MessageGroup", () => {
   it("renders unresolved streaming assistant text before a tool call arrives", () => {
-    // While the current turn is loading, a content-only message lives in the
-    // processing group (#4304). The group must render that text immediately,
-    // even though no tool call exists yet.
     const text = renderGroup(
       [
         {
@@ -94,9 +90,6 @@ describe("MessageGroup", () => {
   });
 
   it("keeps content-only assistant text visible after a tool call while streaming", () => {
-    // A later content-only AI message may itself gain another tool call
-    // before the turn settles; until then it stays visible after the last
-    // tool-call step instead of jumping out of the group (#4304).
     const text = renderGroup(
       [
         {
@@ -131,9 +124,6 @@ describe("MessageGroup", () => {
   });
 
   it("keeps reasoning-only processing groups unchanged", () => {
-    // Reasoning steps stay in the "thinking" collapsible below the tool
-    // call (existing behavior); no assistant-text step is created for an
-    // empty-content message.
     const text = renderGroup([
       {
         id: "ai-1",
@@ -153,9 +143,7 @@ describe("MessageGroup", () => {
       } as Message,
     ]);
 
-    // The reasoning step sits above the last tool call and stays collapsed
-    // behind the "more steps" toggle (pre-existing behavior); no assistant
-    // text step is created for the empty-content message.
+    // Reasoning above the last tool call stays collapsed behind "more steps".
     expect(text).toContain("1 more steps");
     expect(text).toContain("search the web for x");
     expect(text).not.toContain("I should search first.");

@@ -317,10 +317,7 @@ export function MessageList({
       }
     }
     if (lastHumanIndex === -1) return false;
-    // While the turn is streaming, the answer text lives in the trailing
-    // processing group as unresolved steps (#4304) — treat content-bearing AI
-    // messages there like an assistant bubble, so the bottom thinking
-    // placeholder stays hidden once visible text is on screen.
+    // Unresolved streaming text (#4304) counts as visible content too.
     return groupedMessages
       .slice(lastHumanIndex)
       .some(

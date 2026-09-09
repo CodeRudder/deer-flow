@@ -755,11 +755,7 @@ function convertToSteps(messages: Message[]): CoTStep[] {
         };
         steps.push(step);
       }
-      // Visible text rides along inside the processing group as its own step,
-      // ordered after the reasoning it produced and before the tool calls:
-      // provider preambles and post-tool commentary stay on screen instead of
-      // silently disappearing (companion to getMessageGroups' unresolved-text
-      // handling, #4304).
+      // Keep assistant text visible even without tool calls (#4304).
       const content = extractContentFromMessage(message);
       if (content) {
         steps.push({
