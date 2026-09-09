@@ -35,6 +35,7 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --reference-audios https://cdn/voice.mp3 \
   --image-role reference \
   --model doubao-seedance-2-5-260628 \
+  --resolution 720p --duration 5 \
   --output-file /mnt/user-data/outputs/sd-ref.mp4
 ```
 
@@ -42,8 +43,8 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 User uploaded `dawn.jpg` and `dusk.jpg`: "morph the sky from dawn to dusk."
 On 2.5, frame tasks lock `ratio=adaptive` (the output follows the frame
-image) and `duration` defaults to `-1` (model picks a length); an explicit
-`--aspect-ratio` is rejected locally. Do NOT pass `--aspect-ratio` here.
+image); an explicit `--aspect-ratio` is rejected locally. This workflow uses
+the default `--duration 5` rather than model-picked `-1`.
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
@@ -51,6 +52,7 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --reference-images /mnt/user-data/uploads/dawn.jpg /mnt/user-data/uploads/dusk.jpg \
   --image-role first_last \
   --model doubao-seedance-2-5-260628 \
+  --resolution 720p --duration 5 \
   --output-file /mnt/user-data/outputs/sd-fl.mp4
 ```
 
@@ -101,5 +103,6 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --aspect-ratio 16:9 \
   --duration 15 \
   --model doubao-seedance-2-5-260628 \
+  --resolution 720p \
   --output-file /mnt/user-data/outputs/sd-sb.mp4
 ```

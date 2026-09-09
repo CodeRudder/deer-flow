@@ -136,8 +136,9 @@ enforces them locally before submit. 2.0 family has no such locks.
 | T2V / reference | text / `reference_*` | user-set or `adaptive` | user `[4,30]` or `-1` |
 
 Only `video-edit` locks `duration=-1`. Frame tasks lock `ratio` only — do NOT
-promise a custom ratio or a fixed duration in the plan card for 2.5 frame
-tasks (duration may be `-1`/auto).
+promise a custom ratio in the plan card for 2.5 frame tasks. This workflow
+always passes an explicit integer `--duration` (SKILL.md Output settings);
+the `-1` values above are adapter capability, not workflow guidance.
 
 ## Forbidden words in reference mode (critical)
 

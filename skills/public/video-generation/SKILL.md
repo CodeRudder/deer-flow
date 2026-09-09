@@ -341,7 +341,7 @@ only the provider-independent rules.
 | Setting | Rule | Default |
 |---|---|---|
 | Aspect ratio (`--aspect-ratio`) | T2V: optional; reference mode: optional, defaults to adaptive — **storyboard path: pass the concrete ratio the storyboard images were generated at (default `16:9`; never adaptive)**; frame modes: fixed by the image (do not pass); Seedance 2.5 frame modes force `adaptive` | `16:9` (T2V) / adaptive (reference) |
-| Duration (`--duration`) | follow the shot budget in the selected prompt reference; 2+ shots: prefer 6 s or longer | `5` (Seedance 2.5 frame tasks: model-picked, `-1`) |
+| Duration (`--duration`) | follow the shot budget in the selected prompt reference; 2+ shots: prefer 6 s or longer. Always pass an explicit integer duration in this workflow. | `5` |
 | Resolution (`--resolution`) | per-model value domain and draft-tier default — run `--describe-provider` (rejected locally if unsupported) | provider draft tier from `--describe-provider` |
 
 Guidance:
@@ -579,13 +579,18 @@ Confirmation protocol (prevents loops and skips):
 
 ### Step 4: Execute
 
-Use the confirmed Output settings. Pass `--resolution 2K` only when direct 2K
-appeared in the latest approved plan card.
+Use the confirmed Output settings. Every generation command must pass the
+literal `--model`, `--resolution`, and `--duration` values shown by the plan,
+including defaults. Pass `--resolution 2K` only when direct 2K appeared in the
+latest approved plan card.
 
 ```bash
 # T2V (text only). Mode-specific commands: references/providers/{minimax|seedance}/examples.md
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/{name}.txt \
+  --model {model} \
+  --resolution {resolution} \
+  --duration {duration} \
   --output-file /mnt/user-data/outputs/{name}.mp4
 ```
 
@@ -607,8 +612,8 @@ Parameters:
 - `--model` / `--provider`: routing + escape hatch — `references/runtime.md`.
 - `--resolution`: per-model value domain and draft-tier default —
   `--describe-provider`; validated locally.
-- `--duration`: per-model range (default 5 keeps the H3 2K upgrade open;
-  Seedance 2.5 also accepts `-1` auto) — `--describe-provider`.
+- `--duration`: per-model range — `--describe-provider`; the workflow always
+  passes an explicit integer, even when the user accepts the 5 s default.
 - `--query` / `--cancel`: read-only task lookup / cancel a queued task —
   `references/task-lifecycle.md`.
 
@@ -710,6 +715,9 @@ prompt (the routed provider's format file — Step 2 routing table) → plan car
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/cat-stretch.txt \
+  --model {model} \
+  --resolution {draft tier} \
+  --duration 5 \
   --output-file /mnt/user-data/outputs/cat-stretch.mp4
 ```
 

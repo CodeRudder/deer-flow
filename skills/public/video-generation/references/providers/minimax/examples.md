@@ -17,6 +17,7 @@ image fixes it. Command:
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/turn.txt \
   --reference-images /mnt/user-data/uploads/portrait.jpg \
+  --model MiniMax-H3 --resolution 768P --duration 5 \
   --output-file /mnt/user-data/outputs/turn.mp4
 ```
 
@@ -31,6 +32,7 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/landing.txt \
   --reference-images /mnt/user-data/uploads/landing.jpg \
   --image-role last_frame \
+  --model MiniMax-H3 --resolution 768P --duration 5 \
   --output-file /mnt/user-data/outputs/landing.mp4
 ```
 
@@ -45,6 +47,7 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/sky.txt \
   --reference-images /mnt/user-data/uploads/dawn.jpg /mnt/user-data/uploads/dusk.jpg \
   --image-role first_last \
+  --model MiniMax-H3 --resolution 768P --duration 5 \
   --output-file /mnt/user-data/outputs/sky.mp4
 ```
 
@@ -60,6 +63,7 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/wave.txt \
   --reference-images /mnt/user-data/uploads/face.jpg /mnt/user-data/uploads/outfit.jpg \
   --image-role reference \
+  --model MiniMax-H3 --resolution 768P --duration 5 \
   --output-file /mnt/user-data/outputs/wave.mp4
 ```
 
@@ -109,5 +113,6 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --image-role reference \
   --aspect-ratio 16:9 \
   --duration 9 \
+  --model MiniMax-H3 --resolution 768P \
   --output-file /mnt/user-data/outputs/wave-sb.mp4
 ```
