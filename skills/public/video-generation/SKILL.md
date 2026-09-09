@@ -311,6 +311,11 @@ Before prompt writing, check only what is required to continue:
   script's output paths as the materials. An image it cannot decode is NOT
   fixable — replace it before writing any prompt. The script never calls the
   provider.
+- Seedance + real-person material: if any image may contain a real person's
+  face (the user's statement or your visual judgment), run the per-material
+  question — drop / replace / redraw each face image per
+  `references/workarounds.md` — before any image generation. Never redraw
+  silently; MiniMax H3 needs no workaround.
 
 Do not require matching ratios across `reference` images, and do not compare
 across images for a single first or last frame. If frame-image ratios conflict
@@ -374,7 +379,10 @@ owns the grammar. Routing table (provider → mode → format file):
 
 Read the routed file at
 `/mnt/skills/public/video-generation/<format file from the table>`, then write
-the prompt file in that format.
+the prompt file in that format. Redraw workaround active (materials are
+character design sheets — `references/workarounds.md`): also read that file
+for the fixed live-action instruction paragraph and its placement after the
+@-tag declarations.
 
 Prompt content language: Chinese by default — switch to English only when the
 user explicitly requests an English prompt. Protocol tokens stay in English
@@ -416,7 +424,9 @@ re-check). Generated BEFORE the plan card so the card confirms real files.
 
 - **First shot** — by the Images row's collection intent:
   - 有图 or 无图帮我找 (collected) → `image-editing` with the user's /
-    collected material as the base image (identity/consistency anchor):
+    collected material as the base image (identity/consistency anchor;
+    redraw workaround active → the design sheet replaces the photo as the
+    anchor — `references/workarounds.md`):
     ```bash
     python /mnt/skills/public/image-editing/scripts/edit.py \
       --image {base material path} \
@@ -531,6 +541,10 @@ The card must not show the model, quota, or cost notes. The 4 s upgrade
 limitation is a capability note, not a cost note; show it only when the user
 explicitly selects a 4 s 768P draft.
 Direct 2K output does not need an upgrade warning.
+Redraw-workaround path: the Materials row lists the character design sheets
+(source-labeled, redrawn from real-person photos) and declares the result is
+an AI re-enactment from them; the image-quota cost was declared at the
+per-material question and is not repeated on the card.
 
 - `clarification_type`: `approach_choice`.
 - `options`: `["Confirm and generate", "I want to adjust"]`.
