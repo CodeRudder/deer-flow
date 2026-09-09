@@ -509,6 +509,7 @@ language:
   {None / This 4 s draft cannot be upgraded to 2K; use 5 s or longer to keep the upgrade option}
 
 Reply "confirm" to start, or tell me what to change.
+{Storyboard path only: not happy with a storyboard image? Say which shot and what to change — the affected images are regenerated in this conversation; video generation starts only after you confirm the storyboard images.}
 ```
 
 The plan card is fully transparent about what will be submitted: materials
