@@ -302,7 +302,9 @@ export function MessageList({
     }
   }, [messageSubtaskFingerprint, messageSubtaskUpdates]);
 
-  const groupedMessages = getMessageGroups(messages);
+  const groupedMessages = getMessageGroups(messages, {
+    isCurrentTurnLoading: thread.isLoading,
+  });
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<
     string | null
   >(null);
@@ -315,9 +317,18 @@ export function MessageList({
       }
     }
     if (lastHumanIndex === -1) return false;
+    // While the turn is streaming, the answer text lives in the trailing
+    // processing group as unresolved steps (#4304) — treat content-bearing AI
+    // messages there like an assistant bubble, so the bottom thinking
+    // placeholder stays hidden once visible text is on screen.
     return groupedMessages
       .slice(lastHumanIndex)
-      .some((g) => g.type === "assistant");
+      .some(
+        (g) =>
+          g.type === "assistant" ||
+          (g.type === "assistant:processing" &&
+            g.messages.some((m) => m.type === "ai" && hasContent(m))),
+      );
   }, [groupedMessages]);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
   const lastGroupIndex = groupedMessages.length - 1;

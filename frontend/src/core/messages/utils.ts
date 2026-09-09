@@ -33,13 +33,31 @@ const HIDDEN_CONTROL_MESSAGE_NAMES = new Set([
   "todo_completion_reminder",
 ]);
 
-export function getMessageGroups(messages: Message[]): MessageGroup[] {
+export function getMessageGroups(
+  messages: Message[],
+  { isCurrentTurnLoading = false }: { isCurrentTurnLoading?: boolean } = {},
+): MessageGroup[] {
   if (messages.length === 0) {
     return [];
   }
 
   const groups: MessageGroup[] = [];
   const toolCallGroupMap = new Map<string, MessageGroup>();
+
+  // While the current turn is still loading, locate it by the last visible
+  // human message: AI messages after that point are still unresolved, because
+  // a provider may append tool-call chunks to the same message later (#4304).
+  // Hidden human inputs (e.g. structured replies) do not open a turn.
+  let currentTurnStartIndex = -1;
+  if (isCurrentTurnLoading) {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (message?.type === "human" && !isHiddenFromUIMessage(message)) {
+        currentTurnStartIndex = index;
+        break;
+      }
+    }
+  }
 
   // Returns the last group if it can still accept tool messages
   // (i.e. it's an in-flight processing group, not a terminal human/assistant group).
@@ -64,7 +82,7 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
     }
   }
 
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (isHiddenFromUIMessage(message)) {
       continue;
     }
@@ -99,6 +117,30 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
     }
 
     if (message.type === "ai") {
+      // A content-only message is not necessarily the final answer while its
+      // turn is still streaming: providers can append tool-call chunks to the
+      // same message later. Keep that unresolved text in the processing group
+      // so it does not jump from an assistant bubble into the steps panel
+      // mid-turn (#4304). Only the current turn is treated this way: messages
+      // before the latest visible human input keep their existing
+      // classification, so scrollback and reloaded history look the same.
+      const isUnresolvedAssistantText =
+        currentTurnStartIndex >= 0 &&
+        messageIndex > currentTurnStartIndex &&
+        hasContent(message) &&
+        !hasToolCalls(message);
+
+      // A message that becomes its own assistant bubble (content, no tool
+      // calls) already renders its reasoning inside the bubble's <Reasoning>
+      // collapsible. It must NOT also feed the processing group, or the
+      // ChainOfThought panel above the bubble paints the identical reasoning
+      // a second time (#3868). Intermediate reasoning (no content) and
+      // tool-calling steps still belong in the processing group.
+      const becomesAssistantBubble =
+        hasContent(message) &&
+        !hasToolCalls(message) &&
+        !isUnresolvedAssistantText;
+
       if (hasPresentFiles(message)) {
         const group: MessageGroup = {
           id: message.id,
@@ -115,7 +157,12 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
         };
         groups.push(group);
         registerToolCalls(message, group);
-      } else if (hasReasoning(message) || hasToolCalls(message)) {
+      } else if (
+        !becomesAssistantBubble &&
+        (hasReasoning(message) ||
+          hasToolCalls(message) ||
+          isUnresolvedAssistantText)
+      ) {
         const lastGroup = groups[groups.length - 1];
         let group: MessageGroup;
         // Accumulate consecutive intermediate AI messages into one processing group.
@@ -138,10 +185,10 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
         "ask_clarification",
       );
 
-      // Not an else-if: a message can contribute processing/tool steps above and
-      // still get an assistant bubble when it carries user-visible text.
+      // A tool-calling clarification message keeps its processing steps above
+      // AND gets an assistant bubble carrying the question text.
       if (
-        (hasContent(message) && !hasToolCalls(message)) ||
+        becomesAssistantBubble ||
         (hasClarificationToolCall && hasDisplayableContent(message))
       ) {
         groups.push({ id: message.id, type: "assistant", messages: [message] });

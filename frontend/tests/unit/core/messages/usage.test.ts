@@ -42,7 +42,14 @@ test("counts later usage-bearing snapshots for the same AI message id", () => {
   });
 });
 
-test("keeps header and per-turn aggregation consistent for duplicated UI groups", () => {
+test("keeps header and per-turn aggregation consistent for a reasoning+answer message", () => {
+  // A single AI message carrying both reasoning (here via inline <think>) and
+  // answer text lands in exactly one assistant group (#3868), so its usage is
+  // counted once both in the per-turn aggregation and against the header
+  // total. The by-id dedupe (see "accumulates each AI message usage only
+  // once") remains the defence-in-depth guard, and the clarification text
+  // mirrored across UI groups still relies on it (see the clarification
+  // dedupe test below).
   const messages = [
     {
       id: "human-1",
@@ -61,15 +68,8 @@ test("keeps header and per-turn aggregation consistent for duplicated UI groups"
   const usageMessagesByGroupIndex = getAssistantTurnUsageMessages(groups);
   const turnUsageMessages = usageMessagesByGroupIndex.at(-1);
 
-  expect(groups.map((group) => group.type)).toEqual([
-    "human",
-    "assistant:processing",
-    "assistant",
-  ]);
-  expect(turnUsageMessages?.map((message) => message.id)).toEqual([
-    "ai-1",
-    "ai-1",
-  ]);
+  expect(groups.map((group) => group.type)).toEqual(["human", "assistant"]);
+  expect(turnUsageMessages?.map((message) => message.id)).toEqual(["ai-1"]);
   expect(accumulateUsage(messages)).toEqual(
     accumulateUsage(turnUsageMessages!),
   );

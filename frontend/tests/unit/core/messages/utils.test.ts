@@ -81,6 +81,156 @@ test("aggregates token usage messages once per assistant turn", () => {
   ).toEqual([null, null, ["ai-1", "ai-2"], null, ["ai-3"]]);
 });
 
+test("reasoning + content (no tool calls) yields a single assistant bubble, not a duplicate processing group", () => {
+  // Regression for #3868: the final assistant message in thinking modes
+  // carries both reasoning and answer text. It must surface its reasoning
+  // exactly once — inside the assistant bubble's <Reasoning> collapsible.
+  // Routing the same message into a processing group as well makes the
+  // ChainOfThought panel above the bubble paint the identical reasoning a
+  // second time.
+  const messages = [
+    { id: "human-1", type: "human", content: "Why is the sky blue?" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "Rayleigh scattering makes the sky blue.",
+      additional_kwargs: { reasoning_content: "Recall Rayleigh scattering." },
+    },
+  ] as Message[];
+
+  const groups = getMessageGroups(messages);
+
+  expect(groups.map((group) => group.type)).toEqual(["human", "assistant"]);
+
+  // The reasoning-bearing message lands in exactly one group, so turn-usage
+  // aggregation never double-counts it.
+  const turnUsage = getAssistantTurnUsageMessages(groups);
+  expect(turnUsage.at(-1)?.map((message) => message.id)).toEqual(["ai-1"]);
+});
+
+test("keeps unresolved streaming text in the processing group when tool calls arrive later", () => {
+  // Regression for #4304: some providers stream an assistant message as text
+  // first and only append tool-call chunks to the same message a moment
+  // later. While the turn is loading, that text stays in the processing
+  // group so it never renders as a final bubble and then jumps into the
+  // steps panel mid-turn.
+  const textOnlyMessages = [
+    { id: "human-1", type: "human", content: "Create a presentation" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "I will inspect the source material first.",
+    },
+  ] as Message[];
+
+  const textOnlyGroups = getMessageGroups(textOnlyMessages, {
+    isCurrentTurnLoading: true,
+  });
+  expect(textOnlyGroups.map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+  ]);
+
+  const withToolCall = [
+    textOnlyMessages[0],
+    {
+      ...textOnlyMessages[1],
+      tool_calls: [
+        { id: "call-1", name: "read_file", args: { path: "slides.md" } },
+      ],
+    },
+  ] as Message[];
+  const toolCallGroups = getMessageGroups(withToolCall, {
+    isCurrentTurnLoading: true,
+  });
+  expect(toolCallGroups.map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+  ]);
+  // Same group id across the transition, so React keeps the container.
+  expect(toolCallGroups[1]?.id).toBe(textOnlyGroups[1]?.id);
+
+  // Once the turn settles, plain text becomes a normal assistant bubble.
+  expect(getMessageGroups(textOnlyMessages).map((group) => group.type)).toEqual(
+    ["human", "assistant"],
+  );
+});
+
+test("keeps post-tool streaming text in the processing group until the turn settles", () => {
+  const messages = [
+    { id: "human-1", type: "human", content: "Inspect and summarize" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "I will inspect the current implementation.",
+      tool_calls: [
+        { id: "call-1", name: "read_file", args: { path: "source.ts" } },
+      ],
+    },
+    {
+      id: "tool-1",
+      type: "tool",
+      name: "read_file",
+      tool_call_id: "call-1",
+      content: "file contents",
+    },
+    {
+      id: "ai-2",
+      type: "ai",
+      content: "Here is the final streamed answer.",
+    },
+  ] as Message[];
+
+  const loadingGroups = getMessageGroups(messages, {
+    isCurrentTurnLoading: true,
+  });
+  expect(loadingGroups.map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+  ]);
+  expect(loadingGroups[1]?.messages.map((message) => message.id)).toEqual([
+    "ai-1",
+    "tool-1",
+    "ai-2",
+  ]);
+
+  expect(getMessageGroups(messages).map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+    "assistant",
+  ]);
+});
+
+test("keeps clarification bubbles while the current turn is loading", () => {
+  // Tool-calling messages are never "unresolved text": an ask_clarification
+  // message keeps its processing steps above and its own question bubble
+  // even while the turn is still loading.
+  const messages = [
+    { id: "human-1", type: "human", content: "Plan my trip" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "Before I continue, which city should I plan for?",
+      tool_calls: [
+        {
+          id: "call-1",
+          name: "ask_clarification",
+          args: { question: "Which city?" },
+        },
+      ],
+    },
+  ] as Message[];
+
+  for (const isCurrentTurnLoading of [true, false]) {
+    const groups = getMessageGroups(messages, { isCurrentTurnLoading });
+    expect(groups.map((group) => group.type)).toEqual([
+      "human",
+      "assistant:processing",
+      "assistant",
+    ]);
+  }
+});
+
 describe("inline <think> tag splitting", () => {
   test("strips a fully closed <think> block from AI content", () => {
     const message = aiMessage("<think>internal reasoning</think>final answer");

@@ -28,6 +28,7 @@ import { useI18n } from "@/core/i18n/hooks";
 import { formatTokenCount } from "@/core/messages/usage";
 import type { TokenDebugStep } from "@/core/messages/usage-model";
 import {
+  extractContentFromMessage,
   extractReasoningContentFromMessage,
   findToolCallResult,
 } from "@/core/messages/utils";
@@ -95,6 +96,15 @@ export function MessageGroup({
       return steps.slice(0, index);
     }
     return [];
+  }, [lastToolCallStep, steps]);
+  const afterLastToolCallAssistantTextSteps = useMemo(() => {
+    if (!lastToolCallStep) {
+      return [];
+    }
+    const index = steps.indexOf(lastToolCallStep);
+    return steps
+      .slice(index + 1)
+      .filter((step) => step.type === "assistantText");
   }, [lastToolCallStep, steps]);
   const lastReasoningStep = useMemo(() => {
     if (lastToolCallStep) {
@@ -220,6 +230,44 @@ export function MessageGroup({
     );
   };
 
+  const renderStep = (step: CoTStep) => {
+    const stepIndex = steps.indexOf(step);
+    if (step.type === "reasoning") {
+      return [
+        renderDebugSummary(step.messageId, stepIndex),
+        <ChainOfThoughtStep
+          key={step.id}
+          label={
+            <MarkdownContent
+              content={step.reasoning ?? ""}
+              isLoading={isLoading}
+              rehypePlugins={rehypePlugins}
+            />
+          }
+        ></ChainOfThoughtStep>,
+      ];
+    }
+    if (step.type === "assistantText") {
+      return [
+        renderDebugSummary(step.messageId, stepIndex),
+        <ChainOfThoughtStep
+          key={step.id}
+          label={
+            <MarkdownContent
+              content={step.content}
+              isLoading={isLoading}
+              rehypePlugins={rehypePlugins}
+            />
+          }
+        ></ChainOfThoughtStep>,
+      ];
+    }
+    return [
+      renderDebugSummary(step.messageId, stepIndex),
+      renderToolCall(step),
+    ];
+  };
+
   const lastReasoningDebugStep =
     showTokenDebugSummaries && lastReasoningStep?.messageId
       ? debugStepByMessageId.get(lastReasoningStep.messageId)
@@ -256,40 +304,28 @@ export function MessageGroup({
           ></ChainOfThoughtStep>
         </Button>
       )}
-      {lastToolCallStep && (
+      {(lastToolCallStep ??
+        steps.some((step) => step.type === "assistantText")) && (
         <ChainOfThoughtContent className="px-4 pb-2">
-          {showAbove &&
-            aboveLastToolCallSteps.flatMap((step) => {
-              const stepIndex = steps.indexOf(step);
-              if (step.type === "reasoning") {
-                return [
-                  renderDebugSummary(step.messageId, stepIndex),
-                  <ChainOfThoughtStep
-                    key={step.id}
-                    label={
-                      <MarkdownContent
-                        content={step.reasoning ?? ""}
-                        isLoading={isLoading}
-                        rehypePlugins={rehypePlugins}
-                      />
-                    }
-                  ></ChainOfThoughtStep>,
-                ];
-              }
-
-              return [
-                renderDebugSummary(step.messageId, stepIndex),
-                renderToolCall(step),
-              ];
-            })}
-          {renderDebugSummary(
-            lastToolCallStep.messageId,
-            steps.indexOf(lastToolCallStep),
-          )}
+          {(lastToolCallStep
+            ? showAbove
+              ? aboveLastToolCallSteps
+              : aboveLastToolCallSteps.filter(
+                  (step) => step.type === "assistantText",
+                )
+            : steps.filter((step) => step.type === "assistantText")
+          ).flatMap(renderStep)}
           {lastToolCallStep && (
-            <FlipDisplay uniqueKey={lastToolCallStep.id ?? ""}>
-              {renderToolCall(lastToolCallStep, { isLast: true })}
-            </FlipDisplay>
+            <>
+              {renderDebugSummary(
+                lastToolCallStep.messageId,
+                steps.indexOf(lastToolCallStep),
+              )}
+              <FlipDisplay uniqueKey={lastToolCallStep.id ?? ""}>
+                {renderToolCall(lastToolCallStep, { isLast: true })}
+              </FlipDisplay>
+              {afterLastToolCallAssistantTextSteps.flatMap(renderStep)}
+            </>
           )}
         </ChainOfThoughtContent>
       )}
@@ -699,11 +735,15 @@ interface CoTToolCallStep extends GenericCoTStep<"toolCall"> {
   result?: string;
 }
 
-type CoTStep = CoTReasoningStep | CoTToolCallStep;
+interface CoTAssistantTextStep extends GenericCoTStep<"assistantText"> {
+  content: string;
+}
+
+type CoTStep = CoTReasoningStep | CoTToolCallStep | CoTAssistantTextStep;
 
 function convertToSteps(messages: Message[]): CoTStep[] {
   const steps: CoTStep[] = [];
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.type === "ai") {
       const reasoning = extractReasoningContentFromMessage(message);
       if (reasoning) {
@@ -714,6 +754,20 @@ function convertToSteps(messages: Message[]): CoTStep[] {
           reasoning,
         };
         steps.push(step);
+      }
+      // Visible text rides along inside the processing group as its own step,
+      // ordered after the reasoning it produced and before the tool calls:
+      // provider preambles and post-tool commentary stay on screen instead of
+      // silently disappearing (companion to getMessageGroups' unresolved-text
+      // handling, #4304).
+      const content = extractContentFromMessage(message);
+      if (content) {
+        steps.push({
+          id: `${message.id ?? `ai-${messageIndex}`}-content`,
+          messageId: message.id,
+          type: "assistantText",
+          content,
+        });
       }
       for (const tool_call of message.tool_calls ?? []) {
         if (tool_call.name === "task") {

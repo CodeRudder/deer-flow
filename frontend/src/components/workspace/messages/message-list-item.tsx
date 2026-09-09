@@ -37,6 +37,7 @@ import { useI18n } from "@/core/i18n/hooks";
 import {
   extractContentFromMessage,
   extractReasoningContentFromMessage,
+  hasToolCalls,
   parseUploadedFiles,
   stripUploadedFilesTag,
   type FileInMessage,
@@ -417,7 +418,12 @@ function MessageContent_({
   return (
     <AIElementMessageContent className={className}>
       {filesList}
+      {/* Reasoning rides its own bubble only when the message has no tool
+          calls; tool-calling messages (mirrored clarification bubbles) keep
+          their reasoning in the processing group's ChainOfThought panel, and
+          rendering it here too would paint it twice (#3868). */}
       {!isHuman &&
+        !hasToolCalls(message) &&
         (!!reasoningContent || wasLoading || turnDuration !== undefined) && (
           <Reasoning
             isStreaming={isLoading}

@@ -1,0 +1,163 @@
+import type { Message } from "@langchain/langgraph-sdk";
+import { afterEach, describe, expect, it, rs } from "@rstest/core";
+import { cleanup, render } from "@testing-library/react";
+
+import { MessageGroup } from "@/components/workspace/messages/message-group";
+
+rs.mock("@/core/i18n/hooks", () => ({
+  useI18n: () => ({
+    t: {
+      common: { thinking: "thinking" },
+      toolCalls: {
+        lessSteps: "less steps",
+        moreSteps: (count: number) => `${count} more steps`,
+        readFile: "read file",
+        useTool: (name: string) => `use ${name}`,
+        searchForRelatedInfo: "search for related info",
+        searchOnWebFor: (query: string) => `search the web for ${query}`,
+      },
+      tokenUsage: {
+        label: "tokens",
+        unavailableShort: "n/a",
+      },
+    },
+  }),
+}));
+
+rs.mock("@/env", () => ({
+  env: { NEXT_PUBLIC_STATIC_WEBSITE_ONLY: "false" },
+}));
+
+rs.mock("@/components/workspace/artifacts", () => ({
+  useArtifacts: () => ({
+    setOpen: () => undefined,
+    autoOpen: false,
+    autoSelect: false,
+    selectedArtifact: null,
+    select: () => undefined,
+  }),
+}));
+
+afterEach(cleanup);
+
+function renderGroup(messages: Message[], isLoading = false) {
+  // The streaming rehype pipeline splits words into spans, so assert on
+  // textContent instead of innerHTML.
+  return render(<MessageGroup messages={messages} isLoading={isLoading} />)
+    .container.textContent;
+}
+
+describe("MessageGroup", () => {
+  it("renders unresolved streaming assistant text before a tool call arrives", () => {
+    // While the current turn is loading, a content-only message lives in the
+    // processing group (#4304). The group must render that text immediately,
+    // even though no tool call exists yet.
+    const text = renderGroup(
+      [
+        {
+          id: "ai-1",
+          type: "ai",
+          content: "I will inspect the source material first.",
+        } as Message,
+      ],
+      true,
+    );
+
+    expect(text).toContain("I will inspect the source material first.");
+  });
+
+  it("renders assistant text attached to a tool-calling processing message", () => {
+    const text = renderGroup([
+      {
+        id: "ai-1",
+        type: "ai",
+        content: "I will inspect the current implementation.",
+        tool_calls: [
+          {
+            id: "call-1",
+            name: "read_file",
+            args: { path: "message-group.tsx" },
+          },
+        ],
+      } as Message,
+      {
+        id: "tool-1",
+        type: "tool",
+        name: "read_file",
+        tool_call_id: "call-1",
+        content: "file contents",
+      } as Message,
+    ]);
+
+    expect(text).toContain("I will inspect the current implementation.");
+    expect(text).toContain("message-group.tsx");
+  });
+
+  it("keeps content-only assistant text visible after a tool call while streaming", () => {
+    // A later content-only AI message may itself gain another tool call
+    // before the turn settles; until then it stays visible after the last
+    // tool-call step instead of jumping out of the group (#4304).
+    const text = renderGroup(
+      [
+        {
+          id: "ai-1",
+          type: "ai",
+          content: "I will inspect the current implementation.",
+          tool_calls: [
+            {
+              id: "call-1",
+              name: "read_file",
+              args: { path: "source.ts" },
+            },
+          ],
+        } as Message,
+        {
+          id: "tool-1",
+          type: "tool",
+          name: "read_file",
+          tool_call_id: "call-1",
+          content: "file contents",
+        } as Message,
+        {
+          id: "ai-2",
+          type: "ai",
+          content: "Here is the final streamed answer.",
+        } as Message,
+      ],
+      true,
+    );
+
+    expect(text).toContain("Here is the final streamed answer.");
+  });
+
+  it("keeps reasoning-only processing groups unchanged", () => {
+    // Reasoning steps stay in the "thinking" collapsible below the tool
+    // call (existing behavior); no assistant-text step is created for an
+    // empty-content message.
+    const text = renderGroup([
+      {
+        id: "ai-1",
+        type: "ai",
+        content: "",
+        additional_kwargs: { reasoning_content: "I should search first." },
+        tool_calls: [
+          { id: "call-1", name: "web_search", args: { query: "x" } },
+        ],
+      } as Message,
+      {
+        id: "tool-1",
+        type: "tool",
+        name: "web_search",
+        tool_call_id: "call-1",
+        content: "[]",
+      } as Message,
+    ]);
+
+    // The reasoning step sits above the last tool call and stays collapsed
+    // behind the "more steps" toggle (pre-existing behavior); no assistant
+    // text step is created for the empty-content message.
+    expect(text).toContain("1 more steps");
+    expect(text).toContain("search the web for x");
+    expect(text).not.toContain("I should search first.");
+  });
+});

@@ -34,6 +34,61 @@ function humanMessageWithImages(): Message {
   } as unknown as Message;
 }
 
+describe("MessageListItem reasoning placement", () => {
+  it("does not duplicate reasoning inside a tool-calling clarification bubble", () => {
+    // A mirrored clarification bubble (content + ask_clarification tool call)
+    // keeps its reasoning in the processing group's ChainOfThought panel;
+    // rendering it inside the bubble's <Reasoning> too would paint it twice
+    // (#3868).
+    const message = {
+      id: "ai-clarification",
+      type: "ai",
+      content: "Before I continue, which city?",
+      additional_kwargs: { reasoning_content: "internal reasoning" },
+      tool_calls: [
+        {
+          id: "call-1",
+          name: "ask_clarification",
+          args: { question: "Which city?" },
+        },
+      ],
+    } as unknown as Message;
+
+    const { container } = render(
+      <MessageListItem
+        message={message}
+        showCopyButton={false}
+        threadId="t1"
+      />,
+    );
+
+    expect(container.textContent).toContain("Before I continue, which city?");
+    expect(container.textContent).not.toContain("internal reasoning");
+  });
+
+  it("keeps reasoning inside a plain assistant bubble", () => {
+    const message = {
+      id: "ai-1",
+      type: "ai",
+      content: "Rayleigh scattering makes the sky blue.",
+      additional_kwargs: { reasoning_content: "internal reasoning" },
+    } as unknown as Message;
+
+    const { container } = render(
+      <MessageListItem
+        message={message}
+        showCopyButton={false}
+        threadId="t1"
+      />,
+    );
+
+    expect(container.textContent).toContain(
+      "Rayleigh scattering makes the sky blue.",
+    );
+    expect(container.textContent).toContain("internal reasoning");
+  });
+});
+
 describe("MessageListItem uploaded image cards", () => {
   it("opens the lightbox from an uploaded image card", () => {
     const { container, unmount } = render(
@@ -63,13 +118,9 @@ describe("MessageListItem uploaded image cards", () => {
       />,
     );
     fireEvent.click(container.querySelector("button img")!);
-    fireEvent.click(
-      document.querySelector('[aria-label="Zoom in"]')!,
-    );
+    fireEvent.click(document.querySelector('[aria-label="Zoom in"]')!);
     expect(document.body.textContent).toContain("125%");
-    fireEvent.click(
-      document.querySelector('[aria-label="Zoom out"]')!,
-    );
+    fireEvent.click(document.querySelector('[aria-label="Zoom out"]')!);
     expect(document.body.textContent).toContain("100%");
     fireEvent.keyDown(window, { key: "Escape" });
     expect(document.querySelector('[role="dialog"]')).toBeNull();
