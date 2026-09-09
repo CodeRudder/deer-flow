@@ -318,8 +318,9 @@ Before prompt writing, check only what is required to continue:
 - Seedance + real-person material: if any image may contain a real person's
   face (the user's statement or your visual judgment), run the per-material
   question — drop / replace / redraw each face image per
-  `references/workarounds.md` — before any image generation. Never redraw
-  silently; MiniMax H3 needs no workaround.
+  `references/workarounds.md` — after material checks and before prompt
+  writing or image generation. Never redraw silently; MiniMax H3 needs no
+  workaround.
 
 Do not require matching ratios across `reference` images, and do not compare
 across images for a single first or last frame. If frame-image ratios conflict
@@ -430,7 +431,8 @@ re-check). Generated BEFORE the plan card so the card confirms real files.
   - 有图 or 无图帮我找 (collected) → `image-editing` with the user's /
     collected material as the base image (identity/consistency anchor;
     redraw workaround active → the design sheet replaces the photo as the
-    anchor — `references/workarounds.md`):
+    shot-1 anchor, but is not auto-attached to the video call —
+    `references/workarounds.md`):
     ```bash
     python /mnt/skills/public/image-editing/scripts/edit.py \
       --image {base material path} \
@@ -547,10 +549,11 @@ The card must not show the model, quota, or cost notes. The 4 s upgrade
 limitation is a capability note, not a cost note; show it only when the user
 explicitly selects a 4 s 768P draft.
 Direct 2K output does not need an upgrade warning.
-Redraw-workaround path: the Materials row lists the character design sheets
-(source-labeled, redrawn from real-person photos) and declares the result is
-an AI re-enactment from them; the image-quota cost was declared at the
-per-material question and is not repeated on the card.
+Redraw-workaround path: the Materials row lists the effective materials
+(design sheets source-labeled as redrawn from real-person photos; storyboard
+path still defaults to storyboard images) and declares the result is an AI
+re-enactment from them; the image-quota cost was declared at the per-material
+question and is not repeated on the card.
 
 - `clarification_type`: `approach_choice`.
 - `options`: `["确认并生成", "我要调整"]`.

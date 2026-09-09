@@ -14,7 +14,8 @@ live-action paragraph; untested).
 ## The per-material question (after material checks, before any image spend)
 
 If the routed provider is Seedance and any material image may contain a real
-person's face, ask the user ONCE, listing every face-containing image with one
+person's face, ask via `ask_clarification` exactly ONCE, listing every
+face-containing image with one
 choice per image:
 
 | Option | Consequence |
@@ -22,6 +23,13 @@ choice per image:
 | 弃用 (drop) | the image leaves this task; re-count references from the remainder |
 | 重新获取 (replace) | search again or ask the user for a substitute without a face; the substitute passes the same checks |
 | 重绘 (redraw) | the image goes through the redraw below — one image call per image, quota cost stated on the spot |
+
+- `clarification_type`: `approach_choice`; `options`: the three actions above
+  — with multiple face-containing images, keep the same three options and let
+  the user assign one per image in free text.
+- Confirmation protocol: restate every image's assigned choice (image →
+  choice) before the first redraw call; an image without an explicit choice
+  is re-asked, never defaulted.
 
 Images without a face join as usual and never enter this question. If every
 image is dropped, reference mode has no materials — fall back to the standard
@@ -47,10 +55,32 @@ self-retry; each attempt costs one image call.
 
 ## Step 2: Video generation (Seedance reference mode)
 
-The design sheets REPLACE the original photos as `--reference-images`. Append
-this fixed instruction paragraph right after the @-tag material declarations
-(the Seedance reference format is otherwise unchanged; the paragraph contains
-no forbidden words):
+Build the **effective material list** from the per-material decisions: each
+retained design sheet occupies the slot of the photo it was redrawn from, a
+dropped photo leaves the list, a replacement enters only after it passes the
+same face check, and non-face materials keep their slots. The prompt's
+`@imageN` numbering and the `--reference-images` order MUST follow this list.
+
+### Plain reference path
+
+Every retained design sheet replaces its source photo in
+`--reference-images`; never pass a rejected photo alongside its design sheet.
+
+### Storyboard path
+
+The video call passes the generated storyboard images in shot order (the
+Step 2.5 default rule). The design sheet is only the **shot-1 anchor** —
+choose the sheet carrying the primary identity/costume information (if two
+or more are equally plausible, ask one short question while resolving the
+per-material question). Attach the anchor sheet only when it carries
+information the storyboard images don't cover or the user explicitly
+requires it: append it after the storyboard images, count it against the
+material budget, and update the prompt numbering to match the final CLI
+order.
+
+Append this fixed instruction paragraph right after the @-tag material
+declarations (the Seedance reference format is otherwise unchanged; the
+paragraph contains no forbidden words):
 
 ```text
 Reference the uploaded character design to generate an ultra-realistic live-action video. Ensure cinematic lighting, detailed skin, and strict consistency in features, hair, and clothing. Include natural movements and stable, flicker-free footage.
@@ -66,8 +96,7 @@ BEFORE storyboard generation: the design sheet replaces the original photo as
 the storyboard chain's anchor — the first shot is image-edited from the design
 sheet, later shots chain from shot 1 as usual. The whole chain stays
 illustration-form; live-action realism is pulled back by the instruction
-paragraph alone. For the attached-original rule (Step 2.5) the design sheet
-counts as an original material.
+paragraph alone.
 
 ## If a submit is still rejected
 
