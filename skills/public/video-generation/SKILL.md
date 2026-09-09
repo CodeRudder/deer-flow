@@ -57,8 +57,8 @@ Prefill supplied values; do not make the user repeat them.
 
 | Field | Prefilled value |
 |---|---|
-| Theme | {user content — may be vague or abstract / needs input} |
-| Mode | {T2V / first+last frame (首尾帧) / reference — inferred from the request; default `reference`} |
+| Theme* | {user content — may be vague or abstract / needs input} |
+| Mode | T2V / first+last frame (首尾帧) / reference [✓] — mark the inferred mode (default `reference`) |
 | Subject | {decomposed from the theme / user override} |
 | Action | {decomposed from the theme / user override} |
 | Setting | {user content / auto-complete} |
@@ -67,11 +67,11 @@ Prefill supplied values; do not make the user repeat them.
 | Mood | {user content / auto-complete} |
 | Sound | {user content / auto-complete} |
 | Storyboard | {user content / plan as needed — text-only shot planning: how many shots, what happens in each; no image-generation intent} |
-| Storyboard images | {否 (default) / 是 — one design still per shot, consumes image-generation quota (cost noted in the option text; situational mention only for a multi-shot story with no materials)} |
+| Storyboard images | 否 [✓] (default) / 是 — one design still per shot, consumes image-generation quota (cost noted in the option text; situational mention only for a multi-shot story with no materials) |
 | Duration | {user content / default 5 s; Seedance 2.5 frame tasks default to model-picked length (`-1`)} |
-| Aspect ratio | {user content / default 16:9} |
-| Resolution | {user content / default draft tier — from `--describe-provider`} |
-| Images | {filenames and stated intent (user-provided, agent may supplement) / one of: 有图 (user has images) / 无图帮我找 (no images — collect for me: search first; image generation only after approval) / 无图且不找 (no images and do NOT search — skip collection)} |
+| Aspect ratio | 16:9 / 9:16 / 1:1 / 21:9 / adaptive [✓] (default — T2V and the storyboard path render 16:9; reference stays adaptive) / other: {user value} |
+| Resolution | 480P / 720P / 768P / 1080P / 2K — [✓] marks the routed provider's draft tier (value domain via `--describe-provider`) |
+| Images | 有图 ({filenames and intent — user-provided, agent may supplement}) / 无图帮我找 [✓] (collect for me: search first; image generation only after approval) / 无图且不找 (skip collection) — preselect per the user's wording; unstated → 无图帮我找 |
 
 Only a **theme** is required — it may be vague or abstract; the skill
 decomposes it into subject + action while writing the prompt. Tell the user:
@@ -99,6 +99,11 @@ Reply "continue" for defaults, or say what to add or change.
   T2V needs none) and refresh the Images row accordingly.
 - Optional fields never block progress. The user confirms the table as a whole;
   do not interrogate field by field.
+- **Selection rows render as option lists**: the enum/preset rows (Mode,
+  Storyboard images, Images, and the preset slots in Aspect ratio / Resolution)
+  show every option with the current choice marked `[✓]`, the rest listed bare —
+  the user switches by naming another option. `{...}` rows are free
+  text and keep plain prefills.
 - **Storyboard-image intent = 是 (one exception to no-field-interrogation)**:
   when the user sets the Storyboard images row to 是 (or asks for storyboard
   design images in their words), the intent AND its limits must be settled at
