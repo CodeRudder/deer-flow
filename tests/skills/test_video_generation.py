@@ -410,6 +410,21 @@ def test_h3_reference_role_passes_through_more_than_five_images(monkeypatch):
     assert roles == [None] + ["reference_image"] * 6
 
 
+def test_h3_unknown_model_in_reference_mode_is_local_rejection(monkeypatch):
+    # Unknown model must surface as ValueError (base.py -> sidecar "rejected",
+    # quota released) — never KeyError, which lands on "failed".
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    with pytest.raises(ValueError, match="unknown MiniMax model"):
+        _h3().PROVIDER(model="MiniMax-H9").create_task("x", ["https://cdn/1.png"], {"image_role": "reference"})
+
+
+def test_h3_reference_branch_uses_validated_model_lookup():
+    # The reference branch re-resolves the model; it must reuse the validated
+    # lookup instead of a bare MODEL_SPECS[...] subscript.
+    with pytest.raises(ValueError, match="unknown MiniMax model"):
+        _h3().PROVIDER(model="MiniMax-H9")._build_content("x", ["https://cdn/1.png"], "reference")
+
+
 def test_h3_full_flow_downloads_video(monkeypatch, tmp_path):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
 

@@ -150,8 +150,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
             # through; the storyboard path can push the count toward the cap,
             # so enforce it locally instead of letting the API reject the task
             # after billing (same guard as seedance's reference branch).
-            model = self.model or os.getenv("MINIMAX_VIDEO_MODEL", DEFAULT_MODEL)
-            spec = MODEL_SPECS[model]
+            model, spec = self._model_and_spec()
             if len(images) > spec.max_ref_images:
                 raise ValueError(f"too many reference images: {len(images)} > {spec.max_ref_images} for model {model}")
             for path in images:
