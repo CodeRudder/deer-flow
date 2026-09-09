@@ -683,9 +683,10 @@ Hard constraints for the command:
   `--image-role`, and `--model` (the endpoint replays the exact original
   input; a changed input is a new generation, not an upgrade).
 - `--output-file` must be a NEW path, e.g. `{name}-2k.mp4` (never overwritten).
-- A local source above ~45 MB is rejected (request-body cap). Point
-  `--upscale-video` at a public URL, or draft a shorter one — a new
-  generation that must pass the full plan-card gate.
+- A local source above ~45 MB is rejected (request-body cap). No object
+  storage is configured, so no public URL can be produced for the draft —
+  the only exit is drafting a shorter take: a new generation that must
+  pass the full plan-card gate.
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
