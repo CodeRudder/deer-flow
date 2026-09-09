@@ -62,9 +62,8 @@ User set Storyboard images = 是, Images = 无图且不找, duration 15 s → 3 
 settled at the input table (cap check passes on 2.5 and 2.0 family alike).
 No user material, so shot 1 is the text-to-image fallback
 (`OPENAI_IMAGE_QUALITY=medium` inline; the input-table approval covers it —
-no extra confirmation); shots 2-3 chain from shot 1 via image-editing,
-dispatched in parallel once shot 1 succeeds (independent calls in the same
-response — never `&&`-chained, never one-by-one):
+no extra confirmation); shots 2-3 chain from shot 1 via image-editing and are
+dispatched together in one foreground command after shot 1 succeeds:
 
 ```bash
 OPENAI_IMAGE_QUALITY=medium python /mnt/skills/public/image-generation/scripts/generate.py \
@@ -72,17 +71,18 @@ OPENAI_IMAGE_QUALITY=medium python /mnt/skills/public/image-generation/scripts/g
   --aspect-ratio 16:9 \
   --output-file /mnt/user-data/outputs/sd-sb-1.png
 
-# shot 1 done → dispatch shots 2-3 in parallel (independent calls)
+# shot 1 done → dispatch shots 2-3 in parallel (one foreground call: & + wait)
 python /mnt/skills/public/image-editing/scripts/edit.py \
   --image /mnt/user-data/outputs/sd-sb-1.png \
   --prompt {shot-2 description: change framing/action/scene only; keep identity} \
   --output-file /mnt/user-data/outputs/sd-sb-2.png \
-  --quality medium
+  --quality medium &
 python /mnt/skills/public/image-editing/scripts/edit.py \
   --image /mnt/user-data/outputs/sd-sb-1.png \
   --prompt {shot-3 description} \
   --output-file /mnt/user-data/outputs/sd-sb-3.png \
-  --quality medium
+  --quality medium &
+wait
 ```
 
 Prompt file (`sd-sb.txt`) opens with the mandatory keyframe declaration

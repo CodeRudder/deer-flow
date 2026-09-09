@@ -75,7 +75,7 @@ User uploaded `face.jpg`, set Storyboard images = 是, Images = 有图, duration
 (`wave-sb.txt`, six-section
 format with per-shot `<Picture N>` anchors and the `[keyframe completion]`
 prefix), generate the storyboard chain — shots 2-3 dispatched in parallel
-once shot 1 succeeds:
+(one foreground call) once shot 1 succeeds:
 
 ```bash
 # shot 1: user material as base (image-editing)
@@ -85,17 +85,18 @@ python /mnt/skills/public/image-editing/scripts/edit.py \
   --output-file /mnt/user-data/outputs/wave-sb-1.png \
   --quality medium
 
-# shots 2-3: chain from shot 1 (parallel independent calls, not &&-chained)
+# shots 2-3: chain from shot 1 (one foreground call: & + wait, not &&-chained)
 python /mnt/skills/public/image-editing/scripts/edit.py \
   --image /mnt/user-data/outputs/wave-sb-1.png \
   --prompt {shot-2 description: change framing/action/scene only; keep identity} \
   --output-file /mnt/user-data/outputs/wave-sb-2.png \
-  --quality medium
+  --quality medium &
 python /mnt/skills/public/image-editing/scripts/edit.py \
   --image /mnt/user-data/outputs/wave-sb-1.png \
   --prompt {shot-3 description} \
   --output-file /mnt/user-data/outputs/wave-sb-3.png \
-  --quality medium
+  --quality medium &
+wait
 ```
 
 Spec preflight, then the video call — storyboard images only by default

@@ -458,11 +458,11 @@ re-check). Generated BEFORE the plan card so the card confirms real files.
   景别/动作/机位/场景; identity, clothing, palette, style stay anchored to
   shot 1) — never from the previous shot (previous-shot chaining forces
   serial generation and compounds drift). **Dispatch shots 2..N in
-  parallel**: once shot 1 succeeds, issue all remaining shots in the SAME
-  response as independent bash calls (or one call with `&` + `wait`) —
-  never one-by-one waiting for each. Never `&&`-chain shots (a
-  short-circuit would still bill reserved calls); `;` is sequential, not
-  parallel.
+  parallel**: once shot 1 succeeds, launch all remaining shots in ONE
+  foreground bash call with `&` + `wait` — shell backgrounding is the
+  reliable parallel form; independent tool calls may not actually run
+  concurrently. Never `&&`-chain shots (a short-circuit would still bill
+  reserved calls); `;` is sequential, not parallel.
 - **Prompt-file JSON** (image-generation only): `{ "prompt": "..." }` — the
   shot description verbatim (subject, framing, action, scene, style; no
   storyboard jargon inside the image prompt).
@@ -473,9 +473,11 @@ re-check). Generated BEFORE the plan card so the card confirms real files.
   orientation (`check_materials.py` preflight still applies; it validates, it
   never crops to a target). State the landed ratio on the plan card if it
   differs from the target.
-- **Failure**: stop at the first failed image — report the error, do not
-  retry on your own (each attempt consumes image quota even on failure).
-  Wait for the user; a retried image costs one more image call.
+- **Failure**: shot 1 failed → dispatch nothing further, report, and wait.
+  Dispatched shots failed → collect every result, keep the successes, report
+  the failed shot(s), and ask the user whether to regenerate them. No
+  self-retry (each attempt consumes image quota even on failure); a retried
+  image costs one more image call.
 - **Resume**: on a new run with the storyboard half-generated, reuse existing
   on-disk storyboard files (`{name}-sb-N.png`), generate only the missing
   shots.
