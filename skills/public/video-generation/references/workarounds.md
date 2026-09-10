@@ -77,13 +77,15 @@ never pass a rejected photo alongside its design sheet.
 
 The final CLI asset list takes the generated storyboard images (shot order)
 as its body — the default rule in `references/storyboard.md`. The design
-sheet is only the **shot-1 anchor** — choose the sheet carrying the primary
+sheet is the **shot-1 anchor** — choose the sheet carrying the primary
 identity/costume information (if two or more are equally plausible, ask one
-short question while resolving the per-material question). Attach the anchor
-sheet only when it carries information the storyboard images don't cover or
-the user explicitly requires it: append it after the storyboard images,
-count it against the material budget, and update the prompt numbering to
-match the final CLI order.
+short question while resolving the per-material question). The anchor sheet
+is ALWAYS attached on the redraw path: the storyboard chain re-renders the
+character, so the sheet is the only faithful identity source, and the fixed
+instruction paragraph below presupposes it is uploaded. Append it after the
+storyboard images and other non-face materials, count it against the
+material budget, and update the prompt numbering to match the final CLI
+order.
 
 Append this fixed instruction paragraph right after the @-tag material
 declarations (the Seedance reference format is otherwise unchanged; the
@@ -109,9 +111,14 @@ question and is not repeated on the card.
 When storyboard images are opted in AND the workaround is active, redraw
 BEFORE storyboard generation: the design sheet replaces the original photo as
 the storyboard chain's anchor — the first shot is image-edited from the design
-sheet, later shots chain from shot 1 as usual. The whole chain stays
-illustration-form; live-action realism is pulled back by the instruction
-paragraph alone.
+sheet, later shots chain from shot 1 as usual. The detector judges the FACE's
+rendering form, not the scene: in every storyboard image only the character
+stays in the sheet's illustration form — the scene, props, and products
+render realistically (hybrid form, tested passing 2026-09-10). A
+realistic-face storyboard is rejected even when the theme demands live action
+— the character's live-action realism in the video comes from the instruction
+paragraph alone. Scene realism pulls the character toward realistic; the
+post-generation inspection lives in `references/storyboard.md` §4.
 
 ## If a submit is still rejected
 

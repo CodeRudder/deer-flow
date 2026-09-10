@@ -77,8 +77,11 @@ BEFORE the plan card so the card confirms real files.
   - 有图 or 无图帮我找 (collected) → `image-editing` with the user's /
     collected material as the base image (identity/consistency anchor;
     redraw workaround active → the design sheet replaces the photo as the
-    shot-1 anchor, but is not auto-attached to the video call —
-    `references/workarounds.md`):
+    shot-1 anchor and ALWAYS joins the video call as the identity anchor;
+    in storyboard images only the character keeps the sheet's illustration
+    form — scene, props, and products render realistically — a
+    realistic-face storyboard is rejected by Seedance even when the theme
+    demands live action (rule and evidence: `references/workarounds.md`)):
     ```bash
     python /mnt/skills/public/image-editing/scripts/edit.py \
       --image {base material path} \
@@ -98,7 +101,9 @@ BEFORE the plan card so the card confirms real files.
       --output-file /mnt/user-data/outputs/{name}-sb-1.png
     ```
   By default the storyboard images are the ONLY reference assets passed to
-  the video call; original materials join only when they carry visual
+  the video call — on the redraw path the design sheet joins as well
+  (`references/workarounds.md`); original materials join only when they
+  carry visual
   information the storyboard images don't cover or the user explicitly
   requires likeness to a specific photo (the card then lists them as
   attached). One image per shot; EVERY subsequent shot chains from the
@@ -130,7 +135,11 @@ BEFORE the plan card so the card confirms real files.
   on-disk storyboard files (`{name}-sb-N.png`), generate only the missing
   shots.
 - After all images exist, run the spec preflight (`check_materials.py` with
-  the routed provider) on them, then proceed to the plan card.
+  the routed provider) on them; on the redraw path also inspect every
+  storyboard both ways — the character's illustration form stays
+  recognizable and scene, props, and products stay realistic; flag either
+  drift on the plan card for the user's regenerate decision — then proceed
+  to the plan card.
 
 ## 5. Plan-card integration
 
