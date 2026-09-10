@@ -1,11 +1,30 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 import { MessageListItem } from "@/components/workspace/messages/message-list-item";
 
+const clipboardWrites: string[] = [];
+
 rs.mock("@/core/i18n/hooks", () => ({
-  useI18n: () => ({ t: { uploads: { uploading: "uploading" } } }),
+  useI18n: () => ({
+    t: {
+      uploads: { uploading: "uploading" },
+      clipboard: {
+        copyToClipboard: "copy",
+        failedToCopyToClipboard: "failed to copy",
+      },
+    },
+  }),
+}));
+
+rs.mock("@/core/clipboard", () => ({
+  writeTextToClipboard: async (text: string) => {
+    clipboardWrites.push(text);
+    return true;
+  },
+  // streamdown.tsx patches browser globals at import time; no-op it in tests.
+  installClipboardFallback: () => undefined,
 }));
 
 afterEach(cleanup);
@@ -83,6 +102,29 @@ describe("MessageListItem reasoning placement", () => {
       "Rayleigh scattering makes the sky blue.",
     );
     expect(container.textContent).toContain("internal reasoning");
+  });
+});
+
+describe("MessageListItem human message copy", () => {
+  it("copies the displayed text without the injected <uploaded_files> block", async () => {
+    clipboardWrites.length = 0;
+    const message = {
+      id: "human-uploaded",
+      type: "human",
+      content:
+        "<uploaded_files>\nThe following files were uploaded in this message:\n\n(empty)\n\nThe following files were uploaded in previous messages and are still available:\n\n- 视频生成工作流.md (14.5 KB)\n  Path: /mnt/user-data/uploads/视频生成工作流.md\n</uploaded_files>\n\n先撤回到mermaid版本",
+    } as unknown as Message;
+
+    const { container } = render(
+      <MessageListItem message={message} threadId="t1" />,
+    );
+
+    fireEvent.click(container.querySelector("button")!);
+
+    await waitFor(() => {
+      expect(clipboardWrites.length).toBe(1);
+    });
+    expect(clipboardWrites[0]).toBe("先撤回到mermaid版本");
   });
 });
 

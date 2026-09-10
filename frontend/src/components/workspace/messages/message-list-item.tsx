@@ -161,11 +161,12 @@ export function MessageListItem({
         >
           <div className="pointer-events-auto flex gap-1">
             <CopyButton
-              clipboardData={
+              // Copy what is displayed: strip backend-injected context blocks.
+              clipboardData={stripUploadedFilesTag(
                 extractContentFromMessage(message) ??
-                extractReasoningContentFromMessage(message) ??
-                ""
-              }
+                  extractReasoningContentFromMessage(message) ??
+                  "",
+              )}
             />
             {feedback !== undefined && runId && threadId && (
               <FeedbackButtons
