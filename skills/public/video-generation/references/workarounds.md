@@ -27,6 +27,10 @@ choice per image:
 - `clarification_type`: `approach_choice`; `options`: the three actions above
   — with multiple face-containing images, keep the same three options and let
   the user assign one per image in free text.
+- Question format stays COMPACT: one line for the problem (which image, why),
+  one line for the bypass + total image-quota cost (this redraw + the opted-in
+  storyboards), then the three options — no background explanation beyond
+  that.
 - Confirmation protocol: restate every image's assigned choice (image →
   choice) before the first redraw call; an image without an explicit choice
   is re-asked, never defaulted.

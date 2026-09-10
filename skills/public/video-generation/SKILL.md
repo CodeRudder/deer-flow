@@ -27,16 +27,19 @@ Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Re
 For **every new video request**, resolve the provider first (same
 deterministic rules the script uses — `references/runtime.md`) and run
 `generate.py --describe-provider {provider}` once (read-only, never billed):
-its ratio/resolution lists fill the 画幅 / 分辨率 rows. Then parse everything
-the user already gave you and call `ask_clarification` with the fixed
+its ratio/resolution domains fill the 画幅 / 分辨率 row options (omit
+unsupported values). Then parse everything the user already gave you and
+call `ask_clarification` with the fixed
 **Markdown table** below. This gate is mandatory even when the theme
 is already present. Prefill supplied values; do not make the user repeat
 them.
 
 | 字段 | 预填内容 |
 |---|---|
-| 主题* | {用户内容——可以模糊或抽象 / 待输入} |
-| 模式 | 文生视频 / 首尾帧 / 参考图 [✓]——标注推断的模式（默认参考图） |
+| 主题 | {用户内容——可以模糊或抽象 / 待输入} |
+| 模式 | 文生视频：文字生成视频 \| 首尾帧：指定图片作为首尾帧 \| **参考图**：可结合已有参考图，也可调用生图能力，生成分镜照片作为参考图 |
+| 生成分镜效果图 | **否** \| 是（每镜一张，耗生图额度） |
+| 素材 | 有图（列出文件名与用途）\| **无图帮我找**（先搜索；生成需批准）\| 无图且不找（跳过采集）——按用户措辞预选；未提及 → 无图帮我找 |
 | 主体 | {从主题拆解 / 用户指定} |
 | 动作 | {从主题拆解 / 用户指定} |
 | 场景 | {用户内容 / 自动补全} |
@@ -45,19 +48,17 @@ them.
 | 情绪 | {用户内容 / 自动补全} |
 | 声音 | {用户内容 / 自动补全} |
 | 分镜 | {用户内容 / 按需规划——纯文字镜头规划：镜头数与各镜头内容；不含生图意图} |
-| 生成分镜效果图 | 否 [✓]（默认）/ 是 — 每个镜头一张分镜图，消耗图像生成额度（费用写在选项文字里；仅多镜头且无素材时主动提及） |
 | 时长 | {用户内容 / 默认 5 秒} |
-| 画幅 | {manifest 画幅列表；文生视频/分镜路径标 `16:9` [✓]，参考图标 `自适应` [✓]——不列不支持的值} |
-| 分辨率 | {manifest 分辨率列表；草稿档标 [✓]——不列不支持的值} |
-| 素材 | 有图（列出文件名与用途）/ 无图帮我找 [✓]（默认：先搜索；生成需批准）/ 无图且不找（跳过采集）——按用户措辞预选；未提及 → 无图帮我找 |
+| 画幅 | {21:9 \| 16:9 \| 4:3 \| 1:1 \| 3:4 \| 9:16 \| 自适应——加粗当前项：文生视频/分镜路径 16:9，参考模式 自适应；不列不支持的值} |
+| 分辨率 | {480P \| 720P \| 768P \| 1080P \| 2K——加粗路由渠道的草稿档；不列不支持的值} |
 
 Only a **theme** is required — it may be vague or abstract; the skill
-decomposes it into subject + action while writing the prompt. Tell the user:
-**anything left unfilled — including reference images — will be automatically
-completed and collected** (rules in Choosing the mode; the 素材 row's
-three-state collection intent overrides this default when stated). Only
-treat files the user supplied in this conversation as user-provided.
-Reply "继续用这些输入" for defaults, or say what to add or change.
+decomposes it into subject + action while writing the prompt. Tell the user
+in ONE line: 未填项自动补全；回复"继续用这些输入"用当前输入，或说要改什么。
+(Auto-completion and collection stay agent-facing: Choosing the mode governs
+what is filled and collected, the 素材 row's three-state intent overrides
+the default when stated, and only files the user supplied in this
+conversation count as user-provided.)
 
 - **The full table is ALWAYS shown in the first reply** — even when the theme
   is missing (prefill the theme row with "待输入") — together with the
@@ -76,11 +77,12 @@ Reply "继续用这些输入" for defaults, or say what to add or change.
   T2V needs none) and refresh the 素材 row accordingly.
 - Optional fields never block progress. The user confirms the table as a whole;
   do not interrogate field by field.
-- **Selection rows render as option lists**: 模式 / 生成分镜效果图 / 素材
-  show every workflow option with the current choice marked `[✓]`. 画幅 /
-  分辨率 use the routed provider/model's manifest values, mark the default
-  `[✓]`, and omit unsupported values. `{...}` rows are free text and keep
-  plain prefills.
+- **Row rendering**: enum rows (模式 / 生成分镜效果图 / 素材 / 画幅 /
+  分辨率) show their options with the current choice in **bold**; the user
+  switches by naming another option — 生成分镜效果图 surfaces its opt-in
+  only for a multi-shot story with no materials; 素材 preselects per the
+  user's wording and defaults to 无图帮我找. `{...}` rows are free text and
+  keep plain prefills.
 - **术语固定**：模板里的中文列名、选项串与方案卡标签就是规范写法，中文回复
   原样使用；正文术语同样固定——分镜图 / 分镜路径 / 镜头 / 草稿档 / 升格 /
   采集计划 / 规格预检。用户不读中文时，把标签、选项与固定串翻译为用户语言，
@@ -388,15 +390,13 @@ translate the labels and fixed strings, keep proper nouns):
 [视频生成方案]
 
 - 模式：{文生视频 / 首尾帧 / 参考图}
-- 素材：{无 / 完整路径 + 角色 + 顺序 / 分镜路径：分镜图逐镜头一张（来源标注；仅用于生成分镜图的原始素材不传入），原始素材仅在其携带分镜图未覆盖的信息时附加 / 采集计划：每张图的用途、数量、画幅——先搜索；图像生成需用户批准}
+- 素材：{无 / 有图：短文件名 + 角色 + 顺序 / 分镜路径：分镜图短文件名逐镜头一张（sb-1..sb-N，来源标注；仅用于生成分镜图的原始素材不传入），附加素材短文件名 + 角色（仅当携带分镜图未覆盖的信息时附加）/ 采集计划：每张图的用途、数量、画幅——先搜索；图像生成需用户批准}
 - 输出：{时长} · {分辨率} · {具体画幅 / 自适应——分镜路径：分镜图实际生成的画幅}
 - 提示词：{workspace 路径}
   精炼描述：
   {按需以用户语言给出主题、动作、场景、风格/情绪、运镜、声音}
 - 分镜：
-  {无 / 简明分镜（用户语言）/ 分镜路径：逐镜头列表——镜头号 ↔ 时间 ↔ 图片路径——附用途声明（按镜头顺序作为参考图传入；仅参考构图与内容，不采用画风与图内文字）}
-- 本轮变更：
-  {初始方案 / 相对上一版方案的变更}
+  {无 / 简明分镜（用户语言）/ 分镜路径：逐镜头列表——镜头号 ↔ 时间 ↔ 分镜图短文件名——附用途声明（按镜头顺序作为参考图传入；仅参考构图与内容，不采用画风与图内文字）}
 - 能力提示：
   {无 / 该 4 秒草稿无法升格 2K；选 5 秒及以上保留升格选项}
 
@@ -404,10 +404,12 @@ translate the labels and fixed strings, keep proper nouns):
 {仅分镜路径：对某张分镜图不满意？说明镜头号和修改点——受影响的图在本对话内重新生成；你确认分镜图后才开始生成视频。}
 ```
 
-The plan card is fully transparent about what will be submitted: materials
-are listed by their full paths, and the prompt file is given by its path
-(prompt + user-language refined description only) — the user opens the
-presented file to review the actual input. The originals are
+The plan card stays transparent about what will be submitted: material rows
+use short filenames for readability (full paths live in the presented
+files), and the prompt file is given by its path (prompt + user-language
+refined description only) — the user opens the presented file to review the
+actual input. A 本轮变更 line appears ONLY on adjustment rounds (相对上一版
+方案的变更); the initial card omits it. The originals are
 also opened via `present_files` before the card is shown: copy the prompt
 file to `/mnt/user-data/outputs/{name}.prompt.txt` and every material to
 `/mnt/user-data/outputs/{name}-materials/` (use the final images that will
