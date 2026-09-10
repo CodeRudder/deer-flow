@@ -82,12 +82,7 @@ test("aggregates token usage messages once per assistant turn", () => {
 });
 
 test("reasoning + content (no tool calls) yields a single assistant bubble, not a duplicate processing group", () => {
-  // Regression for #3868: the final assistant message in thinking modes
-  // carries both reasoning and answer text. It must surface its reasoning
-  // exactly once — inside the assistant bubble's <Reasoning> collapsible.
-  // Routing the same message into a processing group as well makes the
-  // ChainOfThought panel above the bubble paint the identical reasoning a
-  // second time.
+  // Regression #3868: reasoning + answer must render exactly once.
   const messages = [
     { id: "human-1", type: "human", content: "Why is the sky blue?" },
     {
@@ -102,18 +97,12 @@ test("reasoning + content (no tool calls) yields a single assistant bubble, not 
 
   expect(groups.map((group) => group.type)).toEqual(["human", "assistant"]);
 
-  // The reasoning-bearing message lands in exactly one group, so turn-usage
-  // aggregation never double-counts it.
   const turnUsage = getAssistantTurnUsageMessages(groups);
   expect(turnUsage.at(-1)?.map((message) => message.id)).toEqual(["ai-1"]);
 });
 
 test("keeps unresolved streaming text in the processing group when tool calls arrive later", () => {
-  // Regression for #4304: some providers stream an assistant message as text
-  // first and only append tool-call chunks to the same message a moment
-  // later. While the turn is loading, that text stays in the processing
-  // group so it never renders as a final bubble and then jumps into the
-  // steps panel mid-turn.
+  // Regression #4304: pre-tool text stays in the processing group while loading.
   const textOnlyMessages = [
     { id: "human-1", type: "human", content: "Create a presentation" },
     {
@@ -150,7 +139,6 @@ test("keeps unresolved streaming text in the processing group when tool calls ar
   // Same group id across the transition, so React keeps the container.
   expect(toolCallGroups[1]?.id).toBe(textOnlyGroups[1]?.id);
 
-  // Once the turn settles, plain text becomes a normal assistant bubble.
   expect(getMessageGroups(textOnlyMessages).map((group) => group.type)).toEqual(
     ["human", "assistant"],
   );
@@ -202,9 +190,7 @@ test("keeps post-tool streaming text in the processing group until the turn sett
 });
 
 test("keeps clarification bubbles while the current turn is loading", () => {
-  // Tool-calling messages are never "unresolved text": an ask_clarification
-  // message keeps its processing steps above and its own question bubble
-  // even while the turn is still loading.
+  // Clarification messages are never unresolved text (#4304 exemption).
   const messages = [
     { id: "human-1", type: "human", content: "Plan my trip" },
     {

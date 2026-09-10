@@ -418,10 +418,7 @@ function MessageContent_({
   return (
     <AIElementMessageContent className={className}>
       {filesList}
-      {/* Reasoning rides its own bubble only when the message has no tool
-          calls; tool-calling messages (mirrored clarification bubbles) keep
-          their reasoning in the processing group's ChainOfThought panel, and
-          rendering it here too would paint it twice (#3868). */}
+      {/* Tool-calling bubbles keep reasoning in the CoT panel (#3868). */}
       {!isHuman &&
         !hasToolCalls(message) &&
         (!!reasoningContent || wasLoading || turnDuration !== undefined) && (

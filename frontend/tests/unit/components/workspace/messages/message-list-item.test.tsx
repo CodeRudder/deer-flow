@@ -36,10 +36,7 @@ function humanMessageWithImages(): Message {
 
 describe("MessageListItem reasoning placement", () => {
   it("does not duplicate reasoning inside a tool-calling clarification bubble", () => {
-    // A mirrored clarification bubble (content + ask_clarification tool call)
-    // keeps its reasoning in the processing group's ChainOfThought panel;
-    // rendering it inside the bubble's <Reasoning> too would paint it twice
-    // (#3868).
+    // Reasoning stays in the CoT panel for tool-calling bubbles (#3868).
     const message = {
       id: "ai-clarification",
       type: "ai",

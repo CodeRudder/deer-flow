@@ -43,13 +43,8 @@ test("counts later usage-bearing snapshots for the same AI message id", () => {
 });
 
 test("keeps header and per-turn aggregation consistent for a reasoning+answer message", () => {
-  // A single AI message carrying both reasoning (here via inline <think>) and
-  // answer text lands in exactly one assistant group (#3868), so its usage is
-  // counted once both in the per-turn aggregation and against the header
-  // total. The by-id dedupe (see "accumulates each AI message usage only
-  // once") remains the defence-in-depth guard, and the clarification text
-  // mirrored across UI groups still relies on it (see the clarification
-  // dedupe test below).
+  // One group per message (#3868): usage counted once; the by-id dedupe
+  // still guards mirrored clarification text.
   const messages = [
     {
       id: "human-1",
