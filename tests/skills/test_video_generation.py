@@ -29,14 +29,10 @@ SCRIPT_DIR = REPO_ROOT / "skills" / "public" / "video-generation" / "scripts"
 
 def _load_video_generate():
     """Load video's generate.py with its own providers package (no cross-skill bleed)."""
-    for name in [
-        n for n in sys.modules if n == "providers" or n.startswith("providers.")
-    ]:
+    for name in [n for n in sys.modules if n == "providers" or n.startswith("providers.")]:
         del sys.modules[name]
     sys.path.insert(0, str(SCRIPT_DIR))
-    spec = importlib.util.spec_from_file_location(
-        "video_generation_generate", SCRIPT_DIR / "generate.py"
-    )
+    spec = importlib.util.spec_from_file_location("video_generation_generate", SCRIPT_DIR / "generate.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules["video_generation_generate"] = module
     spec.loader.exec_module(module)
@@ -154,7 +150,6 @@ def test_env_model_beats_env_provider(monkeypatch):
     monkeypatch.setenv("VIDEO_GENERATION_PROVIDER", "minimax_v1")
     monkeypatch.setenv("VIDEO_GENERATION_MODEL", "MiniMax-H3")
     assert vid._resolve_target({}, None, None) == ("minimax_h3", "MiniMax-H3")
-
 
 
 def test_model_without_config_routes_to_its_provider_not_credential(monkeypatch):
@@ -287,9 +282,7 @@ def test_h3_t2v_payload_includes_ratio(monkeypatch):
 
 def test_h3_t2v_accepts_portrait_3_4_ratio(monkeypatch):
     captured = _capture_post(monkeypatch)
-    _h3().PROVIDER(model=None).create_task(
-        "a cat", [], {"resolution": "768P", "duration": 4, "ratio": "3:4"}
-    )
+    _h3().PROVIDER(model=None).create_task("a cat", [], {"resolution": "768P", "duration": 4, "ratio": "3:4"})
     assert captured["json"]["ratio"] == "3:4"
 
 
@@ -370,9 +363,7 @@ def test_h3_first_last_frame_role(monkeypatch):
 
 def test_h3_first_last_with_single_image_is_first_frame_only(monkeypatch):
     captured = _capture_post(monkeypatch)
-    _h3().PROVIDER(model=None).create_task(
-        "x", ["https://cdn/a.png"], {"image_role": "first_last"}
-    )
+    _h3().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {"image_role": "first_last"})
     roles = [c.get("role") for c in captured["json"]["content"]]
     assert roles == [None, "first_frame"]
 
@@ -404,9 +395,7 @@ def test_h3_reference_role_honors_explicit_ratio(monkeypatch):
 def test_h3_reference_role_default_omits_ratio(monkeypatch):
     # Without an explicit ratio the API stays adaptive for r2va.
     captured = _capture_post(monkeypatch)
-    _h3().PROVIDER(model=None).create_task(
-        "x", ["https://cdn/1.png"], {"image_role": "reference"}
-    )
+    _h3().PROVIDER(model=None).create_task("x", ["https://cdn/1.png"], {"image_role": "reference"})
     assert "ratio" not in captured["json"]
 
 
@@ -419,6 +408,21 @@ def test_h3_reference_role_passes_through_more_than_five_images(monkeypatch):
     )
     roles = [c.get("role") for c in captured["json"]["content"]]
     assert roles == [None] + ["reference_image"] * 6
+
+
+def test_h3_unknown_model_in_reference_mode_is_local_rejection(monkeypatch):
+    # Unknown model must surface as ValueError (base.py -> sidecar "rejected",
+    # quota released) — never KeyError, which lands on "failed".
+    monkeypatch.setenv("MINIMAX_API_KEY", "m")
+    with pytest.raises(ValueError, match="unknown MiniMax model"):
+        _h3().PROVIDER(model="MiniMax-H9").create_task("x", ["https://cdn/1.png"], {"image_role": "reference"})
+
+
+def test_h3_reference_branch_uses_validated_model_lookup():
+    # The reference branch re-resolves the model; it must reuse the validated
+    # lookup instead of a bare MODEL_SPECS[...] subscript.
+    with pytest.raises(ValueError, match="unknown MiniMax model"):
+        _h3().PROVIDER(model="MiniMax-H9")._build_content("x", ["https://cdn/1.png"], "reference")
 
 
 def test_h3_full_flow_downloads_video(monkeypatch, tmp_path):
@@ -452,9 +456,7 @@ def test_h3_full_flow_downloads_video(monkeypatch, tmp_path):
 def test_h3_task_failed_raises(monkeypatch, tmp_path):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"}))
-    monkeypatch.setattr(
-        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "failed"}})
-    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp({"task": {"status": "failed"}}))
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
     with pytest.raises(Exception, match="failed"):
@@ -554,7 +556,9 @@ def test_image_role_reference_with_only_videos_not_rejected(monkeypatch, tmp_pat
     pf.write_text("hello", encoding="utf-8")
     out = tmp_path / "v.mp4"
     msg = vid.generate_video(
-        str(pf), [], str(out),
+        str(pf),
+        [],
+        str(out),
         image_role="reference",
         reference_videos=["https://v.mp4"],
     )
@@ -684,9 +688,7 @@ def test_h3_create_task_blocks_out_of_spec_before_post(monkeypatch, tmp_path):
 
 
 def _load_check_materials():
-    spec = importlib.util.spec_from_file_location(
-        "vg_check_materials", SCRIPT_DIR / "check_materials.py"
-    )
+    spec = importlib.util.spec_from_file_location("vg_check_materials", SCRIPT_DIR / "check_materials.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules["vg_check_materials"] = module
     spec.loader.exec_module(module)
@@ -827,9 +829,7 @@ def test_v1_full_flow_uses_files_retrieve(monkeypatch, tmp_path):
     def fake_get(url, headers=None, params=None, **kw):
         if url.endswith("/v1/query/video_generation"):
             assert params["task_id"] == "T1"
-            return FakeResp(
-                {"status": "Success", "file_id": "F1", "base_resp": {"status_code": 0}}
-            )
+            return FakeResp({"status": "Success", "file_id": "F1", "base_resp": {"status_code": 0}})
         if url.endswith("/v1/files/retrieve"):
             assert params["file_id"] == "F1"
             return FakeResp(
@@ -862,9 +862,7 @@ def test_v1_first_frame_as_data_url(monkeypatch, tmp_path):
 
     def fake_get(url, headers=None, params=None, **kw):
         if url.endswith("/v1/query/video_generation"):
-            return FakeResp(
-                {"status": "Success", "file_id": "F1", "base_resp": {"status_code": 0}}
-            )
+            return FakeResp({"status": "Success", "file_id": "F1", "base_resp": {"status_code": 0}})
         if url.endswith("/v1/files/retrieve"):
             return FakeResp(
                 {
@@ -880,9 +878,7 @@ def test_v1_first_frame_as_data_url(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "get", fake_get)
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
-    vid.generate_video(
-        str(pf), [str(ref)], str(tmp_path / "v.mp4"), provider="minimax_v1"
-    )
+    vid.generate_video(str(pf), [str(ref)], str(tmp_path / "v.mp4"), provider="minimax_v1")
     assert posts["json"]["first_frame_image"].startswith("data:image/jpeg;base64,")
 
 
@@ -913,12 +909,8 @@ def test_poll_timeout_raises_with_handle(monkeypatch, tmp_path):
     # P2-5: timeout must raise (stderr + exit 1 upstream) and keep the task
     # handle in the message so a paid in-flight task stays recoverable.
     monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
-    monkeypatch.setattr(
-        requests, "post", lambda *a, **k: FakeResp({"task_id": "task9"})
-    )
-    monkeypatch.setattr(
-        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "pending"}})
-    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "task9"}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp({"task": {"status": "pending"}}))
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
     with pytest.raises(Exception, match=r"task9 timed out after"):
@@ -1015,18 +1007,30 @@ def test_upscale_rejects_generation_only_params(tmp_path):
     out = tmp_path / "v2k.mp4"
     with pytest.raises(ValueError, match="regeneration endpoint"):
         vid.generate_video(
-            str(pf), [], str(out), provider="minimax_h3",
-            upscale_video="https://dl/d.mp4", duration=8,
+            str(pf),
+            [],
+            str(out),
+            provider="minimax_h3",
+            upscale_video="https://dl/d.mp4",
+            duration=8,
         )
     with pytest.raises(ValueError, match="regeneration endpoint"):
         vid.generate_video(
-            str(pf), [], str(out), provider="minimax_h3",
-            upscale_video="https://dl/d.mp4", aspect_ratio="16:9",
+            str(pf),
+            [],
+            str(out),
+            provider="minimax_h3",
+            upscale_video="https://dl/d.mp4",
+            aspect_ratio="16:9",
         )
     with pytest.raises(ValueError, match="regeneration endpoint"):
         vid.generate_video(
-            str(pf), [], str(out), provider="minimax_h3",
-            upscale_video="https://dl/d.mp4", resolution="768P",
+            str(pf),
+            [],
+            str(out),
+            provider="minimax_h3",
+            upscale_video="https://dl/d.mp4",
+            resolution="768P",
         )
 
 
@@ -1035,8 +1039,11 @@ def test_upscale_missing_source_rejected(tmp_path):
     pf.write_text("x", encoding="utf-8")
     with pytest.raises(FileNotFoundError, match="source not found"):
         vid.generate_video(
-            str(pf), [], str(tmp_path / "v2k.mp4"),
-            provider="minimax_h3", upscale_video=str(tmp_path / "nope.mp4"),
+            str(pf),
+            [],
+            str(tmp_path / "v2k.mp4"),
+            provider="minimax_h3",
+            upscale_video=str(tmp_path / "nope.mp4"),
         )
 
 
@@ -1048,8 +1055,11 @@ def test_upscale_source_over_limit_rejected(monkeypatch, tmp_path):
     big.write_bytes(b"x" * 16)
     with pytest.raises(ValueError, match="64 MB"):
         vid.generate_video(
-            str(pf), [], str(tmp_path / "v2k.mp4"),
-            provider="minimax_h3", upscale_video=str(big),
+            str(pf),
+            [],
+            str(tmp_path / "v2k.mp4"),
+            provider="minimax_h3",
+            upscale_video=str(big),
         )
 
 
@@ -1060,8 +1070,11 @@ def test_upscale_output_must_be_new(tmp_path):
     existing.write_bytes(b"old")
     with pytest.raises(FileExistsError, match="already exists"):
         vid.generate_video(
-            str(pf), [], str(existing),
-            provider="minimax_h3", upscale_video="https://dl/d.mp4",
+            str(pf),
+            [],
+            str(existing),
+            provider="minimax_h3",
+            upscale_video="https://dl/d.mp4",
         )
 
 
@@ -1071,8 +1084,11 @@ def test_upscale_rejected_on_provider_without_support(monkeypatch, tmp_path):
     pf.write_text("x", encoding="utf-8")
     with pytest.raises(ValueError, match="does not support --upscale-video"):
         vid.generate_video(
-            str(pf), [], str(tmp_path / "v2k.mp4"),
-            provider="minimax_v1", upscale_video="https://dl/d.mp4",
+            str(pf),
+            [],
+            str(tmp_path / "v2k.mp4"),
+            provider="minimax_v1",
+            upscale_video="https://dl/d.mp4",
         )
 
 
@@ -1086,9 +1102,7 @@ def test_upscale_full_flow_writes_sidecar(monkeypatch, tmp_path):
 
     def fake_get(url, headers=None, **kw):
         if "/v2/query/video_generation/" in url:
-            return FakeResp(
-                {"task": {"status": "succeeded", "content": {"url": "https://dl/v2k.mp4"}}}
-            )
+            return FakeResp({"task": {"status": "succeeded", "content": {"url": "https://dl/v2k.mp4"}}})
         return FakeResp(content=b"2KVIDEO")
 
     monkeypatch.setattr(requests, "post", fake_post)
@@ -1098,9 +1112,7 @@ def test_upscale_full_flow_writes_sidecar(monkeypatch, tmp_path):
     pf = tmp_path / "p.txt"
     pf.write_text("same prompt", encoding="utf-8")
     out = tmp_path / "v2k.mp4"
-    msg = vid.generate_video(
-        str(pf), [], str(out), provider="minimax_h3", upscale_video=str(draft)
-    )
+    msg = vid.generate_video(str(pf), [], str(out), provider="minimax_h3", upscale_video=str(draft))
     assert out.read_bytes() == b"2KVIDEO"
     assert "successfully" in msg.lower()
     assert captured["url"].endswith("/v2/video_regeneration")
@@ -1179,9 +1191,7 @@ def test_query_task_reports_succeeded_with_url(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
 
     def fake_get(url, headers=None, params=None, **kw):
-        return FakeResp(
-            {"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}}
-        )
+        return FakeResp({"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}})
 
     monkeypatch.setattr(requests, "get", fake_get)
     msg = vid.query_task("T1", provider="minimax_h3")
@@ -1204,9 +1214,7 @@ def test_query_task_is_read_only_and_updates_sidecar(monkeypatch, tmp_path):
     import providers.base as base
 
     out = tmp_path / "v.mp4"
-    base.write_task_record(
-        str(out), {"provider": "minimax_h3", "task_id": "T1", "status": "timeout"}
-    )
+    base.write_task_record(str(out), {"provider": "minimax_h3", "task_id": "T1", "status": "timeout"})
     msg = vid.query_task("T1", provider="minimax_h3", output_file=str(out))
     assert "failed" in msg
     assert side_effects["delete"] == 0  # read-only: never cancels
@@ -1243,9 +1251,7 @@ def test_poll_prints_elapsed(monkeypatch, tmp_path, capsys):
             polls["n"] += 1
             if polls["n"] == 1:
                 return FakeResp({"task": {"status": "pending"}})
-            return FakeResp(
-                {"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}}
-            )
+            return FakeResp({"task": {"status": "succeeded", "content": {"url": "https://dl/v.mp4"}}})
         return FakeResp(content=b"V")
 
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"}))
@@ -1258,12 +1264,8 @@ def test_poll_prints_elapsed(monkeypatch, tmp_path, capsys):
 
 def test_timeout_marks_sidecar(monkeypatch, tmp_path):
     monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "v")
-    monkeypatch.setattr(
-        requests, "post", lambda *a, **k: FakeResp({"task_id": "task9"})
-    )
-    monkeypatch.setattr(
-        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "pending"}})
-    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "task9"}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp({"task": {"status": "pending"}}))
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
     out = tmp_path / "v.mp4"
@@ -1275,12 +1277,8 @@ def test_timeout_marks_sidecar(monkeypatch, tmp_path):
 
 def test_failed_marks_sidecar(monkeypatch, tmp_path):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
-    monkeypatch.setattr(
-        requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"})
-    )
-    monkeypatch.setattr(
-        requests, "get", lambda *a, **k: FakeResp({"task": {"status": "failed"}})
-    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResp({"task_id": "T1"}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp({"task": {"status": "failed"}}))
     pf = tmp_path / "p.txt"
     pf.write_text("x", encoding="utf-8")
     out = tmp_path / "v.mp4"
@@ -1392,9 +1390,7 @@ def test_h3_regeneration_4xx_carries_base_resp_reason(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
     monkeypatch.setattr(requests, "post", fake_post)
     with pytest.raises(requests.HTTPError, match="1027: content is sensitive"):
-        _h3().PROVIDER(model=None).create_task(
-            "x", [], {"upscale_video": "https://dl/draft.mp4"}
-        )
+        _h3().PROVIDER(model=None).create_task("x", [], {"upscale_video": "https://dl/draft.mp4"})
 
 
 def test_h3_create_4xx_marks_sidecar_failed_with_error(monkeypatch, tmp_path):
@@ -1448,9 +1444,7 @@ def _capture_sd_post(monkeypatch):
 def test_seedance_t2v_payload_defaults(monkeypatch):
     captured = _capture_sd_post(monkeypatch)
     _sd().PROVIDER(model=None).create_task("a cat", [], {})
-    assert captured["url"] == (
-        "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
-    )
+    assert captured["url"] == ("https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks")
     body = captured["json"]
     assert body["model"] == SD_25  # default model
     assert body["resolution"] == "720p"
@@ -1477,9 +1471,7 @@ def test_seedance_frame_on_25_keeps_explicit_resolution(monkeypatch):
     # An explicit validated resolution on a 2.5 frame task is forwarded, not
     # silently dropped to the upstream 720p default.
     captured = _capture_sd_post(monkeypatch)
-    _sd().PROVIDER(model=None).create_task(
-        "start here", ["https://cdn/a.png"], {"resolution": "480p"}
-    )
+    _sd().PROVIDER(model=None).create_task("start here", ["https://cdn/a.png"], {"resolution": "480p"})
     body = captured["json"]
     assert body["ratio"] == "adaptive"
     assert body["duration"] == -1
@@ -1507,9 +1499,7 @@ def test_seedance_frame_on_25_allows_custom_duration(monkeypatch):
 def test_seedance_frame_on_20_keeps_custom_params(monkeypatch):
     # The 2.0 family documents no frame-task lock: explicit ratio/duration pass.
     captured = _capture_sd_post(monkeypatch)
-    _sd().PROVIDER(model=SD_20).create_task(
-        "x", ["https://cdn/a.png"], {"ratio": "9:16", "duration": 8}
-    )
+    _sd().PROVIDER(model=SD_20).create_task("x", ["https://cdn/a.png"], {"ratio": "9:16", "duration": 8})
     body = captured["json"]
     assert body["ratio"] == "9:16"
     assert body["duration"] == 8
@@ -1524,9 +1514,7 @@ def test_seedance_frame_on_20_default_omits_ratio(monkeypatch):
 
 def test_seedance_first_last_roles(monkeypatch):
     captured = _capture_sd_post(monkeypatch)
-    _sd().PROVIDER(model=SD_MINI).create_task(
-        "x", ["https://cdn/a.png", "https://cdn/b.png"], {"image_role": "first_last"}
-    )
+    _sd().PROVIDER(model=SD_MINI).create_task("x", ["https://cdn/a.png", "https://cdn/b.png"], {"image_role": "first_last"})
     roles = [c.get("role") for c in captured["json"]["content"]]
     assert roles == [None, "first_frame", "last_frame"]
 
@@ -1555,9 +1543,7 @@ def test_seedance_reference_mixes_image_video_audio(monkeypatch):
 
 def test_seedance_reference_honors_explicit_ratio(monkeypatch):
     captured = _capture_sd_post(monkeypatch)
-    _sd().PROVIDER(model=None).create_task(
-        "x", ["https://cdn/a.png"], {"image_role": "reference", "ratio": "9:16"}
-    )
+    _sd().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {"image_role": "reference", "ratio": "9:16"})
     assert captured["json"]["ratio"] == "9:16"
 
 
@@ -1584,9 +1570,7 @@ def test_seedance_last_frame_rejected(monkeypatch):
 def test_seedance_videos_without_images_defaults_to_reference(monkeypatch):
     # Video-only reference (no image) is a valid Ark reference task.
     captured = _capture_sd_post(monkeypatch)
-    _sd().PROVIDER(model=None).create_task(
-        "x", [], {"reference_videos": ["https://cdn/v.mp4"]}
-    )
+    _sd().PROVIDER(model=None).create_task("x", [], {"reference_videos": ["https://cdn/v.mp4"]})
     types = [c["type"] for c in captured["json"]["content"]]
     assert types == ["text", "video_url"]
 
@@ -1651,13 +1635,9 @@ def test_seedance_material_caps(monkeypatch):
             {"image_role": "reference"},
         )
     with pytest.raises(ValueError, match="too many reference videos: 11"):
-        p25.create_task(
-            "x", [], {"reference_videos": [f"https://v/{i}.mp4" for i in range(11)]}
-        )
+        p25.create_task("x", [], {"reference_videos": [f"https://v/{i}.mp4" for i in range(11)]})
     with pytest.raises(ValueError, match="too many reference audios: 4"):
-        _sd().PROVIDER(model=SD_20).create_task(
-            "x", [], {"reference_audios": [f"https://a/{i}.mp3" for i in range(4)]}
-        )
+        _sd().PROVIDER(model=SD_20).create_task("x", [], {"reference_audios": [f"https://a/{i}.mp3" for i in range(4)]})
 
 
 def test_seedance_local_media_paths_rejected():
@@ -1676,9 +1656,7 @@ def test_seedance_unknown_model_rejected():
 def test_seedance_upscale_video_rejected(monkeypatch):
     _capture_sd_post(monkeypatch)
     with pytest.raises(ValueError, match="does not support --upscale-video"):
-        _sd().PROVIDER(model=None).create_task(
-            "x", [], {"upscale_video": "https://dl/d.mp4"}
-        )
+        _sd().PROVIDER(model=None).create_task("x", [], {"upscale_video": "https://dl/d.mp4"})
 
 
 def test_seedance_status_normalization(monkeypatch):
@@ -1718,9 +1696,7 @@ def test_seedance_full_flow_downloads_video_and_writes_sidecar(monkeypatch, tmp_
 
     def fake_get(url, headers=None, **kw):
         if "/contents/generations/tasks/cgt-9" in url:
-            return FakeResp(
-                {"status": "succeeded", "content": {"video_url": "https://dl/v.mp4"}}
-            )
+            return FakeResp({"status": "succeeded", "content": {"video_url": "https://dl/v.mp4"}})
         return FakeResp(content=b"SDVIDEO")
 
     monkeypatch.setattr(requests, "post", fake_post)
@@ -1728,9 +1704,7 @@ def test_seedance_full_flow_downloads_video_and_writes_sidecar(monkeypatch, tmp_
     out = tmp_path / "v.mp4"
     pf = tmp_path / "p.txt"
     pf.write_text("a cat", encoding="utf-8")
-    msg = vid.generate_video(
-        str(pf), [], str(out), provider="seedance", model=SD_MINI
-    )
+    msg = vid.generate_video(str(pf), [], str(out), provider="seedance", model=SD_MINI)
     assert out.read_bytes() == b"SDVIDEO"
     assert "successfully" in msg.lower()
     record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
@@ -1812,9 +1786,7 @@ def test_empty_reference_lists_are_neutral(monkeypatch, tmp_path):
     pf = tmp_path / "p.txt"
     pf.write_text("hello", encoding="utf-8")
     out = tmp_path / "v.mp4"
-    msg = vid.generate_video(
-        str(pf), [], str(out), reference_videos=[], reference_audios=[]
-    )
+    msg = vid.generate_video(str(pf), [], str(out), reference_videos=[], reference_audios=[])
     assert msg == "ok fake"
     assert out.read_text(encoding="utf-8") == "ok"
 
@@ -1938,3 +1910,54 @@ def test_seedance_create_200_non_json_body_marks_sidecar_failed(monkeypatch, tmp
     record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
     assert record["status"] == "failed"
     assert record["task_id"] is None
+
+
+# --- storyboard design images: adapter-level guards (skill layer) ---
+
+
+def test_storyboard_multi_image_reference_within_h3_cap(monkeypatch, tmp_path):
+    # H3 reference mode accepts up to 9 images: 3 storyboard images + 1
+    # original reference must pass the local cap guard unchanged (network is
+    # never reached — the assertion is on the absence of the cap ValueError).
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "k")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network off")))
+    pf = tmp_path / "sb.txt"
+    pf.write_text("subject_definitions:", encoding="utf-8")
+    images = [str(tmp_path / f"sb-{i}.png") for i in range(1, 4)]
+    for p in images:
+        Path(p).write_text("img", encoding="utf-8")
+    orig = str(tmp_path / "face.jpg")
+    Path(orig).write_text("img", encoding="utf-8")
+    with pytest.raises((AssertionError, Exception)) as exc_info:
+        vid.generate_video(
+            str(pf),
+            [*images, orig],
+            str(tmp_path / "v.mp4"),
+            provider="minimax_h3",
+            model="MiniMax-H3",
+            image_role="reference",
+            aspect_ratio="16:9",
+            duration=9,
+        )
+    assert "too many reference images" not in str(exc_info.value)
+
+
+def test_storyboard_reference_cap_still_enforced_on_adapter(monkeypatch, tmp_path):
+    # The adapter cap is the last line of defense: 10 images on H3 (cap 9)
+    # must be rejected locally even when the storyboard flow assembled them —
+    # otherwise the API rejects the task AFTER billing the reservation.
+    monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "k")
+    pf = tmp_path / "sb.txt"
+    pf.write_text("x", encoding="utf-8")
+    images = [str(tmp_path / f"sb-{i}.png") for i in range(10)]
+    for p in images:
+        Path(p).write_text("img", encoding="utf-8")
+    with pytest.raises(ValueError, match="too many reference images"):
+        vid.generate_video(
+            str(pf),
+            images,
+            str(tmp_path / "v.mp4"),
+            provider="minimax_h3",
+            model="MiniMax-H3",
+            image_role="reference",
+        )

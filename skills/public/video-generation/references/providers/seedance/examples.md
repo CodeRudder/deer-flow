@@ -35,6 +35,7 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --reference-audios https://cdn/voice.mp3 \
   --image-role reference \
   --model doubao-seedance-2-5-260628 \
+  --resolution 720p --duration 5 \
   --output-file /mnt/user-data/outputs/sd-ref.mp4
 ```
 
@@ -42,8 +43,8 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
 
 User uploaded `dawn.jpg` and `dusk.jpg`: "morph the sky from dawn to dusk."
 On 2.5, frame tasks lock `ratio=adaptive` (the output follows the frame
-image) and `duration` defaults to `-1` (model picks a length); an explicit
-`--aspect-ratio` is rejected locally. Do NOT pass `--aspect-ratio` here.
+image); an explicit `--aspect-ratio` is rejected locally. This workflow uses
+the default `--duration 5` rather than model-picked `-1`.
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
@@ -51,5 +52,57 @@ python /mnt/skills/public/video-generation/scripts/generate.py \
   --reference-images /mnt/user-data/uploads/dawn.jpg /mnt/user-data/uploads/dusk.jpg \
   --image-role first_last \
   --model doubao-seedance-2-5-260628 \
+  --resolution 720p --duration 5 \
   --output-file /mnt/user-data/outputs/sd-fl.mp4
+```
+
+## SD-4 — Seedance reference with storyboard design images
+
+User set Storyboard images = 是, Images = 无图且不找, duration 15 s → 3 shots
+settled at the input table (cap check passes on 2.5 and 2.0 family alike).
+No user material, so shot 1 is the text-to-image fallback
+(`OPENAI_IMAGE_QUALITY=medium` inline; the input-table approval covers it —
+no extra confirmation); shots 2-3 chain from shot 1 via image-editing and are
+dispatched together in one foreground command after shot 1 succeeds:
+
+```bash
+OPENAI_IMAGE_QUALITY=medium python /mnt/skills/public/image-generation/scripts/generate.py \
+  --prompt-file /mnt/user-data/workspace/sd-sb-1.json \
+  --aspect-ratio 16:9 \
+  --output-file /mnt/user-data/outputs/sd-sb-1.png
+
+# shot 1 done → dispatch shots 2-3 in parallel (one foreground call: & + wait)
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/outputs/sd-sb-1.png \
+  --prompt {shot-2 description: change framing/action/scene only; keep identity} \
+  --output-file /mnt/user-data/outputs/sd-sb-2.png \
+  --quality medium &
+python /mnt/skills/public/image-editing/scripts/edit.py \
+  --image /mnt/user-data/outputs/sd-sb-1.png \
+  --prompt {shot-3 description} \
+  --output-file /mnt/user-data/outputs/sd-sb-3.png \
+  --quality medium &
+wait
+```
+
+Prompt file (`sd-sb.txt`) opens with the mandatory keyframe declaration
+(see `prompt-format.md` storyboard section), then binds every time segment
+to its own image (`[0-3秒] 段落以 @image1 的画面开始…` — per-segment binding
+is mandatory, not a range note). Spec preflight, then the video call —
+storyboard images only
+(no original references in this case), in shot order:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/check_materials.py \
+  --images /mnt/user-data/outputs/sd-sb-1.png /mnt/user-data/outputs/sd-sb-2.png /mnt/user-data/outputs/sd-sb-3.png \
+  --out-dir /mnt/user-data/workspace --provider seedance
+python /mnt/skills/public/video-generation/scripts/generate.py \
+  --prompt-file /mnt/user-data/workspace/sd-sb.txt \
+  --reference-images /mnt/user-data/outputs/sd-sb-1.png /mnt/user-data/outputs/sd-sb-2.png /mnt/user-data/outputs/sd-sb-3.png \
+  --image-role reference \
+  --aspect-ratio 16:9 \
+  --duration 15 \
+  --model doubao-seedance-2-5-260628 \
+  --resolution 720p \
+  --output-file /mnt/user-data/outputs/sd-sb.mp4
 ```

@@ -121,11 +121,12 @@ def test_routing_table_covers_manifest_prompt_files():
 
 def test_routing_table_does_not_reference_undeclared_files():
     # reverse: every references/providers/**.md path named in SKILL.md is a
-    # declared prompt-format file or a known narrative file (spec/examples).
+    # declared prompt-format file or a known narrative file
+    # (spec/examples/upgrade-2k).
     providers = _load_skill_providers()
     skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
     declared = {rel for m in providers.MANIFESTS.values() for rel in m.prompt_format_files.values()}
-    narrative = {"spec.md", "examples.md"}
+    narrative = {"spec.md", "examples.md", "upgrade-2k.md"}
     undeclared = [
         rel
         for rel in re.findall(r"references/providers/[\w/.-]+\.md", skill_text)

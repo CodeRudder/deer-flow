@@ -1,6 +1,6 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Five input modes — text-only (T2V), first-frame image, last-frame image, first+last frame, or reference images (character/style likeness). Staged workflow — always show a prefilled input information table, then confirm a fixed user-facing generation plan before execution; drafts can be upgraded to 2K (MiniMax H3). Read SKILL.md before replying — including before any clarifying question — for the input table, mode routing, confirmation gate, structured-prompt methodology (MiniMax H3) or @-tag/timeline methodology (Seedance — also accepts reference videos/audios), and output settings.
+description: Use this skill when the user requests to generate, create, or imagine videos. Three input modes — text-only (T2V), first/last frame (首尾帧, precise start/end locking), or reference images (character/style likeness). Staged workflow — always show a prefilled input information table, then confirm a fixed user-facing generation plan before execution; drafts can be upgraded to 2K (MiniMax H3). Read SKILL.md before replying — including before any clarifying question — for the input table, mode routing, confirmation gate, structured-prompt methodology (MiniMax H3) or @-tag/timeline methodology (Seedance — also accepts reference videos/audios), and output settings.
 ---
 
 # Video Generation Skill
@@ -8,82 +8,88 @@ description: Use this skill when the user requests to generate, create, or imagi
 ## Overview
 
 This skill generates short videos through a **staged, confirmed workflow**:
+an input information table first, then a fixed generation plan card, then
+execution. The full procedure is the Workflow section (Steps 1–5); the two
+conditional paths load their own references at their trigger points
+(storyboard design images → `references/storyboard.md`; 2K upgrade →
+`references/providers/minimax/upgrade-2k.md`).
 
-1. Parse every new video request into a fixed, prefilled **input information
-   table** and wait for the user to continue or edit it. Only a theme is
-   required — it may be vague or abstract; the skill decomposes it into
-   subject + action and completes everything else.
-2. Route the confirmed inputs to one of five input modes (reference mode by
-   default) and perform only the necessary material checks.
-3. Write the prompt file — route by provider: MiniMax H3 uses the official
-   **structured format** (`[Shot N]` timeline, three fields / six sections) from
-   `references/providers/minimax/prompt-format-base.md` (T2V/frame modes) or `prompt-format-ref.md`
-   (reference mode); Seedance uses the **@-tag + timeline format**
-   (`@image1`/`@video1`/`@audio1` material tags, time-axis segments) from
-   `references/providers/seedance/prompt-format.md`; `minimax_v1` keeps natural-language prose.
-4. Show a fixed **generation plan** containing the mode, materials, output,
-   user-language prompt refinement, storyboard, change summary, and capability
-   note; then wait for confirmation.
-5. Generate a draft-tier video (default resolution is the provider's draft
-   tier — `--describe-provider`; MiniMax H3 drafts are upgradable
-   to 2K via the official regeneration endpoint, Seedance has
-   no upgrade path), present it, and offer structured next steps.
+Nothing is sent to the video or image provider before the user has approved
+it at the applicable gate: the video plan requires the plan-card approval;
+storyboard design images (when the user opted in at the input table) require
+the input-table approval that stated the image-quota cost — both approvals
+must be on record before the corresponding provider call.
 
-Nothing is sent to the provider before the user has approved the latest plan.
-
-Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Ref2VA — per-provider reference caps via `--describe-provider`, including reference videos/audios on Seedance); 2K upgrade (MiniMax H3); extended durations on Seedance 2.5; queued-task cancel; read-only task query; per-run sidecar (`outputs/{name}.task.json`). Async create → poll → download is handled by the script.
+Capabilities: T2V; I2V (first / last / first+last frame); reference transfer (Ref2VA — per-provider reference caps via `--describe-provider`, including reference videos/audios on Seedance); storyboard design images (opt-in per-shot keyframe stills, any reference-capable provider); 2K upgrade (MiniMax H3); extended durations on Seedance 2.5; queued-task cancel; read-only task query; per-run sidecar (`outputs/{name}.task.json`). Async create → poll → download is handled by the script.
 
 ## Input information table (always show before routing)
 
-For **every new video request**, first parse everything the user already gave
-you, then call `ask_clarification` with the fixed **Markdown table** below,
-translated to the user's language. This gate is mandatory even when the theme
-is already present — and the table is shown even when the theme is missing.
-Prefill supplied values; do not make the user repeat them.
+For **every new video request**, resolve the provider first (same
+deterministic rules the script uses — `references/runtime.md`) and run
+`generate.py --describe-provider {provider}` once (read-only, never billed):
+its ratio/resolution lists fill the 画幅 / 分辨率 rows. Then parse everything
+the user already gave you and call `ask_clarification` with the fixed
+**Markdown table** below. This gate is mandatory even when the theme
+is already present. Prefill supplied values; do not make the user repeat
+them.
 
-| Field | Prefilled value | Required |
-|---|---|---|
-| Theme | {user content — may be vague or abstract / needs input} | yes |
-| Mode | {T2V / first frame / last frame / first+last / reference — inferred from the request; default `reference`} | no |
-| Subject | {decomposed from the theme / user override} | no |
-| Action | {decomposed from the theme / user override} | no |
-| Setting | {user content / auto-complete} | no |
-| Style | {user content / auto-complete} | no |
-| Camera | {user content / auto-complete} | no |
-| Mood | {user content / auto-complete} | no |
-| Sound | {user content / auto-complete} | no |
-| Storyboard | {user content / plan as needed} | no |
-| Duration | {user content / default 5 s; Seedance 2.5 frame tasks default to model-picked length (`-1`)} | no |
-| Aspect ratio | {user content / default 16:9 / frame ratio, adaptive for references} | no |
-| Resolution | {user content / default draft tier — from `--describe-provider`} | no |
-| Images (reference mode default) | {filenames and stated intent / none — will be auto-collected: search first; image generation only after user approval} | no |
+| 字段 | 预填内容 |
+|---|---|
+| 主题* | {用户内容——可以模糊或抽象 / 待输入} |
+| 模式 | 文生视频 / 首尾帧 / 参考图 [✓]——标注推断的模式（默认参考图） |
+| 主体 | {从主题拆解 / 用户指定} |
+| 动作 | {从主题拆解 / 用户指定} |
+| 场景 | {用户内容 / 自动补全} |
+| 风格 | {用户内容 / 自动补全} |
+| 运镜 | {用户内容 / 自动补全} |
+| 情绪 | {用户内容 / 自动补全} |
+| 声音 | {用户内容 / 自动补全} |
+| 分镜 | {用户内容 / 按需规划——纯文字镜头规划：镜头数与各镜头内容；不含生图意图} |
+| 生成分镜效果图 | 否 [✓]（默认）/ 是 — 每个镜头一张分镜图，消耗图像生成额度（费用写在选项文字里；仅多镜头且无素材时主动提及） |
+| 时长 | {用户内容 / 默认 5 秒} |
+| 画幅 | {manifest 画幅列表；文生视频/分镜路径标 `16:9` [✓]，参考图标 `自适应` [✓]——不列不支持的值} |
+| 分辨率 | {manifest 分辨率列表；草稿档标 [✓]——不列不支持的值} |
+| 素材 | 有图（列出文件名与用途）/ 无图帮我找 [✓]（默认：先搜索；生成需批准）/ 无图且不找（跳过采集）——按用户措辞预选；未提及 → 无图帮我找 |
 
 Only a **theme** is required — it may be vague or abstract; the skill
 decomposes it into subject + action while writing the prompt. Tell the user:
 **anything left unfilled — including reference images — will be automatically
-completed and collected** (missing reference images are collected in Step 4 —
-search first, generation only after approval; rules in Choosing the mode).
-Only treat files the user supplied in this conversation as user-provided.
-Reply "continue" for defaults, or say what to add or change.
+completed and collected** (rules in Choosing the mode; the 素材 row's
+three-state collection intent overrides this default when stated). Only
+treat files the user supplied in this conversation as user-provided.
+Reply "继续用这些输入" for defaults, or say what to add or change.
 
 - **The full table is ALWAYS shown in the first reply** — even when the theme
-  is missing (prefill the theme row with "needs input") — together with the
+  is missing (prefill the theme row with "待输入") — together with the
   auto-completion note. Never send a bare clarifying question without the
   table. The table must appear in the visible reply text **before** calling
   `ask_clarification`; the tool's `question` only carries the short confirm
-  prompt (e.g. "continue or edit?"), never the table itself.
+  prompt (e.g. "继续或修改？"), never the table itself.
 - `clarification_type`: `missing_info` if there is no theme at all (not even
   a vague one) — then ask for ONLY the theme in the question and do NOT offer
   a "continue" option (there is nothing to continue yet; the table is still
   shown with the theme row marked as missing); otherwise `approach_choice`.
-- `options` (theme present): `["Continue with these inputs", "I want to add
-  or change something"]`.
+- `options` (theme present): `["继续用这些输入", "我要补充或修改"]`.
 - If the user edits any field, update and re-show the complete table. A mode
   edit re-routes: confirm the new mode's material expectations (reference
   needs images — see the collection plan; frame modes need the frame image;
-  T2V needs none) and refresh the Images row accordingly.
+  T2V needs none) and refresh the 素材 row accordingly.
 - Optional fields never block progress. The user confirms the table as a whole;
   do not interrogate field by field.
+- **Selection rows render as option lists**: 模式 / 生成分镜效果图 / 素材
+  show every workflow option with the current choice marked `[✓]`. 画幅 /
+  分辨率 use the routed provider/model's manifest values, mark the default
+  `[✓]`, and omit unsupported values. `{...}` rows are free text and keep
+  plain prefills.
+- **术语固定**：模板里的中文列名、选项串与方案卡标签就是规范写法，中文回复
+  原样使用；正文术语同样固定——分镜图 / 分镜路径 / 镜头 / 草稿档 / 升格 /
+  采集计划 / 规格预检。用户不读中文时，把标签、选项与固定串翻译为用户语言，
+  专有名词保留。
+- **Storyboard-image intent = 是**: when the user first expresses storyboard
+  intent in their words — or before the 生成分镜效果图 row is prefilled or
+  shown as 是 — read `references/storyboard.md` FIRST and apply its
+  input-table settlement (cost note placement, duration–shot estimate,
+  on-the-spot limit check) before showing or updating the table.
 - Creative-field precedence: explicit user input > image-determined values >
   semantic completion > fixed defaults. Preserve explicit executable settings
   when compatible with the mode. A frame image's physical ratio is a hard
@@ -100,8 +106,13 @@ defaults, best-for guidance) comes from the adapter manifest — run
 --describe-provider {provider}` for the routed provider before writing the
 plan card. Never read the adapter source.**
 
-Route by what the user actually provided. MiniMax H3 supports five modes,
-selected by `--image-role` plus the images you pass in `--reference-images`:
+User-facing modes are three — T2V, first+last frame (首尾帧), reference.
+首尾帧 is the precise-locking choice: use the frame API entries only when the
+video must start/end exactly on a given image; softer intent (including the
+whole storyboard path) routes to reference with a keyframe declaration.
+Internally the three map to the routing entries below. MiniMax H3 supports
+them all, selected by `--image-role` plus the images you pass in
+`--reference-images`:
 
 | The user gives you | Mode | `--image-role` |
 |---|---|---|
@@ -135,14 +146,15 @@ request. Pick the mode from intent: is the image a moment *in* the video (frame)
 or a likeness to *imitate* (reference)?
 
 **When the user has not specified a mode, default to reference mode.**
-Reference mode needs images. If the user supplied none, do NOT call any
-provider yet — draft a **collection plan** (one line per image: purpose —
-face / outfit / scene / style, count, target ratio) for the plan card's
-Materials row: **three images by default**, adjusted up or down to fit the
-storyboard. Confirming that plan approves the **search** stage only. Then
-collect in Step 4 — **search first** (image search by purpose; only use
-results whose subject is clear and usable). When nothing suitable is found,
-do NOT silently fall back to image generation: it spends the image quota, so
+Reference mode needs images. If the user supplied none AND the 素材 row is
+not 无图且不找, do NOT call any provider yet — draft a **collection plan**
+(one line per image: purpose — face / outfit / scene / style, count, target
+ratio) for the plan card's Materials row: **three images by default**,
+adjusted up or down to fit the storyboard. Confirming that plan approves the
+**search** stage only. Then collect — **search first** (image search by
+purpose; only use results whose subject is clear and usable). When nothing
+suitable is found, do NOT silently
+fall back to image generation: it spends the image quota, so
 **ask the user first** (one question: allow generating the missing reference
 images — uses image quota / skip). Only generate after an explicit yes;
 otherwise stop and offer: user uploads / switch to pure T2V / revise the
@@ -154,6 +166,23 @@ when the user asks for text-only or the scene outranks consistency. Note:
 the default adds a collection stage (search always, image generation only
 with the user's approval) before video generation; choose T2V explicitly
 when visual freedom and a single call matter more.
+
+**Collection timing (storyboard path included):** for reference mode without
+user-supplied images, collection happens BEFORE prompt writing (Step 2), not
+after the plan card. The 素材 row's three-state intent drives routing:
+有图 → material checks on those images → prompt; 无图帮我找 → collection
+plan → collect (rules above) → collected-material checks → prompt;
+无图且不找 → skip collection — with the 生成分镜效果图 row = 是, the
+storyboard images become the prompt's reference assets (first image
+generated text-to-image — `references/storyboard.md`); with 否 (default), a
+reference request without images has nothing to route on — ask the user:
+explicit T2V or upload.
+
+**Storyboard path (生成分镜效果图 row = 是):** read or re-verify
+`references/storyboard.md` at routing time — run its applicability check
+there (before any prompt writing) and write the Step 2 prompt under its
+prompt-declares-design-images-first exception. Generation, plan-card
+integration, adjustments, and the video call all follow that file.
 
 ### When the image role is ambiguous
 
@@ -190,8 +219,10 @@ label), so order matters — confirm it with the user when it isn't obvious:
 | `reference` | multiple, per-provider cap (run `--describe-provider`) | all treated as likeness references; Seedance reference mode also accepts reference videos/audios (URLs) |
 
 Do not pass more images than a mode uses — a 3rd image to `first_last`, or a 2nd
-to `first_frame`/`last_frame`, is dropped with a printed warning, so send only
-what the mode takes. For `reference`, name the images in your prompt in the same
+to `first_frame`/`last_frame`, is dropped with a printed warning (the adapter
+also hard-rejects reference images over the model's cap — e.g. 9 on H3 —
+instead of letting the API reject a billed task), so send only what the mode
+takes. For `reference`, name the images in your prompt in the same
 order you
 pass them (the Ref2VA format labels them `<Picture 1>`, `<Picture 2>`, … by
 position — see `references/providers/minimax/prompt-format-ref.md`).
@@ -228,6 +259,12 @@ Before prompt writing, check only what is required to continue:
   script's output paths as the materials. An image it cannot decode is NOT
   fixable — replace it before writing any prompt. The script never calls the
   provider.
+- Seedance + real-person material: if any image may contain a real person's
+  face (the user's statement or your visual judgment), run the per-material
+  question — drop / replace / redraw each face image per
+  `references/workarounds.md` — after material checks and before prompt
+  writing or image generation. Never redraw silently; MiniMax H3 needs no
+  workaround.
 
 Do not require matching ratios across `reference` images, and do not compare
 across images for a single first or last frame. If frame-image ratios conflict
@@ -248,8 +285,8 @@ only the provider-independent rules.
 
 | Setting | Rule | Default |
 |---|---|---|
-| Aspect ratio (`--aspect-ratio`) | T2V: optional; reference mode: optional, defaults to adaptive; frame modes: fixed by the image (do not pass); Seedance 2.5 frame modes force `adaptive` | `16:9` (T2V) / adaptive (reference) |
-| Duration (`--duration`) | follow the shot budget in the selected prompt reference; 2+ shots: prefer 6 s or longer | `5` (Seedance 2.5 frame tasks: model-picked, `-1`) |
+| Aspect ratio (`--aspect-ratio`) | T2V: optional; reference mode: optional, defaults to adaptive — **storyboard path: pass the concrete ratio the storyboard images were generated at (default `16:9`; never adaptive)**; frame modes: fixed by the image (do not pass); Seedance 2.5 frame modes force `adaptive` | `16:9` (T2V) / adaptive (reference) |
+| Duration (`--duration`) | follow the shot budget in the selected prompt reference; 2+ shots: prefer 6 s or longer. Always pass an explicit integer duration in this workflow, even when the user accepts the 5 s default. | `5` |
 | Resolution (`--resolution`) | per-model value domain and draft-tier default — run `--describe-provider` (rejected locally if unsupported) | provider draft tier from `--describe-provider` |
 
 Guidance:
@@ -257,8 +294,9 @@ Guidance:
 - Casual request → draft plan = draft tier (per `--describe-provider`) · 5 s;
   state it on the plan card, don't ask.
 - Vertical / social → suggest `9:16`; cinematic → `16:9` or `21:9`.
-- H3: prefer drafting at the draft tier and upgrading the take the user likes
-  (Step 6); Seedance has no upgrade path, so pick its draft tier. If the user
+- H3: prefer drafting at the draft tier and upgrading the take the user
+  likes (the ④ upgrade exit — `references/providers/minimax/upgrade-2k.md`);
+  Seedance has no upgrade path, so pick its draft tier. If the user
   explicitly requests direct 2K (H3), preserve that setting in both the input
   information table and the generation plan.
 - Explicitly given parameters are prefilled in the input table and preserved in
@@ -271,8 +309,9 @@ Guidance:
 Apply the input-table, mode-routing, precedence, and material-check rules
 above. Material checks run in two layers: **available-material checks** (the
 images the user supplied) before prompt writing; **collected-material
-checks** (auto-collected images: usable, subject clear) after collection in
-Step 4, before the final Ref2VA prompt is written. Both layers include the
+checks** (auto-collected images: usable, subject clear) after collection
+(happens before prompt writing — Choosing the mode, Collection timing),
+before the final Ref2VA prompt is written. Both layers include the
 spec preflight (`scripts/check_materials.py`). Never report material checks
 as "passed" while planned images do not exist yet.
 
@@ -290,7 +329,10 @@ owns the grammar. Routing table (provider → mode → format file):
 
 Read the routed file at
 `/mnt/skills/public/video-generation/<format file from the table>`, then write
-the prompt file in that format.
+the prompt file in that format. Redraw workaround active (materials are
+character design sheets — `references/workarounds.md`): also read that file
+for the fixed live-action instruction paragraph and its placement after the
+@-tag declarations.
 
 Prompt content language: Chinese by default — switch to English only when the
 user explicitly requests an English prompt. Protocol tokens stay in English
@@ -306,13 +348,21 @@ JSON blob.
 
 Other providers (`minimax_v1`) keep the prose methodology: subject + main
 action first, ONE main camera move, lighting, atmosphere, ~60–100 words for a
-single-beat clip (audio description is H3-only); same content-language rule —
-Chinese by default, English on explicit request.
+single-beat clip (audio description is H3-only).
 
-Ref2VA prompts must be written from the ACTUAL images — their real subjects,
-features, and `<Picture N>` order. When reference images are auto-collected,
-write this prompt only after collection and the collected-material check;
-never fill the word budget by describing planned-but-unseen images.
+Ref2VA prompts must be written from the ACTUAL user images — their real
+subjects, features, and `<Picture N>` order. When reference images are
+auto-collected, write this prompt only after collection and the
+collected-material check; never fill the word budget by describing
+planned-but-unseen images. Storyboard path: the one planned-but-unseen
+exception and its format rules live in `references/storyboard.md`.
+
+### Step 2.5: Generate storyboard design images (storyboard path only)
+
+Run this step ONLY on the storyboard path (生成分镜效果图 row = 是), and only
+after the Step 2 video prompt file exists. Every entry condition, generation
+rule, and the plan-card integration live in `references/storyboard.md` —
+read it before dispatching any image call.
 
 ### Step 3: Build, self-check, and confirm the fixed plan card
 
@@ -331,33 +381,33 @@ copy of it. Preserve the subject, action, setting, style/mood, camera
 movement, and material role; add a short storyboard only when needed (`None`
 for a simple single-shot clip).
 
-Call `ask_clarification` with this fixed template, translated to the user's
-language:
+Call `ask_clarification` with this fixed template (user not reading Chinese →
+translate the labels and fixed strings, keep proper nouns):
 
 ```text
-[Video generation plan]
+[视频生成方案]
 
-- Mode: {T2V / first frame / last frame / first + last frame / reference}
-- Materials: {none / FULL paths with roles and order / collection plan: purpose, count, ratio per image — search first; image generation only after user approval}
-- Output: {duration} · {resolution} · {explicit ratio / frame-image ratio / adaptive}
-- Prompt file: {workspace path}
-  Full prompt (verbatim, exactly as it will be submitted):
-  {the complete content of the prompt file}
-- Refined prompt:
-  {subject, action, setting, style/mood, camera, and sound as needed in the user's language}
-- Storyboard:
-  {None / concise storyboard in the user's language}
-- Changes this round:
-  {Initial plan / changes from the latest superseded plan}
-- Capability note:
-  {None / This 4 s draft cannot be upgraded to 2K; use 5 s or longer to keep the upgrade option}
+- 模式：{文生视频 / 首尾帧 / 参考图}
+- 素材：{无 / 完整路径 + 角色 + 顺序 / 分镜路径：分镜图逐镜头一张（来源标注；仅用于生成分镜图的原始素材不传入），原始素材仅在其携带分镜图未覆盖的信息时附加 / 采集计划：每张图的用途、数量、画幅——先搜索；图像生成需用户批准}
+- 输出：{时长} · {分辨率} · {具体画幅 / 自适应——分镜路径：分镜图实际生成的画幅}
+- 提示词：{workspace 路径}
+  精炼描述：
+  {按需以用户语言给出主题、动作、场景、风格/情绪、运镜、声音}
+- 分镜：
+  {无 / 简明分镜（用户语言）/ 分镜路径：逐镜头列表——镜头号 ↔ 时间 ↔ 图片路径——附用途声明（按镜头顺序作为参考图传入；仅参考构图与内容，不采用画风与图内文字）}
+- 本轮变更：
+  {初始方案 / 相对上一版方案的变更}
+- 能力提示：
+  {无 / 该 4 秒草稿无法升格 2K；选 5 秒及以上保留升格选项}
 
-Reply "confirm" to start, or tell me what to change.
+回复"确认并生成"开始，或告诉我要改什么。
+{仅分镜路径：对某张分镜图不满意？说明镜头号和修改点——受影响的图在本对话内重新生成；你确认分镜图后才开始生成视频。}
 ```
 
 The plan card is fully transparent about what will be submitted: materials
-are listed by their full paths, and the prompt file appears verbatim (path +
-complete content) so the user can review the actual input. The originals are
+are listed by their full paths, and the prompt file is given by its path
+(prompt + user-language refined description only) — the user opens the
+presented file to review the actual input. The originals are
 also opened via `present_files` before the card is shown: copy the prompt
 file to `/mnt/user-data/outputs/{name}.prompt.txt` and every material to
 `/mnt/user-data/outputs/{name}-materials/` (use the final images that will
@@ -370,7 +420,7 @@ explicitly selects a 4 s 768P draft.
 Direct 2K output does not need an upgrade warning.
 
 - `clarification_type`: `approach_choice`.
-- `options`: `["Confirm and generate", "I want to adjust"]`.
+- `options`: `["确认并生成", "我要调整"]`.
 
 Confirmation protocol (prevents loops and skips):
 
@@ -379,22 +429,31 @@ Confirmation protocol (prevents loops and skips):
 - **Adjustment** reply → revise the prompt file, user-facing refinement,
   storyboard, settings, or materials as needed, then re-show the FULL fixed
   card with a change summary. No round limit; never advance without fresh
-  approval. Re-run material checks if images change.
+  approval. Re-run material checks if images change. Storyboard-image
+  adjustments (affected-only regeneration, chain invalidation, dropping the
+  intent) follow `references/storyboard.md`.
 - **Resume across runs**: the gate ends the current run; the user's next
   message starts a new one. The LATEST plan card in history is the only live
-  one — execute only that approved plan, never an older card.
+  one — execute only that approved plan, never an older card. A run that ends
+  mid-storyboard-generation (before any card) resumes per
+  `references/storyboard.md`.
 - **Ambiguous or non-committal** reply (for example, "嗯" or "ok?") → remain at
   the gate and ask for an explicit confirmation. Never execute without one.
 
 ### Step 4: Execute
 
-Use the confirmed Output settings. Pass `--resolution 2K` only when direct 2K
-appeared in the latest approved plan card.
+Use the confirmed Output settings. Every generation command must pass the
+literal `--model`, `--resolution`, and `--duration` values shown by the plan,
+including defaults. Pass `--resolution 2K` only when direct 2K appeared in the
+latest approved plan card.
 
 ```bash
 # T2V (text only). Mode-specific commands: references/providers/{minimax|seedance}/examples.md
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/{name}.txt \
+  --model {model} \
+  --resolution {resolution} \
+  --duration {duration} \
   --output-file /mnt/user-data/outputs/{name}.mp4
 ```
 
@@ -416,21 +475,18 @@ Parameters:
 - `--model` / `--provider`: routing + escape hatch — `references/runtime.md`.
 - `--resolution`: per-model value domain and draft-tier default —
   `--describe-provider`; validated locally.
-- `--duration`: per-model range (default 5 keeps the H3 2K upgrade open;
-  Seedance 2.5 also accepts `-1` auto) — `--describe-provider`.
+- `--duration`: per-model range — `--describe-provider`.
 - `--query` / `--cancel`: read-only task lookup / cancel a queued task —
   `references/task-lifecycle.md`.
 
 [!NOTE]
 Do NOT read the python file, instead just call it with the parameters.
 
-Reference mode with an approved collection plan: **collect FIRST** under the
-search-first rules in Choosing the mode (search by purpose; ask before any
-image generation; at most two search rounds), then run the spec preflight
-(`scripts/check_materials.py`) on the collected images. Then re-show the
-video plan card (materials now name the actual files and their source:
-searched / generated), and generate the video only after that fresh
-confirmation.
+Reference mode with an approved collection plan: the collected images passed
+the spec preflight and were named in the prompt before the plan card
+(Collection timing); the card already showed them — generate the video
+directly on confirmation. **Storyboard path**: assemble the call per
+`references/storyboard.md` (assets, order, ratio, timing).
 
 Before dispatching, check the sidecar for an unfinished duplicate. A local
 polling `timeout` is not an upstream terminal status — resolve it read-only
@@ -456,50 +512,21 @@ Happy with it? I can: ① tweak the prompt ② change duration/resolution
 
 Append `④ upgrade this take to 2K (same content, refined details)` ONLY when
 all conditions hold: the result is a MiniMax **H3** (not H3-Max) 768P draft,
-its duration is at
-least 5 s, and its source video is available to the regeneration endpoint.
-Never show the upgrade exit for a 4 s draft; offer only ①–③ so the user
-cannot enter an impossible upgrade flow. Prompt/setting changes return to
-prompt writing; image changes return to mode routing, then material checks
-and prompt rewriting (a different image may change the mode). Routes ①–③
-each re-pass the full fixed plan card (④ uses the Step 6 gate); new output
-filenames per Iteration. Do not repeat the
-input-table gate unless the user starts a new request or invalidates the
-confirmed theme.
-
-### Step 6: Upgrade to 2K (optional, MiniMax H3 only)
-
-The upgrade runs a short confirmation gate showing the source video path and
-"content corresponds, details re-rendered, 768P→2K". Do not include model,
-quota, cost, or the full prompt in the user-facing card. Execute only after an
-explicit confirmation; cancellation returns to Step 5. A prompt, material, or
-setting change starts a new generation plan rather than changing the upgrade.
-Hard constraints for the command:
-
-- Reuse the ORIGINAL prompt file and reference images — same paths, order,
-  `--image-role`, and `--model` (the endpoint replays the exact original
-  input; a changed input is a new generation, not an upgrade).
-- `--output-file` must be a NEW path, e.g. `{name}-2k.mp4` (never overwritten).
-- A local source above ~45 MB is rejected (request-body cap). Point
-  `--upscale-video` at a public URL, or draft a shorter one — a new
-  generation that must pass the full plan-card gate.
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/{name}.txt \
-  --reference-images {exactly the original run's images, if any} \
-  --image-role {exactly the original run's role, if any} \
-  --model {exactly the original run's model} \
-  --upscale-video /mnt/user-data/outputs/{name}.mp4 \
-  --output-file /mnt/user-data/outputs/{name}-2k.mp4
-```
-
-Do NOT pass `--duration` / `--aspect-ratio` / `--resolution` together with
-`--upscale-video` — the upgrade runs at a fixed 2K and follows the source.
+its duration is at least 5 s, and its source video is available to the
+regeneration endpoint. Never show the upgrade exit for a 4 s draft; offer
+only ①–③ so the user cannot enter an impossible upgrade flow. Prompt/setting
+changes return to prompt writing; image changes return to mode routing, then
+material checks and prompt rewriting (a different image may change the mode).
+Routes ①–③ each re-pass the full fixed plan card; new output filenames per
+Iteration. Do not repeat the input-table gate unless the user starts a new
+request or invalidates the confirmed theme. When the user chooses ④: read
+`references/providers/minimax/upgrade-2k.md` first, render its confirmation
+card, and execute only after an explicit confirmation.
 
 ## Examples
 
-Example A shows the full T2V flow with both gates, Example E the 2K upgrade.
+Example A shows the full T2V flow with both gates; the worked 2K-upgrade
+example (Example E) lives in `references/providers/minimax/upgrade-2k.md`.
 Worked commands for the other modes live in the routed provider's examples —
 `references/providers/minimax/examples.md` (MiniMax) or
 `references/providers/seedance/examples.md` (Seedance) — load it after the
@@ -517,38 +544,25 @@ prompt (the routed provider's format file — Step 2 routing table) → plan car
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate.py \
   --prompt-file /mnt/user-data/workspace/cat-stretch.txt \
+  --model {model} \
+  --resolution {draft tier} \
+  --duration 5 \
   --output-file /mnt/user-data/outputs/cat-stretch.mp4
 ```
 
 Present with exits ①–③ plus ④ (eligible 5 s draft on the H3 upgrade path).
 
-### Example E — upgrade the take to 2K
-
-User (after watching `cat-stretch.mp4`): "yes — give me this one in 2K."
-
-Brief confirmation card (source video path + content-corresponds note) →
-"confirm" → original prompt file and settings replayed:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/cat-stretch.txt \
-  --model MiniMax-H3 \
-  --upscale-video /mnt/user-data/outputs/cat-stretch.mp4 \
-  --output-file /mnt/user-data/outputs/cat-stretch-2k.mp4
-```
-
 ## Provider constraints
 
-Per-provider value domains, draft-tier defaults, reference caps, image roles,
-and parameter support come from the adapter manifest — run
-`--describe-provider` (see Choosing the mode). Credentials and behavior notes
-per provider: `references/providers/minimax/spec.md` /
+Per-provider capability numbers (value domains, draft-tier defaults, reference
+caps, image roles, parameter support): run `--describe-provider` — see
+Choosing the mode. Credentials and behavior notes per provider:
+`references/providers/minimax/spec.md` /
 `references/providers/seedance/spec.md`.
 
 `--query` works on every provider; `--cancel` is `minimax_h3`/`seedance` only
-(errors on legacy `minimax_v1`). Frame and reference roles are mutually
-exclusive; reference videos/audios are Seedance-only (MiniMax H3 cannot
-consume them); avoid named real people or trademarked characters.
+(errors on legacy `minimax_v1`); avoid named real people or trademarked
+characters.
 Routing/credentials/compatibility: `references/runtime.md`.
 
 ## Iteration (regenerate, not edit)
@@ -556,7 +570,8 @@ Routing/credentials/compatibility: `references/runtime.md`.
 This skill does NOT edit an existing video — iterating means changing the
 prompt, materials, or settings and generating a brand-new take. Generation is
 non-deterministic (no fixed seed): any change re-rolls the whole clip; the
-ONLY same-content path is the 2K upgrade (Step 6). A fixed first frame is the
+ONLY same-content path is the 2K upgrade
+(`references/providers/minimax/upgrade-2k.md`). A fixed first frame is the
 most controllable iteration. Always use a NEW output filename and regenerate
 deliberately, never blindly.
 

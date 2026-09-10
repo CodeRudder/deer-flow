@@ -95,9 +95,7 @@ def _raise_sync_rejection(resp: requests.Response, operation: str) -> None:
         detail = f"{base.get('status_code')}: {base.get('status_msg')}"
     else:
         detail = resp.text[:500]
-    raise requests.HTTPError(
-        f"provider=minimax_h3 {operation}: HTTP {resp.status_code} {detail}", response=resp
-    )
+    raise requests.HTTPError(f"provider=minimax_h3 {operation}: HTTP {resp.status_code} {detail}", response=resp)
 
 
 class MiniMaxH3Provider(BaseVideoProvider):
@@ -142,17 +140,19 @@ class MiniMaxH3Provider(BaseVideoProvider):
             # Frame modes take a fixed number of images; extras are dropped, so say so
             # instead of failing silently.
             if len(images) > limit:
-                print(
-                    f"Warning: provider=minimax_h3 {image_role} mode uses only the first "
-                    f"{limit} image(s); ignoring {len(images) - limit} extra"
-                )
+                print(f"Warning: provider=minimax_h3 {image_role} mode uses only the first {limit} image(s); ignoring {len(images) - limit} extra")
 
         if not images:
             return content, True  # T2V — ratio is required
 
         if image_role == "reference":
             # Ref2VA: identity/style transfer (not a frame). All images pass
-            # through; upstream accepts up to 9 and rejects the rest.
+            # through; the storyboard path can push the count toward the cap,
+            # so enforce it locally instead of letting the API reject the task
+            # after billing (same guard as seedance's reference branch).
+            model, spec = self._model_and_spec()
+            if len(images) > spec.max_ref_images:
+                raise ValueError(f"too many reference images: {len(images)} > {spec.max_ref_images} for model {model}")
             for path in images:
                 content.append(image_item(path, "reference_image"))
             # r2va: adaptive by default, explicit ratio honored.
@@ -188,11 +188,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
                 continue
             ext = os.path.splitext(path)[1].lower()
             if ext and ext not in spec.extensions:
-                raise ValueError(
-                    f"image {path} has unsupported format {ext}; MiniMax-H3 accepts "
-                    f"{', '.join(sorted(spec.extensions))}. Run scripts/check_materials.py "
-                    "to convert it, then resubmit"
-                )
+                raise ValueError(f"image {path} has unsupported format {ext}; MiniMax-H3 accepts {', '.join(sorted(spec.extensions))}. Run scripts/check_materials.py to convert it, then resubmit")
             try:
                 with Image.open(path) as im:
                     im = ImageOps.exif_transpose(im)
@@ -200,16 +196,9 @@ class MiniMaxH3Provider(BaseVideoProvider):
             except Exception:
                 continue
             ratio = w / h
-            if not (
-                spec.side_min <= w <= spec.side_max
-                and spec.side_min <= h <= spec.side_max
-                and spec.ratio_min <= ratio <= spec.ratio_max
-            ):
+            if not (spec.side_min <= w <= spec.side_max and spec.side_min <= h <= spec.side_max and spec.ratio_min <= ratio <= spec.ratio_max):
                 raise ValueError(
-                    f"image {path} ({w}x{h}, ratio {ratio:.3f}) violates MiniMax-H3 "
-                    f"spec (side [{spec.side_min},{spec.side_max}]px, ratio "
-                    f"[{spec.ratio_min},{spec.ratio_max}]); run "
-                    "scripts/check_materials.py to fix it, then resubmit"
+                    f"image {path} ({w}x{h}, ratio {ratio:.3f}) violates MiniMax-H3 spec (side [{spec.side_min},{spec.side_max}]px, ratio [{spec.ratio_min},{spec.ratio_max}]); run scripts/check_materials.py to fix it, then resubmit"
                 )
 
     def _model_and_spec(self) -> tuple[str, ModelSpec]:
@@ -219,31 +208,20 @@ class MiniMaxH3Provider(BaseVideoProvider):
             raise ValueError(f"unknown MiniMax model {model!r}; known: {', '.join(MODEL_SPECS)}")
         return model, spec
 
-    def create_task(
-        self, prompt_text: str, reference_images: list[str], params: dict
-    ) -> str:
+    def create_task(self, prompt_text: str, reference_images: list[str], params: dict) -> str:
         self._validate_image_specs(reference_images)
         model, spec = self._model_and_spec()
         upscale_video = params.get("upscale_video")
         if upscale_video:
             if not spec.supports_regeneration:
-                raise ValueError(
-                    f"model {model} does not support 2K regeneration (--upscale-video); "
-                    "H3-Max outputs cannot be upgraded — regenerate the take with MiniMax-H3 for a 2K-capable draft"
-                )
-            return self._create_regeneration_task(
-                upscale_video, prompt_text, reference_images, params
-            )
+                raise ValueError(f"model {model} does not support 2K regeneration (--upscale-video); H3-Max outputs cannot be upgraded — regenerate the take with MiniMax-H3 for a 2K-capable draft")
+            return self._create_regeneration_task(upscale_video, prompt_text, reference_images, params)
         image_role = params.get("image_role")
         if image_role is None:
             image_role = "first_frame"
         if image_role == "reference" and not spec.supports_reference:
-            raise ValueError(
-                f"model {model} does not support reference-mode generation (Ref2VA); use MiniMax-H3"
-            )
-        content, send_ratio = self._build_content(
-            prompt_text, reference_images, image_role, params.get("ratio")
-        )
+            raise ValueError(f"model {model} does not support reference-mode generation (Ref2VA); use MiniMax-H3")
+        content, send_ratio = self._build_content(prompt_text, reference_images, image_role, params.get("ratio"))
         duration = params.get("duration")
         if duration is not None and not (spec.duration_range[0] <= duration <= spec.duration_range[1]):
             raise ValueError(f"duration must be {spec.duration_range[0]}-{spec.duration_range[1]} seconds, got {duration}")
@@ -276,9 +254,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
         payload = resp.json()
         task_id = payload.get("task_id")
         if not task_id:
-            raise Exception(
-                f"provider=minimax_h3 no task_id in response: {json.dumps(payload, ensure_ascii=False)}"
-            )
+            raise Exception(f"provider=minimax_h3 no task_id in response: {json.dumps(payload, ensure_ascii=False)}")
         return task_id
 
     def _create_regeneration_task(
@@ -318,9 +294,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
         payload = resp.json()
         task_id = payload.get("task_id")
         if not task_id:
-            raise Exception(
-                f"provider=minimax_h3 no task_id in response: {json.dumps(payload, ensure_ascii=False)}"
-            )
+            raise Exception(f"provider=minimax_h3 no task_id in response: {json.dumps(payload, ensure_ascii=False)}")
         return task_id
 
     def poll_once(self, handle: str) -> tuple[str, dict]:
@@ -341,9 +315,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
     def extract_video_url(self, handle: str, result: dict) -> str:
         url = (result.get("content") or {}).get("url")
         if not url:
-            raise Exception(
-                f"provider=minimax_h3 succeeded but no content.url: {json.dumps(result, ensure_ascii=False)}"
-            )
+            raise Exception(f"provider=minimax_h3 succeeded but no content.url: {json.dumps(result, ensure_ascii=False)}")
         return url
 
     def cancel(self, handle: str, output_file: str | None = None) -> str:
@@ -371,10 +343,7 @@ class MiniMaxH3Provider(BaseVideoProvider):
         if status == "running":
             return f"task {handle} is running and cannot be cancelled; wait for it to finish"
         if status in ("succeeded", "failed"):
-            return (
-                f"task {handle} already {status}; nothing cancelled (the upstream "
-                "endpoint would DELETE the task record)"
-            )
+            return f"task {handle} already {status}; nothing cancelled (the upstream endpoint would DELETE the task record)"
         if status == "cancelled":
             return f"task {handle} was already cancelled"
         return f"task {handle} is in unknown state {status!r}; nothing done"

@@ -93,7 +93,8 @@ def edit(
             image.verify()
         content = Path(image_path).read_bytes()
         suffix = Path(image_path).suffix.lower().lstrip(".") or "png"
-        mime_type = "image/png" if suffix == "png" else f"image/{suffix}"
+        # ".jpg" spelled out as MIME is the invalid "image/jpg"; the edits API rejects it.
+        mime_type = {"jpg": "image/jpeg"}.get(suffix, f"image/{suffix}")
         files.append(("image[]", (Path(image_path).name, content, mime_type)))
 
     data = {

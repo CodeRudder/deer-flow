@@ -48,6 +48,16 @@ Put spoken lines in `{}` so they are voiced.
 
 ## Time / shot organization
 
+### Shot budget (provider-independent)
+
+Shared with the H3 format — use for shot planning and storyboard estimates:
+
+| Duration | Shot count |
+|---|---|
+| 4–6 s | 1–2 shots |
+| 7–10 s | 2–3 shots |
+| 11–15 s | 3–5 shots |
+
 ### Seedance 2.5
 
 Segment by seconds; one beat per ~5s is a good pace. Keep Chinese ≤500 chars
@@ -85,6 +95,33 @@ Use shot numbers only (exact timestamps are unstable):
 - **First frame / first+last**: `@image1 作为首帧。` as a standalone sentence;
   other materials declare "不改变首帧构图"; describe the motion between frames.
 
+### Storyboard design images (Seedance keyframe reference)
+
+The storyboard path (`references/storyboard.md`) passes one generated keyframe still
+per shot; 2.0 family binds by shot numbers (its time/shot section). On 2.5
+alignment is relatively strict (official keyframe reference); on 2.0 family
+the stills read as ordinary references (weaker — note it on the plan card).
+
+- **First sentence (mandatory, exact shape)**:
+  `以图片 1 至图片 N 的顺序作为关键帧。` (N = storyboard image count; if
+  original references ride along, keep the declaration scoped to the
+  storyboard images' numbers, e.g. `以图片 1 至图片 3 的顺序作为关键帧。`)
+- **Per-segment binding (mandatory)**: every time segment in the shot script
+  must explicitly reference its OWN storyboard image —
+  `[0-10秒] 段落以 @image1 的画面开始：…` — so each shot anchors to its still.
+  A collapsed range note (`@image1至@imageN 分别对应镜头1至N 的构图`) alone
+  does NOT satisfy this; the model aligns per reference, not per range.
+  Unused materials waste the reference budget.
+- Usage constraint sentence: `分镜关键帧仅参考构图与内容，不采用其画风与图内文字。`
+- Ordering is load-bearing: label order = `--reference-images` order
+  (storyboard images first by default; any attached originals follow in CLI
+  order — the prompt numbering MUST match the CLI pass order).
+- The keyframe declaration keeps the task a normal reference task — do NOT
+  use frame-mode `--image-role` (mutually exclusive with reference mode), and
+  the forbidden-words rule applies as usual (no 编辑/延长/续写…).
+- Keyframe reference aligns composition relatively strictly but does not
+  lock output params; ratio comes from `--aspect-ratio` as usual.
+
 ## Task-type locks (2.5 only — API Ref)
 
 Seedance 2.5 locks output params for some task types. Violating fails
@@ -99,8 +136,9 @@ enforces them locally before submit. 2.0 family has no such locks.
 | T2V / reference | text / `reference_*` | user-set or `adaptive` | user `[4,30]` or `-1` |
 
 Only `video-edit` locks `duration=-1`. Frame tasks lock `ratio` only — do NOT
-promise a custom ratio or a fixed duration in the plan card for 2.5 frame
-tasks (duration may be `-1`/auto).
+promise a custom ratio in the plan card for 2.5 frame tasks. This workflow
+always passes an explicit integer `--duration` (SKILL.md Output settings);
+the `-1` values above are adapter capability, not workflow guidance.
 
 ## Forbidden words in reference mode (critical)
 
