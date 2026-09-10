@@ -97,7 +97,7 @@ Use shot numbers only (exact timestamps are unstable):
 
 ### Storyboard design images (Seedance keyframe reference)
 
-The storyboard path (SKILL.md Step 2.5) passes one generated keyframe still
+The storyboard path (`references/storyboard.md`) passes one generated keyframe still
 per shot; 2.0 family binds by shot numbers (its time/shot section). On 2.5
 alignment is relatively strict (official keyframe reference); on 2.0 family
 the stills read as ordinary references (weaker — note it on the plan card).

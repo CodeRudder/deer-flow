@@ -84,7 +84,7 @@ do not use them.) Use only labels defined in Section 1.
 
 ### Storyboard design images (multi-shot keyframe anchoring)
 
-The storyboard path (SKILL.md Step 2.5) passes one generated keyframe still
+The storyboard path (`references/storyboard.md`) passes one generated keyframe still
 per shot. Multiple `<Picture N>` anchor lines are allowed — the format's
 "keyframe" role covers a storyboard (see Section 1), and this extends the
 official opening/closing-frame usage to per-shot anchors:
@@ -101,8 +101,8 @@ official opening/closing-frame usage to per-shot anchors:
 - Ordering is load-bearing: label order = `--reference-images` order. Number
   storyboard images consecutively (either all storyboard images first, then
   the original references, or the reverse — whichever, the prompt's numbering
-  MUST match the CLI pass order; see the storyboard section in SKILL.md
-  Step 2.5 for the chosen convention). For shot N's image, the label number
+  MUST match the CLI pass order; see `references/storyboard.md`
+  for the chosen convention). For shot N's image, the label number
   is whatever position it holds in that order.
 - Usage constraint sentence (content language), included when storyboard
   images are present: 分镜关键帧仅用于构图与内容的对齐，不采用其画风与图内文字。

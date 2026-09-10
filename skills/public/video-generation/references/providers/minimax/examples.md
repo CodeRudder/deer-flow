@@ -2,7 +2,8 @@
 
 Loaded on demand when the routed provider is MiniMax H3 and the mode is not
 plain T2V — Example A in SKILL.md shows the full T2V flow with both gates, and
-Example E shows the 2K upgrade. All examples below assume the input-table and
+the 2K upgrade is documented in `upgrade-2k.md` (same directory). All examples
+below assume the input-table and
 plan-card gates have passed and the prompt file was written in the mode's
 structured format (Step 2).
 
