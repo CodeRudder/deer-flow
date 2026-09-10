@@ -44,6 +44,13 @@ def _make_png(path: Path) -> None:
     img.save(path)
 
 
+def _make_jpg(path: Path) -> None:
+    from PIL import Image
+
+    img = Image.new("RGB", (4, 4), (255, 0, 0, 255))
+    img.save(path)
+
+
 def test_edit_rejects_mask(tmp_path):
     with pytest.raises(ValueError, match="mask is not supported yet"):
         edit_module.edit_image(["a.png"], "prompt", str(tmp_path / "out.png"), mask="mask.png")
@@ -149,3 +156,29 @@ def test_provider_rejects_missing_input_images():
             authorization="raw-auth",
             base_url="https://example.com",
         )
+
+
+def test_provider_maps_jpg_extension_to_image_jpeg_mime(tmp_path):
+    image = tmp_path / "in.jpg"
+    _make_jpg(image)
+    output = tmp_path / "out.png"
+    post_response = Mock()
+    post_response.ok = True
+    post_response.json.return_value = {"data": [{"b64_json": "AAAA"}]}
+
+    with patch.object(provider_module.requests, "Session") as session_factory:
+        session = Mock()
+        session_factory.return_value = session
+        session.post.return_value = post_response
+
+        provider_module.edit(
+            prompt_text="Edit the image",
+            reference_images=[str(image)],
+            output_file=str(output),
+            authorization="raw-auth",
+            base_url="https://example.com",
+        )
+
+    _, (filename, _, mime_type) = session.post.call_args.kwargs["files"][0]
+    assert filename == "in.jpg"
+    assert mime_type == "image/jpeg"
