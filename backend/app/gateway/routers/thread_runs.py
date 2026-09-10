@@ -140,10 +140,8 @@ class ThreadTokenUsageResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _cancel_conflict_detail(run_id: str, record: RunRecord) -> str:
-    if record.status in (RunStatus.pending, RunStatus.running):
-        return f"Run {run_id} is not active on this worker and cannot be cancelled"
-    return f"Run {run_id} is not cancellable (status: {record.status.value})"
+def _cancel_conflict_detail(run_id: str) -> str:
+    return f"Run {run_id} is not active on this worker and cannot be cancelled"
 
 
 def _record_to_response(record: RunRecord) -> RunResponse:
@@ -523,7 +521,13 @@ async def cancel_run(
 
     cancelled = await run_mgr.cancel(run_id, action=action)
     if not cancelled:
-        raise HTTPException(status_code=409, detail=_cancel_conflict_detail(run_id, record))
+        # A terminal-state run (success/error/timeout) cannot be aborted any
+        # more, but the SDK stop button can race with run completion; treat
+        # the cancel as a no-op success instead of a 409 conflict. Only a
+        # pending/running record without local worker state stays a conflict.
+        if record.status in (RunStatus.pending, RunStatus.running):
+            raise HTTPException(status_code=409, detail=_cancel_conflict_detail(run_id))
+        return Response(status_code=204 if wait else 202)
 
     if wait and record.task is not None:
         try:
@@ -590,7 +594,11 @@ async def stream_existing_run(
     if action is not None:
         cancelled = await run_mgr.cancel(run_id, action=action)
         if not cancelled:
-            raise HTTPException(status_code=409, detail=_cancel_conflict_detail(run_id, record))
+            # Same idempotent rule as POST /cancel: a terminal-state run is a
+            # no-op success; only an unowned pending/running record conflicts.
+            if record.status in (RunStatus.pending, RunStatus.running):
+                raise HTTPException(status_code=409, detail=_cancel_conflict_detail(run_id))
+            return Response(status_code=204)
         if wait and record.task is not None:
             try:
                 await record.task

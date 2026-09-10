@@ -99,6 +99,50 @@ const THREAD_MESSAGES_PAGE_SIZE = 50;
 const THREAD_HISTORY_V2_ENABLED =
   env.NEXT_PUBLIC_THREAD_HISTORY_V2_ENABLED === "true";
 
+// Stuck-stream watchdog: poll interval for the run list while streaming, and
+// how long the stream must show no message progress after the backend run has
+// reached a terminal state before the dead stream is aborted.
+const STREAM_RUN_POLL_INTERVAL_MS = 20_000;
+const STREAM_STALL_GRACE_MS = 30_000;
+const STREAM_STALL_CHECK_INTERVAL_MS = 10_000;
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "success",
+  "error",
+  "timeout",
+  "interrupted",
+]);
+
+/**
+ * True when the watchdog should abort the current stream: the run is terminal,
+ * silent past the grace period, and belongs to this stream (id from onCreated,
+ * or created before the loading cycle started — the reconnect path).
+ */
+export function shouldAbortStalledStream({
+  latestRun,
+  currentStreamRunId,
+  streamCycleStartAt,
+  lastProgressAt,
+  now,
+}: {
+  latestRun: Pick<Run, "run_id" | "status" | "created_at"> | undefined;
+  currentStreamRunId: string | null;
+  streamCycleStartAt: number;
+  lastProgressAt: number;
+  now: number;
+}): boolean {
+  if (!latestRun || !TERMINAL_RUN_STATUSES.has(latestRun.status)) {
+    return false;
+  }
+  const belongsToStream =
+    latestRun.run_id === currentStreamRunId ||
+    new Date(latestRun.created_at).getTime() < streamCycleStartAt;
+  if (!belongsToStream) {
+    return false;
+  }
+  return now - lastProgressAt >= STREAM_STALL_GRACE_MS;
+}
+
 function messageIdentity(message: Message): string | undefined {
   if (
     "tool_call_id" in message &&
@@ -848,6 +892,9 @@ export function useThreadStream({
   // and to allow access to the current thread id in onUpdateEvent
   const threadIdRef = useRef<string | null>(threadId ?? null);
   const startedRef = useRef(false);
+  // Run id captured from onCreated; the stuck-stream watchdog only judges the
+  // run the current stream belongs to.
+  const currentStreamRunIdRef = useRef<string | null>(null);
   const pendingUsageBaselineMessageIdsRef = useRef<Set<string>>(new Set());
   const listeners = useRef({
     onSend,
@@ -886,6 +933,7 @@ export function useThreadStream({
 
   const handleStreamStart = useCallback((_threadId: string, _runId: string) => {
     threadIdRef.current = _threadId;
+    currentStreamRunIdRef.current = _runId;
     setOptimisticThreadId((currentOptimisticThreadId) => {
       const currentView = currentViewThreadIdRef.current;
       if (
@@ -1158,6 +1206,60 @@ export function useThreadStream({
         : [],
     [hasVisibleStreamState, pendingSupersededMessageIds, thread.messages],
   );
+
+  // Stuck-stream watchdog: poll the run list while loading; abort via stop() once
+  // the latest run is terminal and the message tail has been silent past the grace period.
+  const streamRuns = useThreadRuns(threadId ?? undefined, {
+    enabled: !isMock && thread.isLoading,
+    refetchInterval: STREAM_RUN_POLL_INTERVAL_MS,
+  });
+  const streamProgressAtRef = useRef(Date.now());
+  const streamTailMessage = persistedMessages.at(-1);
+  useEffect(() => {
+    streamProgressAtRef.current = Date.now();
+  }, [streamTailMessage]);
+
+  const streamStopRef = useRef(thread.stop);
+  streamStopRef.current = thread.stop;
+  // Loading-cycle start; a run counts as belonging to the current stream if its
+  // id matches onCreated's, or it was created before this cycle (reconnect path).
+  const streamCycleStartAtRef = useRef(Date.now());
+  const latestStreamRunRef = useRef<Run | undefined>(undefined);
+  latestStreamRunRef.current = streamRuns.data?.at(0);
+
+  useEffect(() => {
+    if (!thread.isLoading || isMock) {
+      return;
+    }
+    streamCycleStartAtRef.current = Date.now();
+    // The progress clock restarts with the cycle: the runs observer can surface
+    // a stale cached terminal run before the fresh stream's first delta.
+    streamProgressAtRef.current = Date.now();
+    const timer = window.setInterval(() => {
+      if (
+        !shouldAbortStalledStream({
+          latestRun: latestStreamRunRef.current,
+          currentStreamRunId: currentStreamRunIdRef.current,
+          streamCycleStartAt: streamCycleStartAtRef.current,
+          lastProgressAt: streamProgressAtRef.current,
+          now: Date.now(),
+        })
+      ) {
+        return;
+      }
+      const latestRun = latestStreamRunRef.current!;
+      streamProgressAtRef.current = Date.now();
+      void streamStopRef.current();
+      void queryClient.invalidateQueries({
+        queryKey: ["thread", latestRun.thread_id],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
+      void queryClient.invalidateQueries({
+        queryKey: INFINITE_THREADS_QUERY_KEY_PREFIX,
+      });
+    }, STREAM_STALL_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [isMock, queryClient, thread.isLoading]);
   const visibleHistory = useMemo(
     () => (threadId ? history : []),
     [history, threadId],
@@ -2071,7 +2173,10 @@ export function useInfiniteThreads(
 
 export function useThreadRuns(
   threadId?: string,
-  { enabled = true }: { enabled?: boolean } = {},
+  {
+    enabled = true,
+    refetchInterval,
+  }: { enabled?: boolean; refetchInterval?: number | false } = {},
 ) {
   const apiClient = getAPIClient();
   return useQuery<Run[]>({
@@ -2084,6 +2189,7 @@ export function useThreadRuns(
       return response;
     },
     enabled: enabled && Boolean(threadId),
+    refetchInterval,
     refetchOnWindowFocus: false,
   });
 }

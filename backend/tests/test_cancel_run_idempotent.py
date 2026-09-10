@@ -4,6 +4,14 @@ RunManager.cancel() returns True when a run is already interrupted so that
 a second cancel request from the same worker is treated as a no-op success
 (202) rather than a conflict (409).  Both the POST cancel endpoint and the
 POST stream endpoint share this behaviour through the same cancel() call.
+
+Cancelling a run that already reached a non-interrupted terminal state
+(success/error/timeout) is also treated as a no-op success: the SDK stop
+button can race with run completion (the SSE stream may still be draining
+when the user clicks stop), and a 409 there surfaces as an unhandled
+promise rejection in the browser.  The rule extends to hydrated store-only
+records so a stop click after a worker restart stays a no-op for terminal
+runs while a still-running record keeps its worker-ownership 409.
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.gateway.routers import thread_runs
 from deerflow.runtime import RunManager, RunStatus
+from deerflow.runtime.runs.store.memory import MemoryRunStore
 
 THREAD_ID = "thread-cancel-test"
 
@@ -106,8 +115,13 @@ class TestCancelRunEndpointIdempotency:
         resp = client.post(f"/api/threads/{THREAD_ID}/runs/no-such-run/cancel")
         assert resp.status_code == 404
 
-    def test_cancel_successful_run_returns_409(self):
-        """Successfully-completed runs cannot be cancelled — must return 409."""
+    def test_cancel_successful_run_returns_idempotent_202(self):
+        """Cancelling a successfully-completed run is a no-op success (202).
+
+        The SDK stop button can race with run completion; the endpoint must
+        not answer 409 because the browser surfaces the rejected promise as
+        a runtime error.
+        """
 
         async def _setup():
             mgr = RunManager()
@@ -119,7 +133,33 @@ class TestCancelRunEndpointIdempotency:
         mgr, run_id = asyncio.run(_setup())
         client = _make_app(mgr)
         resp = client.post(f"/api/threads/{THREAD_ID}/runs/{run_id}/cancel")
-        assert resp.status_code == 409
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
+
+    def test_cancel_errored_run_returns_idempotent_202(self):
+        async def _setup():
+            mgr = RunManager()
+            record = await mgr.create(THREAD_ID)
+            await mgr.set_status(record.run_id, RunStatus.running)
+            await mgr.set_status(record.run_id, RunStatus.error, error="boom")
+            return mgr, record.run_id
+
+        mgr, run_id = asyncio.run(_setup())
+        client = _make_app(mgr)
+        resp = client.post(f"/api/threads/{THREAD_ID}/runs/{run_id}/cancel")
+        assert resp.status_code == 202
+
+    def test_cancel_wait_on_successful_run_returns_204(self):
+        async def _setup():
+            mgr = RunManager()
+            record = await mgr.create(THREAD_ID)
+            await mgr.set_status(record.run_id, RunStatus.running)
+            await mgr.set_status(record.run_id, RunStatus.success)
+            return mgr, record.run_id
+
+        mgr, run_id = asyncio.run(_setup())
+        client = _make_app(mgr)
+        resp = client.post(f"/api/threads/{THREAD_ID}/runs/{run_id}/cancel", params={"wait": "true"})
+        assert resp.status_code == 204
 
 
 # ---------------------------------------------------------------------------
@@ -128,15 +168,64 @@ class TestCancelRunEndpointIdempotency:
 
 
 class TestStreamExistingRunIdempotentCancel:
-    def test_stream_cancel_already_interrupted_returns_not_409(self):
-        """stream_existing_run with action=interrupt on an already-interrupted run
-        must not raise 409 — the idempotent cancel path returns 202/SSE."""
+    def test_stream_cancel_successful_run_returns_204(self):
+        """POST stream (stop-button path) on a finished run returns 204, not 409."""
         mgr = RunManager()
-        run_id = _create_interrupted_run(mgr)
-        client = _make_app(mgr)
 
+        async def _setup():
+            record = await mgr.create(THREAD_ID)
+            await mgr.set_status(record.run_id, RunStatus.running)
+            await mgr.set_status(record.run_id, RunStatus.success)
+            return record.run_id
+
+        run_id = asyncio.run(_setup())
+        client = _make_app(mgr)
         resp = client.post(
-            f"/api/threads/{THREAD_ID}/runs/{run_id}/join",
-            params={"action": "interrupt"},
+            f"/api/threads/{THREAD_ID}/runs/{run_id}/stream",
+            params={"action": "interrupt", "wait": "1"},
         )
-        assert resp.status_code != 409, f"Should not 409 on idempotent cancel, got {resp.status_code}"
+        assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
+
+
+class TestCancelStoreOnlyTerminalRun:
+    def test_cancel_store_only_success_run_returns_202(self):
+        """Cancelling a hydrated terminal run (worker restarted, user clicks
+        stop before reload) is a no-op success, not a worker-ownership 409."""
+        store = MemoryRunStore()
+        asyncio.run(
+            store.put(
+                "store-only-success-run",
+                thread_id=THREAD_ID,
+                assistant_id="lead_agent",
+                status="success",
+                multitask_strategy="reject",
+                metadata={},
+                kwargs={},
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        client = _make_app(RunManager(store=store))
+
+        resp = client.post(f"/api/threads/{THREAD_ID}/runs/store-only-success-run/cancel")
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
+
+    def test_cancel_store_only_running_run_still_409(self):
+        """A hydrated running record has no worker state to stop — stays 409."""
+        store = MemoryRunStore()
+        asyncio.run(
+            store.put(
+                "store-only-running-run",
+                thread_id=THREAD_ID,
+                assistant_id="lead_agent",
+                status="running",
+                multitask_strategy="reject",
+                metadata={},
+                kwargs={},
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        client = _make_app(RunManager(store=store))
+
+        resp = client.post(f"/api/threads/{THREAD_ID}/runs/store-only-running-run/cancel")
+        assert resp.status_code == 409
+        assert "not active on this worker" in resp.json()["detail"]

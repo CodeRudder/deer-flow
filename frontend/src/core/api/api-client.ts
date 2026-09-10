@@ -42,7 +42,9 @@ function injectCsrfHeader(_url: URL, init: RequestInit): RequestInit {
   return { ...init, headers };
 }
 
-export function isInactiveRunStreamError(error: unknown): boolean {
+/** Match gateway 409s via status or the "HTTP 409: ..." message prefix; every
+ * needle must be present so sibling conflict branches stay distinguishable. */
+function isRunConflictError(error: unknown, ...needles: string[]): boolean {
   const status =
     typeof error === "object" && error !== null
       ? Reflect.get(error, "status")
@@ -56,14 +58,49 @@ export function isInactiveRunStreamError(error: unknown): boolean {
           ? String(Reflect.get(error, "message") ?? "")
           : "";
 
-  // Match the gateway's store-only run response in
-  // backend/app/gateway/routers/thread_runs.py until the API exposes a
-  // structured error code for inactive run streams.
   return (
     (status === 409 || message.includes("HTTP 409")) &&
-    message.includes("not active on this worker") &&
-    message.includes("cannot be streamed")
+    needles.every((needle) => message.includes(needle))
   );
+}
+
+// Store-only run cannot be streamed (no in-memory stream bridge on this
+// worker): reconnect has nothing to rejoin.
+export function isInactiveRunStreamError(error: unknown): boolean {
+  return isRunConflictError(
+    error,
+    "not active on this worker",
+    "cannot be streamed",
+  );
+}
+
+/** Match the terminal-state cancel 409 ("is not cancellable") — the current backend
+ * answers these idempotently, so this is only a shim for older deployments. The
+ * "not active on this worker" branch is a real failure and must never match. */
+export function isRunNotCancellableError(error: unknown): boolean {
+  return isRunConflictError(error, "is not cancellable");
+}
+
+const TERMINAL_RUN_STATUSES = new Set([
+  "success",
+  "error",
+  "timeout",
+  "interrupted",
+]);
+
+/** True when the run is already terminal — the caller should skip joinStream so
+ * the SDK's onSuccess path resets isLoading. Lookup errors fall back to the join. */
+async function shouldSkipReconnect(
+  client: LangGraphClient,
+  threadId: string,
+  runId: string,
+): Promise<boolean> {
+  try {
+    const run = await client.runs.get(threadId, runId);
+    return TERMINAL_RUN_STATUSES.has(run.status);
+  } catch {
+    return false;
+  }
 }
 
 export function clearReconnectRun(
@@ -103,8 +140,29 @@ function createCompatibleClient(isMock?: boolean): LangGraphClient {
       sanitizeRunStreamOptions(payload),
     )) as typeof client.runs.stream;
 
+  // Swallow the terminal-state cancel 409 (current backend is idempotent; this
+  // is a shim for older gateways) and clear the now-stale reconnect key.
+  const originalCancel = client.runs.cancel.bind(client.runs);
+  client.runs.cancel = (async (threadId, runId, wait, action, options) => {
+    try {
+      return await originalCancel(threadId, runId, wait, action, options);
+    } catch (error) {
+      if (isRunNotCancellableError(error)) {
+        clearReconnectRun(threadId, runId);
+        return;
+      }
+      throw error;
+    }
+  }) as typeof client.runs.cancel;
+
   const originalJoinStream = client.runs.joinStream.bind(client.runs);
   client.runs.joinStream = async function* (threadId, runId, options) {
+    // Skip reconnects to finished runs — joining them would block on a drained
+    // bridge (or 409 as store-only) and pin isLoading true after a reload.
+    if (threadId && (await shouldSkipReconnect(client, threadId, runId))) {
+      clearReconnectRun(threadId, runId);
+      return;
+    }
     try {
       yield* originalJoinStream(
         threadId,

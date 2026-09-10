@@ -110,6 +110,7 @@ skill, so there is no separate frontend selector yet.
 
 - `src/app/workspace/chats/[thread_id]/page.tsx` owns composer busy-state wiring.
 - `src/core/threads/hooks.ts` owns pre-submit upload state and thread submission.
+- `src/core/threads/hooks.ts` owns the stuck-stream watchdog: while `useStream` reports `isLoading`, it polls the run list and aborts via `stop()` when the current run is already terminal and the message tail has been silent past the grace period — the SDK never resets `isLoading` when the SSE connection drops mid-run, which used to leave the composer stuck on the stop button until a manual reload. The abort decision lives in the pure export `shouldAbortStalledStream` (unit-tested in `tests/unit/core/threads/stuck-stream-watchdog.test.ts`).
 
 ## Code Style
 
