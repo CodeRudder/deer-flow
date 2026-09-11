@@ -896,6 +896,296 @@ function Stop-DeerFlowProcess {
     return $true
 }
 
+function Get-DeerFlowRootAncestorPid {
+    <#
+    .SYNOPSIS
+        从给定 PID 沿父进程链上溯，返回最顶层的「仍属于本项目」的祖先 PID。
+
+    .DESCRIPTION
+        用于按端口收尾时找对要杀的目标。实测踩坑：端口被监听的那个进程往往是
+        链路的末端（python 持有 socket），只杀它会释放端口、却把中间的
+        uv.exe / uvicorn.exe 留成孤儿 —— 端口看起来空了，进程表里却还挂着几个
+        「我们的人」，Get-DeerFlowProcess 仍能把它们扫出来，status 就会显示
+        「运行中」而端口又连不上。
+
+        正确做法是回溯到最顶层的本项目祖先，再对那一个执行 taskkill /F /T ——
+        /T 会连同整棵子树一起收，一次覆盖全链路：
+            cmd.exe → uv.exe → uvicorn.exe → python.exe → python.exe
+
+        上溯的停止条件（任一满足即停）：
+          · 父进程不存在（顶层进程的父进程可能已退出，或被重新挂靠到系统进程）
+          · 父进程的命令行不含部署根目录 —— 说明已经走出本项目边界，
+            绝不能继续往上杀（再往上可能是 explorer.exe / services.exe 之类）
+          · 父进程等于当前进程（防御 PID 复用导致的环）
+          · 上溯超过 32 层（纯防御，正常链路不超过 6 层）
+
+        ⚠ 本函数只做「找」，不做「杀」；调用方负责 taskkill。这样把有风险的
+        「判定归属」与有副作用的「终止进程」分开，便于单独复核判据。
+
+    .PARAMETER ProcessId
+        起始 PID。
+
+    .OUTPUTS
+        System.Int32 —— 最顶层的本项目祖先 PID；找不到（含起始进程不存在）
+                        时返回传入的 ProcessId 本身。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    $top = $ProcessId
+    $current = $ProcessId
+    $guard = 0
+
+    while ($guard -lt 32) {
+        $guard++
+
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$current" -ErrorAction SilentlyContinue
+        if (-not $proc) { break }
+
+        $parentId = [int]$proc.ParentProcessId
+        if ($parentId -le 0 -or $parentId -eq $current) { break }
+
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" -ErrorAction SilentlyContinue
+        if (-not $parent) { break }
+
+        if (-not (Test-DeerFlowPathInRoot -Text $parent.CommandLine)) { break }
+
+        $top = $parentId
+        $current = $parentId
+    }
+
+    return $top
+}
+
+function Stop-DeerFlowProcessTree {
+    <#
+    .SYNOPSIS
+        终止一个进程及其整棵子进程树（含中途变成孤儿的部分）。
+
+    .DESCRIPTION
+        ⚠ 为什么需要它，而不是直接用 Stop-DeerFlowProcess —— 实测踩坑。
+
+        Stop-DeerFlowProcess 的流程是「先 Stop-Process（温和），WaitSeconds 内没退出
+        才上 taskkill /F /T」。服务是用 cmd.exe /d /s /c <命令> 包装拉起的，
+        温和终止只杀掉 cmd 自己：它会立刻退出，于是「超时未退出」这个前提不成立，
+        /T 分支根本执行不到；而它的子进程（uv → uvicorn → python /
+        pnpm → next → next-server）此时被重新挂靠到别的父进程下，继续存活。
+
+        实测两种情况都会漏杀：
+          · 端口已就绪时 —— 端口被 python 持着，uv.exe / uvicorn.exe 成了孤儿，
+            端口看着空了、进程表里还挂着，Get-DeerFlowProcess 仍能扫出来
+          · 端口还没绑定时（启动刚失败就回滚）—— 连按端口兜底都无从下手，
+            因为「端口上没有监听者」，整条链原样留着
+
+        本函数的做法：
+          1. 先快照整棵树（自身 + 所有后代，按 ParentProcessId 逐层展开）。
+             ⚠ 快照必须在任何终止动作之前 —— 子进程一变孤儿就会被重新挂靠，
+             之后再按 ParentProcessId 上溯是找不到它们的。
+          2. 对根进程温和终止（给它正常退出的机会：释放端口、关闭 SQLite、刷日志），
+             等待至多 WaitSeconds。
+          3. 把快照里仍然活着的进程逐个 taskkill /F /T 强制清掉。
+
+        与 Stop-DeerFlowPortOwner 的分工：本函数负责「按已知 PID 清树」，
+        那个负责「按端口反查并清树」。启动失败回滚时端口可能还没绑上，
+        必须靠本函数；连接被外部占用时端口反查更可靠。两者配合使用。
+
+        ⚠ 关于误杀：调用方必须先确认 ProcessId 属于本项目（例如来自 PID 文件、
+        或已通过 Get-DeerFlowProcess / 部署根校验）。本函数会连带清掉其后代 ——
+        这在语义上是正确的：服务的子进程就是服务自己派生出来的。
+        因此不要在未校验的情况下把任意 PID 传进来。
+
+    .PARAMETER ProcessId
+        进程树根 PID（通常是包装进程 cmd.exe，也可能是它链路中的任一进程）。
+
+    .PARAMETER WaitSeconds
+        温和终止的等待秒数，默认 5。
+
+    .OUTPUTS
+        System.Boolean —— 树已全部清掉则为 $true。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId,
+
+        [Parameter(Mandatory = $false)]
+        [int]$WaitSeconds = 5
+    )
+
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        Write-Info "进程 $ProcessId 不存在，无需停止"
+        return $true
+    }
+
+    # ── 1) 快照整棵树（必须在终止之前，理由见 .DESCRIPTION）──────────────
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+
+    $tree = New-Object System.Collections.Generic.List[int]
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    $tree.Add($ProcessId)
+    $queue.Enqueue($ProcessId)
+
+    $guard = 0
+    while ($queue.Count -gt 0 -and $guard -lt 512) {
+        $guard++
+        $current = $queue.Dequeue()
+        foreach ($child in @($all | Where-Object { $_.ParentProcessId -eq $current })) {
+            $childId = [int]$child.ProcessId
+            if (-not $tree.Contains($childId)) {
+                $tree.Add($childId)
+                $queue.Enqueue($childId)
+            }
+        }
+    }
+
+    Write-Info "进程树共 $($tree.Count) 个进程（根 $ProcessId）"
+
+    # ── 2) 温和终止根进程 ─────────────────────────────────────────────────
+    Stop-Process -Id $ProcessId -ErrorAction SilentlyContinue
+
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 300
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { break }
+    }
+
+    # ── 3) 强制清掉快照里仍存活的所有进程 ─────────────────────────────────
+    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+    $killed = 0
+
+    # ⚠ 循环变量不能叫 $pid：那是有特殊含义的自动变量（当前进程 PID），
+    #   PowerShell 里它是只读的，赋值会抛「read-only or constant」异常。
+    foreach ($treePid in $tree) {
+        if (-not (Get-Process -Id $treePid -ErrorAction SilentlyContinue)) { continue }
+
+        $output = & $taskkill /F /T /PID $treePid 2>&1 | Out-String
+        $output = $output.Trim()
+        if ($output) { Write-Info $output }
+        $killed++
+    }
+
+    Start-Sleep -Milliseconds 500
+
+    # ── 4) 复查 ───────────────────────────────────────────────────────────
+    $left = @($tree | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+
+    if ($left.Count -gt 0) {
+        Write-Fail "进程树仍有 $($left.Count) 个进程未退出: $($left -join ', ')"
+        return $false
+    }
+
+    if ($killed -gt 0) {
+        Write-Ok "进程树已清空（强制终止 $killed 个）"
+    } else {
+        Write-Ok "进程 $ProcessId 已退出"
+    }
+
+    return $true
+}
+
+function Stop-DeerFlowPortOwner {
+    <#
+    .SYNOPSIS
+        停掉仍占着指定端口、且命令行落在部署根内的进程树。
+
+    .DESCRIPTION
+        ⚠ 为什么不能只靠 Stop-DeerFlowProcess —— 这是实测踩出来的关键坑。
+
+        Stop-DeerFlowProcess 的流程是「先 Stop-Process（温和），WaitSeconds 内没退出
+        才上 taskkill /F /T」。而服务是用 cmd.exe /d /s /c <命令> 包装拉起的：
+        温和终止只杀掉 cmd 自己，它的子进程（后端 uv → uvicorn → python；
+        前端 pnpm → next → next-server）会被重新挂靠到别的父进程下继续跑，
+        并且继续占着监听端口 —— 因为「超时未退出」这个条件根本没成立
+        （cmd 立刻退了），/T 分支压根没有被执行到。
+
+        实测：回滚后 8001 仍有 python.exe 在监听，脚本却报告「进程已退出」。
+        这会让 start 的半启动清理失效（下次启动撞端口占用），
+        也是 stop 明明说成功、端口却没释放的原因。
+
+        所以停止服务必须分两步：先按 PID 温和停包装进程，再按端口收一次进程树。
+        本函数就是第二步，用 taskkill /F /T 连整棵树一起收。
+
+        ⚠ 误杀防护：只处理命令行里含部署根目录的进程。端口上若是别人的进程
+        （用户自己起的 next / 别的 uvicorn），一律不动，只通过 Verbose 提示。
+
+    .PARAMETER Port
+        要收干净的端口。
+
+    .OUTPUTS
+        System.Int32 —— 收尾后仍占着该端口、且属于本项目的监听进程数量。
+                        0 表示我们自己的进程已全部清干净（端口上仍可能有别人的
+                        进程，那种情况不计入，由调用方按需提示）。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 65535)]
+        [int]$Port
+    )
+
+    $ownerPids = @(Get-PortOwnerPid -Port $Port)
+    if ($ownerPids.Count -eq 0) { return 0 }
+
+    $ours = @()
+    foreach ($ownerPid in $ownerPids) {
+        $cmdLine = Get-ProcessCommandLine -ProcessId $ownerPid
+        if (Test-DeerFlowPathInRoot -Text $cmdLine) {
+            $ours += $ownerPid
+        } else {
+            Write-Verbose "端口 $Port 的占用者 PID $ownerPid 不属于本项目，跳过"
+        }
+    }
+
+    if ($ours.Count -eq 0) { return 0 }
+
+    # ⚠ 要杀的是「最顶层的本项目祖先」而不是端口占用者本身。
+    #   占用者往往是链路末端（python 持有 socket），只杀它虽然能释放端口，
+    #   却会把中间的 uv.exe / uvicorn.exe 留成孤儿 —— 端口空了、进程还在，
+    #   status 仍会报「运行中」。详见 Get-DeerFlowRootAncestorPid 的注释。
+    $targets = New-Object System.Collections.Generic.List[int]
+    foreach ($ourPid in $ours) {
+        $topPid = Get-DeerFlowRootAncestorPid -ProcessId $ourPid
+        if (-not $targets.Contains($topPid)) {
+            $targets.Add($topPid)
+        }
+    }
+
+    foreach ($topPid in $targets) {
+        Write-Info "端口 $Port 仍有本项目进程（占用者 PID $($ours -join ', ')），从顶层 PID $topPid 收尾整棵进程树"
+        $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+        $output = & $taskkill /F /T /PID $topPid 2>&1 | Out-String
+        $output = $output.Trim()
+        if ($output) { Write-Info $output }
+    }
+
+    # 复查只看「本项目」的监听者：刚被杀掉的 PID 再查命令行会得到 $null，
+    # Test-DeerFlowPathInRoot 返回 $false，因此不会把已死的进程误算成遗留。
+    #
+    # ⚠ 必须有重试：taskkill 返回成功后，监听套接字在操作系统层面还可能残留
+    # 极短一段时间（实测偶发）。只查一次会把这个瞬时状态判成「没清干净」，
+    # 于是 stop.ps1 以非零退出 —— 而紧接着的命令再查端口其实已经空了。
+    # stop 的退出码会被编排脚本当判据用，这种偶发误报会让它不可信，
+    # 因此这里给足约 3 秒的收敛窗口。
+    $left = 0
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $left = 0
+        foreach ($ownerPid in @(Get-PortOwnerPid -Port $Port)) {
+            if (Test-DeerFlowPathInRoot -Text (Get-ProcessCommandLine -ProcessId $ownerPid)) {
+                $left++
+            }
+        }
+
+        if ($left -eq 0) { break }
+        Start-Sleep -Milliseconds 300
+    }
+
+    return $left
+}
+
 # ── PID 文件 ────────────────────────────────────────────────────────────────
 
 function Get-PidFilePath {
@@ -1003,6 +1293,81 @@ function Remove-PidFile {
     }
 }
 
+# ── 日志读取 ────────────────────────────────────────────────────────────────
+
+function Read-LogFileLines {
+    <#
+    .SYNOPSIS
+        按 UTF-8 读取日志文件全部行；文件不存在或读取失败时返回空数组。
+
+    .DESCRIPTION
+        ⚠ 不要改用 [System.IO.File]::ReadAllLines —— 实测踩坑。
+
+        ReadAllLines 内部以 FileShare.Read 打开文件，即「只允许别人读」。
+        而服务日志是被 cmd 的 >> 重定向持续持有的（进程活着就一直开着写句柄），
+        于是对「正在运行中的服务」读日志必然抛：
+            The process cannot access the file '...gateway.log'
+            because it is being used by another process.
+
+        这恰好打击两个最需要看日志的场景：
+          · status.ps1 -Tail  —— 服务在跑的时候想看最近输出，必崩
+          · start.ps1 启动失败 —— 进程可能还活着并占着日志，诊断信息反而读不出来
+        实测确认：服务运行中调用 ReadAllLines 稳定复现该异常。
+
+        修法是显式用 FileStream 打开，并把共享模式放宽到 ReadWrite|Delete：
+        日志是追加写入的，并发读不会撕裂已写出的行；Delete 是为了不与
+        运维/清理工具的文件删除动作互斥。
+
+        UTF8Encoding($false) 保持无 BOM 语义；decodeErrorAction 用默认的
+        「非法字节替换为 U+FFFD」，因此日志里混入少量非 UTF-8 内容也不会
+        让读取动作本身二次失败（node 与 uv 都写 UTF-8，但 Windows 控制台程序
+        偶尔会混进 GBK 字节）。
+
+    .PARAMETER Path
+        日志文件绝对路径。
+
+    .OUTPUTS
+        System.String[] —— 行数组；不可读时为空数组（调用方无需 try/catch）。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $empty = @()
+
+    if (-not (Test-Path $Path)) { return $empty }
+
+    try {
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, (New-Object System.Text.UTF8Encoding($false)))
+            try {
+                $content = $reader.ReadToEnd()
+            } finally {
+                $reader.Close()
+            }
+        } finally {
+            $stream.Close()
+        }
+    } catch {
+        # 读不到日志不应该让调用方崩掉（例如文件正被独占、权限不足）
+        return $empty
+    }
+
+    if ([string]::IsNullOrEmpty($content)) { return $empty }
+
+    # 归一化 CRLF / LF，并丢掉末尾空串（ReadToEnd 不会自己去掉结尾换行）
+    $lines = @($content -split "`r?`n")
+    if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
+        $lines = @($lines[0..($lines.Count - 2)])
+    }
+
+    return $lines
+}
+
 # ── 导出 ────────────────────────────────────────────────────────────────────
 #
 # 显式列出导出清单：不写 Export-ModuleMember 时模块会导出全部函数，
@@ -1024,7 +1389,11 @@ Export-ModuleMember -Function @(
     'Read-DotEnv', 'Write-DotEnv', 'Test-DeerFlowConfigured'
     # 端口与进程
     'Test-PortListening', 'Get-PortOwnerPid', 'Get-ProcessCommandLine',
-    'Get-DeerFlowProcess', 'Stop-DeerFlowProcess'
+    'Get-DeerFlowProcess', 'Stop-DeerFlowProcess', 'Stop-DeerFlowProcessTree',
+    'Stop-DeerFlowPortOwner',
+    'Get-DeerFlowRootAncestorPid'
     # PID 文件
     'Write-PidFile', 'Read-PidFile', 'Remove-PidFile'
+    # 日志
+    'Read-LogFileLines'
 )

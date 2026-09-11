@@ -132,6 +132,46 @@ EXCLUDES=(
     './._*'
 )
 
+# ── 必须禁用 macOS 元数据（--no-mac-metadata + --no-xattrs）──────────────────
+#
+# ⚠ 这不是优化，是正确性要求。踩坑记录（已实测复现）：
+#
+# macOS 上绝大多数文件带扩展属性（com.apple.provenance，实测本仓库命中率极高）。
+# bsdtar 打包时会为这类文件做两件「自动化」的事，两者都会污染 Windows 侧：
+#
+#   1. 写出 AppleDouble 边车成员 ._<原名>（这是归档里的独立成员，
+#      不是本地文件——本地 find 一个 ._* 都找不到，所以排除规则无从下手）
+#   2. 写出 PAX 记录 LIBARCHIVE.xattr.* / SCHILY.xattr.*
+#
+# 排除参数（--exclude './._*'）对第 1 条完全无效：排除规则作用在文件系统遍历
+# 出的「真实文件」上，而 ._X 是打包过程中由元数据合成出来的归档成员，
+# 没有任何一次遍历能看到它。
+#
+# 后果：Windows 的 bsdtar 解包时，NTFS 无法原生保存 macOS xattr，libarchive 就把
+# 它们实体化成 ._*.py 文件。实测一次同步后 src 下凭空多出 2319 个 ._* 文件。
+#
+# 这些文件带 null 字节、不是合法 Python 源码，而 alembic 的
+# ScriptDirectory._load_revisions 会用 glob 扫 migrations\versions\*.py 并逐个
+# exec_module —— 于是 Gateway 启动直接崩：
+#
+#     SyntaxError: source code string cannot contain null bytes
+#     Application startup failed. Exiting.
+#
+# 因为带日期的迁移文件名是否会命中 ._<同名> 取决于当次同步内容，这个故障会时有时无。
+#
+# 两个开关的分工（实测数据，源目录 11 个带 xattr 的文件 + 1 个 .DS_Store）：
+#
+#     参数组合                          归档成员   ._边车   xattr PAX 记录
+#     （无）                              22        11         11
+#     --no-xattrs                         22        11          0    ← 修不了边车
+#     --no-mac-metadata                   11         0         11    ← 修不了 PAX
+#     --no-xattrs --no-mac-metadata       11         0          0    ← 正确
+#
+# 所以两个都要加：--no-mac-metadata 负责不生成 ._ 边车成员，
+# --no-xattrs 负责不写 xattr PAX 记录（否则 Windows 解包仍可能由记录实体化出 ._ 文件）。
+# 只加前者会让归档里留下 xattr PAX 记录，只加后者则完全无效。
+TAR_CREATE_NO_MAC_METADATA=(--no-xattrs --no-mac-metadata)
+
 # 构造 tar 的排除参数（bsdtar 语法）。
 #
 # 结果存入全局数组 TAR_EXCLUDES，调用方用 "${TAR_EXCLUDES[@]}" 展开。
@@ -252,8 +292,8 @@ if $DRY_RUN; then
     step "将同步的文件（dry-run，仅统计）"
 
     build_tar_excludes
-    count=$(cd "$REPO_ROOT" && tar "${TAR_EXCLUDES[@]}" -cf - . 2>/dev/null | tar -tf - 2>/dev/null | wc -l | tr -d ' ')
-    total=$(cd "$REPO_ROOT" && tar "${TAR_EXCLUDES[@]}" -cf - . 2>/dev/null | wc -c | tr -d ' ')
+    count=$(cd "$REPO_ROOT" && tar "${TAR_CREATE_NO_MAC_METADATA[@]}" "${TAR_EXCLUDES[@]}" -cf - . 2>/dev/null | tar -tf - 2>/dev/null | wc -l | tr -d ' ')
+    total=$(cd "$REPO_ROOT" && tar "${TAR_CREATE_NO_MAC_METADATA[@]}" "${TAR_EXCLUDES[@]}" -cf - . 2>/dev/null | wc -c | tr -d ' ')
 
     ok "文件数: $count"
     ok "压缩后约: $(( total / 1024 )) KB"
@@ -288,7 +328,7 @@ sync_start=$(date +%s)
 # 用管道直传，不落盘中转。
 # --no-same-owner / --no-same-permissions：macOS 的 uid/gid 在 Windows 上无意义，
 # 且 Windows 的权限模型与 POSIX 不同，保留会报错。
-if ! ( cd "$REPO_ROOT" && tar "${TAR_EXCLUDES[@]}" -czf - . ) 2>/dev/null \
+if ! ( cd "$REPO_ROOT" && tar "${TAR_CREATE_NO_MAC_METADATA[@]}" "${TAR_EXCLUDES[@]}" -czf - . ) 2>/dev/null \
     | ssh "${SSH_OPTS[@]}" "$WIN_HOST" \
         "powershell -NoProfile -ExecutionPolicy Bypass -Command \"cd '$REMOTE_DIR'; & C:\WINDOWS\system32\tar.exe -xzf - --no-same-owner --no-same-permissions; exit \$LASTEXITCODE\""
 then
