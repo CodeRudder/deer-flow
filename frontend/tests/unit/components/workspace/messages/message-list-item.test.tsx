@@ -5,10 +5,8 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { MessageListItem } from "@/components/workspace/messages/message-list-item";
 import * as messageUtils from "@/core/messages/utils";
 
-// Count calls to the toolbar copy derivation. Rendering reads message content
-// for the body through other utils, so a content getter cannot isolate this
-// derivation; assistant rows never call `stripUploadedFilesTag` on the render
-// path, making it the derivation's entry point.
+// Count the toolbar copy derivation via its entry point
+// (`stripUploadedFilesTag`); other render paths never call it.
 const copyDerivations = rs.spyOn(messageUtils, "stripUploadedFilesTag");
 
 const clipboardWrites: string[] = [];
@@ -179,8 +177,7 @@ describe("MessageListItem uploaded image cards", () => {
 
 describe("MessageListItem copy-data derivation guard", () => {
   it("derives the toolbar copy text once per settled row", () => {
-    // Rerendering with the same message reference (a streaming chunk
-    // re-render) must reuse the memoized derivation (#5094).
+    // Same message reference (a chunk re-render) must reuse the memo (#5094).
     const message = {
       id: "ai-copy",
       type: "ai",
@@ -220,8 +217,7 @@ describe("MessageListItem copy-data derivation guard", () => {
   });
 
   it("skips the derivation when the toolbar never renders", () => {
-    // The guard matches the toolbar's render condition: no copy button means
-    // no derivation, for rows that opted out and while the row is loading.
+    // No copy button (opt-out or loading) means no derivation.
     const message = {
       id: "ai-no-toolbar",
       type: "ai",

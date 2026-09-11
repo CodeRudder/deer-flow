@@ -138,11 +138,9 @@ export function MessageListItem({
   turnStartTime?: number | null;
 }) {
   const isHuman = message.type === "human";
-  // The toolbar copies what is displayed, with backend-injected context
-  // blocks stripped. Derive it once per row: settled rows keep their message
-  // reference across streaming chunks, so a chunk re-render reuses this value
-  // instead of re-running the content extraction (#5094). The guard matches
-  // the toolbar's render condition, so rows that never show it skip the work.
+  // What the toolbar copies (backend-injected context stripped), memoized per
+  // row so chunk re-renders reuse it (#5094); the guard mirrors the toolbar's
+  // render condition.
   const copyData = useMemo(
     () =>
       !isLoading && showCopyButton

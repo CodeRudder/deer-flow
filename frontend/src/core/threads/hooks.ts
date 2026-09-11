@@ -79,8 +79,7 @@ const EMPTY_THREAD_VALUES: AgentThreadState = {
   todos: [],
 };
 
-// Stable identity for "no optimistic messages" so the merged-messages memo
-// below is not invalidated by a fresh empty array on every render.
+// Stable identity for empty message lists: a fresh [] per render would invalidate downstream memos.
 const EMPTY_MESSAGES: Message[] = [];
 
 function isNonEmptyString(value: string | undefined): value is string {
@@ -718,11 +717,9 @@ export type CoalesceDecision =
   | { action: "wait" };
 
 /**
- * Decide how an incoming stream update reaches the rendered snapshot: flush
- * immediately once a full interval has elapsed (leading edge), otherwise
- * schedule exactly one trailing flush for the interval remainder. Unlike a
- * debounce, the delay never extends past the interval, so a dense stream can
- * never starve rendering.
+ * Leading-edge flush once a full interval has elapsed, else one scheduled
+ * trailing flush for the remainder — the delay never extends past the
+ * interval, so a dense stream cannot starve rendering.
  */
 export function decideCoalesce(
   nowMs: number,
@@ -747,35 +744,27 @@ function sameMessageArray(a: Message[], b: Message[]): boolean {
 }
 
 /**
- * While a run is streaming, expose the messages array as a snapshot that
- * updates at most once per interval instead of once per SSE chunk, so the
- * merge/group/render pipeline runs per frame budget rather than per token
- * (#4409 Phase 1). When the stream is idle the latest array passes straight
- * through, keeping non-stream updates immediate.
+ * While a run is streaming, expose messages as a snapshot updated at most
+ * once per interval instead of once per SSE chunk (#4409 Phase 1); idle
+ * streams pass the latest array straight through.
  */
 export function useCoalescedStreamMessages(
   messages: Message[],
   isStreaming: boolean,
   intervalMs: number = STREAM_RENDER_COALESCE_MS,
 ): Message[] {
-  // `null` means "no snapshot belongs to the current stream": the live array is
-  // returned until the leading-edge flush lands, so a snapshot left over from an
-  // earlier stream can never be painted. This hook outlives thread switches (the
-  // chat page deliberately avoids re-mounting, see its `onStart` comment), so a
-  // retained snapshot would otherwise be another thread's messages.
+  // null = no snapshot for the current stream; the hook outlives thread
+  // switches, so a leftover snapshot must never be painted.
   const [snapshot, setSnapshot] = useState<Message[] | null>(null);
   const latestRef = useRef(messages);
   latestRef.current = messages;
-  // Monotonic clock: a wall-clock step (NTP, sleep/wake) between two reads
-  // would otherwise be added to the remaining interval and stall the flush for
-  // the length of the jump. -Infinity means "never flushed", so the first
-  // update of a stream always takes the leading edge.
+  // Monotonic clock: wall-clock steps would stall the interval math.
+  // -Infinity = never flushed, so a stream's first update takes the leading edge.
   const lastFlushRef = useRef(Number.NEGATIVE_INFINITY);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Every publication goes through the shallow-equality guard: inputs whose
-  // identity churns without content change (the SDK getter mints fresh arrays)
-  // must not re-trigger renders, or this effect would setState-loop.
+  // Guard publications with shallow equality: identity churn (the getter mints
+  // fresh arrays) must not re-trigger renders.
   const publish = useCallback(() => {
     setSnapshot((previous) =>
       previous !== null && sameMessageArray(previous, latestRef.current)
@@ -794,11 +783,8 @@ export function useCoalescedStreamMessages(
   useEffect(() => {
     if (!isStreaming) {
       clearPendingFlush();
-      // Drop the flush baseline so the leading edge is per stream rather than
-      // per hook instance: a run starting within one interval of the previous
-      // one must not have its first frame deferred. Dropping the snapshot with
-      // it costs one render per stream end, versus one per idle message change
-      // if the snapshot were instead kept in sync while nothing reads it.
+      // Reset per stream: the leading edge is per run, not per hook instance,
+      // and the snapshot must not outlive its stream.
       lastFlushRef.current = Number.NEGATIVE_INFINITY;
       setSnapshot((previous) => (previous === null ? previous : null));
       return;
@@ -811,17 +797,16 @@ export function useCoalescedStreamMessages(
       timerRef.current !== null,
     );
     if (decision.action === "flush-now") {
-      // A trailing timer can still be armed here: timers fire late under
-      // main-thread load, which is exactly when a chunk overtakes one. Leaving
-      // it would publish a second time and slip the next interval forward.
+      // A timer may still be armed (timers fire late under load); leaving it
+      // would publish twice.
       clearPendingFlush();
       lastFlushRef.current = now;
       publish();
     } else if (decision.action === "schedule") {
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
-        // Read the clock again: timers fire late under load, and the next
-        // interval must start from the real flush.
+        // Re-read the clock: timers fire late, and the next interval starts
+        // from the real flush.
         lastFlushRef.current = performance.now();
         publish();
       }, decision.delayMs);
@@ -1125,9 +1110,7 @@ export function useThreadStream({
     reconnectOnMount: true,
     fetchStateHistory: { limit: 1 },
     // Coalesce same-tick stream events into one React notification; the SDK's
-    // numeric tier is a trailing debounce that starves UI updates while chunks
-    // keep arriving, so keep the boolean tier explicit (SDK types claim a true
-    // default, runtime uses `throttle ?? false`).
+    // numeric tier debounces and starves updates, so keep the boolean tier.
     throttle: true,
     onCreated(meta) {
       handleStreamStart(meta.thread_id, meta.run_id);
@@ -1348,22 +1331,18 @@ export function useThreadStream({
     const filtered = thread.messages.filter(
       (message) => !message.id || !pendingSupersededMessageIds.has(message.id),
     );
-    // The SDK getter mints a fresh [] on every read while the stream has no
-    // values; normalize to a stable identity so downstream effects keyed on
-    // this array cannot re-fire (and setState-loop) on idle renders.
+    // Normalize a fresh [] (the getter mints one per read) to a stable
+    // identity so downstream effects cannot re-fire on idle renders.
     return filtered.length === 0 ? EMPTY_MESSAGES : filtered;
   }, [hasVisibleStreamState, pendingSupersededMessageIds, thread.messages]);
 
-  // Render-facing coalesced snapshot. Refs, counters and usage tracking keep
-  // consuming the per-chunk array above so lifecycle semantics (optimistic
-  // clearing, summarization capture, token-usage baselines) are unchanged.
+  // Render-facing snapshot; refs and usage tracking keep the per-chunk array.
   const renderMessages = useCoalescedStreamMessages(
     persistedMessages,
     thread.isLoading,
   );
-  // Optimistic hand-off tracks the same array the merge renders from: hiding
-  // or clearing on the live count would blank the just-sent bubble until the
-  // snapshot carries the server echo (up to one coalescing interval).
+  // Count on the render snapshot: the live count would blank the just-sent
+  // bubble until the server echo lands.
   const renderHumanMessageCount = renderMessages.filter(
     (message) => message.type === "human",
   ).length;
@@ -1866,10 +1845,8 @@ export function useThreadStream({
   // screen, and reading it here (instead of clearing a ref during render) is
   // concurrent-mode safe (#3825).
   //
-  // The rescue refs are read into locals and listed as memo deps: they mutate in
-  // lockstep with the history append that follows them, so a buffered rescue
-  // cannot be pinned stale behind the memo — the merge reruns on the render
-  // that carries the updated buffer.
+  // The rescue refs are read into locals and listed as memo deps so the merge
+  // reruns on the render that carries an updated buffer.
   const rescueBuffer = pendingArchivedMessagesRef.current;
   const rescueThreadId = pendingArchiveThreadIdRef.current;
   const mergedMessages = useMemo(() => {

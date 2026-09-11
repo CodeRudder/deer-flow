@@ -291,14 +291,9 @@ export function isAssistantMessageGroupStreaming(
   });
 }
 
-// The copy button re-renders with the message list. Cache per array reference
-// so a caller that re-reads a referentially stable settled array skips the
-// derivation (#5094) — a rebuilt array simply misses and recomputes, so the
-// cache never serves a stale value. For string-content turns the saved work is
-// the reverse/filter/map traversal and its allocations (the regex/trim split
-// itself is already cached per message by `inlineReasoningCache`); for
-// array-content turns `extractContentFromMessage` has no lower-level cache, so
-// this also skips its O(bytes) map/join/trim re-run.
+// Cache per array reference: the copy button re-reads the settled array on
+// every message-list render (#5094). A rebuilt array misses and recomputes, so
+// the cache never serves a stale value.
 const assistantTurnCopyDataCache = new WeakMap<Message[], string>();
 
 export function getAssistantTurnCopyData(
@@ -319,9 +314,8 @@ export function getAssistantTurnCopyData(
       .reverse()
       .filter((message) => message.type === "ai")
       .map((message) => {
-        // extractContentFromMessage never returns null, so fall back to
-        // reasoning on empty text — otherwise a reasoning-only turn loses its
-        // copy button entirely.
+        // extractContentFromMessage never returns null: fall back to reasoning
+        // on empty text, or a reasoning-only turn loses its copy button.
         const content = extractContentFromMessage(message);
         return content.length > 0
           ? content
@@ -401,12 +395,9 @@ function splitInlineReasoning(content: string): InlineReasoningSplit {
   };
 }
 
-// The split is re-derived on every render: `hasContent`, `hasReasoning`,
-// `extractContentFromMessage` and `extractReasoningContentFromMessage` all run
-// over the whole message list on each stream chunk, so an unmemoized scan costs
-// O(total content) per chunk — quadratic across a long run. Cache per message
-// object, keyed by the exact content string it was derived from so a message
-// whose `content` is reassigned recomputes instead of serving a stale split.
+// Cache per message object, keyed by the exact content string so reassignment
+// recomputes. The split is re-derived every render and its consumers scan the
+// whole list per stream chunk — quadratic across a long run.
 const inlineReasoningCache = new WeakMap<
   object,
   { content: string; split: InlineReasoningSplit }
@@ -607,10 +598,8 @@ export function isHiddenFromUIMessage(message: Message) {
   ) {
     return true;
   }
-  // Only the human branch consults the text. Extracting it up front made every
-  // caller pay a full content scan for every AI message it was about to
-  // discard, and this predicate runs over the whole message list on each
-  // stream chunk (grouping, dedup, human-input state).
+  // Only the human branch needs the text; extracting up front made every
+  // discarded AI message pay a full content scan per stream chunk.
   if (message.type !== "human") {
     return false;
   }

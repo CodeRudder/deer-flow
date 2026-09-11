@@ -312,9 +312,8 @@ describe("inline <think> tag splitting", () => {
   });
 
   test("re-splits when the same message object gets new content", () => {
-    // Streaming replaces `content` on the accumulating message, so a split
-    // cached against the message object must be keyed by the content it was
-    // derived from.
+    // Streaming replaces `content` on the same object, so the split cache is
+    // keyed by the content it was derived from.
     const message = aiMessage("<think>first</think>one");
 
     expect(extractContentFromMessage(message)).toBe("one");
@@ -345,10 +344,7 @@ describe("isHiddenFromUIMessage", () => {
   }
 
   test("does not read AI content to decide visibility", () => {
-    // Only the human branch consults the text, but this predicate runs over
-    // every message on every stream chunk (grouping, dedup, human-input
-    // state), so reading AI content here costs a full content scan per
-    // message per chunk.
+    // Reading AI content here would cost a full scan per message per chunk.
     const { probe, counter } = contentReadCounter(
       { id: "ai-visible", type: "ai" } as Message,
       "<think>long reasoning</think>a long streamed answer",

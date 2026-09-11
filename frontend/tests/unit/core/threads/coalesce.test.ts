@@ -30,19 +30,16 @@ describe("decideCoalesce", () => {
   });
 
   it("still takes the leading edge when a late trailing flush is pending", () => {
-    // Timer callbacks queue behind long tasks, so an update can arrive past the
-    // interval while the trailing flush is still armed. The decision is
-    // flush-now, which obliges the call site to disarm that timer — otherwise
-    // it publishes a second time and slips the next interval forward.
+    // A late update can pass the interval while a trailing flush is armed;
+    // flush-now obliges the call site to disarm it.
     expect(decideCoalesce(1000, 900, 80, true)).toEqual({
       action: "flush-now",
     });
   });
 
   it("never delays a flush beyond the interval, unlike a debounce", () => {
-    // Simulate a dense stream: updates every 10ms. A debounce would keep
-    // resetting its timer and never fire; here the trailing flush scheduled at
-    // the first update stays put and every later update just waits on it.
+    // Dense stream (10ms steps): a debounce would reset forever; here the
+    // first scheduled flush holds and later updates just wait on it.
     let lastFlush = 0;
     let pendingUntil: number | null = null;
     const flushes: number[] = [];
@@ -74,15 +71,14 @@ describe("decideCoalesce", () => {
   });
 
   it("takes the leading edge when nothing has flushed yet", () => {
-    // The hook seeds lastFlush with -Infinity on a monotonic clock whose epoch
-    // is page load, so the first update of a stream must not be deferred.
+    // First update of a stream takes the leading edge (seeded -Infinity).
     expect(decideCoalesce(5, Number.NEGATIVE_INFINITY, 80, false)).toEqual({
       action: "flush-now",
     });
   });
 
   it("keeps the scheduled delay inside the interval", () => {
-    // Holds for every elapsed value a monotonic clock can produce, which is why
+    // Holds for any elapsed value a monotonic clock can produce, which is why
     // the call site needs no clamp on the timeout delay.
     for (let elapsed = 0; elapsed < 80; elapsed++) {
       const decision = decideCoalesce(1000, 1000 - elapsed, 80, false);
