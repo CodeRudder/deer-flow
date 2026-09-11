@@ -38,6 +38,7 @@ import {
   hasPresentFiles,
   hasReasoning,
   isAssistantMessageGroupStreaming,
+  isClarificationPreambleGroup,
   isHiddenFromUIMessage,
 } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
@@ -613,6 +614,7 @@ export function MessageList({
                   turnUsageMessages,
                 })}
                 {group.type === "assistant" &&
+                  !isClarificationPreambleGroup(groupedMessages, groupIndex) &&
                   renderAssistantActions(
                     group.messages,
                     isAssistantMessageGroupStreaming(

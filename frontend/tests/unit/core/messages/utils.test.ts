@@ -13,6 +13,7 @@ import {
   hasContent,
   hasReasoning,
   isAssistantMessageGroupStreaming,
+  isClarificationPreambleGroup,
   isHiddenFromUIMessage,
   stripUploadedFilesTag,
 } from "@/core/messages/utils";
@@ -919,5 +920,122 @@ describe("hasAssistantTextInCurrentTurn", () => {
     const groups = getMessageGroups(messages);
 
     expect(hasAssistantTextInCurrentTurn(messages, groups)).toBe(false);
+  });
+});
+
+describe("isClarificationPreambleGroup", () => {
+  // A clarification turn: preamble text + the ask_clarification tool call.
+  function clarificationTranscript(): Message[] {
+    return [
+      { id: "human-1", type: "human", content: "把动作改成激光攻击" },
+      {
+        id: "ai-1",
+        type: "ai",
+        content: "已把动作改为激光攻击，是否按此继续？",
+        tool_calls: [
+          {
+            id: "call-1",
+            name: "ask_clarification",
+            args: { question: "是否按此继续？" },
+          },
+        ],
+      },
+      {
+        id: "tool-1",
+        type: "tool",
+        name: "ask_clarification",
+        tool_call_id: "call-1",
+        content: "fallback text",
+      },
+    ] as Message[];
+  }
+
+  test("flags the bubble whose clarification card renders underneath", () => {
+    const groups = getMessageGroups(clarificationTranscript());
+    expect(groups.map((group) => group.type)).toEqual([
+      "human",
+      "assistant:processing",
+      "assistant",
+      "assistant:clarification",
+    ]);
+
+    const index = groups.findIndex((group) => group.type === "assistant");
+    expect(isClarificationPreambleGroup(groups, index)).toBe(true);
+  });
+
+  test("leaves a normal answer's actions alone", () => {
+    const groups = getMessageGroups([
+      { id: "human-1", type: "human", content: "hi" },
+      { id: "ai-1", type: "ai", content: "Hello!" },
+    ] as Message[]);
+
+    expect(isClarificationPreambleGroup(groups, 1)).toBe(false);
+  });
+
+  test("leaves the actions alone when a processing group separates them", () => {
+    const groups = getMessageGroups([
+      { id: "human-1", type: "human", content: "继续" },
+      { id: "ai-1", type: "ai", content: "好的，开始生成。" },
+      {
+        id: "ai-2",
+        type: "ai",
+        content: "",
+        tool_calls: [
+          {
+            id: "call-1",
+            name: "ask_clarification",
+            args: { question: "继续吗？" },
+          },
+        ],
+      },
+      {
+        id: "tool-1",
+        type: "tool",
+        name: "ask_clarification",
+        tool_call_id: "call-1",
+        content: "fallback text",
+      },
+    ] as Message[]);
+
+    expect(groups.map((group) => group.type)).toEqual([
+      "human",
+      "assistant",
+      "assistant:processing",
+      "assistant:clarification",
+    ]);
+    expect(isClarificationPreambleGroup(groups, 1)).toBe(false);
+  });
+
+  test("stays flagged once the card has been answered", () => {
+    const groups = getMessageGroups([
+      ...clarificationTranscript(),
+      {
+        id: "human-answer",
+        type: "human",
+        content: "继续",
+        additional_kwargs: {
+          hide_from_ui: true,
+          human_input_response: {
+            version: 1,
+            kind: "human_input_response",
+            source: "ask_clarification",
+            request_id: "clarification:call-1",
+            response_kind: "text",
+            value: "继续",
+          },
+        },
+      } as Message,
+      { id: "ai-2", type: "ai", content: "好的，开始生成计划。" },
+    ] as Message[]);
+
+    expect(groups.map((group) => group.type)).toEqual([
+      "human",
+      "assistant:processing",
+      "assistant",
+      "assistant:clarification",
+      "assistant",
+    ]);
+    const index = groups.findIndex((group) => group.type === "assistant");
+    expect(isClarificationPreambleGroup(groups, index)).toBe(true);
   });
 });

@@ -291,6 +291,16 @@ export function isAssistantMessageGroupStreaming(
   });
 }
 
+// The clarification card renders directly below the assistant bubble that
+// carries its question; a copy/regenerate toolbar in between would break the
+// text-to-card flow, so that bubble's actions are suppressed.
+export function isClarificationPreambleGroup(
+  groups: MessageGroup[],
+  index: number,
+): boolean {
+  return groups[index + 1]?.type === "assistant:clarification";
+}
+
 // Cache per array reference: the copy button re-reads the settled array on
 // every message-list render (#5094). A rebuilt array misses and recomputes, so
 // the cache never serves a stale value.
