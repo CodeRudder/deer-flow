@@ -491,7 +491,14 @@ function Set-UserEnv {
 # 且避开 registry.npmjs.org 在代理下的证书问题。
 Set-UserEnv -Name 'NPM_CONFIG_REGISTRY' -Value $NpmRegistry
 
-Set-UserEnv -Name 'DEER_FLOW_HOME' -Value $RootDir
+# 注意：这里**不设置** DEER_FLOW_HOME。
+#
+# 用户级环境变量优先于项目 .env（uv run 起的进程读用户级），所以若在此处把它
+# 设成 $RootDir，会覆盖 init-config.ps1 写进 .env 的 data 目录，导致运行时状态
+# （SQLite、管理员的 admin_initial_credentials.txt）落到部署根而非 data\。
+# 实测踩过：admin-init.ps1 因此报「base_dir 与数据目录不同」的警告。
+#
+# DEER_FLOW_HOME 的唯一权威来源是 .env，由 init-config.ps1 生成。
 Set-UserEnv -Name 'NPM_CONFIG_CACHE' -Value (Join-Path $cacheDir 'npm')
 Set-UserEnv -Name 'UV_CACHE_DIR' -Value (Join-Path $cacheDir 'uv')
 # uv 自带的 Python 也放到数据盘，避免占满系统盘
