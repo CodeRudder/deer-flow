@@ -261,7 +261,7 @@ export function RecentChatList() {
                         </span>
                         {channelSource && (
                           <span
-                            className="bg-muted text-muted-foreground ml-auto inline-flex h-5 max-w-14 shrink-0 items-center rounded-md px-1.5 text-[10px] font-medium"
+                            className="bg-sidebar-accent text-sidebar-foreground/80 ml-auto inline-flex h-5 max-w-14 shrink-0 items-center rounded-md px-1.5 text-[10px] font-medium"
                             title={`${channelSource.label} channel`}
                           >
                             <span className="truncate">
@@ -276,7 +276,7 @@ export function RecentChatList() {
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuAction
                             showOnHover
-                            className="bg-background/50 hover:bg-background after:left-0!"
+                            className="bg-sidebar-accent hover:bg-sidebar-accent after:left-0!"
                           >
                             <MoreHorizontal />
                             <span className="sr-only">{t.common.more}</span>
