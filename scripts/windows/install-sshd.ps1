@@ -43,6 +43,11 @@
 .EXAMPLE
     .\install-sshd.ps1 -PublicKeyFile C:\Temp\deerflow_win.pub -Port 2222
 
+.EXAMPLE
+    # Windows 10 20H2 等无法使用可选功能的系统，走便携版 + 本机 SOCKS 代理
+    .\install-sshd.ps1 -Method Portable -Proxy socks5://127.0.0.1:1080 `
+        -PublicKey "ssh-ed25519 AAAAC3Nza... deerflow-win"
+
 .NOTES
     Windows 10 1809+ / Server 2019+ 可用系统可选功能；更早版本走便携版即可。
 
@@ -54,6 +59,10 @@
 
     便携版来自微软官方仓库 https://github.com/PowerShell/Win32-OpenSSH，
     完全绕开 Windows Update 与 WSUS。
+
+    代理写法：SOCKS5 必须写成 socks5:// 或 socks5h://。
+    curl 会把 socks:// 当作 SOCKS4，而 SOCKS4 不支持远程 DNS，访问 GitHub
+    时会退回本地 DNS 解析（易被污染）。脚本会自动纠正并提示。
 #>
 
 #Requires -RunAsAdministrator
@@ -121,7 +130,20 @@ param(
       适用于目标机无法访问 github.com 的情况。
     #>
     [Parameter(Mandatory = $false)]
-    [string]$PortableZipPath
+    [string]$PortableZipPath,
+
+    <#
+      下载便携版时使用的代理，例如 socks5://127.0.0.1:1080。
+
+      注意：必须写成 socks5:// 或 socks5h://。
+      写成 socks:// 时 curl 会按 SOCKS4 处理，而 SOCKS4 不支持远程 DNS，
+      解析 github.com 会走本地 DNS（易被污染）——因此脚本会自动把
+      socks:// 归一化为 socks5h://，并在检测到 socks4 时给出警告。
+
+      本参数同时作用于原生命令的 git/curl。
+    #>
+    [Parameter(Mandatory = $false)]
+    [string]$Proxy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -278,10 +300,41 @@ function Install-OpenSshViaFeature {
   完全绕开 Windows Update / WSUS，适用于任何 Windows 版本。
   返回 $true 表示安装成功。
 #>
+# 把用户传入的代理地址归一化为 curl 能正确处理的方案名。
+#
+# curl 识别的 SOCKS 方案只有 socks4:// socks4a:// socks5:// socks5h://。
+# 裸写 socks:// 时 curl 按 SOCKS4 处理，而 SOCKS4 不支持远程 DNS——
+# github.com 会在本地解析，被污染时直接失败。
+# socks5h:// 的 h 表示由代理解析域名，是访问 GitHub 的正确选择。
+function Resolve-ProxyUrl {
+    param([string]$ProxyUrl)
+
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return $null
+    }
+
+    $value = $ProxyUrl.Trim()
+
+    if ($value -match '^socks://') {
+        $normalized = $value -replace '^socks://', 'socks5h://'
+        Write-Warn "代理方案 socks:// 会被 curl 当作 SOCKS4（不支持远程 DNS）"
+        Write-Info "已自动改为 $normalized"
+        return $normalized
+    }
+
+    if ($value -match '^socks4://|^socks4a://') {
+        Write-Warn "SOCKS4 不支持远程 DNS，解析 github.com 可能失败"
+        Write-Info "建议改用 socks5h://"
+    }
+
+    return $value
+}
+
 function Install-OpenSshPortable {
     param(
         [string]$Version,
-        [string]$LocalZipPath
+        [string]$LocalZipPath,
+        [string]$ProxyUrl
     )
 
     # 已装过便携版则复用
@@ -310,24 +363,61 @@ function Install-OpenSshPortable {
 
             Write-Info "下载便携版 $Version ..."
             Write-Info $url
+            if ($ProxyUrl) {
+                Write-Info "经代理: $ProxyUrl"
+            }
 
-            # 用 TLS 1.2：Windows 10 早期版本的 .NET 默认可能仍是 TLS 1.0，
-            # 会被 GitHub 拒绝。
-            $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
-            try {
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                $ProgressPreference = 'SilentlyContinue'   # 关闭进度条，否则下载会慢一个数量级
-                Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
-            } catch {
-                Write-Fail "下载失败: $($_.Exception.Message)"
+            # 用 curl.exe 而不是 Invoke-WebRequest：
+            # Invoke-WebRequest 的 -Proxy 只支持 HTTP/HTTPS，不支持 SOCKS。
+            # curl.exe 自 Windows 10 1803 起随系统内置。
+            $curlExe = Join-Path $env:SystemRoot 'System32\curl.exe'
+            if (-not (Test-Path $curlExe)) {
+                Write-Fail "未找到 curl.exe（$curlExe）。本系统可能低于 Windows 10 1803。"
+                Write-Info "请手动下载后通过 -PortableZipPath 指定：$url"
+                return $false
+            }
+
+            $curlArgs = @(
+                '--fail',                     # HTTP 错误码视为失败，避免把错误页当压缩包
+                '--location',                 # GitHub release 会 302 到 CDN
+                '--silent',
+                '--show-error',
+                '--connect-timeout', '20',
+                '--max-time', '300',
+                '--output', $zipPath
+            )
+            if ($ProxyUrl) {
+                $curlArgs += @('--proxy', $ProxyUrl)
+            }
+            $curlArgs += $url
+
+            # 2>&1 与 --show-error 配合：把 curl 的错误文本捕获下来供诊断
+            $curlOutput = & $curlExe @curlArgs 2>&1
+            $curlExit = $LASTEXITCODE
+
+            if ($curlExit -ne 0) {
+                Write-Fail "下载失败 (curl 返回码 $curlExit)"
+                if ($curlOutput) {
+                    Write-Info ($curlOutput | Select-Object -Last 4)
+                }
                 Write-Host ""
-                Write-Host "  请在有网的机器上下载后拷贝到本机，再用 -PortableZipPath 指定：" -ForegroundColor Yellow
-                Write-Host "    $url"
+                Write-Host "  诊断建议：" -ForegroundColor Yellow
+                if ($ProxyUrl) {
+                    Write-Host "    - 确认代理正在运行且端口正确: $ProxyUrl"
+                    Write-Host "    - SOCKS5 需用 socks5:// 或 socks5h://，不要写 socks://"
+                } else {
+                    Write-Host "    - 若需经代理访问 GitHub，加 -Proxy socks5://127.0.0.1:1080"
+                }
+                Write-Host "    - 或手动下载后指定: -PortableZipPath C:\Temp\OpenSSH-Win64.zip"
+                Write-Host "      $url"
                 Write-Host ""
                 return $false
-            } finally {
-                [Net.ServicePointManager]::SecurityProtocol = $previousProtocol
-                $ProgressPreference = 'Continue'
+            }
+
+            # curl --fail 已保证非 2xx 返回非零，但输出被截断时仍需复查文件
+            if (-not (Test-Path $zipPath) -or (Get-Item $zipPath).Length -eq 0) {
+                Write-Fail "下载后文件为空: $zipPath"
+                return $false
             }
 
             $sizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
@@ -387,12 +477,16 @@ if ($alreadyInstalled) {
 } else {
     $installed = $false
 
+    # 归一化一次，供所有便携版安装分支复用
+    $resolvedProxy = Resolve-ProxyUrl -ProxyUrl $Proxy
+
     switch ($Method) {
         'Feature' {
             $installed = Install-OpenSshViaFeature -LocalSourcePath $SourcePath
         }
         'Portable' {
-            $installed = Install-OpenSshPortable -Version $OpenSshVersion -LocalZipPath $PortableZipPath
+            $installed = Install-OpenSshPortable -Version $OpenSshVersion `
+                -LocalZipPath $PortableZipPath -ProxyUrl $resolvedProxy
         }
         'Source' {
             if (-not $SourcePath) {
@@ -411,7 +505,8 @@ if ($alreadyInstalled) {
                 }
             }
             if (-not $installed) {
-                $installed = Install-OpenSshPortable -Version $OpenSshVersion -LocalZipPath $PortableZipPath
+                $installed = Install-OpenSshPortable -Version $OpenSshVersion `
+                    -LocalZipPath $PortableZipPath -ProxyUrl $resolvedProxy
             }
         }
     }
