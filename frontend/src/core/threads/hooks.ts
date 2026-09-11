@@ -79,6 +79,9 @@ const EMPTY_THREAD_VALUES: AgentThreadState = {
   todos: [],
 };
 
+// Stable identity for empty message lists: a fresh [] per render would invalidate downstream memos.
+const EMPTY_MESSAGES: Message[] = [];
+
 function isNonEmptyString(value: string | undefined): value is string {
   return typeof value === "string" && value.length > 0;
 }
@@ -706,6 +709,122 @@ export function getSummarizationMiddlewareMessages(
   return undefined;
 }
 
+export const STREAM_RENDER_COALESCE_MS = 80;
+
+export type CoalesceDecision =
+  | { action: "flush-now" }
+  | { action: "schedule"; delayMs: number }
+  | { action: "wait" };
+
+/**
+ * Leading-edge flush once a full interval has elapsed, else one scheduled
+ * trailing flush for the remainder — the delay never extends past the
+ * interval, so a dense stream cannot starve rendering.
+ */
+export function decideCoalesce(
+  nowMs: number,
+  lastFlushMs: number,
+  intervalMs: number,
+  hasPendingTimer: boolean,
+): CoalesceDecision {
+  if (nowMs - lastFlushMs >= intervalMs) {
+    return { action: "flush-now" };
+  }
+  if (hasPendingTimer) {
+    return { action: "wait" };
+  }
+  return { action: "schedule", delayMs: intervalMs - (nowMs - lastFlushMs) };
+}
+
+function sameMessageArray(a: Message[], b: Message[]): boolean {
+  return (
+    a === b ||
+    (a.length === b.length && a.every((message, index) => message === b[index]))
+  );
+}
+
+/**
+ * While a run is streaming, expose messages as a snapshot updated at most
+ * once per interval instead of once per SSE chunk (#4409 Phase 1); idle
+ * streams pass the latest array straight through.
+ */
+export function useCoalescedStreamMessages(
+  messages: Message[],
+  isStreaming: boolean,
+  intervalMs: number = STREAM_RENDER_COALESCE_MS,
+): Message[] {
+  // null = no snapshot for the current stream; the hook outlives thread
+  // switches, so a leftover snapshot must never be painted.
+  const [snapshot, setSnapshot] = useState<Message[] | null>(null);
+  const latestRef = useRef(messages);
+  latestRef.current = messages;
+  // Monotonic clock: wall-clock steps would stall the interval math.
+  // -Infinity = never flushed, so a stream's first update takes the leading edge.
+  const lastFlushRef = useRef(Number.NEGATIVE_INFINITY);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Guard publications with shallow equality: identity churn (the getter mints
+  // fresh arrays) must not re-trigger renders.
+  const publish = useCallback(() => {
+    setSnapshot((previous) =>
+      previous !== null && sameMessageArray(previous, latestRef.current)
+        ? previous
+        : latestRef.current,
+    );
+  }, []);
+
+  const clearPendingFlush = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      clearPendingFlush();
+      // Reset per stream: the leading edge is per run, not per hook instance,
+      // and the snapshot must not outlive its stream.
+      lastFlushRef.current = Number.NEGATIVE_INFINITY;
+      setSnapshot((previous) => (previous === null ? previous : null));
+      return;
+    }
+    const now = performance.now();
+    const decision = decideCoalesce(
+      now,
+      lastFlushRef.current,
+      intervalMs,
+      timerRef.current !== null,
+    );
+    if (decision.action === "flush-now") {
+      // A timer may still be armed (timers fire late under load); leaving it
+      // would publish twice.
+      clearPendingFlush();
+      lastFlushRef.current = now;
+      publish();
+    } else if (decision.action === "schedule") {
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        // Re-read the clock: timers fire late, and the next interval starts
+        // from the real flush.
+        lastFlushRef.current = performance.now();
+        publish();
+      }, decision.delayMs);
+    }
+  }, [messages, isStreaming, intervalMs, publish, clearPendingFlush]);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+      }
+    },
+    [],
+  );
+
+  return isStreaming && snapshot !== null ? snapshot : messages;
+}
+
 export function upsertThreadInSearchCache(
   queryClient: QueryClient,
   thread: AgentThread,
@@ -990,6 +1109,9 @@ export function useThreadStream({
     threadId: onStreamThreadId,
     reconnectOnMount: true,
     fetchStateHistory: { limit: 1 },
+    // Coalesce same-tick stream events into one React notification; the SDK's
+    // numeric tier debounces and starves updates, so keep the boolean tier.
+    throttle: true,
     onCreated(meta) {
       handleStreamStart(meta.thread_id, meta.run_id);
       invalidateThreadStatus(meta.thread_id);
@@ -1202,16 +1324,28 @@ export function useThreadStream({
 
   const hasVisibleStreamState =
     Boolean(threadId) || liveMessagesThreadId === currentViewThreadId;
-  const persistedMessages = useMemo(
-    () =>
-      hasVisibleStreamState
-        ? thread.messages.filter(
-            (message) =>
-              !message.id || !pendingSupersededMessageIds.has(message.id),
-          )
-        : [],
-    [hasVisibleStreamState, pendingSupersededMessageIds, thread.messages],
+  const persistedMessages = useMemo(() => {
+    if (!hasVisibleStreamState) {
+      return EMPTY_MESSAGES;
+    }
+    const filtered = thread.messages.filter(
+      (message) => !message.id || !pendingSupersededMessageIds.has(message.id),
+    );
+    // Normalize a fresh [] (the getter mints one per read) to a stable
+    // identity so downstream effects cannot re-fire on idle renders.
+    return filtered.length === 0 ? EMPTY_MESSAGES : filtered;
+  }, [hasVisibleStreamState, pendingSupersededMessageIds, thread.messages]);
+
+  // Render-facing snapshot; refs and usage tracking keep the per-chunk array.
+  const renderMessages = useCoalescedStreamMessages(
+    persistedMessages,
+    thread.isLoading,
   );
+  // Count on the render snapshot: the live count would blank the just-sent
+  // bubble until the server echo lands.
+  const renderHumanMessageCount = renderMessages.filter(
+    (message) => message.type === "human",
+  ).length;
 
   // Stuck-stream watchdog: poll the run list while loading; abort via stop() once
   // the latest run is terminal and the message tail has been silent past the grace period.
@@ -1359,13 +1493,14 @@ export function useThreadStream({
   useEffect(() => {
     if (optimisticMessageCount === 0) return;
 
-    const newHumanMsgArrived = humanMessageCount > prevHumanMsgCountRef.current;
+    const newHumanMsgArrived =
+      renderHumanMessageCount > prevHumanMsgCountRef.current;
 
     if (!hasHumanOptimistic || newHumanMsgArrived) {
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
     }
-  }, [hasHumanOptimistic, humanMessageCount, optimisticMessageCount]);
+  }, [hasHumanOptimistic, optimisticMessageCount, renderHumanMessageCount]);
 
   const sendMessage = useCallback(
     async (
@@ -1694,27 +1829,44 @@ export function useThreadStream({
     messagesRef.current = persistedMessages;
   }
 
-  const visibleOptimisticMessages = getVisibleOptimisticMessages(
+  const rawVisibleOptimisticMessages = getVisibleOptimisticMessages(
     optimisticThreadId === currentViewThreadId ? optimisticMessages : [],
     prevHumanMsgCountRef.current,
-    humanMessageCount,
+    renderHumanMessageCount,
   );
+  const visibleOptimisticMessages =
+    rawVisibleOptimisticMessages.length === 0
+      ? EMPTY_MESSAGES
+      : rawVisibleOptimisticMessages;
 
   // Overlay the summarization rescue buffer only onto the history of the thread
   // it was captured from. visibleHistory is gated on `threadId`, so comparing the
   // same prop keeps the buffer from flashing into another thread or the new-chat
   // screen, and reading it here (instead of clearing a ref during render) is
   // concurrent-mode safe (#3825).
+  //
+  // The rescue refs are read into locals and listed as memo deps so the merge
+  // reruns on the render that carries an updated buffer.
   const rescueBuffer = pendingArchivedMessagesRef.current;
-  const effectiveHistory =
-    rescueBuffer.length > 0 && pendingArchiveThreadIdRef.current === threadId
-      ? resolvePreservedHistory(visibleHistory, rescueBuffer)
-      : visibleHistory;
-  const mergedMessages = mergeMessages(
-    effectiveHistory,
-    persistedMessages,
+  const rescueThreadId = pendingArchiveThreadIdRef.current;
+  const mergedMessages = useMemo(() => {
+    const effectiveHistory =
+      rescueBuffer.length > 0 && rescueThreadId === threadId
+        ? resolvePreservedHistory(visibleHistory, rescueBuffer)
+        : visibleHistory;
+    return mergeMessages(
+      effectiveHistory,
+      renderMessages,
+      visibleOptimisticMessages,
+    );
+  }, [
+    renderMessages,
+    threadId,
+    visibleHistory,
     visibleOptimisticMessages,
-  );
+    rescueBuffer,
+    rescueThreadId,
+  ]);
   const pendingUsageMessages = thread.isLoading
     ? getMessagesAfterBaseline(
         persistedMessages,

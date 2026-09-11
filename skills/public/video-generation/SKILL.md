@@ -465,12 +465,12 @@ card, and execute only after an explicit confirmation.
 
 ## Examples
 
-Worked examples live in `references/examples.md` (full T2V flow with both
-gates) and in the routed provider's examples —
-`references/providers/minimax/examples.md` /
-`references/providers/seedance/examples.md` (2K upgrade:
-`references/providers/minimax/upgrade-2k.md`). Load them after the gates
-when needed.
+Worked commands per provider live in
+`references/providers/minimax/examples.md` (T2V / I2V / first+last /
+reference) and `references/providers/seedance/examples.md` (T2V / multimodal
+reference / first+last); the 2K upgrade is in
+`references/providers/minimax/upgrade-2k.md`. Load the routed provider's file
+after the gates when needed.
 ## Provider constraints
 
 Per-provider capability numbers (value domains, draft-tier defaults, reference

@@ -1,11 +1,23 @@
-# MiniMax worked mode examples (I2V / first+last / reference)
+# MiniMax worked mode examples (T2V / I2V / first+last / reference)
 
-Loaded on demand when the routed provider is MiniMax H3 and the mode is not
-plain T2V — Example A in SKILL.md shows the full T2V flow with both gates, and
-the 2K upgrade is documented in `upgrade-2k.md` (same directory). All examples
-below assume the input-table and
-plan-card gates have passed and the prompt file was written in the mode's
-structured format (Step 2).
+Loaded on demand when the routed provider is MiniMax H3 — worked commands for
+every mode; the 2K upgrade is documented in `upgrade-2k.md` (same directory).
+All examples below assume the input-table and plan-card gates have passed and
+the prompt file was written in the mode's structured format (Step 2).
+
+## A — T2V, explicit text-only request
+
+User: "Make a short clip of a cat stretching on a windowsill in the morning —
+text only, no reference images." The explicit text-only ask opts out of the
+reference-mode default. Write `cat-stretch.txt` in the H3 structured format
+(`prompt-format-base.md`, same directory); the plan card marks `T2V`, no
+materials, `5 s · draft tier · 16:9`. Run:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate.py   --prompt-file /mnt/user-data/workspace/cat-stretch.txt   --model MiniMax-H3 --resolution 768P --duration 5   --output-file /mnt/user-data/outputs/cat-stretch.mp4
+```
+
+Present with exits ①–③ plus ④ (eligible 5 s draft on the H3 upgrade path).
 
 ## B — I2V, user uploaded a first frame
 

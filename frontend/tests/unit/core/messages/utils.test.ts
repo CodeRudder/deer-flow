@@ -12,6 +12,7 @@ import {
   hasContent,
   hasReasoning,
   isAssistantMessageGroupStreaming,
+  isHiddenFromUIMessage,
   stripUploadedFilesTag,
 } from "@/core/messages/utils";
 
@@ -309,6 +310,92 @@ describe("inline <think> tag splitting", () => {
     expect(extractContentFromMessage(message)).toBe("Documentation: `<think>");
     expect(extractReasoningContentFromMessage(message)).toBeNull();
   });
+
+  test("re-splits when the same message object gets new content", () => {
+    // Streaming replaces `content` on the same object, so the split cache is
+    // keyed by the content it was derived from.
+    const message = aiMessage("<think>first</think>one");
+
+    expect(extractContentFromMessage(message)).toBe("one");
+    expect(extractReasoningContentFromMessage(message)).toBe("first");
+
+    (message as { content: string }).content = "<think>second</think>two";
+
+    expect(extractContentFromMessage(message)).toBe("two");
+    expect(extractReasoningContentFromMessage(message)).toBe("second");
+    expect(hasReasoning(message)).toBe(true);
+  });
+});
+
+describe("isHiddenFromUIMessage", () => {
+  function contentReadCounter(
+    message: Omit<Message, "content">,
+    content: string,
+  ) {
+    const counter = { reads: 0 };
+    const probe = {
+      ...message,
+      get content() {
+        counter.reads++;
+        return content;
+      },
+    } as unknown as Message;
+    return { probe, counter };
+  }
+
+  test("does not read AI content to decide visibility", () => {
+    // Reading AI content here would cost a full scan per message per chunk.
+    const { probe, counter } = contentReadCounter(
+      { id: "ai-visible", type: "ai" } as Message,
+      "<think>long reasoning</think>a long streamed answer",
+    );
+
+    expect(isHiddenFromUIMessage(probe)).toBe(false);
+    expect(counter.reads).toBe(0);
+  });
+
+  test("does not read content when a control message name already hides it", () => {
+    const { probe, counter } = contentReadCounter(
+      { id: "summary-1", type: "ai", name: "summary" } as Message,
+      "compressed context",
+    );
+
+    expect(isHiddenFromUIMessage(probe)).toBe(true);
+    expect(counter.reads).toBe(0);
+  });
+
+  test("still hides a human message that is only slash skill activation", () => {
+    const message = {
+      id: "slash-activation",
+      type: "human",
+      content:
+        "<slash_skill_activation>\n<skill_content># SKILL.md</skill_content>\n</slash_skill_activation>",
+    } as Message;
+
+    expect(isHiddenFromUIMessage(message)).toBe(true);
+  });
+
+  test("keeps a human message that carries real text alongside the activation", () => {
+    const message = {
+      id: "slash-activation-with-task",
+      type: "human",
+      content:
+        "<slash_skill_activation>\n<skill_content># SKILL.md</skill_content>\n</slash_skill_activation>\nreal user task",
+    } as Message;
+
+    expect(isHiddenFromUIMessage(message)).toBe(false);
+  });
+
+  test("hides any message flagged with hide_from_ui", () => {
+    const message = {
+      id: "hidden-1",
+      type: "human",
+      content: "internal reply",
+      additional_kwargs: { hide_from_ui: true },
+    } as Message;
+
+    expect(isHiddenFromUIMessage(message)).toBe(true);
+  });
 });
 
 describe("human message internal context stripping", () => {
@@ -513,6 +600,72 @@ test("keeps previous assistant copyable after a hidden send is appended", () => 
       getStreamingMessageLookup(messages, true),
     ),
   ).toBe(false);
+});
+
+test("falls back to reasoning for a reasoning-only assistant turn's copy data", () => {
+  // A turn can end with reasoning but no answer text (e.g. stopped during
+  // thinking); the turn-level copy button must not disappear in that case.
+  const messages = [
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "",
+      additional_kwargs: { reasoning_content: "the actual reasoning" },
+    },
+  ] as Message[];
+
+  expect(getAssistantTurnCopyData(messages)).toBe("the actual reasoning");
+});
+
+test("settled copy data is derived once per messages array reference (#5094)", () => {
+  // The cache is keyed on the messages array reference, so any caller that
+  // reads copy data for the same settled array twice is served from the cache
+  // instead of re-running the O(turn bytes) extraction. Reading `content`
+  // through a getter proves the second call never touches the message.
+  let contentReads = 0;
+  const message = {
+    id: "ai-1",
+    type: "ai",
+    get content() {
+      contentReads += 1;
+      return "Final answer";
+    },
+  } as unknown as Message;
+  const messages = [message];
+
+  expect(getAssistantTurnCopyData(messages)).toBe("Final answer");
+  const readsAfterFirstCall = contentReads;
+  expect(readsAfterFirstCall).toBeGreaterThan(0);
+
+  expect(getAssistantTurnCopyData(messages)).toBe("Final answer");
+  expect(contentReads).toBe(readsAfterFirstCall);
+});
+
+test("copy-data cache does not leak across array references", () => {
+  const first = [
+    { id: "ai-1", type: "ai", content: "first answer" },
+  ] as Message[];
+  const second = [
+    { id: "ai-2", type: "ai", content: "second answer" },
+  ] as Message[];
+
+  expect(getAssistantTurnCopyData(first)).toBe("first answer");
+  expect(getAssistantTurnCopyData(second)).toBe("second answer");
+  // The streaming short-circuit stays ahead of the cache.
+  expect(getAssistantTurnCopyData(second, { isStreaming: true })).toBeNull();
+  expect(getAssistantTurnCopyData(second)).toBe("second answer");
+});
+
+test("null copy data is not cached for a reference", () => {
+  // A turn with no copyable AI text must keep recomputing (and stay null)
+  // rather than a cached null hiding a later value — the same array can be
+  // re-used once messages are appended to a rebuilt group.
+  const messages = [
+    { id: "human-1", type: "human", content: "hi" },
+  ] as Message[];
+
+  expect(getAssistantTurnCopyData(messages)).toBeNull();
+  expect(getAssistantTurnCopyData(messages)).toBeNull();
 });
 
 test("uses stream metadata to identify an assistant before optimistic input", () => {

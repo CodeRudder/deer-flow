@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 import { MessageListItem } from "@/components/workspace/messages/message-list-item";
+import * as messageUtils from "@/core/messages/utils";
+
+// Count the toolbar copy derivation via its entry point
+// (`stripUploadedFilesTag`); other render paths never call it.
+const copyDerivations = rs.spyOn(messageUtils, "stripUploadedFilesTag");
 
 const clipboardWrites: string[] = [];
 
@@ -28,6 +33,9 @@ rs.mock("@/core/clipboard", () => ({
 }));
 
 afterEach(cleanup);
+afterEach(() => {
+  copyDerivations.mockClear();
+});
 
 function humanMessageWithImages(): Message {
   return {
@@ -164,5 +172,69 @@ describe("MessageListItem uploaded image cards", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     unmount();
+  });
+});
+
+describe("MessageListItem copy-data derivation guard", () => {
+  it("derives the toolbar copy text once per settled row", () => {
+    // Same message reference (a chunk re-render) must reuse the memo (#5094).
+    const message = {
+      id: "ai-copy",
+      type: "ai",
+      content: "copy me",
+    } as unknown as Message;
+
+    const { rerender } = render(
+      <MessageListItem message={message} threadId="t1" />,
+    );
+
+    expect(copyDerivations).toHaveBeenCalledTimes(1);
+
+    rerender(<MessageListItem message={message} threadId="t1" />);
+
+    expect(copyDerivations).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-derives when the row receives a new message reference", () => {
+    const first = {
+      id: "ai-1",
+      type: "ai",
+      content: "first",
+    } as unknown as Message;
+    const second = {
+      id: "ai-1",
+      type: "ai",
+      content: "second",
+    } as unknown as Message;
+
+    const { rerender } = render(
+      <MessageListItem message={first} threadId="t1" />,
+    );
+    expect(copyDerivations).toHaveBeenCalledTimes(1);
+
+    rerender(<MessageListItem message={second} threadId="t1" />);
+    expect(copyDerivations).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the derivation when the toolbar never renders", () => {
+    // No copy button (opt-out or loading) means no derivation.
+    const message = {
+      id: "ai-no-toolbar",
+      type: "ai",
+      content: "copy me",
+    } as unknown as Message;
+
+    const { unmount } = render(
+      <MessageListItem
+        message={message}
+        showCopyButton={false}
+        threadId="t1"
+      />,
+    );
+    expect(copyDerivations).not.toHaveBeenCalled();
+    unmount();
+
+    render(<MessageListItem message={message} isLoading threadId="t1" />);
+    expect(copyDerivations).not.toHaveBeenCalled();
   });
 });

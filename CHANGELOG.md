@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Stuck loading state after refreshing a thread within ~60s–300s of a run finishing:** the SSE replay buffer is reclaimed 60s after a run ends while the run's in-memory record lingers for 300s; a browser refresh in that window (`reconnectOnMount` + sessionStorage marker) joined a terminal run, the bridge lazily recreated an empty never-ending stream, and the UI stayed in a loading state (clarification cards greyed out, composer disabled). Streaming joins (`/join`, `/stream`) now return 409 "not active on this worker" for terminal runs whose replay buffer is gone, which the frontend already handles by clearing the reconnect marker; joining within the replay window still replays buffered events and ends cleanly.
 
+### Performance
+
+- **frontend:** Streaming replies coalesce to an 80 ms frame budget instead of
+  one React update per SSE chunk, and message-content derivations (inline
+  reasoning splits, hidden-message checks, copy text) are cached per message
+  or reference — long threads stay responsive while streaming.
+
 ### Changed
 
 #### Skills

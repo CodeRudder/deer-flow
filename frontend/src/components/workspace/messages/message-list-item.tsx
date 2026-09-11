@@ -138,6 +138,20 @@ export function MessageListItem({
   turnStartTime?: number | null;
 }) {
   const isHuman = message.type === "human";
+  // What the toolbar copies (backend-injected context stripped), memoized per
+  // row so chunk re-renders reuse it (#5094); the guard mirrors the toolbar's
+  // render condition.
+  const copyData = useMemo(
+    () =>
+      !isLoading && showCopyButton
+        ? stripUploadedFilesTag(
+            extractContentFromMessage(message) ??
+              extractReasoningContentFromMessage(message) ??
+              "",
+          )
+        : "",
+    [isLoading, message, showCopyButton],
+  );
   return (
     <AIElementMessage
       className={cn("group/conversation-message relative w-full", className)}
@@ -160,14 +174,7 @@ export function MessageListItem({
           )}
         >
           <div className="pointer-events-auto flex gap-1">
-            <CopyButton
-              // Copy what is displayed: strip backend-injected context blocks.
-              clipboardData={stripUploadedFilesTag(
-                extractContentFromMessage(message) ??
-                  extractReasoningContentFromMessage(message) ??
-                  "",
-              )}
-            />
+            <CopyButton clipboardData={copyData} />
             {feedback !== undefined && runId && threadId && (
               <FeedbackButtons
                 threadId={threadId}
