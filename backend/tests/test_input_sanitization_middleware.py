@@ -650,3 +650,148 @@ class TestOriginalUserContentKey:
 
         assert captured[0] is request  # no override happened
         assert ORIGINAL_USER_CONTENT_KEY not in (request.messages[0].additional_kwargs or {})
+
+
+# ---------------------------------------------------------------------------
+# wrap_model_call — thinking-block repair
+# ---------------------------------------------------------------------------
+
+# The shape produced when a streamed thinking block only delivered a
+# signature_delta: the block keeps type/signature/index but the `thinking` key
+# never exists. Strict Anthropic-compatible APIs reject it on replay.
+SIGNATURE_ONLY_BLOCK = {"type": "thinking", "signature": "baffd894-4473-4ea2-90f2-e8eb660bf9fe", "index": 0}
+WELL_FORMED_THINKING_BLOCK = {"type": "thinking", "thinking": "reasoning text", "signature": "sig-1", "index": 0}
+TOOL_USE_BLOCK = {"type": "tool_use", "id": "call_1", "name": "read_file", "input": {"path": "/tmp/x"}}
+
+
+class TestWrapModelCallThinkingBlockRepair:
+    """Signature-only thinking blocks gain an empty `thinking` text field."""
+
+    def test_signature_only_block_gains_empty_thinking_text(self):
+        mw = _make_middleware()
+        request = _make_request([AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK), dict(TOOL_USE_BLOCK)], id="ai-1")])
+        captured = []
+
+        mw.wrap_model_call(request, lambda req: captured.append(req) or "ok")
+
+        blocks = captured[0].messages[0].content
+        assert blocks[0]["thinking"] == ""
+        assert blocks[0]["signature"] == SIGNATURE_ONLY_BLOCK["signature"]
+        assert blocks[1] == TOOL_USE_BLOCK
+
+    def test_original_message_is_not_mutated(self):
+        mw = _make_middleware()
+        message = AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK)], id="ai-1")
+        request = _make_request([message])
+
+        mw.wrap_model_call(request, lambda req: "ok")
+
+        assert "thinking" not in message.content[0]
+
+    def test_repaired_message_preserves_id_and_tool_calls(self):
+        mw = _make_middleware()
+        image = AIMessage(
+            content=[dict(SIGNATURE_ONLY_BLOCK), dict(TOOL_USE_BLOCK)],
+            id="ai-1",
+            tool_calls=[{"name": "read_file", "args": {"path": "/tmp/x"}, "id": "call_1", "type": "tool_call"}],
+        )
+        request = _make_request([image])
+        captured = []
+
+        mw.wrap_model_call(request, lambda req: captured.append(req) or "ok")
+
+        assert captured[0].messages[0].id == "ai-1"
+        assert captured[0].messages[0].tool_calls == image.tool_calls
+
+    def test_request_passes_through_identical_when_nothing_to_repair(self):
+        mw = _make_middleware()
+        messages = [
+            AIMessage(content=[dict(WELL_FORMED_THINKING_BLOCK)], id="ai-1"),
+            AIMessage(content="plain string", id="ai-2"),
+            AIMessage(content=[{"type": "redacted_thinking", "data": "..."}], id="ai-3"),
+        ]
+        request = _make_request(messages)
+        captured = []
+
+        mw.wrap_model_call(request, lambda req: captured.append(req) or "ok")
+
+        assert captured[0] is request
+
+    def test_repair_is_idempotent(self):
+        mw = _make_middleware()
+        request = _make_request([AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK)], id="ai-1")])
+        first, second = [], []
+
+        mw.wrap_model_call(request, lambda req: first.append(req) or "ok")
+        mw.wrap_model_call(first[0], lambda req: second.append(req) or "ok")
+
+        assert second[0] is first[0]
+
+    def test_multiple_broken_blocks_in_one_message_are_repaired(self):
+        mw = _make_middleware()
+        second = {"type": "thinking", "signature": "sig-3", "index": 2}
+        request = _make_request([AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK), dict(TOOL_USE_BLOCK), dict(second)], id="ai-1")])
+        captured = []
+
+        mw.wrap_model_call(request, lambda req: captured.append(req) or "ok")
+
+        blocks = captured[0].messages[0].content
+        assert blocks[0]["thinking"] == ""
+        assert blocks[1] == TOOL_USE_BLOCK
+        assert blocks[2]["thinking"] == ""
+
+    @pytest.mark.anyio
+    async def test_async_model_call_forwards_repaired_messages(self):
+        mw = _make_middleware()
+        request = _make_request([AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK)], id="ai-1")])
+        captured = []
+
+        async def handler(req):
+            captured.append(req)
+            return "ok"
+
+        await mw.awrap_model_call(request, handler)
+
+        assert captured[0].messages[0].content[0]["thinking"] == ""
+
+    def test_repair_failure_passes_request_through(self, monkeypatch):
+        import deerflow.agents.middlewares.input_sanitization_middleware as module
+
+        def boom(message):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(module, "_repair_thinking_block", boom)
+        mw = _make_middleware()
+        request = _make_request([AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK)], id="ai-1")])
+        captured = []
+
+        mw.wrap_model_call(request, lambda req: captured.append(req) or "ok")
+
+        assert captured[0] is request
+
+    @pytest.mark.anyio
+    async def test_repaired_blocks_survive_anthropic_payload_serialization(self):
+        """The repaired block must reach the Anthropic request body with the field present."""
+        from langchain_anthropic import ChatAnthropic
+
+        mw = _make_middleware()
+        request = _make_request(
+            [
+                HumanMessage(content="hi", id="h-1"),
+                AIMessage(content=[dict(SIGNATURE_ONLY_BLOCK), dict(TOOL_USE_BLOCK)], id="ai-1"),
+            ]
+        )
+        captured = []
+
+        async def handler(req):
+            captured.append(req)
+            return "ok"
+
+        await mw.awrap_model_call(request, handler)
+
+        model = ChatAnthropic(model="claude-test", api_key="test-key")
+        payload = model._get_request_payload(captured[0].messages)
+        assistant = next(message for message in payload["messages"] if message["role"] == "assistant")
+        thinking_blocks = [block for block in assistant["content"] if block["type"] == "thinking"]
+        assert thinking_blocks and thinking_blocks[0]["thinking"] == ""
+        assert thinking_blocks[0]["signature"] == SIGNATURE_ONLY_BLOCK["signature"]

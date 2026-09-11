@@ -210,7 +210,7 @@ Lead-agent middlewares are assembled in strict order across three functions: the
 
 **Shared runtime base** (`build_lead_runtime_middlewares`; subagents reuse most of this via `build_subagent_runtime_middlewares`):
 
-1. **InputSanitizationMiddleware** - First, so it is the outermost `wrap_model_call` wrapper; every inner middleware (including LLM retries) sees sanitized messages
+1. **InputSanitizationMiddleware** - First, so it is the outermost `wrap_model_call` wrapper; every inner middleware (including LLM retries) sees sanitized messages. Also fills the `thinking` text field on replayed thinking blocks that were assembled from a signature delta only — strict Anthropic-compatible APIs reject the missing field (``messages[N].content: missing field `thinking` ``); request-local, checkpointed messages untouched
 2. **ToolOutputBudgetMiddleware** - Caps tool output size (per app config) before it re-enters the model context
 3. **ThreadDataMiddleware** - Creates per-thread directories under the user's isolation scope (`backend/.deer-flow/users/{user_id}/threads/{thread_id}/user-data/{workspace,uploads,outputs}`); resolves `user_id` via `get_effective_user_id()` (falls back to `"default"` in no-auth mode)
 4. **UploadsMiddleware** - Tracks and injects newly uploaded files into conversation (lead agent only)

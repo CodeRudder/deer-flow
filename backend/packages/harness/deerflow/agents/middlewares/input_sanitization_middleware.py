@@ -12,6 +12,10 @@ tags (system, instruction, role, etc.). Normal HTML/XML tags (<div>,
 
 Clean input is wrapped in plain-text boundary markers as a secondary
 semantic defense (OWASP structured-prompt guidance).
+
+Also repairs history-side thinking blocks that lost their ``thinking`` text
+field (signature-only blocks, streamed without reasoning text), which strict
+Anthropic-compatible APIs reject on replay.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.errors import GraphBubbleUp
 
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
@@ -138,6 +142,29 @@ def _check_user_content(text: str) -> str:
     return f"{_USER_INPUT_BEGIN}\n{text}\n{_USER_INPUT_END}"
 
 
+def _repair_thinking_block(message: BaseMessage) -> BaseMessage:
+    """Fill a missing ``thinking`` text field on thinking blocks (returns the message).
+
+    A thinking block streamed without reasoning text is assembled as
+    ``{"type": "thinking", "signature": ...}``; strict Anthropic-compatible
+    APIs reject it on replay. An empty string keeps the block schema-valid
+    and preserves the signature the tool-call loop requires. Returns the
+    original message when nothing needs repair.
+    """
+    content = message.content
+    if not isinstance(content, list):
+        return message
+    repaired: list | None = None
+    for index, block in enumerate(content):
+        if isinstance(block, dict) and block.get("type") == "thinking" and "thinking" not in block:
+            if repaired is None:
+                repaired = list(content)
+            repaired[index] = {**block, "thinking": ""}
+    if repaired is None:
+        return message
+    return message.model_copy(update={"content": repaired})
+
+
 class InputSanitizationMiddleware(AgentMiddleware[AgentState]):
     """Guardrail middleware that escapes prompt-injection tags in user input.
 
@@ -145,6 +172,9 @@ class InputSanitizationMiddleware(AgentMiddleware[AgentState]):
     preserved while the tags lose their semantic significance. Clean input
     is wrapped in plain-text boundary markers. Transformation is temporary
     (wrap_model_call) — never written to state.
+
+    Also fills the ``thinking`` text field on replayed thinking blocks that
+    lost it, so strict Anthropic-compatible APIs accept the request.
     """
 
     @staticmethod
@@ -259,7 +289,7 @@ class InputSanitizationMiddleware(AgentMiddleware[AgentState]):
         GraphBubbleUp propagates; other exceptions return the original request.
         """
         try:
-            return self._process_request(request)
+            sanitized = self._process_request(request)
         except GraphBubbleUp:
             raise
         except Exception:
@@ -268,6 +298,19 @@ class InputSanitizationMiddleware(AgentMiddleware[AgentState]):
                 exc_info=True,
             )
             return request
+        try:
+            return self._repair_thinking_blocks(sanitized)
+        except Exception:
+            logger.warning("Thinking block repair failed; passing sanitized request to model", exc_info=True)
+            return sanitized
+
+    @staticmethod
+    def _repair_thinking_blocks(request: ModelRequest) -> ModelRequest:
+        """Repair history-side thinking blocks for this call (request-local)."""
+        messages = [_repair_thinking_block(message) for message in request.messages]
+        if all(new is old for new, old in zip(messages, request.messages)):
+            return request
+        return request.override(messages=messages)
 
     @override
     def wrap_model_call(
