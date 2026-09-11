@@ -148,4 +148,58 @@ describe("MessageGroup", () => {
     expect(text).toContain("search the web for x");
     expect(text).not.toContain("I should search first.");
   });
+
+  it("keeps clarification text and the question row out of the step panel", () => {
+    const text = renderGroup([
+      {
+        id: "ai-1",
+        type: "ai",
+        content: "Here is the updated table before asking.",
+        additional_kwargs: { reasoning_content: "I need user confirmation." },
+        tool_calls: [
+          {
+            id: "call-1",
+            name: "ask_clarification",
+            args: { question: "Shall I continue?" },
+          },
+        ],
+      } as Message,
+      {
+        id: "tool-1",
+        type: "tool",
+        name: "ask_clarification",
+        tool_call_id: "call-1",
+        content: "Shall I continue?",
+      } as Message,
+    ]);
+
+    // Panel keeps only the reasoning trace; text/question live outside.
+    expect(text).not.toContain("Here is the updated table before asking.");
+    expect(text).not.toContain("Shall I continue?");
+    expect(text).toContain("thinking");
+    expect(text).not.toContain("I need user confirmation.");
+  });
+
+  it("renders nothing for a clarification message without reasoning", () => {
+    const { container } = render(
+      <MessageGroup
+        messages={[
+          {
+            id: "ai-1",
+            type: "ai",
+            content: "Question preamble text.",
+            tool_calls: [
+              {
+                id: "call-1",
+                name: "ask_clarification",
+                args: { question: "Shall I continue?" },
+              },
+            ],
+          } as Message,
+        ]}
+      />,
+    );
+
+    expect(container.innerHTML).toBe("");
+  });
 });

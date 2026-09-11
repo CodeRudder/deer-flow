@@ -7,7 +7,6 @@ import {
   GlobeIcon,
   LightbulbIcon,
   ListTodoIcon,
-  MessageCircleQuestionMarkIcon,
   NotebookPenIcon,
   SearchIcon,
   SquareTerminalIcon,
@@ -272,6 +271,11 @@ export function MessageGroup({
     showTokenDebugSummaries && lastReasoningStep?.messageId
       ? debugStepByMessageId.get(lastReasoningStep.messageId)
       : undefined;
+
+  // All steps filtered out (e.g. a clarification-only message) — no panel.
+  if (steps.length === 0) {
+    return null;
+  }
 
   return (
     <ChainOfThought
@@ -690,14 +694,6 @@ function ToolCall({
         )}
       </ChainOfThoughtStep>
     );
-  } else if (name === "ask_clarification") {
-    return (
-      <ChainOfThoughtStep
-        key={id}
-        label={resolveLabel(t.toolCalls.needYourHelp)}
-        icon={MessageCircleQuestionMarkIcon}
-      ></ChainOfThoughtStep>
-    );
   } else if (name === "write_todos") {
     return (
       <ChainOfThoughtStep
@@ -755,8 +751,15 @@ function convertToSteps(messages: Message[]): CoTStep[] {
         };
         steps.push(step);
       }
+      // Clarification text/question render outside the panel (bubble + card).
+      const isClarificationMessage =
+        message.tool_calls?.some(
+          (toolCall) => toolCall.name === "ask_clarification",
+        ) === true;
       // Keep assistant text visible even without tool calls (#4304).
-      const content = extractContentFromMessage(message);
+      const content = isClarificationMessage
+        ? ""
+        : extractContentFromMessage(message);
       if (content) {
         steps.push({
           id: `${message.id ?? `ai-${messageIndex}`}-content`,
@@ -766,7 +769,10 @@ function convertToSteps(messages: Message[]): CoTStep[] {
         });
       }
       for (const tool_call of message.tool_calls ?? []) {
-        if (tool_call.name === "task") {
+        if (
+          tool_call.name === "task" ||
+          tool_call.name === "ask_clarification"
+        ) {
           continue;
         }
         const step: CoTToolCallStep = {
