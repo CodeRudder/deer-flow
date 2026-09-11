@@ -66,3 +66,6 @@ config.yaml.bak
 .worktrees
 
 .lh/
+
+# 远程同步工具的本地状态标记（scripts/windows-remote/sync-to-windows.sh）
+.sync-state/
