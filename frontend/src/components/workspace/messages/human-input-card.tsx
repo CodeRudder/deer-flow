@@ -76,6 +76,10 @@ export function findMissingRequiredFields(
   );
 }
 
+// `dark:hover:*` is a separate tailwind-merge group, so both themes must be spelled out.
+const OPTION_HOVER_CLASS =
+  "hover:border-foreground/35 hover:bg-foreground/14 dark:hover:border-foreground/35 dark:hover:bg-foreground/14";
+
 function FormFieldInput({
   field,
   value,
@@ -161,6 +165,7 @@ function FormFieldInput({
               key={option.id}
               className={cn(
                 "h-8 w-fit rounded-md px-2.5 text-left leading-5 whitespace-normal",
+                OPTION_HOVER_CLASS,
                 selected && "border-primary/40 bg-primary/10",
               )}
               aria-pressed={selected}
@@ -476,7 +481,10 @@ export function HumanInputCard({
               {options.map((option) => (
                 <Button
                   key={option.id}
-                  className="min-h-11 w-full justify-start rounded-md px-3 py-2 text-left leading-5 whitespace-normal"
+                  className={cn(
+                    OPTION_HOVER_CLASS,
+                    "min-h-11 w-full justify-start rounded-md px-3 py-2 text-left leading-5 whitespace-normal",
+                  )}
                   disabled={isDisabled}
                   type="button"
                   variant="outline"

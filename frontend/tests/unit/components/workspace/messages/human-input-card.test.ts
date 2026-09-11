@@ -133,6 +133,42 @@ describe("HumanInputCard", () => {
     expect(html).toContain('aria-required="true"');
   });
 
+  it("emphasizes the option hover state on the near-black card", () => {
+    const html = renderCard();
+    const optionMarkup = markupContaining(html, "development");
+
+    expect(optionMarkup).toContain("hover:bg-foreground/14");
+    expect(optionMarkup).toContain("hover:border-foreground/35");
+    expect(optionMarkup).toContain("dark:hover:bg-foreground/14");
+    expect(optionMarkup).toContain("dark:hover:border-foreground/35");
+  });
+
+  it("emphasizes the form option chips' hover state", () => {
+    const html = renderCard({
+      request: {
+        ...request,
+        version: 2,
+        request_id: "clarification:call-form",
+        question: "Please provide the expense details.",
+        input_mode: "form",
+        options: undefined,
+        fields: [
+          {
+            name: "receipts",
+            label: "Receipts",
+            type: "multi_select",
+            required: false,
+            options: [{ id: "receipts-option-1", label: "A-1", value: "A-1" }],
+          },
+        ],
+      },
+    });
+
+    const chipMarkup = markupContaining(html, "A-1");
+    expect(chipMarkup).toContain("hover:bg-foreground/14");
+    expect(chipMarkup).toContain("dark:hover:bg-foreground/14");
+  });
+
   it("findMissingRequiredFields flags empty required values only", () => {
     const fields = [
       {
@@ -206,6 +242,14 @@ function renderCard(props: Partial<Parameters<typeof HumanInputCard>[0]> = {}) {
       }),
     ),
   );
+}
+
+function markupContaining(html: string, text: string) {
+  const chunk = html.split("<button").find((part) => part.includes(text));
+  if (!chunk) {
+    throw new Error(`no button renders ${text}`);
+  }
+  return chunk;
 }
 
 function keyEvent({
