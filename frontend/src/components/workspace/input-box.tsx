@@ -195,6 +195,7 @@ function ModelProviderLogo({
 export function InputBox({
   className,
   disabled,
+  disabledPlaceholder,
   autoFocus,
   status = "ready",
   context,
@@ -211,6 +212,8 @@ export function InputBox({
   assistantId?: string | null;
   status?: ChatStatus;
   disabled?: boolean;
+  /** Replaces the placeholder while `disabled` is true. */
+  disabledPlaceholder?: string;
   context: Omit<
     AgentThreadContext,
     "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
@@ -973,7 +976,11 @@ export function InputBox({
           <PromptInputTextarea
             className={cn("size-full")}
             disabled={disabled}
-            placeholder={t.inputBox.placeholder}
+            placeholder={
+              disabled && disabledPlaceholder
+                ? disabledPlaceholder
+                : t.inputBox.placeholder
+            }
             autoFocus={autoFocus}
             defaultValue={initialValue}
             onBlur={() => setTextareaFocused(false)}

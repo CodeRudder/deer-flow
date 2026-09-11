@@ -95,6 +95,46 @@ test("mergeMessages deduplicates tool messages by tool_call_id", () => {
   expect(mergeMessages([oldTool], [liveTool], [])).toEqual([liveTool]);
 });
 
+test("mergeMessages keeps hidden clarification replies from live messages", () => {
+  const requestTool = {
+    id: "tool-1",
+    type: "tool",
+    content: "fallback text",
+    artifact: {
+      human_input: {
+        version: 1,
+        kind: "human_input_request",
+        source: "ask_clarification",
+        request_id: "clarification:call-1",
+        tool_call_id: "call-1",
+        clarification_type: "approach_choice",
+        question: "Proceed?",
+        input_mode: "free_text",
+      },
+    },
+  } as unknown as Message;
+  const hiddenReply = {
+    id: "human-reply-1",
+    type: "human",
+    content: 'For your clarification "Proceed?", my answer is: yes',
+    additional_kwargs: {
+      hide_from_ui: true,
+      human_input_response: {
+        version: 1,
+        kind: "human_input_response",
+        source: "ask_clarification",
+        request_id: "clarification:call-1",
+        response_kind: "option",
+        option_id: "option-1",
+        value: "yes",
+      },
+    },
+  } as Message;
+
+  const merged = mergeMessages([], [requestTool, hiddenReply], []);
+  expect(merged).toEqual([requestTool, hiddenReply]);
+});
+
 test("mergeMessages keeps a visible history message when a hidden live message reuses its id", () => {
   const historyHuman = {
     id: "human-1",
@@ -484,6 +524,38 @@ test("runEventRowsToMessages filters middleware, hidden, and summary rows", () =
   expect(
     runEventRowsToMessages([visible, middleware, hidden, summary]),
   ).toEqual([visible.content]);
+});
+
+test("runEventRowsToMessages keeps hidden clarification replies", () => {
+  const visible = {
+    ...runMessage(1),
+    content: { id: "human-1", type: "human", content: "visible" } as Message,
+  };
+  const hiddenReply = {
+    ...runMessage(2),
+    content: {
+      id: "human-reply-1",
+      type: "human",
+      content: 'For your clarification "Proceed?", my answer is: yes',
+      additional_kwargs: {
+        hide_from_ui: true,
+        human_input_response: {
+          version: 1,
+          kind: "human_input_response",
+          source: "ask_clarification",
+          request_id: "clarification:call-1",
+          response_kind: "option",
+          option_id: "option-1",
+          value: "yes",
+        },
+      },
+    } as Message,
+  };
+
+  expect(runEventRowsToMessages([visible, hiddenReply])).toEqual([
+    visible.content,
+    hiddenReply.content,
+  ]);
 });
 
 test("findLatestUnloadedRunIndex loads the newest run first from a newest-first list", () => {

@@ -31,6 +31,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["runs"])
 REGENERATE_HISTORY_SCAN_LIMIT = 200
 
+# Statuses a run cannot leave once reached.
+_TERMINAL_RUN_STATUSES = frozenset(
+    {
+        RunStatus.success,
+        RunStatus.error,
+        RunStatus.timeout,
+        RunStatus.interrupted,
+    }
+)
+
+
+async def _raise_if_unreplayable(record: RunRecord, bridge) -> None:
+    """Reject joins on terminal runs whose replay buffer was reclaimed
+    (bridge cleanup 60s vs manager cleanup 300s): subscribing would create
+    an empty, never-ending stream and hang the client's reconnect.
+    """
+    if record.status in _TERMINAL_RUN_STATUSES and not await bridge.has_stream(record.run_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {record.run_id} is not active on this worker and cannot be streamed",
+        )
+
 
 def compute_run_durations(runs) -> dict[str, int]:
     """Map run_id -> duration in seconds from run timestamps."""
@@ -549,8 +571,9 @@ async def join_run(thread_id: str, run_id: str, request: Request) -> StreamingRe
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     if record.store_only:
         raise HTTPException(status_code=409, detail=f"Run {run_id} is not active on this worker and cannot be streamed")
-
     bridge = get_stream_bridge(request)
+    await _raise_if_unreplayable(record, bridge)
+
     return StreamingResponse(
         sse_consumer(bridge, record, request, run_mgr),
         media_type="text/event-stream",
@@ -607,6 +630,7 @@ async def stream_existing_run(
             return Response(status_code=204)
 
     bridge = get_stream_bridge(request)
+    await _raise_if_unreplayable(record, bridge)
     return StreamingResponse(
         sse_consumer(bridge, record, request, run_mgr),
         media_type="text/event-stream",

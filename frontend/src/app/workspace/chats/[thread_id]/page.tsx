@@ -10,6 +10,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import {
   ChatBox,
+  useHumanInput,
   useSpecificChatMode,
   useThreadChat,
 } from "@/components/workspace/chats";
@@ -175,6 +176,15 @@ export default function ChatPage() {
     : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
 
+  // Strict mode: while a clarification card is open the composer is disabled
+  // and regenerate is blocked. See useHumanInput.
+  const { hasOpenHumanInputCard, handleSubmitHumanInput } = useHumanInput({
+    threadId,
+    sendMessage,
+    messages: thread.messages,
+    enabled: !isMock && env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true",
+  });
+
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
       <ChatBox threadId={threadId}>
@@ -231,9 +241,15 @@ export default function ChatPage() {
                   !isMock &&
                   env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
                   !isUploading &&
-                  !thread.isLoading
+                  !thread.isLoading &&
+                  !hasOpenHumanInputCard
                 }
                 onRegenerateMessage={handleRegenerate}
+                onSubmitHumanInput={
+                  isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                    ? undefined
+                    : handleSubmitHumanInput
+                }
               />
             </div>
             <div
@@ -296,7 +312,13 @@ export default function ChatPage() {
                     disabled={
                       isMock ||
                       env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                      isUploading
+                      isUploading ||
+                      hasOpenHumanInputCard
+                    }
+                    disabledPlaceholder={
+                      hasOpenHumanInputCard
+                        ? t.humanInput.inputDisabledHint
+                        : undefined
                     }
                     onContextChange={(context) =>
                       setSettings("context", context)

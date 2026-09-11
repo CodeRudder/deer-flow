@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Workspace
+
+- **Interactive clarification cards** (`ask_clarification`): the agent can now ask structured questions that render as interactive cards in the web UI — free text, option buttons with an "other" input, or typed forms (text / number / select / multi-select / checkbox / textarea fields with required-field validation, markdown questions). The backend middleware writes a versioned `human_input` artifact on the tool message (v1 text/options, v2 form), drops sibling tool calls in the same turn, and interrupts; the frontend answers via a hidden `HumanMessage` carrying `additional_kwargs.human_input_response`; the journal and the frontend transcript keep these replies (visible-content carve-out) so the answered state survives reload. Strict mode: while a card awaits an answer the composer is disabled (placeholder explains why) and regenerate is blocked; failed/errored submissions unlock the card for retry. IM channels and old clients keep the plain-text question as message content.
+
+### Fixed
+
+#### Gateway
+
+- **Stuck loading state after refreshing a thread within ~60s–300s of a run finishing:** the SSE replay buffer is reclaimed 60s after a run ends while the run's in-memory record lingers for 300s; a browser refresh in that window (`reconnectOnMount` + sessionStorage marker) joined a terminal run, the bridge lazily recreated an empty never-ending stream, and the UI stayed in a loading state (clarification cards greyed out, composer disabled). Streaming joins (`/join`, `/stream`) now return 409 "not active on this worker" for terminal runs whose replay buffer is gone, which the frontend already handles by clearing the reconnect marker; joining within the replay window still replays buffered events and ends cleanly.
+
 ### Changed
 
 #### Skills

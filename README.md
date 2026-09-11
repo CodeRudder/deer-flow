@@ -66,6 +66,7 @@ DeerFlow has newly integrated the intelligent search and crawling toolset indepe
     - [Sub-Agents](#sub-agents)
     - [Sandbox \& File System](#sandbox--file-system)
     - [Context Engineering](#context-engineering)
+    - [Interactive Clarification Cards](#interactive-clarification-cards)
     - [Long-Term Memory](#long-term-memory)
   - [Recommended Models](#recommended-models)
   - [Embedded Python Client](#embedded-python-client)
@@ -720,6 +721,10 @@ This is the difference between a chatbot with tool access and an agent with an a
 **Strict Tool-Call Recovery**: When a provider or middleware interrupts a tool-call loop, DeerFlow now strips provider-level raw tool-call metadata on forced-stop assistant messages and injects placeholder tool results for dangling calls before the next model invocation. This keeps OpenAI-compatible reasoning models that strictly validate `tool_call_id` sequences from failing with malformed history errors.
 
 **Run-Scoped Model Errors**: Model fallback errors are attributed only to the run that produced them. A fallback retained in a thread's checkpoint remains visible in conversation history, but it cannot mark a later successful run as failed, including after switching models.
+
+### Interactive Clarification Cards
+
+When the agent needs your input mid-task (`ask_clarification`), the web UI no longer shows a plain-text question: unanswered requests render as interactive cards — single-choice buttons, free text, or structured forms (text, number, select, multi-select, checkbox, textarea fields) — with required-field validation and markdown rendering for the question itself. While a card awaits your answer the composer is locked and the card is the only way to reply ("other" free-text input on choice cards is still available); regenerate is also blocked until the turn is answered. Your answer is sent as a hidden message that the agent reads on resume, so the card itself switches to a read-only answered state instead of adding a duplicate chat bubble. IM channels and old clients keep receiving the plain-text question, so the feature degrades gracefully outside the web UI.
 
 ### Long-Term Memory
 

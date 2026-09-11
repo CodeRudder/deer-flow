@@ -384,6 +384,22 @@ export const enUS: Translations = {
   },
 
   // Subtasks
+  humanInput: {
+    answered: "Answered",
+    pending: "Sending...",
+    readOnly: "Read only",
+    otherLabel: "Other answer",
+    otherPlaceholder: "Type another answer...",
+    submit: "Submit",
+    emptyError: "Enter an answer before submitting.",
+    requiredError: "Fill in all required fields before submitting.",
+    requiredA11yLabel: "required",
+    selectPlaceholder: "Select...",
+    inputDisabledHint:
+      "A question above needs your answer before you can continue.",
+    answeredValue: (value: string) => `Answered: ${value}`,
+  },
+
   uploads: {
     uploading: "Uploading...",
     uploadingFiles: "Uploading files, please wait...",

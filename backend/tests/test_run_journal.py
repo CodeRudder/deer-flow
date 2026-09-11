@@ -952,6 +952,41 @@ class TestChatModelStartHumanMessage:
         assert not any(e["event_type"] == "llm.human.input" for e in events)
 
     @pytest.mark.anyio
+    async def test_hidden_clarification_reply_is_journaled(self, journal_setup):
+        """The web frontend sends clarification answers as hidden human messages;
+        the journal must still record them (with the metadata) so the UI history
+        can derive the answered card state after a reload."""
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        reply = HumanMessage(
+            content='For your clarification "Proceed?", my answer is: yes',
+            additional_kwargs={
+                "hide_from_ui": True,
+                "human_input_response": {
+                    "version": 1,
+                    "kind": "human_input_response",
+                    "source": "ask_clarification",
+                    "request_id": "clarification:call-1",
+                    "response_kind": "option",
+                    "option_id": "option-1",
+                    "value": "yes",
+                },
+            },
+        )
+        j.on_chat_model_start({}, [[reply]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg is not None and "Proceed?" in j._first_human_msg
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert len(human_events) == 1
+        content = human_events[0]["content"]
+        assert content["additional_kwargs"]["hide_from_ui"] is True
+        assert content["additional_kwargs"]["human_input_response"]["value"] == "yes"
+        assert "Proceed?" in content["content"]
+
+    @pytest.mark.anyio
     async def test_visible_human_message_after_hidden_only_prompt_is_captured(self, journal_setup):
         """Skipping an internal-only prompt does not block later user input."""
         from langchain_core.messages import HumanMessage

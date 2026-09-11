@@ -5,9 +5,14 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph.message import add_messages
+from langgraph.types import Command
 
-from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
+from deerflow.agents.middlewares.clarification_middleware import (
+    MAX_FORM_FIELDS,
+    ClarificationMiddleware,
+)
 from deerflow.runtime.events.store.memory import MemoryRunEventStore
 from deerflow.runtime.journal import RunJournal
 
@@ -235,3 +240,348 @@ class TestClarificationJournalRecording:
 
         assert command.goto == "__end__"
         assert command.update["messages"][0].name == "ask_clarification"
+
+
+class TestHumanInputPayload:
+    """Tests for _build_human_input_payload mode selection and wire shape."""
+
+    def test_free_text_mode_without_options_or_fields(self, middleware):
+        payload = middleware._build_human_input_payload(
+            {"question": "What is the project name?"},
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["version"] == 1
+        assert payload["kind"] == "human_input_request"
+        assert payload["source"] == "ask_clarification"
+        assert payload["request_id"] == "clarification:call-1"
+        assert payload["tool_call_id"] == "call-1"
+        assert payload["input_mode"] == "free_text"
+        assert payload["question"] == "What is the project name?"
+        assert "options" not in payload
+        assert "fields" not in payload
+
+    def test_choice_with_other_mode_with_options(self, middleware):
+        payload = middleware._build_human_input_payload(
+            {"question": "Which env?", "options": ["dev", "staging"]},
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["version"] == 1
+        assert payload["input_mode"] == "choice_with_other"
+        assert payload["options"] == [
+            {"id": "option-1", "label": "dev", "value": "dev"},
+            {"id": "option-2", "label": "staging", "value": "staging"},
+        ]
+
+    def test_form_mode_with_fields_is_version_2(self, middleware):
+        fields_arg = [{"name": "env", "label": "Env", "type": "select", "required": True, "options": ["dev", "prod"]}]
+        fields = middleware._normalize_fields(fields_arg)
+        payload = middleware._build_human_input_payload(
+            {"question": "Configure deploy", "fields": fields_arg},
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["version"] == 2
+        assert payload["input_mode"] == "form"
+        assert payload["fields"] == fields
+        assert "options" not in payload
+
+    def test_fields_take_precedence_over_options(self, middleware):
+        payload = middleware._build_human_input_payload(
+            {"question": "Q", "options": ["a"], "fields": [{"name": "x", "type": "text"}]},
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["input_mode"] == "form"
+        assert "options" not in payload
+
+    def test_context_none_is_preserved(self, middleware):
+        payload = middleware._build_human_input_payload(
+            {"question": "Q", "context": None},
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["context"] is None
+
+    def test_clarification_type_non_string_is_coerced(self, middleware):
+        payload = middleware._build_human_input_payload(
+            {"question": "Q", "clarification_type": []},
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["clarification_type"] == "[]"
+
+    def test_handle_clarification_attaches_artifact(self, middleware):
+        request = SimpleNamespace(
+            tool_call={
+                "name": "ask_clarification",
+                "id": "call-abc",
+                "args": {"question": "Which env?", "clarification_type": "approach_choice", "options": ["dev", "prod"]},
+            },
+            runtime=SimpleNamespace(context={}),
+        )
+        command = middleware.wrap_tool_call(request, lambda _req: pytest.fail("handler should not be called"))
+        tool_message = command.update["messages"][0]
+        assert tool_message.artifact["human_input"]["kind"] == "human_input_request"
+        assert tool_message.artifact["human_input"]["request_id"] == "clarification:call-abc"
+        assert tool_message.artifact["human_input"]["input_mode"] == "choice_with_other"
+        assert "Which env?" in tool_message.content
+
+
+class TestFormPayload:
+    """Atomic degradation for structurally broken forms; benign local degradation."""
+
+    def _fields_arg(self, fields):
+        return {"question": "Q", "fields": fields}
+
+    def test_valid_multi_field_form(self, middleware):
+        fields = middleware._normalize_fields(
+            [
+                {"name": "env", "type": "select", "options": ["dev", "prod"], "required": True},
+                {"name": "notes", "type": "textarea", "placeholder": "Anything else"},
+                {"name": "count", "type": "number"},
+                {"name": "flags", "type": "multi_select", "options": ["a", "b"]},
+                {"name": "ok", "type": "checkbox"},
+                {"name": "when", "type": "date"},
+            ]
+        )
+        assert [f["type"] for f in fields] == ["select", "textarea", "number", "multi_select", "checkbox", "date"]
+        assert fields[0]["options"][0]["id"] == "env-option-1"
+        assert fields[0]["required"] is True
+        assert fields[1]["placeholder"] == "Anything else"
+
+    def test_non_dict_entry_invalidates_whole_form(self, middleware):
+        assert middleware._normalize_fields([{"name": "a"}, "not-a-dict"]) == []
+
+    def test_missing_name_invalidates_whole_form(self, middleware):
+        assert middleware._normalize_fields([{"type": "text"}]) == []
+
+    def test_duplicate_name_invalidates_whole_form(self, middleware):
+        assert middleware._normalize_fields([{"name": "a"}, {"name": "a"}]) == []
+
+    def test_reserved_name_invalidates_whole_form(self, middleware):
+        assert middleware._normalize_fields([{"name": "__proto__"}]) == []
+        assert middleware._normalize_fields([{"name": "constructor"}]) == []
+
+    def test_over_field_cap_invalidates_whole_form(self, middleware):
+        fields = [{"name": f"f{i}", "type": "text"} for i in range(MAX_FORM_FIELDS + 1)]
+        assert middleware._normalize_fields(fields) == []
+        assert len(middleware._normalize_fields(fields[:MAX_FORM_FIELDS])) == MAX_FORM_FIELDS
+
+    def test_over_option_cap_invalidates_whole_form(self, middleware):
+        fields = [{"name": "a", "type": "select", "options": [f"o{i}" for i in range(25)]}]
+        assert middleware._normalize_fields(fields) == []
+
+    def test_oversized_name_invalidates_whole_form(self, middleware):
+        assert middleware._normalize_fields([{"name": "x" * 201}]) == []
+
+    def test_oversized_placeholder_invalidates_whole_form(self, middleware):
+        assert middleware._normalize_fields([{"name": "a", "placeholder": "p" * 201}]) == []
+
+    def test_fields_as_broken_json_string_degrades_to_empty(self, middleware):
+        assert middleware._normalize_fields("{not json") == []
+
+    def test_fields_as_non_list_degrades_to_empty(self, middleware):
+        assert middleware._normalize_fields({"name": "a"}) == []
+
+    def test_unknown_type_degrades_locally_to_text(self, middleware):
+        fields = middleware._normalize_fields([{"name": "a", "type": "wibble"}])
+        assert fields[0]["type"] == "text"
+
+    def test_unhashable_type_degrades_locally_to_text(self, middleware):
+        fields = middleware._normalize_fields([{"name": "a", "type": ["text"]}])
+        assert fields[0]["type"] == "text"
+
+    def test_select_without_options_degrades_locally_to_text(self, middleware):
+        fields = middleware._normalize_fields([{"name": "a", "type": "select"}])
+        assert fields[0]["type"] == "text"
+        assert "options" not in fields[0]
+
+    def test_select_options_get_stable_ids(self, middleware):
+        fields = middleware._normalize_fields([{"name": "env", "type": "select", "options": ["dev", "prod"]}])
+        assert fields[0]["options"] == [
+            {"id": "env-option-1", "label": "dev", "value": "dev"},
+            {"id": "env-option-2", "label": "prod", "value": "prod"},
+        ]
+
+    def test_required_string_true_is_coerced(self, middleware):
+        fields = middleware._normalize_fields([{"name": "a", "required": "true"}])
+        assert fields[0]["required"] is True
+        fields = middleware._normalize_fields([{"name": "a", "required": "nope"}])
+        assert fields[0]["required"] is False
+
+    def test_label_defaults_to_name(self, middleware):
+        fields = middleware._normalize_fields([{"name": "a"}])
+        assert fields[0]["label"] == "a"
+
+    def test_broken_form_degrades_payload_to_free_text(self, middleware):
+        payload = middleware._build_human_input_payload(
+            self._fields_arg([{"name": "__proto__", "type": "text"}]),
+            tool_call_id="call-1",
+            request_id="clarification:call-1",
+        )
+        assert payload["input_mode"] == "free_text"
+        assert payload["version"] == 1
+        assert "fields" not in payload
+
+    def test_form_text_fallback_lists_fields(self, middleware):
+        message = middleware._format_clarification_message(
+            self._fields_arg(
+                [
+                    {"name": "env", "label": "Env", "type": "select", "required": True, "options": ["dev", "prod"]},
+                    {"name": "flags", "label": "Flags", "type": "multi_select", "options": ["a", "b"]},
+                ]
+            )
+        )
+        assert "1. Env (required) — options: dev / prod" in message
+        assert "2. Flags — options: a / b (multiple allowed)" in message
+        assert "Please reply with a value for each field." in message
+
+
+class TestClarificationToolSchema:
+    """The tool schema must expose `fields` so models can discover it."""
+
+    def test_schema_has_fields_param(self):
+        from deerflow.tools.builtins.clarification_tool import ask_clarification_tool
+
+        properties = ask_clarification_tool.args_schema.model_json_schema()["properties"]
+        assert "fields" in properties
+        assert "options" in properties
+
+
+class TestClarificationDisabled:
+    """disable_clarification runs turn the interrupt into a proceed ToolMessage."""
+
+    def _request(self, middleware=None, context=None):
+        return SimpleNamespace(
+            tool_call={
+                "name": "ask_clarification",
+                "id": "call-1",
+                "args": {"question": "Which env?", "options": ["dev", "prod"]},
+            },
+            runtime=SimpleNamespace(context=context or {}),
+        )
+
+    def test_enabled_by_default_interrupts(self, middleware):
+        result = middleware.wrap_tool_call(self._request(), lambda _req: pytest.fail("handler should not be called"))
+        assert isinstance(result, Command)
+        assert result.goto == "__end__"
+
+    def test_disabled_returns_proceed_tool_message(self, middleware):
+        result = middleware.wrap_tool_call(self._request(context={"disable_clarification": True}), lambda _req: pytest.fail("handler should not be called"))
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == "call-1"
+        assert "Proceed with your best judgment" in result.content
+
+    def test_disabled_string_value_is_falsy(self, middleware):
+        result = middleware.wrap_tool_call(self._request(context={"disable_clarification": "false"}), lambda _req: pytest.fail("handler should not be called"))
+        assert isinstance(result, Command)
+
+
+class TestDropParallelSiblingTools:
+    """after_model drops sibling tool calls so the turn can interrupt cleanly."""
+
+    def _ai_message(self, tool_calls=None, invalid_tool_calls=None, content=None):
+        kwargs = {"content": content if content is not None else "thinking"}
+        if tool_calls is not None:
+            kwargs["tool_calls"] = tool_calls
+        message = AIMessage(**kwargs)
+        if invalid_tool_calls is not None:
+            message.invalid_tool_calls = invalid_tool_calls
+        return message
+
+    def test_mixed_batch_drops_siblings(self, middleware):
+        state = {
+            "messages": [
+                self._ai_message(
+                    tool_calls=[
+                        {"name": "ask_clarification", "id": "call-1", "args": {}},
+                        {"name": "bash", "id": "call-2", "args": {"command": "rm -rf /"}},
+                    ]
+                )
+            ]
+        }
+        result = middleware.after_model(state, SimpleNamespace(context={}))
+        assert result is not None
+        patched = result["messages"][0]
+        assert [tc["name"] for tc in patched.tool_calls] == ["ask_clarification"]
+
+    def test_clarification_only_batch_is_untouched(self, middleware):
+        state = {
+            "messages": [
+                self._ai_message(
+                    tool_calls=[
+                        {"name": "ask_clarification", "id": "call-1", "args": {}},
+                    ]
+                )
+            ]
+        }
+        assert middleware.after_model(state, SimpleNamespace(context={})) is None
+
+    def test_no_clarification_call_is_untouched(self, middleware):
+        state = {
+            "messages": [
+                self._ai_message(
+                    tool_calls=[
+                        {"name": "bash", "id": "call-2", "args": {}},
+                    ]
+                )
+            ]
+        }
+        assert middleware.after_model(state, SimpleNamespace(context={})) is None
+
+    def test_invalid_clarification_call_also_drops_siblings(self, middleware):
+        state = {
+            "messages": [
+                self._ai_message(
+                    tool_calls=[{"name": "bash", "id": "call-2", "args": {}}],
+                    invalid_tool_calls=[
+                        {"name": "ask_clarification", "id": "call-1", "args": "{bad json", "error": "invalid"},
+                    ],
+                )
+            ]
+        }
+        result = middleware.after_model(state, SimpleNamespace(context={}))
+        assert result is not None
+        patched = result["messages"][0]
+        assert patched.tool_calls == []
+
+    def test_disable_clarification_keeps_siblings(self, middleware):
+        state = {
+            "messages": [
+                self._ai_message(
+                    tool_calls=[
+                        {"name": "ask_clarification", "id": "call-1", "args": {}},
+                        {"name": "bash", "id": "call-2", "args": {}},
+                    ]
+                )
+            ]
+        }
+        assert middleware.after_model(state, SimpleNamespace(context={"disable_clarification": True})) is None
+
+    def test_provider_tool_use_content_blocks_are_filtered(self, middleware):
+        content = [
+            {"type": "text", "text": "let me ask"},
+            {"type": "tool_use", "id": "call-1", "name": "ask_clarification", "input": {}},
+            {"type": "tool_use", "id": "call-2", "name": "bash", "input": {}},
+        ]
+        state = {
+            "messages": [
+                self._ai_message(
+                    tool_calls=[
+                        {"name": "ask_clarification", "id": "call-1", "args": {}},
+                        {"name": "bash", "id": "call-2", "args": {}},
+                    ],
+                    content=content,
+                )
+            ]
+        }
+        result = middleware.after_model(state, SimpleNamespace(context={}))
+        patched = result["messages"][0]
+        remaining = [block for block in patched.content if isinstance(block, dict) and block.get("type") == "tool_use"]
+        assert [block["id"] for block in remaining] == ["call-1"]
+
+    def test_empty_state_is_untouched(self, middleware):
+        assert middleware.after_model({"messages": []}, SimpleNamespace(context={})) is None
+        assert middleware.after_model({}, SimpleNamespace(context={})) is None

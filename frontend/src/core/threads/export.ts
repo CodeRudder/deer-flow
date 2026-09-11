@@ -1,5 +1,6 @@
 import type { Message } from "@langchain/langgraph-sdk";
 
+import { extractHumanInputResponse } from "../messages/human-input";
 import {
   extractContentFromMessage,
   extractReasoningContentFromMessage,
@@ -35,7 +36,13 @@ function visibleMessages(
   options: ExportOptions,
 ): Message[] {
   return messages.filter((message) => {
-    if (!options.includeHidden && isHiddenFromUIMessage(message)) {
+    // Hidden clarification replies are genuine user content — keep exports
+    // conversation-complete (question + answer).
+    if (
+      !options.includeHidden &&
+      isHiddenFromUIMessage(message) &&
+      !extractHumanInputResponse(message)
+    ) {
       return false;
     }
     if (!options.includeToolMessages && message.type === "tool") {

@@ -19,6 +19,7 @@ import { getAPIClient } from "../api";
 import { fetch } from "../api/fetcher";
 import { getBackendBaseURL } from "../config";
 import { useI18n } from "../i18n/hooks";
+import { extractHumanInputResponse } from "../messages/human-input";
 import { isHiddenFromUIMessage } from "../messages/utils";
 import type { FileInMessage } from "../messages/utils";
 import type { LocalSettings } from "../settings";
@@ -158,6 +159,11 @@ function messageIdentity(message: Message): string | undefined {
 }
 
 function isVisibleTranscriptMessage(message: Message): boolean {
+  // Hidden clarification replies carry `human_input_response` metadata that
+  // drives the answered card state; the render layer re-filters them.
+  if (extractHumanInputResponse(message)) {
+    return true;
+  }
   return !isHiddenFromUIMessage(message) && message.name !== "summary";
 }
 
@@ -452,9 +458,9 @@ export function mergeMessages(
   optimisticMessages: Message[],
 ): Message[] {
   // Only visible live messages should trim overlapping history. Hidden messages
-  // are UI control messages in this path, not observability records; any hidden
-  // message that must survive as task/tracing data should use custom events or a
-  // separate state channel instead of participating in this overlap heuristic.
+  // are UI control messages in this path — except clarification replies, which
+  // are real user content and participate in the overlap heuristic (see
+  // isVisibleTranscriptMessage).
 
   const savedTurnDurations = new Map<string, number>();
   for (const msg of historyMessages) {
@@ -469,7 +475,7 @@ export function mergeMessages(
 
   const threadMessageIds = new Set(
     threadMessages
-      .filter((message) => !isHiddenFromUIMessage(message))
+      .filter(isVisibleTranscriptMessage)
       .map(messageIdentity)
       .filter(isNonEmptyString),
   );

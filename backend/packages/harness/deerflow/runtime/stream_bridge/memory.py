@@ -145,6 +145,9 @@ class MemoryStreamBridge(StreamBridge):
                 return
             yield entry
 
+    async def has_stream(self, run_id: str) -> bool:
+        return run_id in self._streams
+
     async def cleanup(self, run_id: str, *, delay: float = 0) -> None:
         if delay > 0:
             await asyncio.sleep(delay)

@@ -11,7 +11,11 @@ import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
-import { ChatBox, useThreadChat } from "@/components/workspace/chats";
+import {
+  ChatBox,
+  useHumanInput,
+  useThreadChat,
+} from "@/components/workspace/chats";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { InputBox } from "@/components/workspace/input-box";
 import {
@@ -179,6 +183,17 @@ export default function AgentChatPage() {
     : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
 
+  // Strict mode (parity with chats/[thread_id]/page.tsx): while a
+  // clarification card is open the composer is disabled and regenerate is
+  // blocked. See useHumanInput.
+  const { hasOpenHumanInputCard, handleSubmitHumanInput } = useHumanInput({
+    threadId,
+    sendMessage,
+    messages: thread.messages,
+    extraContext: { agent_name },
+    enabled: !isMock && env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true",
+  });
+
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
       <ChatBox threadId={threadId}>
@@ -257,9 +272,15 @@ export default function AgentChatPage() {
                   !isMock &&
                   env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
                   !isUploading &&
-                  !thread.isLoading
+                  !thread.isLoading &&
+                  !hasOpenHumanInputCard
                 }
                 onRegenerateMessage={handleRegenerate}
+                onSubmitHumanInput={
+                  isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                    ? undefined
+                    : handleSubmitHumanInput
+                }
               />
             </div>
 
@@ -326,7 +347,13 @@ export default function AgentChatPage() {
                     disabled={
                       isMock ||
                       env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                      isUploading
+                      isUploading ||
+                      hasOpenHumanInputCard
+                    }
+                    disabledPlaceholder={
+                      hasOpenHumanInputCard
+                        ? t.humanInput.inputDisabledHint
+                        : undefined
                     }
                     onContextChange={(context) =>
                       setSettings("context", context)

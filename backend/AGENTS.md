@@ -32,6 +32,7 @@ deer-flow/
 │   │           │   ├── lead_agent/    # Main agent (factory + system prompt)
 │   │           │   ├── middlewares/   # middleware components (see Middleware Chain section)
 │   │           │   ├── memory/        # Memory extraction, queue, prompts
+│   │           │   ├── human_input.py # Clarification request/response protocol helpers (artifact + additional_kwargs)
 │   │           │   └── thread_state.py # ThreadState schema
 │   │           ├── sandbox/           # Sandbox execution system
 │   │           │   ├── local/         # Local filesystem provider
@@ -238,7 +239,7 @@ Lead-agent middlewares are assembled in strict order across three functions: the
 23. **TokenBudgetMiddleware** - *(optional, if `token_budget.enabled`)* Enforces per-run token limits
 24. **Custom middlewares** - *(optional)* Any `custom_middlewares` passed to `build_middlewares` are injected here, before the safety/clarification tail
 25. **SafetyFinishReasonMiddleware** - *(optional, if `safety_finish_reason.enabled`)* Suppresses tool execution when the provider safety-terminated the response (e.g. `finish_reason=content_filter`); registered after custom middlewares so LangChain's reverse-order `after_model` dispatch runs it first
-26. **ClarificationMiddleware** - Intercepts `ask_clarification` tool calls, interrupts via `Command(goto=END)` (must be last)
+26. **ClarificationMiddleware** - Intercepts `ask_clarification` tool calls and interrupts via `Command(goto=END)` (must be last). When the tool call carries a structured `fields` payload, the wrapped tool call writes a versioned `human_input` request into the tool message `artifact` (v1: free text / options with `input_mode`; v2: form with typed `fields` — see `utils/human_input.py`) and drops any sibling tool calls in the same AI message; the text content keeps a plain-text rendering of the question so IM channels and old clients still work. The user's answer comes back as a hidden `HumanMessage` (`hide_from_ui` + `additional_kwargs.human_input_response`); `read_human_input_response()` extracts it. The journal carries a carve-out in `on_chat_model_start`: hidden clarification replies are journaled like normal user input (other hidden messages stay skipped), so the web UI's answered state survives reload. Unanswered requests render as interactive cards in the web UI (`human-input-card.tsx`) while the composer is locked (strict mode)
 
 ### Configuration System
 
@@ -363,7 +364,7 @@ Proxied through nginx: `/api/langgraph/*` → Gateway LangGraph-compatible runti
 2. **MCP tools** - From enabled MCP servers (lazy initialized, cached with mtime invalidation)
 3. **Built-in tools**:
    - `present_files` - Make output files visible to user (only `/mnt/user-data/outputs`)
-   - `ask_clarification` - Request clarification (intercepted by ClarificationMiddleware → interrupts)
+   - `ask_clarification` - Request clarification (intercepted by ClarificationMiddleware → interrupts; optional `fields` payload upgrades the question to a structured card — form/select/multi-select/checkbox/textarea fields, rendered by the web UI's human-input card)
    - `view_image` - Read image files. Added when `vision.models[0]` is configured or when the selected main model supports vision; independent vision mode returns text understanding directly, legacy mode stores base64 for `ViewImageMiddleware`
    - `setup_agent` - Bootstrap-only: persist a brand-new custom agent's `SOUL.md` and `config.yaml`. Bound only when `is_bootstrap=True`.
    - `update_agent` - Custom-agent-only: persist self-updates to the current agent's `SOUL.md` / `config.yaml` from inside a normal chat (partial update + atomic write). Bound when `agent_name` is set and `is_bootstrap=False`.

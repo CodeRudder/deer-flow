@@ -295,6 +295,22 @@ export interface Translations {
     skillInstallTooltip: string;
   };
 
+  // Human Input (clarification cards)
+  humanInput: {
+    answered: string;
+    pending: string;
+    readOnly: string;
+    otherLabel: string;
+    otherPlaceholder: string;
+    submit: string;
+    emptyError: string;
+    requiredError: string;
+    requiredA11yLabel: string;
+    selectPlaceholder: string;
+    inputDisabledHint: string;
+    answeredValue: (value: string) => string;
+  };
+
   // Uploads
   uploads: {
     uploading: string;

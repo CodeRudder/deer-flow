@@ -546,6 +546,24 @@ ask_clarification(
 )
 ```
 
+To collect several structured values in one round trip (project name, environment, a
+yes/no flag, ...), pass `fields` instead of `options`. Each field needs a stable `name`, a
+`label`, a `type` (text / textarea / number / select / multi_select / checkbox / date),
+an optional `required` flag, and `options` for select/multi_select. The user gets a form
+card and answers all fields in one submission:
+```python
+ask_clarification(
+    question="Configure the deployment",
+    clarification_type="missing_info",
+    fields=[
+        {{"name": "env", "label": "Target environment", "type": "select", "required": True, "options": ["dev", "staging", "prod"]}},
+        {{"name": "project", "label": "Project name", "type": "text", "required": True}},
+        {{"name": "rollback", "label": "Enable auto-rollback", "type": "checkbox"}},
+    ]
+)
+```
+Simple single-choice questions should still use `options`.
+
 **Example:**
 User: "Deploy the application"
 You (thinking): Missing environment info - I MUST ask for clarification

@@ -392,3 +392,74 @@ class TestDetectReinforcement:
         ]
 
         assert detect_reinforcement(msgs) is False
+
+
+# ===========================================================================
+# hide_from_ui + human_input_response exemption
+# ===========================================================================
+
+
+class TestHideFromUiHumanInputResponse:
+    def _hidden(self, text: str, extra_kwargs=None) -> HumanMessage:
+        kwargs = {"hide_from_ui": True}
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
+        return HumanMessage(content=text, additional_kwargs=kwargs)
+
+    def test_hide_from_ui_without_response_is_excluded(self):
+        """Framework-injected hidden messages (reminders etc.) stay excluded."""
+        msgs = [self._hidden("todo reminder"), _ai("ok")]
+        assert filter_messages_for_memory(msgs) == [_ai("ok")]
+
+    def test_hidden_clarification_response_is_preserved(self):
+        """The user's clarification-card answer must reach long-term memory."""
+        response = {
+            "version": 1,
+            "kind": "human_input_response",
+            "source": "ask_clarification",
+            "request_id": "clarification:call-1",
+            "response_kind": "option",
+            "option_id": "option-2",
+            "value": "staging",
+        }
+        msgs = [
+            _human("Deploy the app"),
+            _ai("Which environment?", tool_calls=[{"name": "ask_clarification", "id": "call-1", "args": {}}]),
+            self._hidden('For your clarification "Which environment?", my answer is: staging', {"human_input_response": response}),
+            _ai("Deploying to staging."),
+        ]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 3
+        assert result[1].content.startswith("For your clarification")
+        assert result[2].content == "Deploying to staging."
+
+    def test_hidden_text_kind_response_is_preserved(self):
+        response = {
+            "version": 1,
+            "kind": "human_input_response",
+            "source": "ask_clarification",
+            "request_id": "clarification:call-1",
+            "response_kind": "text",
+            "value": "staging (note: db password changed yesterday)",
+        }
+        msgs = [self._hidden("answer", {"human_input_response": response}), _ai("got it")]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 2
+        assert result[0].content == "answer"
+
+    def test_malformed_human_input_response_is_excluded(self):
+        """A structurally broken payload is not trusted as user content."""
+        for broken in (
+            {"version": 2, "kind": "human_input_response", "source": "s", "request_id": "r", "response_kind": "text", "value": "v"},
+            {"version": 1, "kind": "other", "source": "s", "request_id": "r", "response_kind": "text", "value": "v"},
+            {"version": 1, "kind": "human_input_response", "source": "s", "request_id": "r", "response_kind": "option", "value": "v"},
+            {"version": 1, "kind": "human_input_response", "source": "", "request_id": "r", "response_kind": "text", "value": "v"},
+        ):
+            msgs = [self._hidden("answer", {"human_input_response": broken}), _ai("ok")]
+            assert filter_messages_for_memory(msgs) == [_ai("ok")], f"broken payload should be dropped: {broken}"
+
+    def test_visible_false_hide_from_ui_is_not_treated_as_hidden(self):
+        """hide_from_ui=False (visible) human messages pass through as before."""
+        msgs = [HumanMessage(content="hello", additional_kwargs={"hide_from_ui": False}), _ai("hi")]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 2

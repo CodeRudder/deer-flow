@@ -15,6 +15,7 @@ def ask_clarification_tool(
     ],
     context: str | None = None,
     options: list[str] | None = None,
+    fields: list[dict] | None = None,
 ) -> str:
     """Ask the user for clarification when you need more information to proceed.
 
@@ -48,6 +49,12 @@ def ask_clarification_tool(
         clarification_type: The type of clarification needed (missing_info, ambiguous_requirement, approach_choice, risk_confirmation, suggestion).
         context: Optional context explaining why clarification is needed. Helps the user understand the situation.
         options: Optional list of choices (for approach_choice or suggestion types). Present clear options for the user to choose from.
+        fields: Optional list of form fields to collect multiple structured values at once. Use fields when you need several related
+            values in one round trip (e.g. project name + environment + a yes/no flag); use options for a simple single choice. Each
+            field is a dict whose "name" key is the stable identifier mapped back in the answer, plus optional keys: "label" (display
+            name), "type" (one of text, textarea, number, select, multi_select, checkbox, date; unknown types degrade to text),
+            "required" (whether the user must fill it), "placeholder" (hint text), and "options" (choices, required for
+            select/multi_select types).
     """
     # This is a placeholder implementation
     # The actual logic is handled by ClarificationMiddleware which intercepts this tool call

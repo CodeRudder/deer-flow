@@ -51,6 +51,7 @@ https://github.com/user-attachments/assets/a8bcadc4-e040-4cf2-8fda-dd768b999c18
     - [Sub-Agents](#sub-agents)
     - [Sandbox 与文件系统](#sandbox-与文件系统)
     - [Context Engineering](#context-engineering)
+    - [交互式问题澄清卡片](#交互式问题澄清卡片)
     - [长期记忆](#长期记忆)
   - [推荐模型](#推荐模型)
   - [内嵌 Python Client](#内嵌-python-client)
@@ -501,6 +502,10 @@ DeerFlow 不只是“会说它能做”，它是真的有一台自己的“电�
 **隔离的 Sub-Agent Context**：每个 sub-agent 都在自己独立的上下文里运行。它看不到主 agent 的上下文，也看不到其他 sub-agents 的上下文。这样做的目的很直接，就是让它只聚焦当前任务，不被无关信息干扰。
 
 **摘要压缩**：在单个 session 内，DeerFlow 会比较积极地管理上下文，包括总结已完成的子任务、把中间结果转存到文件系统、压缩暂时不重要的信息。这样在长链路、多步骤任务里，它也能保持聚焦，而不会轻易把上下文窗口打爆。
+
+### 交互式问题澄清卡片
+
+当 agent 在任务中需要你补充信息（`ask_clarification`）时，Web UI 不再只展示一段纯文本问题：未回答的请求会渲染为可交互的卡片 —— 单选按钮、自由文本，或结构化表单（text / number / select / multi-select / checkbox / textarea 字段，带必填校验，问题本身支持 markdown 渲染）。卡片等待回答期间，底部输入框会被锁定，卡片是唯一的回答入口（选择型卡片仍提供“其他”自由文本框）；重新生成也会被阻止，直到本轮回答完成。你的回答以一条隐藏消息发送，agent 恢复运行时读取，卡片切换为只读的已回答状态，不会在历史里多出一条重复的对话气泡。IM 渠道与旧客户端仍收到纯文本问题，功能在 Web UI 之外优雅降级。
 
 ### 长期记忆
 

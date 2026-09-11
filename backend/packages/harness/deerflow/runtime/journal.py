@@ -29,6 +29,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
+from deerflow.utils.human_input import read_human_input_response
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text, message_to_text
 
 if TYPE_CHECKING:
@@ -307,17 +308,20 @@ class RunJournal(BaseCallbackHandler):
         if caller == "lead_agent" and not self._first_human_msg and messages:
             for batch in reversed(messages):
                 for m in reversed(batch):
-                    if isinstance(m, HumanMessage) and m.name != "summary" and m.additional_kwargs.get("hide_from_ui") is not True:
-                        clean_msg, clean_text = _sanitize_human_input_message(m)
-                        self.set_first_human_message(clean_text)
-                        self._put(
-                            event_type="llm.human.input",
-                            category="message",
-                            content=clean_msg.model_dump(),
-                            metadata={"caller": caller},
-                        )
-                        self._record_message_summary(clean_msg, caller=caller)
-                        break
+                    if not isinstance(m, HumanMessage) or m.name == "summary":
+                        continue
+                    if m.additional_kwargs.get("hide_from_ui") is True and read_human_input_response(m.additional_kwargs) is None:
+                        continue
+                    clean_msg, clean_text = _sanitize_human_input_message(m)
+                    self.set_first_human_message(clean_text)
+                    self._put(
+                        event_type="llm.human.input",
+                        category="message",
+                        content=clean_msg.model_dump(),
+                        metadata={"caller": caller},
+                    )
+                    self._record_message_summary(clean_msg, caller=caller)
+                    break
                 if self._first_human_msg:
                     break
 

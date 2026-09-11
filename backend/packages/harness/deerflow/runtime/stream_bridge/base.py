@@ -68,5 +68,12 @@ class StreamBridge(abc.ABC):
         giving late subscribers a chance to drain remaining events.
         """
 
+    async def has_stream(self, run_id: str) -> bool:
+        """Return True when a replayable buffer still exists for *run_id*.
+
+        Default False: callers treat the run as unreplayable.
+        """
+        return False
+
     async def close(self) -> None:
         """Release backend resources.  Default is a no-op."""
