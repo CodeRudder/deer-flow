@@ -11,6 +11,7 @@ import {
   deriveHumanInputThreadState,
   extractHumanInputRequest,
   extractHumanInputResponse,
+  formatHumanInputAnsweredValue,
   hasOpenHumanInputRequest,
   parseHumanInputRequest,
   parseHumanInputResponse,
@@ -472,6 +473,57 @@ describe("response factories", () => {
     expect(response.response_kind).toBe("text");
     expect(buildHumanInputResponseText(request, response)).toBe(
       'For your clarification "Which environment?", my answer is: staging, careful',
+    );
+  });
+
+  test("formatHumanInputAnsweredValue resolves the option label", () => {
+    const request = parseHumanInputRequest(choiceRequestPayload)!;
+    const response = createHumanInputOptionResponse(
+      request,
+      request.options![1]!,
+    );
+    expect(formatHumanInputAnsweredValue(request, response)).toBe("staging");
+
+    // Unknown option id falls back to the raw value.
+    expect(
+      formatHumanInputAnsweredValue(request, {
+        version: 1,
+        kind: "human_input_response",
+        source: "ask_clarification",
+        request_id: "clarification:call-1",
+        response_kind: "option",
+        option_id: "gone",
+        value: "staging",
+      }),
+    ).toBe("staging");
+  });
+
+  test("formatHumanInputAnsweredValue strips the form values block", () => {
+    const request = parseHumanInputRequest(formRequestPayload)!;
+    const values = { env: "staging", project: "deer", rollback: true };
+    const value = buildHumanInputFormSubmissionValue(request, values);
+    expect(value).toContain("[values:");
+    expect(
+      formatHumanInputAnsweredValue(request, {
+        version: 1,
+        kind: "human_input_response",
+        source: "ask_clarification",
+        request_id: request.request_id,
+        response_kind: "text",
+        value,
+      }),
+    ).toBe(buildHumanInputFormSummary(request, values));
+  });
+
+  test("formatHumanInputAnsweredValue keeps plain text intact", () => {
+    const request = parseHumanInputRequest(choiceRequestPayload)!;
+    const response = createHumanInputTextResponse(
+      request,
+      'notes [values: {"unknown":1}]',
+    );
+    // The suffix keys do not match any request field, so nothing is stripped.
+    expect(formatHumanInputAnsweredValue(request, response)).toBe(
+      'notes [values: {"unknown":1}]',
     );
   });
 });

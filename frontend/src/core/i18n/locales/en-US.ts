@@ -397,7 +397,6 @@ export const enUS: Translations = {
     selectPlaceholder: "Select...",
     inputDisabledHint:
       "A question above needs your answer before you can continue.",
-    answeredValue: (value: string) => `Answered: ${value}`,
   },
 
   uploads: {

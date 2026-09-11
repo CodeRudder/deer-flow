@@ -8,10 +8,7 @@ import {
   shouldSubmitHumanInputTextOnKeyDown,
 } from "@/components/workspace/messages/human-input-card";
 import { I18nContext } from "@/core/i18n/context";
-import type {
-  HumanInputRequest,
-  HumanInputResponse,
-} from "@/core/messages/human-input";
+import type { HumanInputRequest } from "@/core/messages/human-input";
 
 const request: HumanInputRequest = {
   version: 1,
@@ -40,23 +37,6 @@ describe("HumanInputCard", () => {
     expect(html).toContain("staging");
     expect(html).toContain("Other answer");
     expect(html).toContain("Type another answer...");
-  });
-
-  it("renders answered state as disabled with the selected value", () => {
-    const response: HumanInputResponse = {
-      version: 1,
-      kind: "human_input_response",
-      source: "ask_clarification",
-      request_id: "clarification:call-abc",
-      response_kind: "option",
-      option_id: "option-2",
-      value: "staging",
-    };
-    const html = renderCard({ answeredResponse: response });
-
-    expect(html).toContain("Answered");
-    expect(html).toContain("Answered: staging");
-    expect(html).toContain("disabled");
   });
 
   it("renders read-only state when no submit handler is available", () => {

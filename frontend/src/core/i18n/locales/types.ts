@@ -308,7 +308,6 @@ export interface Translations {
     requiredA11yLabel: string;
     selectPlaceholder: string;
     inputDisabledHint: string;
-    answeredValue: (value: string) => string;
   };
 
   // Uploads

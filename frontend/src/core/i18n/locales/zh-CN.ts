@@ -378,7 +378,6 @@ export const zhCN: Translations = {
     requiredA11yLabel: "必填",
     selectPlaceholder: "请选择...",
     inputDisabledHint: "上方有问题等待你回答，回答后才能继续。",
-    answeredValue: (value: string) => `已回答：${value}`,
   },
 
   uploads: {

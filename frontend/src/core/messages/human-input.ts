@@ -560,6 +560,52 @@ export function buildHumanInputFormSubmissionValue(
   return `${buildHumanInputFormSummary(request, values)} [values: ${JSON.stringify(record)}]`;
 }
 
+const HUMAN_INPUT_FORM_VALUES_SUFFIX = /\s*\[values: (\{[\s\S]*\})\]$/;
+
+// Form submissions append a machine-readable `[values: {...}]` block keyed by
+// stable field names; only treat the suffix as such when it parses as JSON and
+// every key matches a known field, so free text that happens to end in a
+// similar literal survives intact.
+function parseHumanInputFormSummary(
+  request: HumanInputRequest,
+  value: string,
+): string | null {
+  const match = HUMAN_INPUT_FORM_VALUES_SUFFIX.exec(value);
+  if (!match?.[1] || match.index === undefined) {
+    return null;
+  }
+  let record: unknown;
+  try {
+    record = JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+  if (!isRecord(record)) {
+    return null;
+  }
+  const fieldNames = new Set((request.fields ?? []).map((field) => field.name));
+  if (Object.keys(record).some((name) => !fieldNames.has(name))) {
+    return null;
+  }
+  const summary = value.slice(0, match.index).trimEnd();
+  return summary || null;
+}
+
+// Readable answer for the answered row: resolve the chosen option's label and
+// strip the form values block.
+export function formatHumanInputAnsweredValue(
+  request: HumanInputRequest,
+  response: HumanInputResponse,
+): string {
+  if (response.response_kind === "option") {
+    const option = (request.options ?? []).find(
+      (candidate) => candidate.id === response.option_id,
+    );
+    return option?.label ?? response.value;
+  }
+  return parseHumanInputFormSummary(request, response.value) ?? response.value;
+}
+
 export function createHumanInputTextResponse(
   request: HumanInputRequest,
   value: string,

@@ -56,6 +56,7 @@ import { StreamingIndicator } from "../streaming-indicator";
 import { SubtaskDetailSheet } from "../subtask-detail-sheet";
 import { Tooltip } from "../tooltip";
 
+import { HumanInputAnsweredRow } from "./human-input-answered-row";
 import {
   HumanInputCard,
   type HumanInputSubmitResult,
@@ -654,25 +655,33 @@ export function MessageList({
               );
               return (
                 <div key={groupKey} className="w-full">
-                  <HumanInputCard
-                    answeredResponse={answeredResponse}
-                    disabled={
-                      thread.isLoading ||
-                      pending ||
-                      Boolean(answeredResponse) ||
-                      humanInputState.latestOpenRequestId !==
-                        humanInputRequest.request_id ||
-                      !onSubmitHumanInput
-                    }
-                    pending={pending}
-                    request={humanInputRequest}
-                    onSubmit={
-                      onSubmitHumanInput
-                        ? (response) =>
-                            handleSubmitHumanInput(humanInputRequest, response)
-                        : undefined
-                    }
-                  />
+                  {answeredResponse ? (
+                    <HumanInputAnsweredRow
+                      request={humanInputRequest}
+                      response={answeredResponse}
+                    />
+                  ) : (
+                    <HumanInputCard
+                      disabled={
+                        thread.isLoading ||
+                        pending ||
+                        humanInputState.latestOpenRequestId !==
+                          humanInputRequest.request_id ||
+                        !onSubmitHumanInput
+                      }
+                      pending={pending}
+                      request={humanInputRequest}
+                      onSubmit={
+                        onSubmitHumanInput
+                          ? (response) =>
+                              handleSubmitHumanInput(
+                                humanInputRequest,
+                                response,
+                              )
+                          : undefined
+                      }
+                    />
+                  )}
                   {renderTokenUsage({
                     messages: group.messages,
                     turnUsageMessages,

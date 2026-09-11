@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  CheckCircle2Icon,
   CheckIcon,
   Loader2Icon,
   MessageCircleQuestionMarkIcon,
@@ -218,13 +217,11 @@ export function HumanInputCard({
   request,
   disabled = false,
   pending = false,
-  answeredResponse = null,
   onSubmit,
 }: {
   request: HumanInputRequest;
   disabled?: boolean;
   pending?: boolean;
-  answeredResponse?: HumanInputResponse | null;
   onSubmit?: (
     response: HumanInputResponse,
   ) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
@@ -250,13 +247,8 @@ export function HumanInputCard({
   const options = request.options ?? [];
   const fields = request.fields ?? [];
   const readOnly = !onSubmit;
-  const isDisabled =
-    disabled || pending || Boolean(answeredResponse) || readOnly;
-  const statusLabel = answeredResponse
-    ? t.humanInput.answered
-    : readOnly
-      ? t.humanInput.readOnly
-      : null;
+  const isDisabled = disabled || pending || readOnly;
+  const statusLabel = readOnly ? t.humanInput.readOnly : null;
 
   const submitResponse = async (response: HumanInputResponse) => {
     if (isDisabled || !onSubmit) {
@@ -335,10 +327,6 @@ export function HumanInputCard({
         <p className="text-destructive text-sm" id={formErrorId} role="alert">
           {error}
         </p>
-      ) : answeredResponse ? (
-        <p className="text-muted-foreground text-sm" aria-live="polite">
-          {t.humanInput.answeredValue(answeredResponse.value)}
-        </p>
       ) : (
         <span />
       )}
@@ -380,17 +368,7 @@ export function HumanInputCard({
               ) : null}
             </div>
             {statusLabel ? (
-              <Badge
-                className={cn(
-                  "h-6 rounded-md px-2",
-                  answeredResponse &&
-                    "border-primary/20 bg-primary/10 text-primary",
-                )}
-                variant={answeredResponse ? "outline" : "secondary"}
-              >
-                {answeredResponse ? (
-                  <CheckCircle2Icon className="size-3" />
-                ) : null}
+              <Badge className="h-6 rounded-md px-2" variant="secondary">
                 {statusLabel}
               </Badge>
             ) : null}
@@ -543,13 +521,6 @@ export function HumanInputCard({
                   >
                     {error}
                   </p>
-                ) : answeredResponse ? (
-                  <p
-                    className="text-muted-foreground text-sm"
-                    aria-live="polite"
-                  >
-                    {t.humanInput.answeredValue(answeredResponse.value)}
-                  </p>
                 ) : (
                   <span />
                 )}
@@ -566,12 +537,6 @@ export function HumanInputCard({
                 </Button>
               </div>
             </form>
-          ) : null}
-
-          {!allowText && !isForm && answeredResponse ? (
-            <p className="text-muted-foreground text-sm" aria-live="polite">
-              {t.humanInput.answeredValue(answeredResponse.value)}
-            </p>
           ) : null}
         </div>
       </div>
