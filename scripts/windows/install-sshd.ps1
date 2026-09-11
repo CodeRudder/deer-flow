@@ -44,8 +44,16 @@
     .\install-sshd.ps1 -PublicKeyFile C:\Temp\deerflow_win.pub -Port 2222
 
 .NOTES
-    需 Windows 10 1809+ / Server 2019+（OpenSSH 为系统可选功能）。
-    更早版本请参考 https://github.com/PowerShell/Win32-OpenSSH 手动安装。
+    Windows 10 1809+ / Server 2019+ 可用系统可选功能；更早版本走便携版即可。
+
+    ⚠ Windows 10 20H2 及更早版本在 WSUS 管辖下无法从 Windows Update 取得
+      Feature on Demand 内容，Add-WindowsCapability 会报 0x800F0954
+      （更新服务器上找不到适用的可选内容）。这是更新源策略问题，与被安装的
+      组件无关。默认的 -Method Auto 会自动回退到便携版；也可直接指定：
+          .\install-sshd.ps1 -Method Portable
+
+    便携版来自微软官方仓库 https://github.com/PowerShell/Win32-OpenSSH，
+    完全绕开 Windows Update 与 WSUS。
 #>
 
 #Requires -RunAsAdministrator
@@ -82,7 +90,38 @@ param(
       下载到的目录路径通过此参数传入，脚本会改用本地源安装。
     #>
     [Parameter(Mandatory = $false)]
-    [string]$SourcePath
+    [string]$SourcePath,
+
+    <#
+      安装方式：
+        Auto     — 先试官方可选功能，失败则自动回退便携版（默认）
+        Feature  — 仅用 Windows 可选功能（Feature on Demand）
+        Portable — 仅用 GitHub 上的 Win32-OpenSSH 便携版
+        Source   — 仅用本地 FOD 离线源（需配合 -SourcePath）
+
+      Windows 10 20H2 及更早版本在 WSUS 管辖下无法从 Windows Update 取得
+      FoD 内容，Add-WindowsCapability 会报 0x800F0954（找不到适用的可选内容），
+      此时必须用 Portable。
+    #>
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Auto', 'Feature', 'Portable', 'Source')]
+    [string]$Method = 'Auto',
+
+    <#
+      便携版版本号，默认 v9.5.0.0p1-Beta。
+      注意：Win32-OpenSSH 的所有 release 都带 Beta/Preview 后缀——这是微软官方
+      仓库的一贯命名习惯，并非质量未达标，广泛用于生产环境。
+      可用版本见 https://github.com/PowerShell/Win32-OpenSSH/releases
+    #>
+    [Parameter(Mandatory = $false)]
+    [string]$OpenSshVersion = 'v9.5.0.0p1-Beta',
+
+    <#
+      本地已下载的 OpenSSH-Win64.zip 路径。指定后跳过下载直接解压安装，
+      适用于目标机无法访问 github.com 的情况。
+    #>
+    [Parameter(Mandatory = $false)]
+    [string]$PortableZipPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -151,95 +190,245 @@ if ($loginName -like "*$backslash*") {
 
 Write-Step "安装 OpenSSH Server"
 
-$sshdService = Get-Service -Name sshd -ErrorAction SilentlyContinue
+# 便携版安装目录与安装脚本
+$portableInstallDir = Join-Path $env:ProgramFiles 'OpenSSH'
 
-if ($sshdService) {
-    Write-Ok "sshd 服务已存在（$($sshdService.Status)），跳过安装"
-} else {
+<#
+  用 Windows 可选功能（Feature on Demand）安装。
+  返回 $true 表示安装成功。
+
+  已知失败：Windows 10 20H2 及更早版本在 WSUS 管辖下无法从 Windows Update
+  取到 FoD 内容，会报 0x800F0954（CBS_E_NO_OPTIONAL_CONTENT_FOUND_ON_UPDATE_SERVERS）。
+  该错误由更新源策略造成，与被安装的组件本身无关，此时应改用便携版。
+#>
+function Install-OpenSshViaFeature {
+    param([string]$LocalSourcePath)
+
     $capability = $null
     try {
         $capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction Stop |
             Select-Object -First 1
     } catch {
         Write-Warn "无法查询 Windows 可选功能：$($_.Exception.Message)"
+        return $false
     }
 
     if ($null -eq $capability) {
-        Write-Fail "本系统未提供 OpenSSH Server 可选功能。"
-        Write-Info "本脚本要求 Windows 10 1809+ / Server 2019+。"
-        Write-Info "更早版本请手动安装: https://github.com/PowerShell/Win32-OpenSSH/releases"
-        Write-Info "内网无法出网时，需从可出网机器下载该 Release 后拷贝过来。"
-        exit 1
+        Write-Warn "本系统未提供 OpenSSH Server 可选功能"
+        return $false
     }
 
     if ($capability.State -eq 'Installed') {
         Write-Ok "OpenSSH Server 可选功能已安装"
-    } else {
-        Write-Info "当前状态: $($capability.State)，开始安装（可能需要几分钟）..."
+        return $true
+    }
 
-        $installed = $false
+    if ($LocalSourcePath) {
+        if (-not (Test-Path $LocalSourcePath)) {
+            Write-Fail "离线源目录不存在: $LocalSourcePath"
+            return $false
+        }
+        Write-Info "使用离线源安装: $LocalSourcePath"
+        $dismArgs = @(
+            '/Online', '/Add-Capability',
+            '/CapabilityName:OpenSSH.Server~~~~0.0.1.0',
+            "/Source:$LocalSourcePath"
+        )
+        $dismOutput = & dism.exe @dismArgs 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "OpenSSH Server 已从离线源安装"
+            return $true
+        }
+        Write-Fail "离线安装失败 (dism 返回码 $LASTEXITCODE)"
+        Write-Info ($dismOutput | Select-Object -Last 6)
+        Write-Info "请确认离线包版本与本机 Windows 版本完全一致。"
+        return $false
+    }
 
-        # 离线源优先：内网主机通常连不上 Windows Update，
-        # Add-WindowsCapability 会挂起或失败，此时必须走本地 FOD 包。
-        if ($SourcePath) {
-            if (-not (Test-Path $SourcePath)) {
-                Write-Fail "离线源目录不存在: $SourcePath"
-                exit 1
+    Write-Info "当前状态: $($capability.State)，开始安装（可能需要几分钟）..."
+
+    $failureDetail = ''
+    try {
+        Add-WindowsCapability -Online -Name $capability.Name -ErrorAction Stop | Out-Null
+    } catch {
+        $failureDetail = $_.Exception.Message
+        Write-Warn "在线安装失败: $failureDetail"
+    }
+
+    # Add-WindowsCapability 有时不抛异常但也没有实际安装，必须复查真实状态
+    $recheck = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($recheck -and $recheck.State -eq 'Installed') {
+        Write-Ok "OpenSSH Server 安装完成"
+        return $true
+    }
+
+    if ($failureDetail -match '0x800f0954') {
+        Write-Info "错误 0x800F0954：更新服务器上找不到适用的可选内容。"
+        Write-Info "该组件以 Feature on Demand 形式发布，其内容只能从 Microsoft Update 获取，"
+        Write-Info "而 Windows 10 20H2 及更早版本无法通过 WSUS 取得 FoD 内容。"
+        Write-Info "这是更新源策略问题，与组件本身无关——改用便携版即可绕开。"
+    }
+
+    return $false
+}
+
+<#
+  用 GitHub 上的微软官方 Win32-OpenSSH 便携版安装。
+  完全绕开 Windows Update / WSUS，适用于任何 Windows 版本。
+  返回 $true 表示安装成功。
+#>
+function Install-OpenSshPortable {
+    param(
+        [string]$Version,
+        [string]$LocalZipPath
+    )
+
+    # 已装过便携版则复用
+    $existingInstall = Join-Path $portableInstallDir 'install-sshd.ps1'
+    if (Test-Path $existingInstall) {
+        Write-Ok "检测到已安装的便携版: $portableInstallDir"
+        return $true
+    }
+
+    $tempRoot = Join-Path $env:TEMP ("openssh-setup-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -Path $tempRoot -ItemType Directory -Force | Out-Null
+
+    try {
+        $zipPath = $null
+
+        if ($LocalZipPath) {
+            if (-not (Test-Path $LocalZipPath)) {
+                Write-Fail "指定的便携版压缩包不存在: $LocalZipPath"
+                return $false
             }
-            Write-Info "使用离线源安装: $SourcePath"
-            $dismArgs = @(
-                '/Online', '/Add-Capability',
-                '/CapabilityName:OpenSSH.Server~~~~0.0.1.0',
-                "/Source:$SourcePath"
-            )
-            $dismOutput = & dism.exe @dismArgs 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "OpenSSH Server 已从离线源安装"
-                $installed = $true
-            } else {
-                Write-Fail "离线安装失败 (dism 返回码 $LASTEXITCODE)"
-                Write-Info ($dismOutput | Select-Object -Last 8) -ErrorAction SilentlyContinue
-                Write-Info "请确认离线包版本与本机 Windows 版本一致。"
-                exit 1
-            }
+            $zipPath = $LocalZipPath
+            Write-Info "使用本地压缩包: $LocalZipPath"
         } else {
+            $url = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/$Version/OpenSSH-Win64.zip"
+            $zipPath = Join-Path $tempRoot 'OpenSSH-Win64.zip'
+
+            Write-Info "下载便携版 $Version ..."
+            Write-Info $url
+
+            # 用 TLS 1.2：Windows 10 早期版本的 .NET 默认可能仍是 TLS 1.0，
+            # 会被 GitHub 拒绝。
+            $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
             try {
-                Add-WindowsCapability -Online -Name $capability.Name -ErrorAction Stop | Out-Null
-                Write-Ok "OpenSSH Server 安装完成"
-                $installed = $true
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $ProgressPreference = 'SilentlyContinue'   # 关闭进度条，否则下载会慢一个数量级
+                Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
             } catch {
-                Write-Warn "在线安装失败: $($_.Exception.Message)"
-                Write-Info "这在内网环境很常见——可选功能需要访问 Windows Update。"
+                Write-Fail "下载失败: $($_.Exception.Message)"
+                Write-Host ""
+                Write-Host "  请在有网的机器上下载后拷贝到本机，再用 -PortableZipPath 指定：" -ForegroundColor Yellow
+                Write-Host "    $url"
+                Write-Host ""
+                return $false
+            } finally {
+                [Net.ServicePointManager]::SecurityProtocol = $previousProtocol
+                $ProgressPreference = 'Continue'
             }
 
-            # Add-WindowsCapability 有时不抛异常但也没装上，需复查实际状态
-            if (-not $installed) {
-                $recheck = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction SilentlyContinue |
-                    Select-Object -First 1
-                if ($recheck -and $recheck.State -eq 'Installed') {
-                    Write-Ok "OpenSSH Server 安装完成（复查确认）"
-                    $installed = $true
+            $sizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
+            Write-Ok "下载完成 ($sizeMb MB)"
+        }
+
+        Write-Info "解压到 $portableInstallDir ..."
+        Expand-Archive -Path $zipPath -DestinationPath $tempRoot -Force
+
+        # ZIP 解压后顶层目录名随版本变化（OpenSSH-Win64 / OpenSSH-Win64-v9.5...），
+        # 因此按特征文件定位而不是硬编码目录名。
+        $extractedDir = Get-ChildItem -Path $tempRoot -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName 'install-sshd.ps1') } |
+            Select-Object -First 1
+
+        if (-not $extractedDir) {
+            Write-Fail "解压后未找到 install-sshd.ps1，压缩包结构可能已变化。"
+            Write-Info "请检查 $tempRoot 内容。"
+            return $false
+        }
+
+        if (Test-Path $portableInstallDir) {
+            Write-Warn "$portableInstallDir 已存在，将覆盖其中的 OpenSSH 文件"
+        }
+        New-Item -Path $portableInstallDir -ItemType Directory -Force | Out-Null
+        Copy-Item -Path (Join-Path $extractedDir.FullName '*') -Destination $portableInstallDir -Recurse -Force
+        Write-Ok "文件已释放到 $portableInstallDir"
+
+        # 卸载旧服务（若有）以便干净重装
+        $oldService = Get-Service -Name sshd -ErrorAction SilentlyContinue
+        if ($oldService) {
+            Write-Info "检测到已有 sshd 服务，先移除以便重新注册"
+            Stop-Service -Name sshd -Force -ErrorAction SilentlyContinue
+            & sc.exe delete sshd | Out-Null
+            Start-Sleep -Seconds 2
+        }
+
+        Write-Info "注册 sshd 服务..."
+        $installScript = Join-Path $portableInstallDir 'install-sshd.ps1'
+        $installOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "install-sshd.ps1 执行失败 (返回码 $LASTEXITCODE)"
+            Write-Info ($installOutput | Select-Object -Last 8)
+            return $false
+        }
+
+        Write-Ok "便携版 OpenSSH 安装完成"
+        return $true
+    } finally {
+        Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$alreadyInstalled = Get-Service -Name sshd -ErrorAction SilentlyContinue
+if ($alreadyInstalled) {
+    Write-Ok "sshd 服务已存在（$($alreadyInstalled.Status)），跳过安装"
+} else {
+    $installed = $false
+
+    switch ($Method) {
+        'Feature' {
+            $installed = Install-OpenSshViaFeature -LocalSourcePath $SourcePath
+        }
+        'Portable' {
+            $installed = Install-OpenSshPortable -Version $OpenSshVersion -LocalZipPath $PortableZipPath
+        }
+        'Source' {
+            if (-not $SourcePath) {
+                Write-Fail "-Method Source 需要同时指定 -SourcePath"
+                exit 1
+            }
+            $installed = Install-OpenSshViaFeature -LocalSourcePath $SourcePath
+        }
+        'Auto' {
+            if ($SourcePath) {
+                $installed = Install-OpenSshViaFeature -LocalSourcePath $SourcePath
+            } else {
+                $installed = Install-OpenSshViaFeature
+                if (-not $installed) {
+                    Write-Warn "可选功能方式不可用，自动回退到便携版安装"
                 }
             }
+            if (-not $installed) {
+                $installed = Install-OpenSshPortable -Version $OpenSshVersion -LocalZipPath $PortableZipPath
+            }
         }
+    }
 
-        if (-not $installed) {
-            Write-Fail "OpenSSH Server 未能安装"
-            Write-Host ""
-            Write-Host "  内网环境的离线安装方法：" -ForegroundColor Yellow
-            Write-Host "    1. 找一台能出网、且 Windows 版本与本机一致的机器，下载对应 FOD 包："
-            Write-Host "       https://www.catalog.update.microsoft.com 搜索 `"OpenSSH`""
-            Write-Host "    2. 解压 .cab 到目录，例如 C:\Temp\OpenSSH-FOD"
-            Write-Host "    3. 拷贝到本机后重新运行："
-            Write-Host "       .\install-sshd.ps1 -SourcePath C:\Temp\OpenSSH-FOD"
-            Write-Host ""
-            Write-Host "  备选方案（无需 FOD 包，但需自行管理版本）：" -ForegroundColor Yellow
-            Write-Host "    从 https://github.com/PowerShell/Win32-OpenSSH/releases"
-            Write-Host "    下载 OpenSSH-Win64.zip，解压到 C:\Program Files\OpenSSH，然后执行其中的"
-            Write-Host "    install-sshd.ps1。此时本脚本可跳过安装步骤，直接用于后续配置。"
-            Write-Host ""
-            exit 1
-        }
+    if (-not $installed) {
+        Write-Fail "OpenSSH Server 安装失败"
+        Write-Host ""
+        Write-Host "  可尝试的方式：" -ForegroundColor Yellow
+        Write-Host "    1. 便携版（推荐，绕开 Windows Update）："
+        Write-Host "       .\install-sshd.ps1 -Method Portable"
+        Write-Host "    2. 手动下载后指定压缩包："
+        Write-Host "       https://github.com/PowerShell/Win32-OpenSSH/releases"
+        Write-Host "       .\install-sshd.ps1 -Method Portable -PortableZipPath C:\Temp\OpenSSH-Win64.zip"
+        Write-Host "    3. 用匹配版本的 FOD 离线源："
+        Write-Host "       .\install-sshd.ps1 -Method Source -SourcePath C:\Temp\OpenSSH-FOD"
+        Write-Host ""
+        exit 1
     }
 }
 
