@@ -606,6 +606,72 @@ test("keeps previous assistant copyable after a hidden send is appended", () => 
   ).toBe(false);
 });
 
+test("falls back to reasoning for a reasoning-only assistant turn's copy data", () => {
+  // A turn can end with reasoning but no answer text (e.g. stopped during
+  // thinking); the turn-level copy button must not disappear in that case.
+  const messages = [
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "",
+      additional_kwargs: { reasoning_content: "the actual reasoning" },
+    },
+  ] as Message[];
+
+  expect(getAssistantTurnCopyData(messages)).toBe("the actual reasoning");
+});
+
+test("settled copy data is derived once per messages array reference (#5094)", () => {
+  // The cache is keyed on the messages array reference, so any caller that
+  // reads copy data for the same settled array twice is served from the cache
+  // instead of re-running the O(turn bytes) extraction. Reading `content`
+  // through a getter proves the second call never touches the message.
+  let contentReads = 0;
+  const message = {
+    id: "ai-1",
+    type: "ai",
+    get content() {
+      contentReads += 1;
+      return "Final answer";
+    },
+  } as unknown as Message;
+  const messages = [message];
+
+  expect(getAssistantTurnCopyData(messages)).toBe("Final answer");
+  const readsAfterFirstCall = contentReads;
+  expect(readsAfterFirstCall).toBeGreaterThan(0);
+
+  expect(getAssistantTurnCopyData(messages)).toBe("Final answer");
+  expect(contentReads).toBe(readsAfterFirstCall);
+});
+
+test("copy-data cache does not leak across array references", () => {
+  const first = [
+    { id: "ai-1", type: "ai", content: "first answer" },
+  ] as Message[];
+  const second = [
+    { id: "ai-2", type: "ai", content: "second answer" },
+  ] as Message[];
+
+  expect(getAssistantTurnCopyData(first)).toBe("first answer");
+  expect(getAssistantTurnCopyData(second)).toBe("second answer");
+  // The streaming short-circuit stays ahead of the cache.
+  expect(getAssistantTurnCopyData(second, { isStreaming: true })).toBeNull();
+  expect(getAssistantTurnCopyData(second)).toBe("second answer");
+});
+
+test("null copy data is not cached for a reference", () => {
+  // A turn with no copyable AI text must keep recomputing (and stay null)
+  // rather than a cached null hiding a later value — the same array can be
+  // re-used once messages are appended to a rebuilt group.
+  const messages = [
+    { id: "human-1", type: "human", content: "hi" },
+  ] as Message[];
+
+  expect(getAssistantTurnCopyData(messages)).toBeNull();
+  expect(getAssistantTurnCopyData(messages)).toBeNull();
+});
+
 test("uses stream metadata to identify an assistant before optimistic input", () => {
   const messages = [
     {

@@ -138,6 +138,22 @@ export function MessageListItem({
   turnStartTime?: number | null;
 }) {
   const isHuman = message.type === "human";
+  // The toolbar copies what is displayed, with backend-injected context
+  // blocks stripped. Derive it once per row: settled rows keep their message
+  // reference across streaming chunks, so a chunk re-render reuses this value
+  // instead of re-running the content extraction (#5094). The guard matches
+  // the toolbar's render condition, so rows that never show it skip the work.
+  const copyData = useMemo(
+    () =>
+      !isLoading && showCopyButton
+        ? stripUploadedFilesTag(
+            extractContentFromMessage(message) ??
+              extractReasoningContentFromMessage(message) ??
+              "",
+          )
+        : "",
+    [isLoading, message, showCopyButton],
+  );
   return (
     <AIElementMessage
       className={cn("group/conversation-message relative w-full", className)}
@@ -160,14 +176,7 @@ export function MessageListItem({
           )}
         >
           <div className="pointer-events-auto flex gap-1">
-            <CopyButton
-              // Copy what is displayed: strip backend-injected context blocks.
-              clipboardData={stripUploadedFilesTag(
-                extractContentFromMessage(message) ??
-                  extractReasoningContentFromMessage(message) ??
-                  "",
-              )}
-            />
+            <CopyButton clipboardData={copyData} />
             {feedback !== undefined && runId && threadId && (
               <FeedbackButtons
                 threadId={threadId}

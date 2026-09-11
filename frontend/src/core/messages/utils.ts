@@ -291,6 +291,16 @@ export function isAssistantMessageGroupStreaming(
   });
 }
 
+// The copy button re-renders with the message list. Cache per array reference
+// so a caller that re-reads a referentially stable settled array skips the
+// derivation (#5094) — a rebuilt array simply misses and recomputes, so the
+// cache never serves a stale value. For string-content turns the saved work is
+// the reverse/filter/map traversal and its allocations (the regex/trim split
+// itself is already cached per message by `inlineReasoningCache`); for
+// array-content turns `extractContentFromMessage` has no lower-level cache, so
+// this also skips its O(bytes) map/join/trim re-run.
+const assistantTurnCopyDataCache = new WeakMap<Message[], string>();
+
 export function getAssistantTurnCopyData(
   messages: Message[],
   { isStreaming = false }: { isStreaming?: boolean } = {},
@@ -299,16 +309,29 @@ export function getAssistantTurnCopyData(
     return null;
   }
 
-  return (
+  const cached = assistantTurnCopyDataCache.get(messages);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const copyData =
     [...messages]
       .reverse()
       .filter((message) => message.type === "ai")
       .map((message) => {
+        // extractContentFromMessage never returns null, so fall back to
+        // reasoning on empty text — otherwise a reasoning-only turn loses its
+        // copy button entirely.
         const content = extractContentFromMessage(message);
-        return content ?? extractReasoningContentFromMessage(message) ?? "";
+        return content.length > 0
+          ? content
+          : (extractReasoningContentFromMessage(message) ?? "");
       })
-      .find((content) => content.length > 0) ?? null
-  );
+      .find((content) => content.length > 0) ?? null;
+  if (copyData !== null) {
+    assistantTurnCopyDataCache.set(messages, copyData);
+  }
+  return copyData;
 }
 
 export function extractTextFromMessage(message: Message) {
