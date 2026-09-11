@@ -1,9 +1,8 @@
 # Seedance worked mode examples (T2V / multimodal reference / first+last)
 
-Loaded on demand when the routed provider is Seedance — Example A in SKILL.md
-shows the full T2V flow with both gates. All examples below assume the
-input-table and plan-card gates have passed and the prompt file was written in
-the @-tag/timeline format (Step 2).
+Loaded on demand when the routed provider is Seedance. All examples below
+assume the input-table and plan-card gates have passed and the prompt file was
+written in the @-tag/timeline format (Step 2).
 
 ## SD-1 — Seedance T2V (mini, batch/cheap tier)
 
