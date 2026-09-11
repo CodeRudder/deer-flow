@@ -208,75 +208,13 @@ Rationale: explicit frame language is the user actively choosing the frame
 mode. Defaulting with a correction exit in the plan card beats blocking on
 every upload.
 
-### Image count and order per mode
+### Image count, order, and material checks
 
-Images map by **position** in `--reference-images` (there is no per-image
-label), so order matters — confirm it with the user when it isn't obvious:
-
-| Mode | Images | Order / rule |
-|---|---|---|
-| `first_frame` | 1 | the single image is the opening frame |
-| `last_frame` | 1 | the single image is the closing frame |
-| `first_last` | exactly 2 | **first image = opening frame, second = closing frame** — never swap; if only one image is available, route to `first_frame` instead of invoking `first_last` |
-| `reference` | multiple, per-provider cap (run `--describe-provider`) | all treated as likeness references; Seedance reference mode also accepts reference videos/audios (URLs) |
-
-Do not pass more images than a mode uses — a 3rd image to `first_last`, or a 2nd
-to `first_frame`/`last_frame`, is dropped with a printed warning (the adapter
-also hard-rejects reference images over the model's cap — e.g. 9 on H3 —
-instead of letting the API reject a billed task), so send only what the mode
-takes. For `reference`, name the images in your prompt in the same
-order you
-pass them (the Ref2VA format labels them `<Picture 1>`, `<Picture 2>`, … by
-position — see `references/providers/minimax/prompt-format-ref.md`).
-
-### Necessary material checks
-
-Before prompt writing, check only what is required to continue:
-
-- image count matches the selected mode;
-- image role is clear and first/last order is correct;
-- frame and reference roles are not mixed;
-- images are usable and the subject is basically recognizable;
-- `first_last`: the two images' ratios equal or close enough for a coherent
-  transition;
-- Seedance reference videos/audios are public URLs (the API rejects base64
-  and cannot fetch local paths); counts stay within the model's caps (per-model
-  numbers via `--describe-provider`);
-- Seedance 2.5 frame tasks lock `ratio=adaptive` (the output follows the
-  frame image's aspect ratio); only video-edit locks `duration=-1` — an
-  explicit non-adaptive `--aspect-ratio` on a 2.5 frame task is rejected
-  locally with a clear error;
-- images pass the provider's input specs — run the spec preflight once
-  materials are in hand (the script reads each provider's spec from the
-  adapter manifest; current values via `--describe-provider`):
-
-  ```bash
-  python /mnt/skills/public/video-generation/scripts/check_materials.py \
-    --images {full paths or URLs, space-separated} \
-    --out-dir /mnt/user-data/workspace
-  # Seedance materials: add --provider seedance
-  ```
-
-  Out-of-spec images are auto-fixed locally (no question needed); use the
-  script's output paths as the materials. An image it cannot decode is NOT
-  fixable — replace it before writing any prompt. The script never calls the
-  provider.
-- Seedance + real-person material: if any image may contain a real person's
-  face (the user's statement or your visual judgment), run the per-material
-  question — drop / replace / redraw each face image per
-  `references/workarounds.md` — after material checks and before prompt
-  writing or image generation. Never redraw silently; MiniMax H3 needs no
-  workaround.
-
-Do not require matching ratios across `reference` images, and do not compare
-across images for a single first or last frame. If frame-image ratios conflict
-with each other or with an explicitly requested output ratio, use exactly
-three exits: ① crop the frame image(s) to the requested or a common ratio
-② replace the conflicting image(s) ③ keep the original frame-image ratios —
-a single frame keeps the image's native ratio; `first_last` keeps both and
-explicitly accepts the transition mismatch. An accepted exception counts as a
-passed material check and is never asked again.
-
+Once materials are in hand, FIRST read `references/material-checks.md`, then
+run its checks before prompt writing: per-mode image counts and order, the
+required-check list, the spec preflight (`check_materials.py`), the
+ratio-conflict exits, and the Seedance real-person face trigger
+(`references/workarounds.md`).
 ## Output settings
 
 Surface these settings in the input table. Preserve explicit choices; otherwise
@@ -308,14 +246,14 @@ Guidance:
 
 ### Step 1: Confirm inputs, route the mode, and check materials
 
-Apply the input-table, mode-routing, precedence, and material-check rules
-above. Material checks run in two layers: **available-material checks** (the
-images the user supplied) before prompt writing; **collected-material
-checks** (auto-collected images: usable, subject clear) after collection
-(happens before prompt writing — Choosing the mode, Collection timing),
-before the final Ref2VA prompt is written. Both layers include the
-spec preflight (`scripts/check_materials.py`). Never report material checks
-as "passed" while planned images do not exist yet.
+Apply the input-table and mode-routing rules above; for material checks read
+`references/material-checks.md` first. Checks run in two layers:
+**available-material checks** (the images the user supplied) before prompt
+writing; **collected-material checks** (auto-collected images: usable,
+subject clear) after collection (happens before prompt writing — Choosing
+the mode, Collection timing), before the final Ref2VA prompt is written.
+Both layers include the spec preflight (`scripts/check_materials.py`). Never
+report material checks as "passed" while planned images do not exist yet.
 
 ### Step 2: Write the structured prompt file
 
@@ -527,33 +465,12 @@ card, and execute only after an explicit confirmation.
 
 ## Examples
 
-Example A shows the full T2V flow with both gates; the worked 2K-upgrade
-example (Example E) lives in `references/providers/minimax/upgrade-2k.md`.
-Worked commands for the other modes live in the routed provider's examples —
-`references/providers/minimax/examples.md` (MiniMax) or
-`references/providers/seedance/examples.md` (Seedance) — load it after the
-gates when the routed mode is not plain T2V.
-
-### Example A — explicit text-only request (pure T2V)
-
-User: "Make a short clip of a cat stretching on a windowsill in the morning —
-text only, no reference images." The explicit text-only ask opts out of the
-reference-mode default. Flow: theme-prefilled input table → T2V structured
-prompt (the routed provider's format file — Step 2 routing table) → plan card
-(`T2V`, no materials, `5 s · draft tier · 16:9`, `Storyboard: None`,
-`Initial plan`). Run:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/cat-stretch.txt \
-  --model {model} \
-  --resolution {draft tier} \
-  --duration 5 \
-  --output-file /mnt/user-data/outputs/cat-stretch.mp4
-```
-
-Present with exits ①–③ plus ④ (eligible 5 s draft on the H3 upgrade path).
-
+Worked examples live in `references/examples.md` (full T2V flow with both
+gates) and in the routed provider's examples —
+`references/providers/minimax/examples.md` /
+`references/providers/seedance/examples.md` (2K upgrade:
+`references/providers/minimax/upgrade-2k.md`). Load them after the gates
+when needed.
 ## Provider constraints
 
 Per-provider capability numbers (value domains, draft-tier defaults, reference
