@@ -488,6 +488,47 @@ export function extractURLFromImageURLContent(
   return content.url;
 }
 
+// The thinking placeholder is hidden once the current turn paints assistant
+// text. Hidden human messages (e.g. a submitted clarification answer) start a
+// new turn without forming a group, so the turn boundary must come from the raw
+// transcript rather than from the groups.
+export function hasAssistantTextInCurrentTurn(
+  messages: Message[],
+  groups: MessageGroup[],
+): boolean {
+  let lastHumanMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.type === "human") {
+      lastHumanMessageIndex = index;
+      break;
+    }
+  }
+  if (lastHumanMessageIndex === -1) {
+    return false;
+  }
+
+  const messageIndexById = new Map(
+    messages.map((message, index) => [message.id, index] as const),
+  );
+
+  return groups.some((group) => {
+    const groupStartIndex = messageIndexById.get(group.messages[0]?.id);
+    if (
+      groupStartIndex === undefined ||
+      groupStartIndex <= lastHumanMessageIndex
+    ) {
+      return false;
+    }
+    return (
+      group.type === "assistant" ||
+      (group.type === "assistant:processing" &&
+        group.messages.some(
+          (message) => message.type === "ai" && hasContent(message),
+        ))
+    );
+  });
+}
+
 export function hasContent(message: Message) {
   if (typeof message.content === "string") {
     return (

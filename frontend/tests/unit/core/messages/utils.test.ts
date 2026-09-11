@@ -9,6 +9,7 @@ import {
   getAssistantTurnUsageMessages,
   getMessageGroups,
   getStreamingMessageLookup,
+  hasAssistantTextInCurrentTurn,
   hasContent,
   hasReasoning,
   isAssistantMessageGroupStreaming,
@@ -828,5 +829,95 @@ describe("multi-part content with bare-string continuations", () => {
     expect(extractTextFromMessage(geminiMessage)).toBe(
       "First block carrying the signature.\nContinuation streamed as a bare string.",
     );
+  });
+});
+
+describe("hasAssistantTextInCurrentTurn", () => {
+  // A clarification turn: preamble text + the ask_clarification tool call.
+  const clarificationTranscript = [
+    { id: "human-1", type: "human", content: "把动作改成激光攻击" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "已把动作改为激光攻击，是否按此继续？",
+      tool_calls: [
+        {
+          id: "call-1",
+          name: "ask_clarification",
+          args: { question: "是否按此继续？" },
+        },
+      ],
+    },
+    {
+      id: "tool-1",
+      type: "tool",
+      name: "ask_clarification",
+      tool_call_id: "call-1",
+      content: "fallback text",
+    },
+  ] as Message[];
+
+  // The answer the user submits is a hidden human message: it starts a new
+  // turn but never forms a group of its own.
+  const hiddenAnswer = {
+    id: "human-answer",
+    type: "human",
+    content: 'For your clarification "是否按此继续？", my answer is: 继续',
+    additional_kwargs: {
+      hide_from_ui: true,
+      human_input_response: {
+        version: 1,
+        kind: "human_input_response",
+        source: "ask_clarification",
+        request_id: "clarification:call-1",
+        response_kind: "text",
+        value: "继续",
+      },
+    },
+  } as Message;
+
+  test("ignores the previous turn's clarification text once the answer is submitted", () => {
+    const messages = [
+      ...clarificationTranscript,
+      hiddenAnswer,
+      { id: "ai-2", type: "ai", content: "" },
+    ] as Message[];
+    const groups = getMessageGroups(messages, { isCurrentTurnLoading: true });
+
+    expect(hasAssistantTextInCurrentTurn(messages, groups)).toBe(false);
+  });
+
+  test("counts text streamed after the answer", () => {
+    const messages = [
+      ...clarificationTranscript,
+      hiddenAnswer,
+      { id: "ai-2", type: "ai", content: "好的，开始生成计划。" },
+    ] as Message[];
+    const groups = getMessageGroups(messages, { isCurrentTurnLoading: true });
+
+    expect(hasAssistantTextInCurrentTurn(messages, groups)).toBe(true);
+  });
+
+  test("counts a settled assistant bubble of the current turn", () => {
+    const messages = [
+      ...clarificationTranscript,
+      hiddenAnswer,
+      { id: "ai-2", type: "ai", content: "好的，开始生成计划。" },
+    ] as Message[];
+    const groups = getMessageGroups(messages);
+
+    expect(hasAssistantTextInCurrentTurn(messages, groups)).toBe(true);
+  });
+
+  test("ignores assistant text from before the last human message", () => {
+    const messages = [
+      { id: "human-1", type: "human", content: "hi" },
+      { id: "ai-1", type: "ai", content: "Hello!" },
+      { id: "human-2", type: "human", content: "again" },
+      { id: "ai-2", type: "ai", content: "" },
+    ] as Message[];
+    const groups = getMessageGroups(messages);
+
+    expect(hasAssistantTextInCurrentTurn(messages, groups)).toBe(false);
   });
 });

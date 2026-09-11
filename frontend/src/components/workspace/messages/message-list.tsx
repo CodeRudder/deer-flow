@@ -33,6 +33,7 @@ import {
   getAssistantTurnUsageMessages,
   getMessageGroups,
   getStreamingMessageLookup,
+  hasAssistantTextInCurrentTurn,
   hasContent,
   hasPresentFiles,
   hasReasoning,
@@ -52,7 +53,6 @@ import { cn } from "@/lib/utils";
 
 import { ArtifactFileList } from "../artifacts/artifact-file-list";
 import { CopyButton } from "../copy-button";
-import { StreamingIndicator } from "../streaming-indicator";
 import { SubtaskDetailSheet } from "../subtask-detail-sheet";
 import { Tooltip } from "../tooltip";
 
@@ -327,25 +327,10 @@ export function MessageList({
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<
     string | null
   >(null);
-  const hasActiveAssistantText = useMemo(() => {
-    let lastHumanIndex = -1;
-    for (let i = groupedMessages.length - 1; i >= 0; i--) {
-      if (groupedMessages[i]?.type === "human") {
-        lastHumanIndex = i;
-        break;
-      }
-    }
-    if (lastHumanIndex === -1) return false;
-    // Unresolved streaming text (#4304) counts as visible content too.
-    return groupedMessages
-      .slice(lastHumanIndex)
-      .some(
-        (g) =>
-          g.type === "assistant" ||
-          (g.type === "assistant:processing" &&
-            g.messages.some((m) => m.type === "ai" && hasContent(m))),
-      );
-  }, [groupedMessages]);
+  const hasActiveAssistantText = useMemo(
+    () => hasAssistantTextInCurrentTurn(messages, groupedMessages),
+    [groupedMessages, messages],
+  );
   const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
   const lastGroupIndex = groupedMessages.length - 1;
   const turnUsageMessagesByGroupIndex =
@@ -855,13 +840,14 @@ export function MessageList({
             </div>
           );
         })}
-        {thread.isLoading && !hasActiveAssistantText && (
-          <div className="w-full">
-            <Reasoning isStreaming={true} startTimeProp={turnStartTime}>
-              <ReasoningTrigger hasContent={false} />
-            </Reasoning>
-          </div>
-        )}
+        {(thread.isLoading || pendingHumanInputRequestIds.size > 0) &&
+          !hasActiveAssistantText && (
+            <div className="w-full">
+              <Reasoning isStreaming={true} startTimeProp={turnStartTime}>
+                <ReasoningTrigger hasContent={false} />
+              </Reasoning>
+            </div>
+          )}
         <div style={{ height: `${paddingBottom}px` }} />
       </ConversationContent>
       <SubtaskDetailSheet threadId={threadId} />
