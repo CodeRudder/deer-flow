@@ -218,6 +218,10 @@ function MobileChatScreen() {
             isHistoryLoading={isHistoryLoading}
             tokenUsageInlineMode={tokenUsageInlineMode}
             canRegenerate={canRegenerate}
+            // C6: a tool-call turn arrives as "ran N steps · M tools" and opens
+            // on tap. The desktop's dense panel is the same component with the
+            // default, so it is untouched.
+            collapsedSteps
             onRegenerateMessage={handleRegenerate}
             onSubmitHumanInput={
               isMock || isDemoMode ? undefined : handleSubmitHumanInput
@@ -247,6 +251,8 @@ function MobileChatScreen() {
           status={
             thread.error ? "error" : thread.isLoading ? "streaming" : "ready"
           }
+          threadId={threadId}
+          messages={thread.messages}
           context={settings.context}
           disabled={isInputDisabled}
           disabledPlaceholder={

@@ -11,6 +11,8 @@ rs.mock("@/core/i18n/hooks", () => ({
       toolCalls: {
         lessSteps: "less steps",
         moreSteps: (count: number) => `${count} more steps`,
+        executedSteps: (count: number) => `ran ${count} steps`,
+        toolsUsed: (count: number) => `${count} tools`,
         readFile: "read file",
         useTool: (name: string) => `use ${name}`,
         searchForRelatedInfo: "search for related info",
@@ -178,6 +180,54 @@ describe("MessageGroup", () => {
     expect(text).not.toContain("Shall I continue?");
     expect(text).toContain("thinking");
     expect(text).not.toContain("I need user confirmation.");
+  });
+
+  it("summarises a tool-call turn into one row when collapsedSteps is set", () => {
+    const { container } = render(
+      <MessageGroup
+        collapsedSteps
+        messages={[
+          {
+            id: "ai-1",
+            type: "ai",
+            content: "I will inspect the current implementation.",
+            tool_calls: [
+              { id: "call-1", name: "read_file", args: { path: "a.ts" } },
+              { id: "call-2", name: "read_file", args: { path: "b.ts" } },
+            ],
+          } as Message,
+        ]}
+      />,
+    );
+
+    // 3 rows when expanded — two tool calls plus the assistant text.
+    expect(container.textContent).toContain("ran 3 steps");
+    expect(container.textContent).toContain("2 tools");
+    // Collapsed: no row content yet.
+    expect(container.textContent).not.toContain("a.ts");
+    expect(container.querySelector("[aria-expanded='false']")).not.toBeNull();
+  });
+
+  it("collapses nothing for a reasoning-only turn", () => {
+    // No tool call to summarise: the desktop panel is kept rather than
+    // reporting "ran 1 steps · 0 tools".
+    const { container } = render(
+      <MessageGroup
+        collapsedSteps
+        isLoading
+        messages={[
+          {
+            id: "ai-1",
+            type: "ai",
+            content: "",
+            additional_kwargs: { reasoning_content: "I should search first." },
+          } as Message,
+        ]}
+      />,
+    );
+
+    expect(container.textContent).not.toContain("ran 1 steps");
+    expect(container.textContent).toContain("thinking");
   });
 
   it("renders nothing for a clarification message without reasoning", () => {

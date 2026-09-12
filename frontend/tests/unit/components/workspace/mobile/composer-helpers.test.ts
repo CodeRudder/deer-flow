@@ -1,7 +1,10 @@
 import { describe, expect, test } from "@rstest/core";
 
 import { leadingSlashQuery } from "@/components/workspace/mobile/composer";
-import { resolveMode } from "@/components/workspace/mobile/composer-mode";
+import {
+  modeSelection,
+  resolveMode,
+} from "@/components/workspace/mobile/composer-mode";
 
 /**
  * The pure parts of the composer.
@@ -37,6 +40,39 @@ describe("resolveMode", () => {
     expect(resolveMode("flash", true)).toBe("flash");
     expect(resolveMode("thinking", true)).toBe("thinking");
     expect(resolveMode("ultra", true)).toBe("ultra");
+  });
+});
+
+describe("modeSelection", () => {
+  test("pairs each mode with the reasoning effort the desktop menu writes", () => {
+    // One rule for three call sites (the mode pill's sheet, the 思考 shortcut
+    // and the 计划模式 row). Before the extraction each site repeated the chain,
+    // so a change to one could silently disagree with the others.
+    expect(modeSelection("flash", true)).toEqual({
+      mode: "flash",
+      reasoning_effort: "minimal",
+    });
+    expect(modeSelection("thinking", true)).toEqual({
+      mode: "thinking",
+      reasoning_effort: "low",
+    });
+    expect(modeSelection("pro", true)).toEqual({
+      mode: "pro",
+      reasoning_effort: "medium",
+    });
+    expect(modeSelection("ultra", true)).toEqual({
+      mode: "ultra",
+      reasoning_effort: "high",
+    });
+  });
+
+  test("coerces both halves together for a model that cannot think", () => {
+    // The effort must follow the *resolved* mode, not the requested one: a
+    // request that is going to run Flash must not carry `high`.
+    expect(modeSelection("ultra", false)).toEqual({
+      mode: "flash",
+      reasoning_effort: "minimal",
+    });
   });
 });
 

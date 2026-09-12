@@ -151,6 +151,13 @@ export interface Translations {
     // send, so this is where the labels for the controls that moved into the
     // ＋ panel, plus the two submit-button states, live.
     composerOptions: string;
+    /**
+     * Accessible name of the composer's persistent mode pill, carrying the
+     * current value because the pill itself only shows the short label.
+     */
+    switchMode: (current: string) => string;
+    /** Accessible name of the composer's persistent model pill. */
+    switchModel: (current: string) => string;
     photoLibrary: string;
     takePhoto: string;
     file: string;
@@ -334,6 +341,8 @@ export interface Translations {
   toolCalls: {
     moreSteps: (count: number) => string;
     lessSteps: string;
+    executedSteps: (count: number) => string;
+    toolsUsed: (count: number) => string;
     executeCommand: string;
     presentFiles: string;
     needYourHelp: string;

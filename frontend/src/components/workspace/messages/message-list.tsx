@@ -204,6 +204,7 @@ export function MessageList({
   onRegenerateMessage,
   canRegenerate = false,
   onSubmitHumanInput,
+  collapsedSteps = false,
 }: {
   className?: string;
   threadId: string;
@@ -214,6 +215,12 @@ export function MessageList({
   hasMoreHistory?: boolean;
   loadMoreHistory?: () => void;
   isHistoryLoading?: boolean;
+  /**
+   * Mobile-only (T13 / C6): hand `MessageGroup` its collapsed step summary.
+   * Optional, defaulting to the desktop's rendering, so every existing caller
+   * — including both desktop chat pages — renders byte-identically.
+   */
+  collapsedSteps?: boolean;
   onRegenerateMessage?: (
     messageId: string,
     supersededMessageIds: string[],
@@ -827,6 +834,7 @@ export function MessageList({
               <MessageGroup
                 messages={group.messages}
                 isLoading={thread.isLoading}
+                collapsedSteps={collapsedSteps}
                 tokenDebugSteps={tokenDebugSteps.filter((step) =>
                   group.messages.some(
                     (message) => message.id === step.messageId,

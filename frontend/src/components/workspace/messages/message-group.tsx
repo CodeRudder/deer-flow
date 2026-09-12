@@ -48,12 +48,22 @@ export function MessageGroup({
   isLoading = false,
   tokenDebugSteps = [],
   showTokenDebugSummaries = false,
+  collapsedSteps = false,
 }: {
   className?: string;
   messages: Message[];
   isLoading?: boolean;
   tokenDebugSteps?: TokenDebugStep[];
   showTokenDebugSummaries?: boolean;
+  /**
+   * Mobile-only (T13 / `FEATURE_LIST.md` C6): render the tool-call process as a
+   * single "ran N steps · M tools" row that expands into the usual detail,
+   * instead of starting with the panel open. The phone transcript has the
+   * narrow column to spare and the dense panel is what a 390px screen cannot
+   * afford; the desktop keeps the panel exactly as it was, because the default
+   * is `false` and the false branch is the original JSX, untouched.
+   */
+  collapsedSteps?: boolean;
 }) {
   const { t } = useI18n();
   const [showAbove, setShowAbove] = useState(
@@ -277,6 +287,19 @@ export function MessageGroup({
     return null;
   }
 
+  // Mobile: summarise first, detail on tap. Reasoning-only groups have no
+  // tool call to summarise, so they keep the panel below rather than reading
+  // "ran 0 steps · 0 tools".
+  if (collapsedSteps && steps.some((step) => step.type === "toolCall")) {
+    return (
+      <CollapsedSteps
+        className={className}
+        renderStep={renderStep}
+        steps={steps}
+      />
+    );
+  }
+
   return (
     <ChainOfThought
       className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
@@ -391,6 +414,90 @@ export function MessageGroup({
             </ChainOfThoughtContent>
           )}
         </>
+      )}
+    </ChainOfThought>
+  );
+}
+
+/**
+ * Steps whose row is a link rather than a log line: `ToolCall` turns a
+ * `write_file` / `str_replace` step into the mobile artifact screen's entry
+ * point (`select()` + `setOpen(true)` → the page navigates). On the phone that
+ * row is the *only* route to a draft — a draft exists only in the tool call's
+ * arguments, so it is not in `thread.values.artifacts` and the header's "⋯"
+ * menu cannot offer it.
+ */
+const ARTIFACT_STEP_NAMES = new Set(["write_file", "str_replace"]);
+
+/**
+ * Mobile rendering of a step group (T13 / C6, prototype ②'s `.disc` block):
+ * one row — "ran 3 steps · 2 tools" — that expands into the very same steps
+ * the desktop panel paints. The row is a 44px tap target, and the count is the
+ * number of rows the expansion holds (`steps`), so the summary and the detail
+ * can never disagree.
+ *
+ * A group whose steps open an artifact starts expanded: collapsing it would
+ * hide the entry point to the draft screen behind an extra tap, which is a
+ * behaviour the transcript had before this summary existed (T6 / F7-3). The
+ * summary still folds everything on a run that only reads and searches.
+ *
+ * This is only reached when `MessageGroup` is given `collapsedSteps`, which no
+ * desktop caller passes.
+ */
+function CollapsedSteps({
+  className,
+  renderStep,
+  steps,
+}: {
+  className?: string;
+  renderStep: (step: CoTStep) => React.ReactNode[];
+  steps: CoTStep[];
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(() =>
+    steps.some(
+      (step) => step.type === "toolCall" && ARTIFACT_STEP_NAMES.has(step.name),
+    ),
+  );
+  const toolCallCount = steps.filter((step) => step.type === "toolCall").length;
+
+  return (
+    <ChainOfThought
+      className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <Button
+        aria-expanded={open}
+        className="min-h-11 w-full items-start justify-start text-left"
+        data-testid="mobile-collapsed-steps"
+        variant="ghost"
+        onClick={() => setOpen(!open)}
+      >
+        <div className="flex w-full items-center justify-between">
+          <ChainOfThoughtStep
+            className="font-normal"
+            icon={WrenchIcon}
+            label={
+              <span className="opacity-60">
+                {t.toolCalls.executedSteps(steps.length)}
+                {" · "}
+                {t.toolCalls.toolsUsed(toolCallCount)}
+              </span>
+            }
+          />
+          <ChevronUp
+            className={cn(
+              "text-muted-foreground size-4 shrink-0",
+              open ? "" : "rotate-180",
+            )}
+          />
+        </div>
+      </Button>
+      {open && (
+        <ChainOfThoughtContent className="px-4 pb-2">
+          {steps.flatMap(renderStep)}
+        </ChainOfThoughtContent>
       )}
     </ChainOfThought>
   );

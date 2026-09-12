@@ -197,9 +197,11 @@ export const enUS: Translations = {
         icon: SparklesIcon,
       },
     ],
-    // Mobile composer (prototype ②③): the main row keeps only ＋ / input /
-    // send, so the controls that moved into the ＋ panel are labelled here.
+    // Mobile composer (prototype ②③): the main row is ＋ / mode / model /
+    // send — mode and model are persistent pills that open a picker layer.
     composerOptions: "More options",
+    switchMode: (current: string) => `Switch mode (currently ${current})`,
+    switchModel: (current: string) => `Switch model (currently ${current})`,
     photoLibrary: "Photo library",
     takePhoto: "Take photo",
     file: "File",
@@ -406,6 +408,9 @@ export const enUS: Translations = {
   toolCalls: {
     moreSteps: (count: number) => `${count} more step${count === 1 ? "" : "s"}`,
     lessSteps: "Less steps",
+    executedSteps: (count: number) =>
+      `Ran ${count} step${count === 1 ? "" : "s"}`,
+    toolsUsed: (count: number) => `${count} tool${count === 1 ? "" : "s"}`,
     executeCommand: "Execute command",
     presentFiles: "Present files",
     needYourHelp: "Need your help",

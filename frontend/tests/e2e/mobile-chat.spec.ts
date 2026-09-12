@@ -237,23 +237,33 @@ test.describe("Mobile chat composer", () => {
         page.getByTestId(`mobile-composer-sheet-${id}`),
       ).toBeVisible();
     }
-    // 模型 / 模式 / 图片生成模型 / 视频生成模型 / 推理强度 / 计划模式. The first is
-    // the desktop's header picker, the rest are its footer row — all six moved
-    // off the main row, which keeps only ＋ / input / send.
-    for (const id of ["model", "mode", "image", "video", "effort", "plan"]) {
+    // 图片生成模型 / 视频生成模型 / 推理强度 / 计划模式 — the controls the main row
+    // cannot hold. Mode and model used to be rows here too; T16 moved them onto
+    // the main row as pills, and this asserts they are gone rather than merely
+    // hidden, so a half-finished migration fails here.
+    for (const id of ["image", "video", "effort", "plan"]) {
       await expect(
         page.getByTestId(`mobile-composer-sheet-${id}`),
       ).toBeVisible();
     }
+    for (const id of ["model", "mode"]) {
+      await expect(page.getByTestId(`mobile-composer-sheet-${id}`)).toHaveCount(
+        0,
+      );
+    }
 
-    // The row names the model the request will actually carry: nothing is
-    // pinned yet, so it shows the first configured model.
-    await expect(page.getByTestId("mobile-composer-sheet-model")).toContainText(
+    // The pills name what the request will actually carry: nothing is pinned
+    // yet, so the first configured model stands in, and the mode follows that
+    // model's thinking capability (Pro for a thinking model).
+    await expect(page.getByTestId("mobile-composer-model-pill")).toContainText(
       "Mock Model",
+    );
+    await expect(page.getByTestId("mobile-composer-mode-pill")).toContainText(
+      "Pro",
     );
   });
 
-  test("picking a chat model relabels the row and reaches the outgoing request", async ({
+  test("picking a chat model relabels the pill and reaches the outgoing request", async ({
     page,
   }) => {
     mockLangGraphAPI(page, { threads: [] });
@@ -264,22 +274,19 @@ test.describe("Mobile chat composer", () => {
       timeout: 15_000,
     });
 
-    await page.getByTestId("mobile-composer-plus").click();
-    await page.getByTestId("mobile-composer-sheet-model").click();
+    // The pill is the entry point now — no `＋` panel in between.
+    await page.getByTestId("mobile-composer-model-pill").click();
 
-    // The picker is the desktop dialog, portalled above the bottom sheet.
+    // The picker is the desktop dialog, portalled above the composer.
     const dialog = page.getByTestId("mobile-composer-model-mock-model-2");
     await expect(dialog).toBeVisible({ timeout: 10_000 });
     await dialog.click();
 
-    // Selecting closes the dialog and the row reports the new choice.
+    // Selecting closes the dialog and the pill reports the new choice.
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByTestId("mobile-composer-sheet-model")).toContainText(
+    await expect(page.getByTestId("mobile-composer-model-pill")).toContainText(
       "Mock Model 2",
     );
-
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("mobile-composer-sheet")).toHaveCount(0);
 
     await textarea(page).fill("Hello");
     await page.getByTestId("mobile-composer-send").click();
@@ -302,8 +309,7 @@ test.describe("Mobile chat composer", () => {
       timeout: 15_000,
     });
 
-    await page.getByTestId("mobile-composer-plus").click();
-    await page.getByTestId("mobile-composer-sheet-model").click();
+    await page.getByTestId("mobile-composer-model-pill").click();
     await page.getByTestId("mobile-composer-model-category-vision").click();
 
     const visionOption = page.getByTestId(
@@ -317,12 +323,10 @@ test.describe("Mobile chat composer", () => {
     ).toHaveCount(0);
     await visionOption.click();
 
-    // Wait for the dialog to actually unmount before dismissing the sheet: the
-    // closing dialog keeps its dismissable layer mounted for the exit
-    // animation, and that layer swallows the Escape if it arrives first.
+    // Wait for the dialog to actually unmount before typing: it keeps its
+    // dismissable layer mounted for the exit animation, and that layer would
+    // swallow the first click.
     await expect(visionOption).toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("mobile-composer-sheet")).toHaveCount(0);
 
     await textarea(page).fill("Hello");
     await page.getByTestId("mobile-composer-send").click();
@@ -351,7 +355,7 @@ test.describe("Mobile chat composer", () => {
     await expect(thinking).toHaveAttribute("aria-pressed", "false");
   });
 
-  test("picking a mode in the panel reaches the outgoing request", async ({
+  test("picking a mode from the pill reaches the outgoing request", async ({
     page,
   }) => {
     mockLangGraphAPI(page, { threads: [] });
@@ -362,14 +366,13 @@ test.describe("Mobile chat composer", () => {
       timeout: 15_000,
     });
 
-    await page.getByTestId("mobile-composer-plus").click();
-    await page.getByTestId("mobile-composer-sheet-mode").click();
+    await page.getByTestId("mobile-composer-mode-pill").click();
     await page.getByTestId("mobile-composer-mode-thinking").click();
-    // Selecting closes the submenu; the panel itself is dismissed below.
-    await expect(page.getByTestId("mobile-composer-modes")).toHaveCount(0);
-
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("mobile-composer-sheet")).toHaveCount(0);
+    // Selecting closes the layer and the pill relabels in place.
+    await expect(page.getByTestId("mobile-composer-mode-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-composer-mode-pill")).toContainText(
+      "Reasoning",
+    );
 
     await textarea(page).fill("Hello");
     await page.getByTestId("mobile-composer-send").click();

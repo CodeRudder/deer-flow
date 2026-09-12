@@ -1,7 +1,8 @@
 "use client";
 
+import type { Message } from "@langchain/langgraph-sdk";
 import type { ChatStatus } from "ai";
-import { PlusIcon, SparklesIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon, SparklesIcon, XIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -9,6 +10,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ReactNode,
 } from "react";
 import { toast } from "sonner";
 
@@ -25,13 +27,20 @@ import {
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/core/i18n/hooks";
 import { useModels } from "@/core/models/hooks";
+import { ModelProviderLogo } from "@/core/models/logo";
 import { useSkills } from "@/core/skills/hooks";
 import type { AgentThreadContext } from "@/core/threads";
 import { splitUnsupportedUploadFiles } from "@/core/uploads";
 import { cn } from "@/lib/utils";
 
 import { resolveMode, type ComposerMode } from "./composer-mode";
+import {
+  ComposerModeSheet,
+  ComposerModelPicker,
+  MODE_ICONS,
+} from "./composer-pickers";
 import { ComposerSheet } from "./composer-sheet";
+import { useFollowups } from "./use-followups";
 
 /**
  * Per-thread composer settings.
@@ -69,8 +78,68 @@ const MAX_SKILL_SUGGESTIONS = 6;
  */
 const ROW_BUTTON_CLASS = "size-11 shrink-0 rounded-full p-0";
 
+/**
+ * The persistent mode/model pills (T16, prototype ②'s `.crow .pill`).
+ *
+ * The plan asks for a 34px visual inside a ≥44px touch target, which is why the
+ * button is the 44px box and the bordered pill is the span inside it — one
+ * element cannot be both. `max-w-[134px]` and `min-w-0` are the prototype's own
+ * numbers: they are what keeps a long model name (`DeepSeek-v4.1-Flash`) from
+ * pushing the row past 390px, with `truncate` ellipsising whatever is left.
+ */
+const PILL_BUTTON_CLASS = "flex min-h-11 min-w-0 items-center";
+const PILL_CLASS =
+  "border-border bg-card flex min-h-[34px] min-w-0 max-w-[134px] items-center gap-1 rounded-full border px-2.5 text-[12.5px]";
+
+/**
+ * One pill. A plain function rather than a component so it can be handed
+ * straight to `ModelSelectorTrigger asChild`, which clones its child and needs
+ * a real DOM node to clone onto.
+ *
+ * `title` carries the full value: the pill truncates by design, and on a touch
+ * screen a long-press on the title is the only way to read the rest.
+ */
+function composerPill({
+  testId,
+  icon,
+  label,
+  ariaLabel,
+  className,
+  onClick,
+}: {
+  testId: string;
+  icon: ReactNode;
+  label: string;
+  ariaLabel: string;
+  className?: string;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      aria-label={ariaLabel}
+      title={label}
+      onClick={onClick}
+      className={cn(PILL_BUTTON_CLASS, className)}
+    >
+      <span className={PILL_CLASS}>
+        {icon}
+        <span className="truncate">{label}</span>
+        <ChevronDownIcon
+          aria-hidden="true"
+          className="text-muted-foreground size-3 shrink-0"
+        />
+      </span>
+    </button>
+  );
+}
+
 type MobileComposerProps = {
   status?: ChatStatus;
+  threadId: string;
+  /** The live transcript — read by the follow-up request only. */
+  messages: Message[];
   context: ComposerContext;
   disabled?: boolean;
   /** Shown instead of the placeholder while `disabled` (clarification pending). */
@@ -81,16 +150,18 @@ type MobileComposerProps = {
 };
 
 /**
- * Mobile composer (prototype ②): the main row is only ＋ / input / send.
+ * Mobile composer (prototype ②): the main row is ＋ / mode pill / model pill /
+ * send, with the textarea above it.
  *
  * It is built from the same `PromptInput` primitives the desktop `InputBox`
  * uses — the attachment pipeline, the Enter-to-send handling and the
  * submit/stop button all come from `@/components/ai-elements/prompt-input` —
- * but none of the desktop's controls are rendered here. The model picker (a
- * header trigger on the desktop, next to the send button here) and the whole
- * footer row (mode, image/video generation models, reasoning effort) live in
- * the `＋` sheet (`composer-sheet.tsx`), because six controls cannot share one
- * row and still hold the 44px touch floor at 390px.
+ * but none of the desktop's controls are rendered here. Mode and model are the
+ * two pills, showing the values the next request will carry; everything else
+ * the row cannot hold (the image/video generation models, reasoning effort,
+ * plan mode, the four attachments) lives in the `＋` sheet
+ * (`composer-sheet.tsx`), because those controls cannot share one row and
+ * still hold the 44px touch floor at 390px.
  *
  * Requires a `PromptInputProvider` above it, exactly like the desktop page:
  * `useSpecificChatMode()` (called by `useChatPage()`) reads the prompt-input
@@ -98,6 +169,8 @@ type MobileComposerProps = {
  */
 export function MobileComposer({
   status = "ready",
+  threadId,
+  messages,
   context,
   disabled,
   disabledPlaceholder,
@@ -111,8 +184,20 @@ export function MobileComposer({
   const { textInput } = usePromptInputController();
   const attachments = usePromptInputAttachments();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [modeSheetOpen, setModeSheetOpen] = useState(false);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const {
+    followups: followupSuggestions,
+    loading: followupsLoading,
+    visible: followupsVisible,
+    dismiss: dismissFollowups,
+  } = useFollowups({
+    threadId,
+    messages,
+    isStreaming: status === "streaming",
+    disabled: disabled ?? false,
+  });
 
   const selectedModel = useMemo(
     () =>
@@ -123,6 +208,22 @@ export function MobileComposer({
   const supportReasoningEffort =
     selectedModel?.supports_reasoning_effort ?? false;
   const resolvedMode = resolveMode(context.mode, supportThinking);
+
+  // What the two pills label themselves with. Both show the values the request
+  // will carry rather than the raw context: an unpinned model resolves to the
+  // first configured one (the effect above pins that too), and an unpinned mode
+  // to `resolvedMode`. A missing model list falls back to the generic label so
+  // the row never renders an empty pill.
+  const ModeIcon = MODE_ICONS[resolvedMode];
+  const modeLabels = {
+    flash: t.inputBox.flashMode,
+    thinking: t.inputBox.reasoningMode,
+    pro: t.inputBox.proMode,
+    ultra: t.inputBox.ultraMode,
+  } satisfies Record<ComposerMode, string>;
+  const modeLabel = modeLabels[resolvedMode];
+  const modelLabel =
+    selectedModel?.display_name ?? selectedModel?.name ?? t.inputBox.model;
 
   // Pin the resolved default the way the desktop input box does: no pinned
   // model means "the first configured model stands in", and the mode follows
@@ -222,6 +323,27 @@ export function MobileComposer({
   }, [skills, slashQuery]);
   const showSkillSuggestions = !disabled && skillSuggestions.length > 0;
 
+  /**
+   * A tapped chip fills the composer; it deliberately does not send.
+   *
+   * The desktop submits straight away when its box is empty and asks
+   * append/replace in a dialog otherwise (`input-box.tsx`
+   * `handleFollowupClick`). Neither half survives the translation: a phone has
+   * no dialog here, and an accidental send is worse on a tap interface than one
+   * extra tap on the send button — so the chip only carries the text across,
+   * and the row gets out of the way.
+   */
+  const handleFollowupClick = useCallback(
+    (suggestion: string) => {
+      if (status === "streaming") {
+        return;
+      }
+      textInput.setInput(suggestion);
+      dismissFollowups();
+    },
+    [dismissFollowups, status, textInput],
+  );
+
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
       // The send button doubles as stop while a run streams (same contract as
@@ -289,6 +411,48 @@ export function MobileComposer({
         </div>
       )}
 
+      {/* Follow-up chips (C10). The row scrolls sideways rather than wrapping
+          (prototype ②'s `.chips` / `.chip`): five suggestions at 390px would
+          otherwise stack into four or five lines and push the transcript off
+          the screen. */}
+      {followupsVisible && !showSkillSuggestions && (
+        <div
+          data-testid="mobile-followups"
+          className="mb-1.5 flex items-center gap-1"
+        >
+          <div
+            data-testid="mobile-followups-row"
+            className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-0.5"
+          >
+            {followupsLoading ? (
+              <span className="text-muted-foreground bg-background/80 shrink-0 rounded-full border px-3.5 py-1.5 text-xs">
+                {t.inputBox.followupLoading}
+              </span>
+            ) : (
+              followupSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="border-border bg-card active:bg-accent flex min-h-11 shrink-0 items-center rounded-full border px-3.5 text-sm whitespace-nowrap"
+                  onClick={() => handleFollowupClick(suggestion)}
+                >
+                  {suggestion}
+                </button>
+              ))
+            )}
+          </div>
+          <button
+            type="button"
+            aria-label={t.common.close}
+            data-testid="mobile-followups-dismiss"
+            className="text-muted-foreground active:bg-accent flex size-11 shrink-0 items-center justify-center rounded-full"
+            onClick={dismissFollowups}
+          >
+            <XIcon aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+      )}
+
       <PromptInput
         className={cn(
           "bg-background/85 rounded-2xl backdrop-blur-sm *:data-[slot='input-group']:rounded-2xl",
@@ -337,7 +501,10 @@ export function MobileComposer({
           }
         />
         <PromptInputFooter className="gap-2">
-          <PromptInputTools>
+          {/* `min-w-0 flex-1`: the pills must be free to shrink, otherwise a
+              long model name would push the send button off a 360px screen
+              instead of ellipsising inside its own pill. */}
+          <PromptInputTools className="min-w-0 flex-1">
             <Button
               type="button"
               variant="ghost"
@@ -348,6 +515,42 @@ export function MobileComposer({
             >
               <PlusIcon aria-hidden="true" className="size-5" />
             </Button>
+            {/* Mode first, model second — the prototype's order, and the order
+                of dependence: picking a model can re-resolve the mode. */}
+            {composerPill({
+              testId: "mobile-composer-mode-pill",
+              icon: (
+                <ModeIcon
+                  aria-hidden="true"
+                  className={cn(
+                    "text-muted-foreground size-3.5 shrink-0",
+                    resolvedMode === "ultra" && "text-[#dabb5e]",
+                  )}
+                />
+              ),
+              label: modeLabel,
+              ariaLabel: t.inputBox.switchMode(modeLabel),
+              className: "shrink-0",
+              onClick: () => setModeSheetOpen(true),
+            })}
+            <ComposerModelPicker
+              context={{ ...context, mode: resolvedMode }}
+              onContextChange={onContextChange}
+              trigger={composerPill({
+                testId: "mobile-composer-model-pill",
+                icon: (
+                  <ModelProviderLogo
+                    className="size-3.5 shrink-0"
+                    displayName={selectedModel?.display_name}
+                    name={[selectedModel?.name, selectedModel?.model]
+                      .filter(Boolean)
+                      .join(" ")}
+                  />
+                ),
+                label: modelLabel,
+                ariaLabel: t.inputBox.switchModel(modelLabel),
+              })}
+            />
           </PromptInputTools>
           <PromptInputTools>
             <PromptInputSubmit
@@ -368,7 +571,7 @@ export function MobileComposer({
       <ComposerSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        context={{ ...context, mode: context.mode ?? resolvedMode }}
+        context={{ ...context, mode: resolvedMode }}
         onContextChange={onContextChange}
         supportThinking={supportThinking}
         supportReasoningEffort={supportReasoningEffort}
@@ -378,6 +581,14 @@ export function MobileComposer({
         onPickFile={() => attachments.openFileDialog()}
         onPickPhotoLibrary={() => galleryInputRef.current?.click()}
         onPickCamera={() => cameraInputRef.current?.click()}
+      />
+
+      <ComposerModeSheet
+        open={modeSheetOpen}
+        onOpenChange={setModeSheetOpen}
+        context={{ ...context, mode: resolvedMode }}
+        onContextChange={onContextChange}
+        supportThinking={supportThinking}
       />
 
       <input

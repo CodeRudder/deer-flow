@@ -188,8 +188,11 @@ export const zhCN: Translations = {
         icon: SparklesIcon,
       },
     ],
-    // 移动端输入区（原型 ②③）：主行只留「＋ / 输入 / 发送」，其余控件的标签。
+    // 移动端输入区（原型 ②③）：主行「＋ / 模式 / 模型 / 发送」，
+    // 模式与模型是常驻 pill，点击后弹出选择层。
     composerOptions: "更多选项",
+    switchMode: (current: string) => `切换模式（当前：${current}）`,
+    switchModel: (current: string) => `切换模型（当前：${current}）`,
     photoLibrary: "相册",
     takePhoto: "拍照",
     file: "文件",
@@ -386,6 +389,8 @@ export const zhCN: Translations = {
   toolCalls: {
     moreSteps: (count: number) => `查看其他 ${count} 个步骤`,
     lessSteps: "隐藏步骤",
+    executedSteps: (count: number) => `执行了 ${count} 步`,
+    toolsUsed: (count: number) => `${count} 个工具`,
     executeCommand: "执行命令",
     presentFiles: "展示文件",
     needYourHelp: "需要你的协助",
