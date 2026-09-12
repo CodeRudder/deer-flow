@@ -23,6 +23,36 @@
       当前目录加进 sys.path，但 uv run 会先切一层自己的运行上下文，不能指望它。
       显式设置是唯一稳妥的做法。
 
+    · Gateway 必须显式设 DEER_FLOW_HOME=<root>\data（以及 DEER_FLOW_PROJECT_ROOT）
+      这不是冗余，是唯一能保证 base_dir 稳定的手段。DeerFlow 解析运行时状态目录
+      （凭据文件、memory.json、users\、agents\）的链路是这样的：
+
+        get_paths().base_dir → runtime_home() → os.getenv("DEER_FLOW_HOME")
+                                              ↘ 缺失时 project_root()/.deer-flow
+
+      其中「缺失时」那一支非常危险，因为它取决于 cwd：
+
+        · project_root() 读 DEER_FLOW_PROJECT_ROOT，缺失时回落到 Path.cwd()
+        · 而 DEER_FLOW_HOME 本身可能来自 app_config.py 顶层那次 load_dotenv()，
+          它对 .env 的查找是从 cwd 向上逐级找 —— 从部署根 D:\deer-flow 启动时
+          根本够不到 src\.env（向上找只会上溯到 D:\），于是变量「缺失」，
+          base_dir 静默落到 <root>\.deer-flow
+
+      实测（目标机，逐 cwd 取 get_paths().base_dir）：
+
+        cwd=src\backend                -> D:\deer-flow\data          ✓
+        cwd=src                        -> D:\deer-flow\data          ✓
+        cwd=D:\deer-flow（部署根）      -> D:\deer-flow\.deer-flow    ✗ 静默错位
+
+      错位的后果不是报错而是「脑裂」：config.yaml 仍把 SQLite 指向 data\，
+      但凭据/记忆/用户数据会写到 .deer-flow\，两处状态各走各的，很难排查。
+      显式设死 DEER_FLOW_HOME 后 base_dir 与 cwd 和 dotenv 发现彻底无关
+      —— 实测从 D:\deer-flow 与 src\backend 启动，结果都稳定为 data\。
+
+      注意：本脚本的 Gateway 命令行里有 cd /d <src>\backend，所以即使不设也
+      「碰巧」是对的；但那是巧合而非保证（换启动器、换 cwd、换调用方就失效）。
+      新机器上还可能残留用户级 DEER_FLOW_HOME，显式设置同时消除这一依赖。
+
     · Gateway 绑定 0.0.0.0 是有意为之
       内网其它机器要直接访问 8001，改成 127.0.0.1 会让这些调用全部连接失败。
 
@@ -156,6 +186,7 @@ Add-ToolchainToPath
 
 $rootDir     = Get-DeerFlowRoot
 $srcDir      = Get-DeerFlowSrcDir
+$dataDir     = Get-DeerFlowDataDir
 $logsDir     = Get-DeerFlowLogsDir
 $toolsDir    = Get-DeerFlowToolsDir
 $backendDir  = Join-Path $srcDir 'backend'
@@ -665,7 +696,13 @@ Ensure-DeerFlowFirewall -Ports @($frontendPort, $gatewayPort)
 Write-Step "启动 Gateway (端口 $gatewayPort)"
 
 # PYTHONPATH 见文件头说明；PYTHONUNBUFFERED / PYTHONUTF8 让日志能实时落盘且中文不乱码。
+#
+# DEER_FLOW_HOME 必须在这里显式钉死，不能只依赖 .env —— 原因见下方「路径解析」
+# 一段：base_dir 的解析路径里有一环是 cwd 相关的，.env 是否被找到取决于进程
+# 启动时的工作目录。这里显式设死，base_dir 就与 cwd 和 dotenv 发现彻底无关。
 $gatewayInner = 'set "PYTHONPATH=' + $backendDir + '"' +
+                '&& set "DEER_FLOW_HOME=' + $dataDir + '"' +
+                '&& set "DEER_FLOW_PROJECT_ROOT=' + $srcDir + '"' +
                 '&& set "PYTHONUNBUFFERED=1"' +
                 '&& set "PYTHONUTF8=1"' +
                 '&& set "PATH=' + $nodeDir + ';' + $uvDir + ';%PATH%"' +

@@ -32,16 +32,22 @@
     几个不显然的决策，写在这里避免日后被「顺手改回去」：
 
     · 凭据文件路径必须问 Python 要，不能按「数据目录」拼
-      凭据文件落在 base_dir（= DEER_FLOW_HOME 或 project_root/.deer-flow），
-      而 base_dir 与 config.yaml 里 database.sqlite_dir 指向的数据目录**不是
-      同一回事**：实测目标机上用户级环境变量 DEER_FLOW_HOME=D:\deer-flow，
-      而 sqlite_dir 是 D:\deer-flow\data，于是凭据文件落在 D:\deer-flow\ 下、
-      不在 data\ 里。更麻烦的是 .env 里的 DEER_FLOW_HOME 对 uv run 起的
-      Python 进程并不生效（实测该进程里 DEER_FLOW_PROJECT_ROOT 为空，
-      说明 .env 根本没被加载），所以任何在 PowerShell 里「照着 .env 算一遍」
-      的做法都会算错。唯一可靠的做法是让 Python 自己说出 get_paths().base_dir
-      —— 本脚本用同一个引导程序（base-dir 子命令）取这个值，保证与 CLI 的
-      解析结果完全一致。
+      凭据文件落在 base_dir（= os.getenv('DEER_FLOW_HOME')，缺失时
+      project_root()/.deer-flow），而 base_dir 与 config.yaml 里
+      database.sqlite_dir 指向的数据目录**不是同一回事**：实测目标机上一度因
+      用户级环境变量 DEER_FLOW_HOME=D:\deer-flow 而 sqlite_dir=D:\deer-flow\data，
+      于是凭据文件落在 D:\deer-flow\ 下、不在 data\ 里。
+
+      这个值在 PowerShell 里是算不准的，因为它有一条 cwd 相关的分支：
+      DEER_FLOW_HOME 可能来自 app_config.py 顶层的 load_dotenv()，而那次查找
+      是从 cwd 逐级向上搜 .env。实测同一条命令换 cwd 结果就变
+      （cwd=src\backend→data\，cwd=D:\deer-flow→.deer-flow\）。本脚本恰好
+      在 src\backend 下调用，所以碰巧正确 —— 但「碰巧」不能作为依据。
+
+      唯一可靠的做法是让 Python 自己说出 get_paths().base_dir ——
+      本脚本用同一个引导程序（base-dir 子命令）取这个值，与 CLI 的解析结果
+      完全一致。另外服务侧的 start.ps1 已显式 set DEER_FLOW_HOME，使
+      Gateway 进程的 base_dir 与 cwd 无关；本脚本因此与之对齐。
 
     · 必须显式设 PYTHONPATH=<src>\backend
       CLI 的模块路径是 app.gateway.auth.reset_admin，而 app 包在 src\backend。

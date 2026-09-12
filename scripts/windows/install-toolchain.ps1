@@ -493,12 +493,19 @@ Set-UserEnv -Name 'NPM_CONFIG_REGISTRY' -Value $NpmRegistry
 
 # 注意：这里**不设置** DEER_FLOW_HOME。
 #
-# 用户级环境变量优先于项目 .env（uv run 起的进程读用户级），所以若在此处把它
-# 设成 $RootDir，会覆盖 init-config.ps1 写进 .env 的 data 目录，导致运行时状态
-# （SQLite、管理员的 admin_initial_credentials.txt）落到部署根而非 data\。
-# 实测踩过：admin-init.ps1 因此报「base_dir 与数据目录不同」的警告。
+# 曾经把它设成 $RootDir，结果运行时状态（SQLite、admin_initial_credentials.txt）
+# 落到部署根而非 data\，实测踩过（admin-init.ps1 报「base_dir 与数据目录不同」）。
 #
-# DEER_FLOW_HOME 的唯一权威来源是 .env，由 init-config.ps1 生成。
+# ⚠ 但**不要**由此得出「.env 是权威来源」的结论 —— .env 是靠不住的：
+#   base_dir 取自 os.getenv('DEER_FLOW_HOME')，而它能被读到只是因为
+#   app_config.py 顶层有一次 load_dotenv()，那次查找是从 cwd 向上找 .env。
+#   从部署根 D:\deer-flow 启动时够不到 src\.env，变量就「缺失」，base_dir 会
+#   静默回落到 <root>\.deer-flow（实测：cwd=src\backend→data\ ✓，
+#   cwd=D:\deer-flow→.deer-flow ✗）。
+#
+# 所以这里既不该设、也不能指望 .env 兜底。真正的权威在**服务启动处**：
+# start.ps1 会在 Gateway 命令行里显式 set DEER_FLOW_HOME=<root>\data，
+# 使 base_dir 与 cwd 无关。排查路径问题时先看那里。
 Set-UserEnv -Name 'NPM_CONFIG_CACHE' -Value (Join-Path $cacheDir 'npm')
 Set-UserEnv -Name 'UV_CACHE_DIR' -Value (Join-Path $cacheDir 'uv')
 # uv 自带的 Python 也放到数据盘，避免占满系统盘

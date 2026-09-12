@@ -175,9 +175,10 @@ Test-Path D:\deer-flow\src\frontend\package.json  # 必须 True
 > 直接敲 `node` 会用旧版。工具链脚本把所有部署脚本都做了进程级 PATH 前置，
 > 所以**走脚本没问题**；手工敲命令验证时请用上面的完整路径。
 >
-> ℹ️ `DEER_FLOW_HOME` 的**唯一权威来源是 `src\.env`**（由 `init-config.ps1` 生成）。
-> 工具链脚本刻意不设置这个变量 —— 用户级环境变量会覆盖 `.env`，一旦设错，
-> SQLite 与管理员凭据文件会落到部署根而不是 `data\`，排查起来非常隐蔽。
+> ℹ️ `DEER_FLOW_HOME` 由 **`start.ps1` 在 Gateway 启动命令行里显式钉死**为
+> `<root>\data`（`src\.env` 里也有一份，但 `.env` 的发现依赖 cwd，不能作为唯一依据）。
+> 工具链脚本刻意不设置该变量。一旦它指向别处，SQLite 与管理员凭据文件会落到
+> 非预期目录，排查起来非常隐蔽 —— 详见「路径与配置」一节。
 
 ---
 
@@ -475,8 +476,12 @@ D:\deer-flow\logs\install-build.log
 > （脚本会打印它解析到的 `base_dir`，实测为 `D:\deer-flow\data`）。
 > 如果发现 `D:\deer-flow\admin_initial_credentials.txt`（部署根下、不在 `data\` 里），
 > 那是早期版本遗留的旧文件：早期 `install-toolchain.ps1` 会把 `DEER_FLOW_HOME` 设成部署根，
-> 覆盖了 `.env` 的配置，导致运行状态落到部署根。**该问题已修复**（工具链脚本不再设置
-> `DEER_FLOW_HOME`，唯一权威来源是 `.env`），确认没有新文件产生后即可删除旧文件。
+> 导致运行状态落到部署根。**该问题已修复**（工具链脚本不再设置 `DEER_FLOW_HOME`，
+> 改由 `start.ps1` 显式钉死为 `data\`）。
+>
+> ⚠️ 删除旧文件前，先确认它的密码**已失效**（拿它登录应返回
+> `401 invalid_credentials`），且当前有效密码在 `data\` 那份里（登录返回 `200`）。
+> 两份文件的密码通常不同，不能只看文件名就删。
 
 ---
 
@@ -680,32 +685,57 @@ journal_mode      = wal
 | `UV_CACHE_DIR` | `D:\deer-flow\cache\uv` | 用户级环境变量 | 避开 C 盘 |
 | `UV_PYTHON_INSTALL_DIR` | `D:\deer-flow\cache\uv-python` | 用户级环境变量 | 避开 C 盘 |
 
-**`DEER_FLOW_HOME` 的唯一权威来源是 `src\.env`。**
+**`DEER_FLOW_HOME` 的权威来源是服务启动处，不是 `.env`。**
 
-- `install-toolchain.ps1` **刻意不设置**这个变量（脚本里有明确注释说明原因）。
-  它早期版本会把 `DEER_FLOW_HOME` 设成部署根，而用户级环境变量**优先于项目 `.env`**，
-  于是运行状态（SQLite、`admin_initial_credentials.txt`）落到部署根而不是 `data\`。
-  现在已修复，不要再「顺手加回去」。
-- **也不要在用户级 / 系统级环境变量里手工设置它**。同理，一旦指向别处，数据与凭据会落到
-  非预期目录，表现为「数据库突然空了」或「审批记录不见了」。
-- 实测证据：`.env` 里 `DEER_FLOW_HOME=D:\deer-flow\data`，`admin-init.ps1` 解析出的
-  `base_dir` 就是 `D:\deer-flow\data`，凭据文件也落在这一致的位置。
-- **旧机器需要手工清理一次**。修复脚本只能保证「以后不再设置」，**不会**删掉已经被写进
-  用户级环境变量的值。若某台机器的部署早于这次修复，请检查并清掉：
+> ⚠️ **本节曾写成「唯一权威来源是 `src\.env`」，那是错的，已更正。**
+> 早期版本还建议运维**删除**用户级的 `DEER_FLOW_HOME` —— **千万不要照做**，
+> 那个变量是承重的，删掉才会真的把数据写错地方。原因见下。
 
-```powershell
-# 检查（User 级有值就是旧脚本留下的）
-[Environment]::GetEnvironmentVariable('DEER_FLOW_HOME','User')
+`base_dir`（凭据文件、`memory.json`、`users\`、`agents\` 的落脚点）解析链路：
 
-# 清掉，让 .env 成为唯一来源
-[Environment]::SetEnvironmentVariable('DEER_FLOW_HOME', $null, 'User')
+```
+get_paths().base_dir → runtime_home() → os.getenv("DEER_FLOW_HOME")
+                                      ↘ 缺失时 project_root() / ".deer-flow"
 ```
 
-  目标机当前状态：`DEER_FLOW_HOME` 的 User 级值为 `D:\deer-flow\data`，**恰好与 `.env` 一致**，
-  所以眼下没有实际影响 —— 但它仍然是「用户级变量遮蔽 `.env`」的结构性问题：
-  日后改 `.env` 里的 `DEER_FLOW_HOME` 会发现不生效。建议按上面的命令清掉。
+关键在于「缺失时」那一支**依赖 cwd**：`DEER_FLOW_HOME` 可能来自 `app_config.py`
+顶层的 `load_dotenv()`，而 dotenv 是**从 cwd 逐级向上**找 `.env` 的。
+从部署根启动时够不到 `src\.env`（向上只上溯到 `D:\`），变量就「缺失」，
+`base_dir` 静默落到 `<root>\.deer-flow`。实测：
 
-- ⚠️ 清掉后**必须新开一个 PowerShell 会话**，或重启服务，环境变量才会重新加载。
+| cwd | `base_dir` | |
+|---|---|---|
+| `src\backend` | `D:\deer-flow\data` | ✓ |
+| `src` | `D:\deer-flow\data` | ✓ |
+| `D:\deer-flow`（部署根） | `D:\deer-flow\.deer-flow` | ✗ **静默错位** |
+
+错位不报错，而是**脑裂**：`config.yaml` 仍把 SQLite 指向 `data\`，
+凭据/记忆/用户数据却写到 `.deer-flow\`。
+
+因此：
+
+- `install-toolchain.ps1` **刻意不设置**这个变量。它早期版本会把 `DEER_FLOW_HOME`
+  设成部署根，导致状态落到部署根而非 `data\`。已修复，不要再「顺手加回去」。
+- **`start.ps1` 会在 Gateway 启动命令行里显式 `set DEER_FLOW_HOME=<root>\data`**
+  （同时设 `DEER_FLOW_PROJECT_ROOT`）。这是让 `base_dir` 与 cwd 无关的保证，
+  **不要删掉这两行**。Gateway 因此不受 cwd 与用户级变量影响。
+- **用户级 `DEER_FLOW_HOME` 保留即可，不要删除。** 目标机当前 User 级值为
+  `D:\deer-flow\data`，与 `data\` 一致，是**有意设置**的锚点 —— 它正是让
+  `base_dir` 变成 cwd 无关的那个变量。删掉后，任何从部署根启动的进程都会写错目录。
+  （加固后 Gateway 已自行钉死该值，故它不再是唯一依赖；但其它调用方仍受 cwd 影响。）
+- 若该变量**指向别处**（例如被手工改成部署根），那才是问题 —— 会表现为
+  「数据库突然空了」「审批记录不见了」。正确做法是**改成 `D:\deer-flow\data`**，
+  而不是删掉：
+
+```powershell
+# 检查当前值
+[Environment]::GetEnvironmentVariable('DEER_FLOW_HOME','User')
+
+# 仅当它不等于 <root>\data 时才需要改（正常部署下无需执行）
+[Environment]::SetEnvironmentVariable('DEER_FLOW_HOME','D:\deer-flow\data','User')
+```
+
+- ⚠️ 改完**必须新开一个 PowerShell 会话**，或重启服务，环境变量才会重新加载。
 
 - `DEER_FLOW_*` / `BETTER_AUTH_*` 与其它被 `config.yaml` 以 `$VAR` 引用的变量不同：
   **前者缺失时后端会显式报错**（不会被补成空值），因为缺了它们系统根本无法安全工作。

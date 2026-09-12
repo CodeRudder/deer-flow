@@ -198,6 +198,46 @@ if env_value is None:
 要求 **`application/x-www-form-urlencoded`** 而非 JSON，字段名是 `username` 而非 `email`。
 用 JSON 会得到误导性的 `422 字段缺失`。
 
+**12. `base_dir` 解析依赖 cwd，会静默错位（收尾复核时发现，已加固）**
+
+DeerFlow 运行时状态目录（凭据文件、`memory.json`、`users\`、`agents\`）由
+`get_paths().base_dir` 决定，链路是：
+
+```
+get_paths().base_dir → runtime_home() → os.getenv("DEER_FLOW_HOME")
+                                      ↘ 缺失时 project_root() / ".deer-flow"
+```
+
+问题出在「缺失时」那一支：`DEER_FLOW_HOME` 本身可能来自 `app_config.py` 顶层那次
+`load_dotenv()`，而 dotenv 是**从 cwd 逐级向上**找 `.env` 的。从部署根启动时够不到
+`src\.env`（向上只上溯到 `D:\`），变量就「缺失」，`base_dir` 静默落到 `<root>\.deer-flow`。
+
+实测（目标机，逐 cwd 取 `get_paths().base_dir`）：
+
+| cwd | 结果 | |
+|---|---|---|
+| `src\backend` | `D:\deer-flow\data` | ✓ |
+| `src` | `D:\deer-flow\data` | ✓ |
+| `D:\deer-flow`（部署根） | `D:\deer-flow\.deer-flow` | ✗ **静默错位** |
+
+错位的后果不是报错而是**脑裂**：`config.yaml` 仍把 SQLite 指向 `data\`，
+但凭据/记忆/用户数据写到 `.deer-flow\`，两处状态各走各的。
+
+原有脚本之所以没暴露这个问题，是因为它们**碰巧**都 `cd` 到了 `src\backend`
+（`start.ps1` 的启动命令行、`admin-init.ps1` 的 `Invoke-UvCommand`）——
+是巧合而非保证：换启动器、换 cwd、换调用方就失效。
+
+**修复**：`start.ps1` 在 Gateway 启动命令行里显式
+`set DEER_FLOW_HOME=<root>\data` 与 `set DEER_FLOW_PROJECT_ROOT=<src>`，
+使 `base_dir` 与 cwd、dotenv 发现彻底无关。实测重启后从
+`D:\deer-flow` 与 `src\backend` 启动结果都稳定为 `data\`。
+（用 `Get-CimInstance Win32_Process` 确认 `cmd.exe` 包装进程命令行确实携带该变量，
+uvicorn 子进程继承之。）
+
+同时修正了两处**互相矛盾**的注释：`install-toolchain.ps1` 原写「`.env` 是唯一权威来源」，
+`admin-init.ps1` 原写「`.env` 根本没被加载」——两句都不准确（真相是「取决于 cwd」），
+已按上面的机制改写，避免后来者照着错误前提「顺手改回去」。
+
 ---
 
 ## 五、目标机最终状态
@@ -243,9 +283,11 @@ D:\deer-flow\
 
 ```
 邮箱: admin@sz-jlc.com
-凭据: D:\deer-flow\data\admin_initial_credentials.txt (243 字节)
+凭据: D:\deer-flow\data\admin_initial_credentials.txt (243 字节)  ← 生效的那份
 状态: needs_setup=True（首次登录后前端会引导到 /setup 设置新密码）
 ```
+
+> 部署根下另有一份同名的历史孤儿文件（密码已失效），见第六节「一个孤立的凭据文件」。
 
 ---
 
@@ -271,14 +313,40 @@ D:\deer-flow\
 6. **`Get-AllLanCandidates` 在三处重复** —— `start.ps1` / `deploy.ps1` / 模块私有函数。
    未重构（避免动已验证的脚本），可作为后续改进。
 
-### 一个残留问题
+### ⚠ 不要删除目标机的 `DEER_FLOW_HOME` 用户级环境变量
 
-目标机用户级环境变量仍有 `DEER_FLOW_HOME=D:\deer-flow\data`（早期脚本留下）。
-当前值与 `.env` 一致，**无实际影响**，但它是 `.env` 的结构性影子。
-清理命令（需新开会话生效）：
+目标机用户级环境变量存在 `DEER_FLOW_HOME=D:\deer-flow\data`。
+
+**初版报告建议删除它，这是错的 —— 该变量是承重的，删掉会破坏部署。**
+原因见第四节「缺陷 12」：`base_dir` 的解析有一支依赖 cwd，而这个变量正是让
+`base_dir` 变成 cwd 无关的那个锚点。删掉后，任何从部署根启动的进程都会把运行时状态
+写到 `D:\deer-flow\.deer-flow\` 而非 `data\`。
+
+它由脚本创建、与 `.env` 取值一致，属**有意设置**，保留即可。
+
+（加固后 `start.ps1` 已自行钉死该变量，因此即便它哪天丢了，Gateway 也不会错位；
+但其它调用方仍会受 cwd 影响，故不建议移除。）
+
+### 一个孤立的凭据文件
+
+`D:\deer-flow\admin_initial_credentials.txt` 是 `DEER_FLOW_HOME=D:\deer-flow`
+时期（缺陷 3，03:45）留下的孤儿，与当前生效的
+`D:\deer-flow\data\admin_initial_credentials.txt` 不是同一份，**密码也不同**。
+
+已实测确认孤儿文件里的密码**已失效**（登录返回 `401 invalid_credentials`），
+当前有效密码只存在于 `data\` 那份（登录返回 `200`）。因此它不构成凭据泄露，
+但仍是部署根下一个含历史明文密码的文件，建议删除：
+
 ```powershell
-[Environment]::SetEnvironmentVariable('DEER_FLOW_HOME', $null, 'User')
+Remove-Item D:\deer-flow\admin_initial_credentials.txt
 ```
+
+> 顺带记一个排查体感：确认「哪份凭据有效」时踩了两次空 ——
+> 登录路由是 `/api/v1/auth/login/local`（`auth.router` 的
+> `prefix="/api/v1/auth"`），先当作 `/api/auth/login` 和 `/api/auth/login/local`
+> 试都返回 `401 not_authenticated`（中间件拦的，不是密码错）。
+> 两者报错码不同：路由不存在 → `not_authenticated`；密码错 → `invalid_credentials`。
+> 另外该端点有 **5 次/5 分钟** 的 IP 锁定，试密码前先确认路由是对的。
 
 ---
 
