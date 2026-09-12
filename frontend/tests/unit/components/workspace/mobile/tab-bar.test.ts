@@ -83,33 +83,13 @@ describe("isTabActive", () => {
   });
 });
 
+/**
+ * The bar is rendered from `app/m/(app)/layout.tsx`, so the signed-out screens
+ * never reach it — "no bar on sign-in" is route-group structure, not a pathname
+ * test. The only screen that still hides it by path is the full-screen artifact
+ * view.
+ */
 describe("shouldHideMobileTabBar", () => {
-  test("hides the bar on the signed-out screens", () => {
-    expect(shouldHideMobileTabBar("/m/login")).toBe(true);
-    expect(shouldHideMobileTabBar("/m/setup")).toBe(true);
-    expect(shouldHideMobileTabBar("/m/auth/callback")).toBe(true);
-  });
-
-  test("hides it on the pre-rewrite paths the auth screens report", () => {
-    // A phone reaching /login has its URL rewritten, but usePathname() still
-    // reports the public path.
-    expect(shouldHideMobileTabBar("/login")).toBe(true);
-    expect(shouldHideMobileTabBar("/setup")).toBe(true);
-    expect(shouldHideMobileTabBar("/auth/callback")).toBe(true);
-  });
-
-  test("keeps the bar on workspace screens", () => {
-    expect(shouldHideMobileTabBar("/m/workspace")).toBe(false);
-    expect(shouldHideMobileTabBar("/workspace/chats/abc")).toBe(false);
-    expect(shouldHideMobileTabBar("/m/agents")).toBe(false);
-    expect(shouldHideMobileTabBar("/m/settings/profile")).toBe(false);
-  });
-
-  test("does not hide on a path that merely shares a prefix", () => {
-    expect(shouldHideMobileTabBar("/m/loginfo")).toBe(false);
-    expect(shouldHideMobileTabBar("/m/setup-wizard")).toBe(false);
-  });
-
   test("hides it on the full-screen artifact view (T6)", () => {
     // The artifact screen owns the bottom edge: it has an action bar and
     // carries the safe-area inset, so a tab bar underneath would stack two
@@ -127,7 +107,7 @@ describe("shouldHideMobileTabBar", () => {
     ).toBe(true);
   });
 
-  test("still keeps the bar on the chat screen and the thread list", () => {
+  test("keeps the bar on every other signed-in screen", () => {
     // The pattern matches the artifact segment only — a `startsWith` on the
     // chat path would take the chat screen's bar away with it.
     expect(shouldHideMobileTabBar(`/m/workspace/chats/${THREAD_ID}`)).toBe(
@@ -135,6 +115,20 @@ describe("shouldHideMobileTabBar", () => {
     );
     expect(shouldHideMobileTabBar("/m/workspace/chats/new")).toBe(false);
     expect(shouldHideMobileTabBar("/m/workspace")).toBe(false);
+    expect(shouldHideMobileTabBar("/workspace/chats/abc")).toBe(false);
+    expect(shouldHideMobileTabBar("/m/agents")).toBe(false);
+    expect(shouldHideMobileTabBar("/m/settings/profile")).toBe(false);
+  });
+
+  test("does not hide on a path that merely shares a prefix", () => {
+    expect(shouldHideMobileTabBar(`/m/workspace/chats/${THREAD_ID}/artifact`)).toBe(
+      false,
+    );
+    expect(
+      shouldHideMobileTabBar(
+        `/m/workspace/chats/${THREAD_ID}/xartifacts/a.html`,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -173,12 +167,9 @@ describe("MobileTabBar rendering", () => {
     }
   });
 
-  test("renders nothing on the signed-out screens", () => {
-    for (const pathname of ["/login", "/setup", "/auth/callback"]) {
-      mockPathname.current = pathname;
-      const { container } = render(createElement(MobileTabBar));
-      expect(container.querySelector("nav")).toBeNull();
-      cleanup();
-    }
+  test("renders nothing on the full-screen artifact view", () => {
+    mockPathname.current = `/workspace/chats/${THREAD_ID}/artifacts/${ENCODED_ARTIFACT}`;
+    const { container } = render(createElement(MobileTabBar));
+    expect(container.querySelector("nav")).toBeNull();
   });
 });

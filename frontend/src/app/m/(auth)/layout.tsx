@@ -69,10 +69,11 @@ export default async function MobileAuthLayout({
 /**
  * Full-height column shared by the three auth screens (prototype ⑧).
  *
- * `min-h-full` rather than a viewport unit on purpose: the parent `main` in
- * `app/m/layout.tsx` is already sized by `100dvh`, and the tab bar hides itself
- * on these routes, so "fill the parent" is exactly the visible height — while
- * still tracking the address-bar collapse that `100dvh` exists to handle.
+ * Supplies its own scrolling `<main>`: `app/m/layout.tsx` stopped providing one
+ * when the tab bar moved into `(app)`, and this branch is the one that must not
+ * have one — the bar is what normally owns the bottom of the screen. The inner
+ * `min-h-full` rather than a viewport unit keeps "fill the visible height"
+ * tracking the address-bar collapse that the root `100dvh` exists to handle.
  *
  * Both safe-area insets are owned here: the tab bar normally carries the bottom
  * one, and these are the only mobile routes without it.
@@ -85,16 +86,18 @@ function MobileAuthScreen({
   notice?: string;
 }) {
   return (
-    <div className="flex min-h-full flex-col px-6 pt-[calc(env(safe-area-inset-top)+2rem)] pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
-      {notice && (
-        <p
-          role="status"
-          className="bg-muted text-muted-foreground mb-4 rounded-xl px-3 py-2 text-sm"
-        >
-          {notice}
-        </p>
-      )}
-      <div className="flex flex-1 flex-col justify-center">{children}</div>
-    </div>
+    <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div className="flex min-h-full flex-col px-6 pt-[calc(env(safe-area-inset-top)+2rem)] pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
+        {notice && (
+          <p
+            role="status"
+            className="bg-muted text-muted-foreground mb-4 rounded-xl px-3 py-2 text-sm"
+          >
+            {notice}
+          </p>
+        )}
+        <div className="flex flex-1 flex-col justify-center">{children}</div>
+      </div>
+    </main>
   );
 }

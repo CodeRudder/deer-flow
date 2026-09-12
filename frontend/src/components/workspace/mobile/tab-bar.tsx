@@ -53,45 +53,25 @@ export function isTabActive(pathname: string, href: string): boolean {
 }
 
 /**
- * Screens that own the whole viewport and hide the tab bar.
+ * The full-screen artifact view (T6), the one signed-in screen that owns the
+ * whole viewport and must not also show the bar.
  *
- * These are the signed-out routes: login, admin setup, and the SSO callback.
- * None of the three has a meaningful tab to highlight — the user is not in the
- * workspace yet — and on a 390px column the bar would eat ~56px of a form that
- * already has to clear the software keyboard. The shared auth layout takes over
- * the bottom safe-area inset it would otherwise carry.
+ * Prototype ⑤ is full-bleed with a single action bar at the bottom; a tab bar
+ * under it would stack two bars and split the safe-area inset between them. It
+ * is matched by shape rather than by prefix because the thread id sits in the
+ * middle — a `startsWith("/workspace/chats")` would take the chat screen's bar
+ * away too.
  *
- * The chat screen (T5) keeps the bar on purpose — `shouldHideMobileTabBar` is
- * pinned by `tests/unit/.../tab-bar.test.ts` as "the bar stays on workspace
- * screens" — so the composer sits above it rather than replacing it.
- */
-const TAB_BAR_HIDDEN_PREFIXES = ["/login", "/setup", "/auth/callback"] as const;
-
-/**
- * The full-screen artifact view (T6), which owns the bottom edge instead.
- *
- * Prototype ⑤ is a full-bleed screen with one action bar at the bottom; a tab
- * bar under it would stack two bars and split the safe-area inset between
- * them. It is matched by shape rather than by prefix because the thread id
- * sits in the middle — a `startsWith("/workspace/chats")` would take the chat
- * screen's bar away too.
+ * The signed-out screens used to be listed here as well. They are not any more:
+ * the bar renders from `app/m/(app)/layout.tsx`, which the `(auth)` route group
+ * is not under, so "no bar on sign-in" is now structure rather than a pathname
+ * test that had to be kept in sync with the route tree.
  */
 const TAB_BAR_HIDDEN_PATTERN =
   /^\/m\/workspace\/chats\/[^/]+\/artifacts(?:\/|$)/;
 
 export function shouldHideMobileTabBar(pathname: string): boolean {
-  // Normalize both sides: `pathname` may arrive either pre- or post-rewrite,
-  // while the prefixes are written as the public paths a developer recognises.
-  const normalized = normalizeMobilePathname(pathname);
-  if (TAB_BAR_HIDDEN_PATTERN.test(normalized)) {
-    return true;
-  }
-  return TAB_BAR_HIDDEN_PREFIXES.some((prefix) => {
-    const mobilePrefix = normalizeMobilePathname(prefix);
-    return (
-      normalized === mobilePrefix || normalized.startsWith(`${mobilePrefix}/`)
-    );
-  });
+  return TAB_BAR_HIDDEN_PATTERN.test(normalizeMobilePathname(pathname));
 }
 
 export function MobileTabBar({ className }: { className?: string }) {
