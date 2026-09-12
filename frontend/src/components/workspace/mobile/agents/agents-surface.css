@@ -1,0 +1,18 @@
+/*
+ * The three bottom sheets on the agents screens (new-agent choice, model
+ * picker, discard-changes confirm) inherit their close button from the shared
+ * `SheetContent`: a 16px icon pinned at `top-4 right-4`, i.e. less than half the
+ * 44px touch floor. `chat-surface.css` restates the size and offset for the
+ * chat sheets the same way; this is that rule scoped to the agents sheets, so
+ * the shared `ui/sheet.tsx` stays untouched (it is registry-generated).
+ */
+.mobile-agents-sheet > button {
+  top: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}

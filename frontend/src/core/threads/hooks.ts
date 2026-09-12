@@ -117,6 +117,34 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
   "interrupted",
 ]);
 
+// Statuses that mean the backend is still working, so an opening page should
+// adopt the run rather than render an idle composer.
+const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "running",
+]);
+
+/**
+ * The run id a newly opened chat page should adopt, if any.
+ *
+ * The SDK's own `reconnectOnMount` only replays runs whose id this tab left in
+ * sessionStorage, so a thread opened anywhere else — another tab, another
+ * device, or after the tab was closed — has no key to follow and would sit on a
+ * stale snapshot with an idle-looking composer. `runs.list` is newest-first, and
+ * only the newest run decides: an older active run is already superseded.
+ */
+export function pickActiveRunId(
+  runs: Pick<Run, "run_id" | "status">[] | undefined,
+): string | undefined {
+  const latestRun = runs?.at(0);
+  if (!latestRun) {
+    return undefined;
+  }
+  return ACTIVE_RUN_STATUSES.has(latestRun.status)
+    ? latestRun.run_id
+    : undefined;
+}
+
 /**
  * True when the watchdog should abort the current stream: the run is terminal,
  * silent past the grace period, and belongs to this stream (id from onCreated,
@@ -1349,9 +1377,11 @@ export function useThreadStream({
 
   // Stuck-stream watchdog: poll the run list while loading; abort via stop() once
   // the latest run is terminal and the message tail has been silent past the grace period.
+  // The same list is read once on open to adopt a run this tab never started, so
+  // the query stays enabled while idle and only ticks on an interval mid-stream.
   const streamRuns = useThreadRuns(threadId ?? undefined, {
-    enabled: !isMock && thread.isLoading,
-    refetchInterval: STREAM_RUN_POLL_INTERVAL_MS,
+    enabled: !isMock && Boolean(threadId),
+    refetchInterval: thread.isLoading ? STREAM_RUN_POLL_INTERVAL_MS : false,
   });
   const streamProgressAtRef = useRef(Date.now());
   const streamTailMessage = persistedMessages.at(-1);
@@ -1400,6 +1430,29 @@ export function useThreadStream({
     }, STREAM_STALL_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [isMock, queryClient, thread.isLoading]);
+
+  // Adopt a run this browser did not start. Joining flips isLoading, which swaps
+  // the composer to its stop state and streams the remaining messages through the
+  // existing StreamManager, so no other wiring is needed.
+  const adoptedRunIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    adoptedRunIdRef.current = null;
+  }, [threadId]);
+  const joinStreamRef = useRef(thread.joinStream);
+  joinStreamRef.current = thread.joinStream;
+  useEffect(() => {
+    // Already streaming: either this tab submitted, or the SDK's
+    // reconnectOnMount followed its own sessionStorage key and got there first.
+    if (isMock || !threadId || thread.isLoading) {
+      return;
+    }
+    const activeRunId = pickActiveRunId(streamRuns.data);
+    if (!activeRunId || adoptedRunIdRef.current === activeRunId) {
+      return;
+    }
+    adoptedRunIdRef.current = activeRunId;
+    void joinStreamRef.current(activeRunId);
+  }, [isMock, threadId, thread.isLoading, streamRuns.data]);
   const visibleHistory = useMemo(
     () => (threadId ? history : []),
     [history, threadId],
@@ -2302,7 +2355,12 @@ export function useInfiniteThreads(
   params: InfiniteThreadsParams = {
     sortBy: "updated_at",
     sortOrder: "desc",
-    select: ["thread_id", "updated_at", "values", "metadata"],
+    // `status` is the run state the mobile thread list marks a row with
+    // ("running" | "busy" | "idle" | "error"). It is in the select on purpose:
+    // the gateway ignores `select` today, so omitting it would still work *now*
+    // and the marker would silently disappear the day a deployment honours the
+    // projection. Additive for the desktop list, which ignores the field.
+    select: ["thread_id", "updated_at", "values", "metadata", "status"],
   },
   {
     /**

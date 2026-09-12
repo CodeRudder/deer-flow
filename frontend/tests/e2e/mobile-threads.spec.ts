@@ -26,29 +26,38 @@ const DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
 /**
- * One thread per time bucket. The timestamps are relative to "now" so the
- * buckets are stable whenever the suite runs: an hour ago is today, `now - 26h`
- * is yesterday from any local time (26h back crosses at most one midnight from
- * an hour ago), and `now - 10 days` is always earlier.
+ * One thread per time bucket, anchored to the start of the local calendar day.
+ *
+ * `threadTimeGroupId()` buckets by *calendar day*, so "now minus N hours" only
+ * lands in yesterday when the wall clock happens to agree: run the suite at
+ * 01:20 and `now - 26h` is two midnights back, the yesterday bucket stays empty
+ * and the list renders two groups instead of three. Midnight-today is always
+ * "today", one millisecond before it is always "yesterday", and neither can
+ * drift into the future.
  */
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.now();
+const START_OF_TODAY = new Date(
+  new Date(NOW).getFullYear(),
+  new Date(NOW).getMonth(),
+  new Date(NOW).getDate(),
+).getTime();
 
 const THREADS: MockThread[] = [
   {
     thread_id: "11111111-1111-1111-1111-111111111111",
     title: "Today thread",
-    updated_at: new Date(NOW - HOUR_MS).toISOString(),
+    updated_at: new Date(START_OF_TODAY).toISOString(),
   },
   {
     thread_id: "22222222-2222-2222-2222-222222222222",
     title: "Yesterday thread",
-    updated_at: new Date(NOW - 26 * HOUR_MS).toISOString(),
+    updated_at: new Date(START_OF_TODAY - 1).toISOString(),
   },
   {
     thread_id: "33333333-3333-3333-3333-333333333333",
     title: "Earlier thread",
-    updated_at: new Date(NOW - 10 * 24 * HOUR_MS).toISOString(),
+    updated_at: new Date(START_OF_TODAY - 10 * 24 * HOUR_MS).toISOString(),
   },
 ];
 
@@ -268,6 +277,77 @@ test.describe("Mobile thread list", () => {
       "aria-current",
       "page",
     );
+  });
+});
+
+/**
+ * Prototype ①'s「● 生成中」row (T18).
+ *
+ * The state rides on the thread list response itself: the gateway's
+ * `POST /api/threads/search` returns `ThreadResponse.status`, which is
+ * `running` between run creation and run completion (`threads_meta`, written by
+ * the gateway's run-submission path and reset by the run worker). The row
+ * therefore needs no extra request — the fixture below carries the same field.
+ */
+test.describe("Mobile thread list generating state", () => {
+  const RUNNING_ID = "44444444-4444-4444-4444-444444444444";
+  const SETTLED_ID = "55555555-5555-5555-5555-555555555555";
+
+  const LIST: MockThread[] = [
+    {
+      thread_id: RUNNING_ID,
+      title: "Running thread",
+      // Anchored, not `now - 1h`: see `START_OF_TODAY` above — before 02:00
+      // local an hour back is already yesterday, which would move this row
+      // into another group mid-suite.
+      updated_at: new Date(START_OF_TODAY).toISOString(),
+      status: "running",
+    },
+    {
+      thread_id: SETTLED_ID,
+      title: "Settled thread",
+      // One millisecond earlier so the sort order stays fixed regardless of
+      // what time the suite runs.
+      updated_at: new Date(START_OF_TODAY - 1).toISOString(),
+      status: "idle",
+    },
+  ];
+
+  test("marks the row with a run in flight and leaves the settled row plain", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, { threads: LIST });
+    await page.goto("/workspace");
+
+    // The label sits on the summary line, right where the preview would be.
+    const running = rowFor(page, "Running thread");
+    await expect(running).toBeVisible({ timeout: 15_000 });
+    await expect(running.getByTestId("mobile-thread-generating")).toContainText(
+      "Generating",
+    );
+    // Prototype ① tints the whole row: `background: var(--accent)`.
+    await expect(running).toHaveClass(/bg-accent/);
+
+    // A finished thread must not be dressed up as a running one.
+    const settled = rowFor(page, "Settled thread");
+    await expect(settled).toBeVisible();
+    await expect(settled.getByTestId("mobile-thread-generating")).toHaveCount(
+      0,
+    );
+    await expect(settled).not.toHaveClass(/bg-accent/);
+  });
+
+  test("the marked row still navigates when tapped", async ({ page }) => {
+    // The label is an extra element inside the row's touch target; it must not
+    // swallow the tap.
+    mockLangGraphAPI(page, { threads: LIST });
+    await page.goto("/workspace");
+
+    const running = rowFor(page, "Running thread");
+    await expect(running).toBeVisible({ timeout: 15_000 });
+    await running.locator("a").click();
+
+    await expect(page).toHaveURL(`/workspace/chats/${RUNNING_ID}`);
   });
 });
 

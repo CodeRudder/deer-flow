@@ -662,3 +662,95 @@ class TestAwrapModelCall:
         injected_messages = request.override.call_args.kwargs["messages"]
         assert injected_messages[-1].name == "todo_completion_reminder"
         handler.assert_awaited_once_with("patched-request")
+
+
+class TestStatusTimestampsThroughTheTool:
+    """The phone's durations (prototype ⑨) start at `write_todos`.
+
+    `apply_todo_ops` is unit-tested where it lives (`test_todo_ops.py`); this
+    is the wiring check — the real agent graph, the real tool, and the marks
+    that land in thread state. The clock is replaced inside `thread_state`, so
+    "the rewrite did not refresh the mark" is a value comparison rather than a
+    race against the wall clock.
+    """
+
+    def test_marks_a_todo_through_its_run(self, monkeypatch):
+        ticks = []
+
+        def fake_now() -> str:
+            ticks.append(len(ticks))
+            return f"2026-09-13T06:00:{len(ticks):02d}+00:00"
+
+        monkeypatch.setattr("deerflow.agents.thread_state.now_iso", fake_now)
+
+        def write_todos(tool_id: str, args: dict) -> AIMessage:
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "write_todos", "id": tool_id, "args": args}],
+            )
+
+        mw = TodoMiddleware()
+        model = _CapturingFakeMessagesListChatModel(
+            responses=[
+                write_todos("t1", {"todos": [{"content": "Step 1", "status": "pending"}]}),
+                write_todos("t2", {"updates": [{"index": 0, "status": "in_progress"}]}),
+                # The helper agent re-sends the status it already set, which is
+                # exactly what `write_todos` does on every turn.
+                write_todos("t3", {"updates": [{"index": 0, "status": "in_progress"}]}),
+                write_todos("t4", {"updates": [{"index": 0, "status": "completed"}]}),
+                AIMessage(content="done"),
+            ],
+        )
+
+        graph = create_agent(model=model, tools=[], middleware=[mw])
+        result = graph.invoke(
+            {"messages": [("user", "run the plan")]},
+            context={"thread_id": "stamp-thread", "run_id": "stamp-run"},
+        )
+
+        todo = result["todos"][0]
+        # t2 started the run, t3 was a rewrite and took nothing, t4 ended it.
+        assert ticks == [0, 1]
+        assert todo["started_at"] == "2026-09-13T06:00:01+00:00"
+        assert todo["completed_at"] == "2026-09-13T06:00:02+00:00"
+
+    def test_an_added_pending_item_gets_no_mark(self):
+        mw = TodoMiddleware()
+        model = _CapturingFakeMessagesListChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "id": "t1",
+                            "args": {"adds": [{"content": "Step 1"}]},
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "id": "t2",
+                            "args": {"updates": [{"index": 0, "status": "completed"}]},
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ],
+        )
+
+        graph = create_agent(model=model, tools=[], middleware=[mw])
+        result = graph.invoke(
+            {"messages": [("user", "run the plan")]},
+            context={"thread_id": "add-thread", "run_id": "add-run"},
+        )
+
+        todo = result["todos"][0]
+        assert todo["content"] == "Step 1"
+        # Completing an item that was never seen running writes only the end:
+        # the phone draws no duration instead of a fabricated zero.
+        assert "started_at" not in todo
+        assert "completed_at" in todo

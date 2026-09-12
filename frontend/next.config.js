@@ -25,6 +25,12 @@ const config = {
     defaultLocale: "en",
   },
   devIndicators: false,
+  // Next 16 blocks dev-resource requests whose Origin host is not allowlisted.
+  // That includes the HMR websocket, and when it fails the app never hydrates:
+  // the page renders fine but every click is inert and nothing is logged, so it
+  // reads as "login does nothing". A subnet wildcard keeps LAN testing working
+  // when DHCP hands out a different address (e.g. from a phone). Dev-only.
+  allowedDevOrigins: ["192.168.2.*"],
   async rewrites() {
     const rewrites = [];
     const gatewayURL = getInternalServiceURL(

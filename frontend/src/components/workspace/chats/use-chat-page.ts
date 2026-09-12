@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -50,6 +51,17 @@ export interface UseChatPageOptions {
    * never sees it and the address bar must be written correctly from here.
    */
   basePath?: string;
+  /**
+   * Name of the custom agent this page chats with, when the page is an *agent*
+   * chat (`…/agents/<name>/chats/<threadId>`) rather than a plain one.
+   *
+   * The desktop agent page writes `agent_name` by hand in three places; this
+   * option is those three places, so the mobile agent page can stay a layout:
+   * the stream context, the per-send context, and the clarification-card
+   * answers. Omitted (`undefined`) on plain chats — nothing is injected, and
+   * every value below is the one the hook produced before this option existed.
+   */
+  agentName?: string;
 }
 
 /**
@@ -61,11 +73,38 @@ export interface UseChatPageOptions {
  * mobile chat page call this hook, so behaviour stays in one place and the
  * pages only arrange their own JSX. The redirect to the new-chat route for
  * deleted/inaccessible threads also lives here — it is page-agnostic.
+ *
+ * `agentName` turns it into the *agent* chat variant (the mobile one; the
+ * desktop's `app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` is
+ * the one page that still inlines this behaviour). Passing it is exactly four
+ * changes: the thread context carries `agent_name`, every `sendMessage` carries
+ * it, clarification answers carry it, and the chat routes move under
+ * `/workspace/agents/<name>/`. Not passing it is the plain chat —
+ * the object shapes handed downstream are the ones the hook built before the
+ * option existed (see `threadContext`, `agentContext` and `handleSubmit`).
  */
 export function useChatPage({
   basePath = DEFAULT_CHAT_BASE_PATH,
+  agentName,
 }: UseChatPageOptions = {}): ChatPageController {
   const router = useRouter();
+
+  /**
+   * Public prefix of *this* page's chat routes.
+   *
+   * An agent chat sits one level deeper than a plain one
+   * (`/workspace/agents/<name>/chats/<threadId>`), so the name is folded into
+   * the prefix here rather than into `chatPath()`: that helper stays a function
+   * of (prefix, threadId), and the two navigations below — `onStart`'s
+   * `history.replaceState` and the gone-thread redirect — get the agent
+   * address for free. Both are *public* paths, so the middleware lands a phone
+   * on the mobile tree without `/m/` ever reaching the address bar (plan
+   * §1.2.1). Without `agentName` this is the caller's `basePath`, untouched.
+   */
+  const chatBasePath = agentName
+    ? `${basePath.replace(/\/+$/, "")}/agents/${agentName}`
+    : basePath;
+
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
   // `isNewThread` tracks whether the backend has the thread yet — gates the
@@ -127,6 +166,33 @@ export function useChatPage({
    */
   const submittedTextRef = useRef<string | null>(null);
 
+  /**
+   * `agent_name` in the shape the stream wants it, or `undefined` on a plain
+   * chat. Memoised because two consumers keep it in dependency arrays
+   * (`sendMessage`'s extra context and `useHumanInput`), and a fresh object per
+   * render would rebuild their callbacks every render.
+   */
+  const agentContext = useMemo(
+    () => (agentName ? { agent_name: agentName } : undefined),
+    [agentName],
+  );
+
+  /**
+   * Thread context every run is opened with. On an agent chat this is the
+   * settings context plus `agent_name` (`useThreadStream` reads it to tag the
+   * stream, and it seeds each submit's context). On a plain chat the settings
+   * object is passed through **by identity**: it is a dependency of callbacks
+   * inside `useThreadStream`, so a fresh object per render would be a
+   * behaviour change rather than just an allocation.
+   */
+  const threadContext = useMemo(
+    () =>
+      agentContext
+        ? { ...settings.context, ...agentContext }
+        : settings.context,
+    [agentContext, settings.context],
+  );
+
   const {
     thread,
     pendingUsageMessages,
@@ -139,7 +205,7 @@ export function useChatPage({
   } = useThreadStream({
     threadId: isNewThread ? undefined : threadId,
     displayThreadId: threadId,
-    context: settings.context,
+    context: threadContext,
     isMock,
     // onSend only animates the UI; do NOT flip `isNewThread` here — the
     // LangGraph SDK eagerly fetches /history the moment it receives a
@@ -149,7 +215,7 @@ export function useChatPage({
     },
     onStart: (createdThreadId) => {
       // ! Important: Never use next.js router for navigation in this case, otherwise it will cause the thread to re-mount and lose all states. Use native history API instead.
-      history.replaceState(null, "", chatPath(basePath, createdThreadId));
+      history.replaceState(null, "", chatPath(chatBasePath, createdThreadId));
       setThreadId(createdThreadId);
       setIsNewThread(false);
     },
@@ -184,10 +250,10 @@ export function useChatPage({
       !hasMoreHistory &&
       !hasThreadMessages
     ) {
-      router.replace(chatPath(basePath));
+      router.replace(chatPath(chatBasePath));
     }
   }, [
-    basePath,
+    chatBasePath,
     hasMoreHistory,
     hasThreadMessages,
     isHistoryLoading,
@@ -213,9 +279,15 @@ export function useChatPage({
     // additionally has to hand the text back.
     (message: PromptInputMessage) => {
       submittedTextRef.current = message.text.trim() ? message.text : null;
-      return sendMessage(threadId, message);
+      // An agent chat carries `agent_name` on the send as well: the stream
+      // context above covers the subscription, this covers the run's own
+      // payload. A plain chat calls `sendMessage` with the two arguments it
+      // always did — not with a trailing `undefined`.
+      return agentContext
+        ? sendMessage(threadId, message, agentContext)
+        : sendMessage(threadId, message);
     },
-    [sendMessage, threadId],
+    [agentContext, sendMessage, threadId],
   );
 
   // A failed run cannot reject the submit promise (see `submittedTextRef`), so
@@ -260,6 +332,7 @@ export function useChatPage({
     threadId,
     sendMessage,
     messages: thread.messages,
+    extraContext: agentContext,
     enabled: !isMock && env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true",
   });
 

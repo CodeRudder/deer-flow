@@ -63,8 +63,18 @@ const WIDE_MARKDOWN = [
 ].join("\n");
 
 /**
+ * The sentence the model writes before it reaches for a tool. It rides on the
+ * tool-calling message itself, so it is the answer half of the same group the
+ * steps belong to.
+ */
+const PREAMBLE = "I will inspect the data first.";
+
+/**
  * Three tool calls plus one reasoning trace, so the summary has something to
- * count: `steps.length` is 4 (3 tool calls + 1 reasoning) and the tool count 3.
+ * count: 4 folded rows (3 tool calls + the reasoning trace) and 3 tools. The
+ * tool-calling message also carries its preamble text, which is *not* a folded
+ * row — it has to stay readable while the summary is closed (see "keeps the
+ * assistant text visible while the steps are folded" below).
  * `reasoning_content` has to live in `additional_kwargs` — that is the shape
  * the backend sends and the shape `extractReasoningContentFromMessage` reads.
  */
@@ -95,7 +105,7 @@ const TRANSCRIPT = [
   {
     type: "ai",
     id: "msg-ai-steps",
-    content: "",
+    content: PREAMBLE,
     additional_kwargs: { reasoning_content: "I should look at the data." },
     tool_calls: TOOL_CALLS,
   },
@@ -221,7 +231,10 @@ test.describe("mobile transcript", () => {
 
     const summary = page.getByTestId("mobile-collapsed-steps");
     await expect(summary).toBeVisible();
-    // 4 steps (3 tool calls + the reasoning trace), 3 of them tool calls.
+    // The count is the rows behind the tap: 4 folded rows (3 tool calls + the
+    // reasoning trace), 3 of them tool calls. The preamble text on the same
+    // message is not one of them — it stays outside the fold, so the summary
+    // reads 4 and not 5.
     await expect(summary).toContainText("Ran 4 steps");
     await expect(summary).toContainText("3 tools");
     await expect(summary).toHaveAttribute("aria-expanded", "false");
@@ -230,6 +243,31 @@ test.describe("mobile transcript", () => {
     // is painted before the tap.
     await expect(page.getByText("Run the analysis script")).toBeHidden();
     await expect(page.getByText("I should look at the data.")).toBeHidden();
+  });
+
+  test("keeps the assistant text visible while the steps are folded (C6)", async ({
+    page,
+  }) => {
+    await openTranscript(page);
+
+    const summary = page.getByTestId("mobile-collapsed-steps");
+    await expect(summary).toHaveAttribute("aria-expanded", "false");
+
+    // The answer is not part of the folded process: while every row is folded
+    // away, the words the model wrote are still on screen — a streaming turn
+    // that already saw a tool call has nothing else to show.
+    await expect(page.getByText(PREAMBLE)).toBeVisible();
+    // …and it is outside the tap target, not folded into the summary's label.
+    await expect(summary).not.toContainText(PREAMBLE);
+
+    // Expanding and collapsing again leaves it where it was.
+    await summary.click();
+    await expect(summary).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByText(PREAMBLE)).toBeVisible();
+
+    await summary.click();
+    await expect(summary).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByText(PREAMBLE)).toBeVisible();
   });
 
   test("expands the summary into the real steps and back (C6)", async ({
@@ -463,10 +501,13 @@ test.describe("desktop transcript", () => {
       timeout: 15_000,
     });
     await expect(page.getByTestId("mobile-collapsed-steps")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-collapsed-answer")).toHaveCount(0);
     await expect(page.getByTestId("mobile-composer")).toHaveCount(0);
     // The desktop panel paints the last tool call directly, plus the fold for
-    // the steps above it — its own wording, not the mobile summary's.
+    // the steps above it — its own wording, not the mobile summary's. Its
+    // assistant text sits in the panel next to those steps, where it always was.
     await expect(page.getByText("/mnt/user-data/notes.md")).toBeVisible();
-    await expect(page.getByText("3 more steps")).toBeVisible();
+    await expect(page.getByText("4 more steps")).toBeVisible();
+    await expect(page.getByText(PREAMBLE)).toBeVisible();
   });
 });

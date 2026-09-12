@@ -18,7 +18,8 @@ import { MOCK_THREAD_ID, mockLangGraphAPI } from "./utils/mock-api";
  *    the rewrite assertions above (a client-side `router.push` of an already
  *    `/m/`-prefixed path is skipped by the middleware matcher, so it never
  *    shows up as a rewrite), which is why it is asserted here on the real
- *    address bar, from the list root *and* from inside a thread.
+ *    address bar — including on the hop *out of* a thread, where the tab bar is
+ *    deliberately absent and the back button is the only way out.
  *
  * `defaultBrowserType` is forced back to chromium because the iPhone presets
  * are WebKit-only and this suite installs chromium only (same as
@@ -142,26 +143,26 @@ test.describe("Mobile tab navigation", () => {
     await expect(page.getByTestId("mobile-thread-search")).toBeVisible();
   });
 
-  test("the tab bar keeps working from inside a thread", async ({ page }) => {
+  test("a thread is full-bleed — the tab bar belongs to the roots only", async ({
+    page,
+  }) => {
     mockLangGraphAPI(page, { threads: THREADS });
     await page.goto(CHAT_PATH);
     await expect(page.getByTestId("mobile-composer")).toBeVisible({
       timeout: 15_000,
     });
     await expectPathname(page, CHAT_PATH);
-    // The thread route lights the chats tab, so drilling in does not blank it.
-    await expect(tab(page, "Chats")).toHaveAttribute("aria-current", "page");
 
-    await tab(page, "Agents").click();
-    await expectPathname(page, "/agents");
-    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+    // Prototype ② draws the composer straight onto the home indicator: the tab
+    // bar is the three roots' (①⑥⑦), and a thread is a drill-down, so the two
+    // would otherwise fight over the bottom edge. Structurally this is the
+    // route living in `(app)/(fullbleed)` — not a pathname rule (T17).
+    await expect(tabBar(page)).toHaveCount(0);
 
-    await tab(page, "Settings").click();
-    await expectPathname(page, "/settings");
-
-    await tab(page, "Chats").click();
+    // The hop out is still a client-side navigation, so it is where a `/m/`
+    // leak would show up now that there is no tab to click.
+    await page.getByTestId("mobile-chat-back").click();
     await expectPathname(page, "/workspace");
-    await expect(page.getByTestId("mobile-thread-search")).toBeVisible();
+    await expect(tab(page, "Chats")).toHaveAttribute("aria-current", "page");
   });
-
 });

@@ -11,6 +11,9 @@ const copyDerivations = rs.spyOn(messageUtils, "stripUploadedFilesTag");
 
 const clipboardWrites: string[] = [];
 
+// Everything but the namespaces the assertions below care about is stubbed:
+// the reasoning trigger reads `toolCalls` (T19), and rendering these rows must
+// not blow up on a double that only declares what it asserts.
 rs.mock("@/core/i18n/hooks", () => ({
   useI18n: () => ({
     t: {
@@ -18,6 +21,14 @@ rs.mock("@/core/i18n/hooks", () => ({
       clipboard: {
         copyToClipboard: "copy",
         failedToCopyToClipboard: "failed to copy",
+      },
+      toolCalls: {
+        thinking: "thinking",
+        thoughtFor: (duration: string) => `thought for ${duration}`,
+        thoughtBriefly: "thought briefly",
+        durationSeconds: (seconds: number) => `${seconds}s`,
+        durationMinutes: (minutes: number, seconds: number) =>
+          `${minutes}m ${seconds}s`,
       },
     },
   }),
@@ -110,6 +121,54 @@ describe("MessageListItem reasoning placement", () => {
       "Rayleigh scattering makes the sky blue.",
     );
     expect(container.textContent).toContain("internal reasoning");
+  });
+});
+
+describe("MessageListItem reasoning trigger wording", () => {
+  it("feeds the trigger the locale strings instead of the registry defaults", () => {
+    // T19: the trigger's hardcoded English is replaced by the injected
+    // callback at this call site; the stub above makes the swap observable.
+    const fallback = render(
+      <MessageListItem
+        message={
+          {
+            id: "ai-reasoning-only",
+            type: "ai",
+            content: "",
+            additional_kwargs: { reasoning_content: "internal reasoning" },
+          } as unknown as Message
+        }
+        showCopyButton={false}
+        threadId="t-reasoning"
+      />,
+    );
+
+    expect(fallback.container.textContent).toContain("thought briefly");
+    expect(fallback.container.textContent).not.toContain(
+      "Thought for a few seconds",
+    );
+    cleanup();
+
+    const settled = render(
+      <MessageListItem
+        message={
+          {
+            id: "ai-reasoning-timed",
+            type: "ai",
+            content: "",
+            additional_kwargs: {
+              reasoning_content: "internal reasoning",
+              turn_duration: 12,
+            },
+          } as unknown as Message
+        }
+        showCopyButton={false}
+        threadId="t-reasoning"
+      />,
+    );
+
+    expect(settled.container.textContent).toContain("thought for 12s");
+    expect(settled.container.textContent).not.toContain("Thought for 12s");
   });
 });
 

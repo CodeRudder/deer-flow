@@ -12,7 +12,7 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   ChainOfThought,
@@ -291,11 +291,20 @@ export function MessageGroup({
   // tool call to summarise, so they keep the panel below rather than reading
   // "ran 0 steps · 0 tools".
   if (collapsedSteps && steps.some((step) => step.type === "toolCall")) {
+    // Only the *process* folds. `assistantText` steps stay out of the summary
+    // (and out of its count) and render below it — prototype ② keeps the answer
+    // in a `.bubble` outside the `.disc`, and `AGENTS.md` requires the panel to
+    // paint assistant text with or without tool calls, "in collapsed state"
+    // included. Without this a streaming turn that already saw a tool call
+    // would show no words at all until the run ended.
     return (
       <CollapsedSteps
         className={className}
         renderStep={renderStep}
-        steps={steps}
+        steps={steps.filter((step) => step.type !== "assistantText")}
+        assistantTextSteps={steps.filter(
+          (step): step is CoTAssistantTextStep => step.type === "assistantText",
+        )}
       />
     );
   }
@@ -420,12 +429,12 @@ export function MessageGroup({
 }
 
 /**
- * Steps whose row is a link rather than a log line: `ToolCall` turns a
- * `write_file` / `str_replace` step into the mobile artifact screen's entry
- * point (`select()` + `setOpen(true)` → the page navigates). On the phone that
- * row is the *only* route to a draft — a draft exists only in the tool call's
- * arguments, so it is not in `thread.values.artifacts` and the header's "⋯"
- * menu cannot offer it.
+ * Steps whose row is a link rather than a log line: `ToolCall` turns one of
+ * these into the mobile artifact screen's entry point (`select()` +
+ * `setOpen(true)` → the page navigates). On the phone that row is the *only*
+ * route to a draft — a draft exists only in the tool call's arguments, so it is
+ * not in `thread.values.artifacts`, which is what the title bar's "文件" button
+ * (the artifact entry point since `d6177297`) lists.
  */
 const ARTIFACT_STEP_NAMES = new Set(["write_file", "str_replace"]);
 
@@ -435,6 +444,15 @@ const ARTIFACT_STEP_NAMES = new Set(["write_file", "str_replace"]);
  * the desktop panel paints. The row is a 44px tap target, and the count is the
  * number of rows the expansion holds (`steps`), so the summary and the detail
  * can never disagree.
+ *
+ * `steps` is therefore the folded rows only: `assistantText` steps come in
+ * separately and paint below the summary whether or not it is open. The answer
+ * is not part of the folded *process* (prototype ② keeps it in a `.bubble`
+ * outside the `.disc`), and it is the only thing a streaming turn has on screen
+ * before the first tool result — folding it away would blank the transcript
+ * until the run ended (`AGENTS.md`: assistant text renders "with or without
+ * tool calls — before the first tool call, in collapsed state, and after the
+ * last tool call").
  *
  * A group whose steps open an artifact starts expanded: collapsing it would
  * hide the entry point to the draft screen behind an extra tap, which is a
@@ -448,58 +466,76 @@ function CollapsedSteps({
   className,
   renderStep,
   steps,
+  assistantTextSteps,
 }: {
   className?: string;
   renderStep: (step: CoTStep) => React.ReactNode[];
   steps: CoTStep[];
+  assistantTextSteps: CoTAssistantTextStep[];
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(() =>
-    steps.some(
-      (step) => step.type === "toolCall" && ARTIFACT_STEP_NAMES.has(step.name),
-    ),
-  );
+  const artifactStepCount = steps.filter(
+    (step) => step.type === "toolCall" && ARTIFACT_STEP_NAMES.has(step.name),
+  ).length;
+  const [open, setOpen] = useState(artifactStepCount > 0);
+  // A processing group is keyed by its first AI message, so this component
+  // stays mounted for the whole turn: an artifact step that arrives after the
+  // group opened on `ls`/`read_file` would otherwise never be seen here, and
+  // the new draft would sit one tap deeper than it was before this summary
+  // existed (T6 / F7-3). Re-open whenever another one lands.
+  useEffect(() => {
+    if (artifactStepCount > 0) {
+      setOpen(true);
+    }
+  }, [artifactStepCount]);
   const toolCallCount = steps.filter((step) => step.type === "toolCall").length;
 
   return (
-    <ChainOfThought
-      className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
-      open={open}
-      onOpenChange={setOpen}
-    >
-      <Button
-        aria-expanded={open}
-        className="min-h-11 w-full items-start justify-start text-left"
-        data-testid="mobile-collapsed-steps"
-        variant="ghost"
-        onClick={() => setOpen(!open)}
+    <>
+      <ChainOfThought
+        className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
+        open={open}
+        onOpenChange={setOpen}
       >
-        <div className="flex w-full items-center justify-between">
-          <ChainOfThoughtStep
-            className="font-normal"
-            icon={WrenchIcon}
-            label={
-              <span className="opacity-60">
-                {t.toolCalls.executedSteps(steps.length)}
-                {" · "}
-                {t.toolCalls.toolsUsed(toolCallCount)}
-              </span>
-            }
-          />
-          <ChevronUp
-            className={cn(
-              "text-muted-foreground size-4 shrink-0",
-              open ? "" : "rotate-180",
-            )}
-          />
+        <Button
+          aria-expanded={open}
+          className="min-h-11 w-full items-start justify-start text-left"
+          data-testid="mobile-collapsed-steps"
+          variant="ghost"
+          onClick={() => setOpen(!open)}
+        >
+          <div className="flex w-full items-center justify-between">
+            <ChainOfThoughtStep
+              className="font-normal"
+              icon={WrenchIcon}
+              label={
+                <span className="opacity-60">
+                  {t.toolCalls.executedSteps(steps.length)}
+                  {" · "}
+                  {t.toolCalls.toolsUsed(toolCallCount)}
+                </span>
+              }
+            />
+            <ChevronUp
+              className={cn(
+                "text-muted-foreground size-4 shrink-0",
+                open ? "" : "rotate-180",
+              )}
+            />
+          </div>
+        </Button>
+        {open && (
+          <ChainOfThoughtContent className="px-4 pb-2">
+            {steps.flatMap(renderStep)}
+          </ChainOfThoughtContent>
+        )}
+      </ChainOfThought>
+      {assistantTextSteps.length > 0 && (
+        <div className="w-full pt-2" data-testid="mobile-collapsed-answer">
+          {assistantTextSteps.flatMap(renderStep)}
         </div>
-      </Button>
-      {open && (
-        <ChainOfThoughtContent className="px-4 pb-2">
-          {steps.flatMap(renderStep)}
-        </ChainOfThoughtContent>
       )}
-    </ChainOfThought>
+    </>
   );
 }
 
@@ -730,7 +766,7 @@ function ToolCall({
         )}
       </ChainOfThoughtStep>
     );
-  } else if (name === "write_file" || name === "str_replace") {
+  } else if (ARTIFACT_STEP_NAMES.has(name)) {
     let description: string | undefined = (args as { description: string })
       ?.description;
     if (!description) {

@@ -1,4 +1,11 @@
 /*
+ * The model dialog's touch rules are shared with the artifact route, which
+ * imports them itself; they live in their own file so neither route can have
+ * them without the other. See `mobile-dialog.css` for why that matters.
+ */
+@import "./mobile-dialog.css";
+
+/*
  * Touch has no hover.
  *
  * The transcript reveals two action bars on `group-hover` only:
@@ -32,6 +39,37 @@
 }
 
 /*
+ * The todo panel (C11) — `components/workspace/todo-list.tsx`, shared with the
+ * desktop page and deliberately not modified for the phone.
+ *
+ * Two of its desktop habits have to go:
+ *
+ *   - `translate-y-4` tucks the panel under the input box, because the desktop
+ *     paints its translucent input box over the panel's lower 16px so the two
+ *     read as one surface. On the phone the panel is a card of its own, with a
+ *     gap above and below it, so the tuck would only push it down over the
+ *     composer while leaving a matching hole above.
+ *   - `border-b-0` drops the bottom edge for that same merge; a standalone
+ *     card needs it back, with matching corner radii (`rounded-t-xl` stays).
+ *
+ * The toggle is the whole header bar, which is `min-h-8` (32px) on the
+ * desktop — under the 44px touch floor the plan sets (§1.4). It is the only
+ * control the panel has, and it spans the full width, so growing the bar costs
+ * nothing. Both rules are scoped to `.mobile-chat-surface`, which exists on
+ * the phone only.
+ */
+.mobile-chat-surface .mobile-todo-panel {
+  translate: none;
+  border-bottom-width: 1px;
+  border-bottom-left-radius: var(--radius-xl);
+  border-bottom-right-radius: var(--radius-xl);
+}
+
+.mobile-chat-surface .mobile-todo-panel > header {
+  min-height: 2.75rem;
+}
+
+/*
  * The bottom sheets (`chat-header.tsx`, `composer-sheet.tsx`) inherit their
  * close button from the shared `SheetContent`, which sizes it to its 16px icon
  * and pins it at `top-4 right-4`. Both the size and the offset are restated
@@ -47,40 +85,4 @@
   align-items: center;
   justify-content: center;
   padding: 0;
-}
-
-/*
- * The `＋` panel's 模型 row opens the desktop model dialog, which the
- * `ModelSelector` portals to `document.body` — so it is not covered by the
- * sheet rule above. Its close button gets the same treatment, plus a width
- * cap so the dialog keeps a 16px gutter at 390px instead of running edge to
- * edge.
- */
-.mobile-model-dialog {
-  max-width: calc(100vw - 2rem);
-}
-
-.mobile-model-dialog > button {
-  top: 0.5rem;
-  right: 0.5rem;
-  display: flex;
-  width: 2.75rem;
-  height: 2.75rem;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
-/*
- * Two desktop sizes inside that dialog are below the phone floors. The rows
- * are `modelOptionRowClassName`'s `h-9` (36px) — a `min-height` wins over the
- * fixed `height`, so the row grows without the shared helper changing. The
- * search box is `text-sm` (14px), which iOS zooms into on focus.
- */
-.mobile-model-dialog [role="option"] {
-  min-height: 2.75rem;
-}
-
-.mobile-model-dialog input {
-  font-size: 1rem;
 }

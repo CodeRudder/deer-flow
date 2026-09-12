@@ -487,6 +487,13 @@ CSS 或外层包裹做不到、以及桌面如何证明未变。
 |---|---|---|---|---|
 | 1 | `components/workspace/artifacts/context.tsx` | `ArtifactsProvider` 加可选 `onOpenChange` 回调（T6） | 产物面板由 provider 自己开合，移动端没有面板可开，只有一条路由要跳 | 回调可选，桌面不传 → 行为逐字节不变 |
 | 2 | `components/workspace/messages/message-group.tsx`、`message-list.tsx` | 加可选 `collapsedSteps` prop（T13） | 步骤是 `MessageGroup` 自己排的，外层包不住；纯 CSS 改不了「折叠为摘要」这个结构 | 默认 `false`，桌面不传 → 走原分支；`mobile-transcript.spec.ts` 的 desktop 用例断言的正是「桌面仍是密集面板、无折叠摘要」 |
+| 3 | `components/workspace/messages/thinking-message.tsx`（新增）、`message-list.tsx`、`message-list-item.tsx` | 从三个调用点给 `ReasoningTrigger` 传 locale 感知的 `getThinkingMessage`（T19） | 文案硬编码在 `ai-elements/reasoning.tsx` 的 `defaultGetThinkingMessage` 里，而 `ai-elements/**` 是 registry 生成、禁止手改（registry 更新会冲掉）；`ReasoningTrigger` 的调用点全在共享组件里，mobile 目录没有任何一层能包住这段文案 | 只新增 1 个 prop + 1 个 hook 调用；`hasContent`、类名、DOM 结构、其余 props 一字未动；registry 自带 6 个默认行为用例仍全绿 |
+
+> **例外 #3 的一处桌面可见副效应（知情后接受）**：`t.toolCalls.thinking` 的英文是
+> `Thinking…`（U+2026 单字符省略号），registry 默认是 `Thinking...`（三个 ASCII 点）。
+> 既然文案改为走 locale 单一来源，en-US 的桌面用户就会看到这个字形变化。
+> 其余英文分支逐字节相同（`Thought for 12s` / `Thought for a few seconds`）。
+> 这不是 bug，但属于「为移动端做的改动在桌面可见」，故记在此处而非默默带过。
 
 ---
 
@@ -499,17 +506,34 @@ CSS 或外层包裹做不到、以及桌面如何证明未变。
 
 | 项 | 内容 |
 |---|---|
-| 重构 | `app/m/(app)/` 下再分两组：`(tabbed)/{workspace,agents,settings}` 与 `(fullbleed)/workspace/chats/[id]/artifacts/[path]`；标签栏只挂在 `(tabbed)/layout.tsx` |
+| 重构 | `app/m/(app)/` 下再分两组：`(tabbed)/{workspace,agents,settings}` 与 `(fullbleed)/`；标签栏只挂在 `(tabbed)/layout.tsx` |
 | 删除 | `shouldHideMobileTabBar()` 及其单测（`tab-bar.test.ts` 对应 describe） |
 | 修改 | `tab-bar.tsx` — 只留 `isTabActive()` 与渲染；不再读 pathname 决定「渲不渲染」 |
 | 文档 | 在 §1.3 补「例外登记表」（见上），把 T6/T13 两条已发生的例外补登记 |
 
 **验收**：
-- 产物页不渲染标签栏，会话页/列表/`/agents`/`/settings` 渲染 —— 由 E2E 断言，
-  不靠代码推断
+- 标签栏只在三个根屏幕出现 —— 由 E2E 断言，不靠代码推断
 - 全仓 `grep -r shouldHideMobileTabBar src/ tests/` 为空
 - 新增一条全屏路由时不需要动任何「隐藏规则」（结构上就不在标签栏组里）
 - 桌面 E2E 失败集合不扩大
+
+**落定（2026-09-13）**：`(tabbed)` = 会话列表 / `/agents` / `/settings`；
+`(fullbleed)` = **对话页 + 产物页**。Next 16 接受这个切分（dev server 自生成的
+`validator.ts` 里两组路由与 layout 都在，无「两路由组解析到同一路径」报错）。
+
+> **对话页的归属是产品决定，不是实现细节。** 我最初把对话页放在 `(tabbed)`，
+> 理由是「既有行为 + `mobile-tabs.spec.ts` 有断言」。施工时发现**原型 ② 根本没有
+> 标签栏** —— `class="tabbar"` 只出现在 ①⑥⑦ 三帧（曾据此请用户定夺，用户选「照原型」）。
+> 于是对话页移入 `(fullbleed)`，连带的两个非显然改动：
+> 1. **`composer.tsx` 原本刻意不加底部安全区**，注释写明「由下方标签栏承担」
+>    （`app/m/layout.tsx` 让两者做兄弟）。移走后 composer 独占底边，
+>    改为 `pb-[calc(0.375rem+env(safe-area-inset-bottom))]`；
+> 2. `mobile-tabs.spec.ts` 那条「thread 里标签栏仍可用」的用例反转为
+>    「thread 是全屏、无标签栏」，并从「点标签离开」改为「点返回离开」——
+>    **`/m/` 泄漏断言因此仍然留在原地**，只是换了离开方式。
+>
+> 教训：原型里「某个元素**不在**」和「某个元素在」一样是需求，逐帧比对时
+> 只记录「有什么」会漏掉「没有什么」。
 
 ---
 
@@ -568,6 +592,17 @@ prop / children 口子，那就**停下来报告**，用「改注册表文件」
 
 **要点**：`TodoList` 是共享组件 → 优先只用 CSS / 外层包裹；确需改它时按 §1.3
 走加法式可选 prop 并**登记到例外表**。
+
+**设计已补图（2026-09-13）**：原型新增 **⑨ 待办列表 · 展开** 与
+**⑩ 待办列表 · 折叠（默认）**，形态照搬 `todo-list.tsx` 的真实渲染
+（只有上沿两角圆角、无下边框、下压 4px 塞进输入区底下；列表区固定 112px 内部滚动；
+**默认折叠**）。补充这条是因为原型原先只画到 ③，待办面板没有出图 ——
+而它是 C11 的需求，没有图就没有验收基准。
+
+> **连带发现一处 i18n 缺口**：`todo-list.tsx` 的标题是硬编码英文 `To-dos`，
+> 不读 locale，与 T19 修的 `Thought for 12s` 属同一类。原型按中文「待办」出图，
+> 实现要补齐 —— 这会是 §1.3 的又一条例外（改共享组件的文案来源），
+> 待 T20 回报后统一编号登记。
 
 **验收**：mock 一个带 todos 的线程，待办列表出现在输入框上方、可折叠、
 项数正确；无 todos 时不渲染任何空壳。
@@ -779,14 +814,21 @@ pnpm build && pnpm exec playwright test tests/e2e/mobile-*.spec.ts
       390/360px 复测无横溢、切模式与切模型都进请求载荷；「＋」面板已无这两行
 - [x] **文件入口改到标题栏 + 产物页文件名切换器**（`d6177297`）——原型 ⑤ 同步为
       居中对话框；真机复测 12 项全通过
-- [ ] **T17 收口工程偏差**（标签栏结构性隐藏 + 例外登记）—— 未做
-- [ ] **T18 会话列表「生成中」标识** —— 未做
-- [ ] **T19 Reasoning 文案接 locale** —— 未做
+- [x] **T17 收口工程偏差** —— `(tabbed)` / `(fullbleed)` 路由组切分，
+      `shouldHideMobileTabBar()` 与其单测已删；对话页经产品决定移入 `(fullbleed)`
+      （原型 ② 无标签栏），`composer.tsx` 补回自己的底部安全区。真浏览器实测：
+      五个根/子路由 `navs=1 tabLinks=3`，产物页 `navs=0 actionbars=1`
+- [x] **T19 Reasoning 文案接 locale** —— 复用 `ReasoningTrigger` 既有的
+      `getThinkingMessage` 注入口，**未碰 registry 文件**；新增
+      `thinking-message.tsx`（纯格式化 + 带秒级跳动），三个调用点接同一个 hook。
+      用反证证明流式跳动未退化（摘掉 interval 后测试立刻变红）。已登记为 §1.3 例外 #3
+- [ ] **T18 会话列表「生成中」标识** —— 进行中
 - [ ] **T20 C11 待办列表** —— 未做
-- [ ] **T21 A5 分享 + 操作条刷新** —— 未做
 - [ ] **T22 设置页 S2–S9** —— 未做
-- [ ] **T23 移动端智能体页（T9）** —— 未做，本轮最大单块
-- [ ] **T24 测试收口**（隔离 E2E 环境 + E1/E2/E4/E5/E7/E8）—— 未做
+- [ ] **T23 移动端智能体页（T9）** —— 进行中，本轮最大单块
+- [ ] **T24 测试收口**（隔离 E2E 环境 + E1/E2/E4/E5/E7/E8）—— 进行中（基线）
+- [ ] **T25 评审缺陷修复 · messages 折叠簇** —— 进行中（含 Critical #1）
+- [ ] **T26 评审缺陷修复 · 产物页簇** —— 进行中（已并入原 T21 的分享/刷新）
 
 > **未执行的测试**：`mobile-chat.spec.ts`、`mobile-transcript.spec.ts`、
 > `mobile-artifacts.spec.ts` 三份 spec 的改动**都还没有在本机跑过**（原因见 T24）。
@@ -794,16 +836,24 @@ pnpm build && pnpm exec playwright test tests/e2e/mobile-*.spec.ts
 
 ### 执行顺序（2026-09-13 编排）
 
-| 波次 | 任务 | 能并行的理由 |
+**实际编排（2026-09-13，5 并发）**：
+
+| 波次 | 并行任务 | 为什么可以并行 |
 |---|---|---|
-| 1 | T17 ∥ T23 | 文件集不相交：T17 只碰 `tab-bar.tsx` + 文档；T23 只碰 `app/m/(app)/agents/**` 与 `components/workspace/mobile/agents/**`，且 `t.agents.*` 文案桌面已全量存在，无需新增 i18n |
-| 2 | T18 ∥ T20 | T18 碰 `thread-row.tsx` + 列表页；T20 碰对话页 + todo 相关。**两者都要写 i18n，必须串行收口 i18n 改动**（见下） |
-| 3 | T19 ∥ T21 / T22 | 同上下限约束 |
-| 最后 | T24 | 依赖全部代码改动落地，且要独占隔离构建 |
+| 1 | T17 ∥ T19 ∥ T24a ∥ 评审 | T19 碰 `messages/**`、与 `app/m/**` 不相交；T24a 只在 `/tmp/df-e2e` 用 `git archive HEAD` 的快照干活（**刻意不 rsync 工作区**，否则会抓到 T17 移动到一半的路由树）；评审只读 |
+| 2 | T23 ∥ T18 ∥ T26 | T17 落地后三者的文件集互不相交：`agents/**`、`thread-row + 列表页`、`artifact-actions + 产物页` |
 
-**i18n 是唯一的写冲突点**：三份 locale 文件（`types.ts` / `zh-CN.ts` / `en-US.ts`）
-几乎每个任务都要追加 key。两条硬约束：
+**关键使能动作：i18n 先集中铺好。** 三份 locale 文件（`types.ts` / `zh-CN.ts` /
+`en-US.ts`）几乎每个任务都要追加 key，是**唯一**的跨任务写冲突点。
+按原计划「同波次只允许一个任务改 locale」会把并行度压到 1。改为**开工前一次性把
+key 全铺好**（提交 `1dee7c70`），后续任务只消费不写入，冲突面直接消失。
 
-1. 同一波次内**最多一个任务**可以改这三份文件；其余任务若发现缺 key，
-   **回报缺哪个 key**，由收口方统一补，不要各写各的。
-2. 并发任务的文件集必须不相交 —— 上述波次表已按此排过，不要临时打乱。
+配套硬约束：
+
+1. 子代理**不得**改 `frontend/src/core/i18n/locales/**`。缺 key 就在报告里说明缺哪个，
+   由主代理统一补 —— 否则并行写同一文件必然互相覆盖。
+2. 并发任务的文件集必须不相交。派发前先列出每个任务要写的文件并与在跑任务比对。
+3. **结构性改动先落单跑**：T17 重构了 `app/m/(app)/**`，而这正是 T18/T20/T22/T23
+   要新建文件的地方，所以它必须先单独跑完。
+4. 子代理一律**不得跑 `pnpm build`**（会弄坏用户 `:3000` 上正在跑的生产服务）；
+   需要构建的验证统一放到 `/tmp/df-e2e` 隔离副本里。

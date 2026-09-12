@@ -16,6 +16,13 @@ export const MOCK_THREAD_ID = "00000000-0000-0000-0000-000000000001";
 export const MOCK_THREAD_ID_2 = "00000000-0000-0000-0000-000000000002";
 export const MOCK_RUN_ID = "00000000-0000-0000-0000-000000000099";
 
+/**
+ * The assistant message a joined run (`MockThread.activeRun`) appends, exported
+ * so a spec can assert on the text without restating it.
+ */
+export const JOINED_RUN_MESSAGE_ID = "msg-ai-joined-run";
+export const JOINED_RUN_REPLY = "Joined the run that was already in flight.";
+
 const MOCK_AUTH_USER = {
   id: "default",
   email: "default@test.local",
@@ -35,6 +42,22 @@ export type MockThread = {
   metadata?: Record<string, unknown>;
   messages?: unknown[];
   artifacts?: string[];
+  /**
+   * Per-thread run state, exactly as the gateway's `ThreadResponse` carries it
+   * (`running` while a run is in flight, `idle` once it settles). Defaults to
+   * `idle` so existing fixtures keep describing settled threads.
+   */
+  status?: string;
+  /**
+   * Opt-in: declare that this thread has a run in flight, exactly as the
+   * gateway's runs list would report it. The chat page adopts such a run on
+   * open (`pickActiveRunId` + `joinStream`), so the composer starts in its stop
+   * state and the reply streams in without the user sending anything.
+   *
+   * Fixtures that omit it keep the settled `success` run the runs-list mock has
+   * always returned — declaring nothing must never change a spec's behavior.
+   */
+  activeRun?: { run_id: string; status: "pending" | "running" };
 };
 
 export type MockAgent = {
@@ -122,9 +145,27 @@ export function mockLangGraphAPI(page: Page, options?: MockAPIOptions) {
       ...(thread.metadata ?? {}),
       ...(thread.agent_name ? { agent_name: thread.agent_name } : {}),
     },
-    status: "idle",
+    status: thread.status ?? "idle",
     values: { title: thread.title ?? "Untitled" },
   });
+
+  /**
+   * The runs list for a thread, newest first — which for these fixtures is a
+   * single run: the declared in-flight one when there is one, else a settled
+   * `success` run.
+   */
+  const runEntriesFor = (thread: MockThread) => [
+    {
+      run_id: thread.activeRun?.run_id ?? `run-${thread.thread_id}`,
+      thread_id: thread.thread_id,
+      assistant_id: "lead_agent",
+      status: thread.activeRun?.status ?? "success",
+      metadata: {},
+      kwargs: {},
+      created_at: "2025-01-01T00:00:00Z",
+      updated_at: thread.updated_at ?? "2025-01-01T00:00:00Z",
+    },
+  ];
 
   // Auth — keep workspace tests independent from a real gateway session.
   void page.route("**/api/v1/auth/me", (route) => {
@@ -375,26 +416,43 @@ export function mockLangGraphAPI(page: Page, options?: MockAPIOptions) {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(
-          matchingThread
-            ? [
-                {
-                  run_id: `run-${matchingThread.thread_id}`,
-                  thread_id: matchingThread.thread_id,
-                  assistant_id: "lead_agent",
-                  status: "success",
-                  metadata: {},
-                  kwargs: {},
-                  created_at: "2025-01-01T00:00:00Z",
-                  updated_at:
-                    matchingThread.updated_at ?? "2025-01-01T00:00:00Z",
-                },
-              ]
-            : [],
+          matchingThread ? runEntriesFor(matchingThread) : [],
         ),
       });
     }
     return route.fallback();
   });
+
+  // Run detail — `GET /threads/{threadId}/runs/{runId}`. The client wraps
+  // `joinStream` to look the run up first and skip runs that already finished
+  // (`shouldSkipReconnect` in `src/core/api/api-client.ts`), so the adoption
+  // path reads this endpoint before it opens the stream. Answering it keeps the
+  // adoption hermetic; unmocked it would reach the gateway.
+  //
+  // `(?!stream)` keeps the submit endpoint (`.../runs/stream`) on its own
+  // handler below rather than being read here as a run called "stream".
+  void page.route(
+    /\/api\/langgraph\/threads\/[^/]+\/runs\/(?!stream(\?|$))[^/]+(\?|$)/,
+    (route) => {
+      if (route.request().method() !== "GET") {
+        return route.fallback();
+      }
+      const url = route.request().url();
+      const matchingThread = threads.find((t) => url.includes(t.thread_id));
+      if (!matchingThread) {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "Run not found" }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(runEntriesFor(matchingThread)[0]),
+      });
+    },
+  );
 
   void page.route(
     /\/api\/threads\/([^/]+)\/runs\/([^/]+)\/messages/,
@@ -437,6 +495,23 @@ export function mockLangGraphAPI(page: Page, options?: MockAPIOptions) {
   void page.route(
     "**/api/langgraph/threads/*/runs/stream",
     handleMockRunStream,
+  );
+
+  // Join stream — `GET /threads/{threadId}/runs/{runId}/stream`: the endpoint
+  // the SDK's `joinStream` opens to adopt a run this page did not start (see
+  // `MockThread.activeRun`). The two globs above cannot match it — their single
+  // `*` stands for the thread id, so the extra `/{runId}` segment fails to
+  // match — hence a pattern of its own.
+  void page.route(
+    /\/api\/langgraph\/threads\/[^/]+\/runs\/[^/]+\/stream(\?|$)/,
+    (route) => {
+      if (route.request().method() !== "GET") {
+        return route.fallback();
+      }
+      const url = route.request().url();
+      const matchingThread = threads.find((t) => url.includes(t.thread_id));
+      return handleJoinedRunStream(route, matchingThread);
+    },
   );
 
   // Models list — model picker dropdown
@@ -529,6 +604,62 @@ export function handleRunStream(route: Route) {
       event: "values",
       data: {
         messages: mockStreamMessages(),
+      },
+    },
+    { event: "end", data: {} },
+  ];
+
+  const body = events
+    .map((e) => `event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`)
+    .join("");
+
+  return route.fulfill({
+    status: 200,
+    contentType: "text/event-stream",
+    body,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// handleJoinedRunStream
+// ---------------------------------------------------------------------------
+
+/**
+ * The SSE stream a joined run replays, in the same shape `handleRunStream`
+ * uses (`metadata` → `values` → `end`).
+ *
+ * A `values` event carries the whole thread state, so this reports what the
+ * thread already had plus one new assistant message — the real backend's
+ * "here is the state as of now, and here is what the run went on to produce".
+ * The caller's declared fixture messages are reused, which keeps the transcript
+ * intact for threads that already have turns.
+ *
+ * The run id is read back out of the request URL rather than from a constant,
+ * so the stream names the run the page actually asked to join.
+ */
+export function handleJoinedRunStream(route: Route, thread?: MockThread) {
+  const requestUrl = new URL(route.request().url());
+  const runId = requestUrl.pathname.split("/").at(-2) ?? MOCK_RUN_ID;
+  const threadId = thread?.thread_id ?? MOCK_THREAD_ID;
+
+  const events = [
+    {
+      event: "metadata",
+      data: { run_id: runId, thread_id: threadId },
+    },
+    {
+      event: "values",
+      data: {
+        title: thread?.title ?? "Untitled",
+        messages: [
+          ...(thread?.messages ?? mockStreamMessages()),
+          {
+            type: "ai",
+            id: JOINED_RUN_MESSAGE_ID,
+            content: JOINED_RUN_REPLY,
+          },
+        ],
+        artifacts: thread?.artifacts ?? [],
       },
     },
     { event: "end", data: {} },

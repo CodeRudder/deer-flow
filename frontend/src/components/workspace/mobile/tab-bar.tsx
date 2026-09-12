@@ -53,34 +53,15 @@ export function isTabActive(pathname: string, href: string): boolean {
 }
 
 /**
- * The full-screen artifact view (T6), the one signed-in screen that owns the
- * whole viewport and must not also show the bar.
- *
- * Prototype ⑤ is full-bleed with a single action bar at the bottom; a tab bar
- * under it would stack two bars and split the safe-area inset between them. It
- * is matched by shape rather than by prefix because the thread id sits in the
- * middle — a `startsWith("/workspace/chats")` would take the chat screen's bar
- * away too.
- *
- * The signed-out screens used to be listed here as well. They are not any more:
- * the bar renders from `app/m/(app)/layout.tsx`, which the `(auth)` route group
- * is not under, so "no bar on sign-in" is now structure rather than a pathname
- * test that had to be kept in sync with the route tree.
+ * Where the bar renders — and therefore whether it renders at all — is the
+ * route group's decision, not this component's (T17). `(tabbed)` renders it,
+ * `(fullbleed)` and `(auth)` do not, so a new full-screen route needs no
+ * change here and no hide pattern to keep in sync. `usePathname()` is read for
+ * one thing only: which tab is lit.
  */
-const TAB_BAR_HIDDEN_PATTERN =
-  /^\/m\/workspace\/chats\/[^/]+\/artifacts(?:\/|$)/;
-
-export function shouldHideMobileTabBar(pathname: string): boolean {
-  return TAB_BAR_HIDDEN_PATTERN.test(normalizeMobilePathname(pathname));
-}
-
 export function MobileTabBar({ className }: { className?: string }) {
   const pathname = usePathname();
   const { t } = useI18n();
-
-  if (shouldHideMobileTabBar(pathname)) {
-    return null;
-  }
 
   const labels = {
     chats: t.sidebar.chats,

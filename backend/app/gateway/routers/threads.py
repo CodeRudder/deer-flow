@@ -1032,8 +1032,12 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
                 serialized = serialize_channel_values({"artifacts": channel_values.get("artifacts")})
                 values["artifacts"] = serialized.get("artifacts", [])
 
-            # Attach messages only to the latest checkpoint entry.
+            # Attach messages and todos only to the latest checkpoint entry: both
+            # describe the thread's *current* state, so repeating them on every
+            # historical entry would report the plan as it stood mid-run.
             if is_latest_checkpoint:
+                if "todos" in channel_values:
+                    values["todos"] = _prepare_values_response(thread_id, {"todos": channel_values.get("todos") or []}).get("todos", [])
                 messages = channel_values.get("messages")
                 if messages:
                     serialized_msgs = serialize_channel_values_for_api({"messages": messages}).get("messages", [])

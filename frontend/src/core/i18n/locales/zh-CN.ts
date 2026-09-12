@@ -284,6 +284,7 @@ export const zhCN: Translations = {
       "该智能体仅存在于旧版共享目录，尚未迁移到当前用户名下，无法在此编辑。",
     loadDetailFailed:
       "加载智能体详情失败，当前展示列表数据，可能不是最新内容。",
+    loadFailed: "智能体列表加载失败。",
     createChoiceDescription: "选择创建方式",
     createChoiceManualTitle: "手动创建",
     createChoiceManualDescription:

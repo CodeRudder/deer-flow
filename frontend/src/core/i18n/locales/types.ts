@@ -245,6 +245,12 @@ export interface Translations {
     apiDisabledError: string;
     legacyOnlyError: string;
     loadDetailFailed: string;
+    /**
+     * The gallery itself could not be fetched. Distinct from `loadDetailFailed`
+     * (which says "showing stale data"): here there is nothing to show at all,
+     * so the mobile list renders this with a retry instead of an empty state.
+     */
+    loadFailed: string;
     createChoiceDescription: string;
     createChoiceManualTitle: string;
     createChoiceManualDescription: string;

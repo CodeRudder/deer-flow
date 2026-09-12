@@ -3,7 +3,6 @@ import { Toaster } from "sonner";
 
 import { QueryClientProvider } from "@/components/query-client-provider";
 import { GatewayOfflineFallback } from "@/components/workspace/gateway-offline-fallback";
-import { MobileTabBar } from "@/components/workspace/mobile/tab-bar";
 import { AuthProvider } from "@/core/auth/AuthProvider";
 import { getServerSideUser } from "@/core/auth/server";
 import { assertNever } from "@/core/auth/types";
@@ -11,7 +10,7 @@ import { assertNever } from "@/core/auth/types";
 export const dynamic = "force-dynamic";
 
 /**
- * Guards, providers and the tab bar for every **signed-in** mobile screen.
+ * The guard and the providers for every **signed-in** mobile screen.
  *
  * The split is by session, not by path: `(app)` holds everything a signed-in
  * user may reach — the thread list, the chat, the artifact viewer, and the
@@ -26,6 +25,14 @@ export const dynamic = "force-dynamic";
  * a pathname prefix test rather than as structure. Both are fixed here: the
  * guard covers the whole signed-in tree, and `(auth)` simply never renders the
  * bar.
+ *
+ * It renders no chrome of its own. The bottom edge belongs to the two groups
+ * below it (T17): `(tabbed)` renders the scrolling `<main>` *and* the tab bar,
+ * `(fullbleed)` renders the `<main>` alone. Both are fragments around
+ * `children`, so the DOM is the `100dvh` column from `app/m/layout.tsx` with
+ * whichever pair of elements the group asked for — which is why the bar can be
+ * a sibling of `<main>` rather than something nested inside its scroll
+ * container.
  *
  * Mirrors `app/workspace/layout.tsx` branch for branch — the two trees serve
  * the same data and must not disagree about who may see it. Providers belong
@@ -45,9 +52,7 @@ export default async function MobileAppLayout({
     case "authenticated":
       return (
         <QueryClientProvider>
-          <AuthProvider initialUser={result.user}>
-            <MobileAppScreen>{children}</MobileAppScreen>
-          </AuthProvider>
+          <AuthProvider initialUser={result.user}>{children}</AuthProvider>
           <Toaster position="top-center" />
         </QueryClientProvider>
       );
@@ -64,7 +69,7 @@ export default async function MobileAppLayout({
       return (
         <QueryClientProvider>
           <GatewayOfflineFallback renderBanner>
-            <MobileAppScreen>{children}</MobileAppScreen>
+            {children}
           </GatewayOfflineFallback>
           <Toaster position="top-center" />
         </QueryClientProvider>
@@ -74,24 +79,4 @@ export default async function MobileAppLayout({
     default:
       assertNever(result);
   }
-}
-
-/**
- * The signed-in shell: a scrolling content column above the tab bar.
- *
- * This is the scaffolding `app/m/layout.tsx` used to supply for every `/m/*`
- * route, moved here so the bar exists only where a session does. It is a plain
- * server component — the bar reads `usePathname()` to hide itself on the
- * full-screen artifact route, so the hiding stays in one client component
- * rather than being split across the tree.
- */
-function MobileAppScreen({ children }: { children: React.ReactNode }) {
-  return (
-    <>
-      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {children}
-      </main>
-      <MobileTabBar />
-    </>
-  );
 }

@@ -50,6 +50,7 @@ import { ImageLightbox } from "../artifacts/image-lightbox";
 import { CopyButton } from "../copy-button";
 
 import { MarkdownContent } from "./markdown-content";
+import { useGetThinkingMessage } from "./thinking-message";
 
 function FeedbackButtons({
   threadId,
@@ -235,6 +236,7 @@ function MessageContent_({
   turnStartTime?: number | null;
 }) {
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
+  const getThinkingMessage = useGetThinkingMessage();
   const isHuman = message.type === "human";
   const rawTurnDuration = message.additional_kwargs?.turn_duration as
     | number
@@ -391,7 +393,7 @@ function MessageContent_({
           duration={turnDuration}
           onTurnDurationChange={handleDurationChange}
         >
-          <ReasoningTrigger />
+          <ReasoningTrigger getThinkingMessage={getThinkingMessage} />
           <SafeReasoningContent>{reasoningContent}</SafeReasoningContent>
         </Reasoning>
       </AIElementMessageContent>
@@ -436,7 +438,10 @@ function MessageContent_({
             duration={turnDuration}
             onTurnDurationChange={handleDurationChange}
           >
-            <ReasoningTrigger hasContent={!!reasoningContent} />
+            <ReasoningTrigger
+              hasContent={!!reasoningContent}
+              getThinkingMessage={getThinkingMessage}
+            />
             {reasoningContent && (
               <SafeReasoningContent>{reasoningContent}</SafeReasoningContent>
             )}

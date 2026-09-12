@@ -25,7 +25,7 @@ export function resolveMode(
   return mode ?? (supportsThinking ? "pro" : "flash");
 }
 
-/** The reasoning-effort level each mode implies, mirroring the desktop menu. */
+/** The reasoning-effort level each mode implies. See `modeSelection` below. */
 export type ComposerEffort = "minimal" | "low" | "medium" | "high";
 
 const MODE_EFFORT: Record<ComposerMode, ComposerEffort> = {
@@ -40,8 +40,17 @@ const MODE_EFFORT: Record<ComposerMode, ComposerEffort> = {
  *
  * One rule, three call sites — the mode picker, the `＋` panel's 思考 shortcut
  * and its 计划模式 row all write the same pair. Kept pure so the derivation is
- * unit-testable and cannot drift between them; the desktop writes exactly these
- * values in `input-box.tsx`'s `handleModeSelect`.
+ * unit-testable and cannot drift between them.
+ *
+ * Deliberately **not** the same values as `input-box.tsx`'s `handleModeSelect`,
+ * which derives the effort from the mode the user *clicked* rather than from
+ * the resolved one. The two agree whenever the model supports thinking. They
+ * diverge only when it does not: that menu still offers Pro/Ultra (only the
+ * 思考 entry is gated on `supportThinking`), so clicking Ultra on a
+ * non-thinking model makes the desktop send `{mode: "flash",
+ * reasoning_effort: "high"}`. Resolving first, as here, keeps the pair
+ * self-consistent instead. No functional difference today — a model without
+ * thinking has no use for `reasoning_effort`.
  */
 export function modeSelection(
   mode: ComposerMode,

@@ -210,8 +210,10 @@ test.describe("Mobile chat composer", () => {
     const composer = page.getByTestId("mobile-composer");
     await expect(composer).toBeVisible({ timeout: 15_000 });
 
-    // Exactly two buttons: ＋ and send. Everything else moved into the panel.
-    await expect(composer.locator("button")).toHaveCount(2);
+    // ＋, the mode pill, the model pill and send. T16 moved mode and model onto
+    // the main row as pills — the ＋-panel test further down asserts the sheet
+    // no longer carries them — so the row is four controls, not two.
+    await expect(composer.locator("button")).toHaveCount(4);
     await expect(page.getByTestId("mobile-composer-plus")).toBeVisible();
     await expect(page.getByTestId("mobile-composer-send")).toBeVisible();
     await expect(composer.locator("textarea")).toHaveCount(1);

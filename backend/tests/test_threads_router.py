@@ -599,6 +599,92 @@ def test_get_thread_history_includes_latest_checkpoint_artifacts() -> None:
     ]
 
 
+def test_get_thread_history_includes_latest_checkpoint_todos() -> None:
+    """The frontend hydrates thread.values from /history on historical chats.
+
+    Keep todos in the latest history entry only, so the to-do panel renders on
+    reload instead of showing an empty list. Unlike artifacts, todos describe the
+    *current* plan, so a stale checkpoint must not report its own copy.
+    """
+    app, _store, checkpointer = _build_thread_app()
+    thread_id = "history-todos"
+
+    older_todos = [{"content": "stale step", "status": "completed"}]
+    latest_todos = [
+        {"content": "collect sources", "status": "completed"},
+        {"content": "draft the summary", "status": "in_progress"},
+        {"content": "review the draft", "status": "pending"},
+    ]
+
+    async def _seed() -> None:
+        from langgraph.checkpoint.base import empty_checkpoint
+
+        for index, todos in enumerate((older_todos, latest_todos)):
+            checkpoint = empty_checkpoint()
+            checkpoint["channel_values"] = {"title": "Todos", "todos": todos}
+            checkpoint["channel_versions"] = {"title": index + 1, "todos": index + 1}
+            await checkpointer.aput(
+                {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+                checkpoint,
+                {"step": index, "source": "loop", "writes": None, "parents": {}},
+                {"title": index + 1, "todos": index + 1},
+            )
+
+    import asyncio
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/threads/{thread_id}/history",
+            json={"limit": 10},
+        )
+
+    assert response.status_code == 200, response.text
+    entries = response.json()
+    assert len(entries) >= 2, "expected both seeded checkpoints"
+    assert entries[0]["values"]["todos"] == latest_todos
+    assert "todos" not in entries[1]["values"], "only the latest entry may carry todos"
+
+
+def test_get_thread_history_omits_todos_key_when_channel_absent() -> None:
+    """An absent todos channel must not surface as an empty list.
+
+    The frontend distinguishes "no plan was ever written" from "the plan is
+    empty"; synthesizing ``[]`` here would blur that and paint an empty panel.
+    """
+    app, _store, checkpointer = _build_thread_app()
+    thread_id = "history-todos-absent"
+
+    async def _seed() -> None:
+        from langgraph.checkpoint.base import empty_checkpoint
+
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = {"title": "No todos"}
+        checkpoint["channel_versions"] = {"title": 1}
+        await checkpointer.aput(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+            checkpoint,
+            {"step": -1, "source": "input", "writes": None, "parents": {}},
+            {"title": 1},
+        )
+
+    import asyncio
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/threads/{thread_id}/history",
+            json={"limit": 10},
+        )
+
+    assert response.status_code == 200, response.text
+    entries = response.json()
+    assert entries, "expected at least one history entry"
+    assert "todos" not in entries[0]["values"]
+
+
 # ── Metadata filter validation at API boundary ────────────────────────────────
 
 

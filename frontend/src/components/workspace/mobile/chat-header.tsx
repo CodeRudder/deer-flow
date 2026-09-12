@@ -40,6 +40,15 @@ const CONTROL_ROW_CLASS =
 type MobileChatHeaderProps = {
   /** Recomputed by `useChatPage()`; `""` for a thread the backend has not titled yet. */
   title: string;
+  /**
+   * Where the back button goes. Defaults to the thread list — the screen a
+   * plain chat came from. An *agent* chat comes from `/agents` (the mobile
+   * gallery), so its page overrides both this and `backLabel`; both are the
+   * public paths the middleware rewrites, never `/m/...`.
+   */
+  backHref?: string;
+  /** Accessible name of the back button; defaults to the thread list's label. */
+  backLabel?: string;
   threadId: string;
   thread: BaseStream<AgentThreadState>;
   isNewThread: boolean;
@@ -64,6 +73,8 @@ type MobileChatHeaderProps = {
  */
 export function MobileChatHeader({
   title,
+  backHref = "/workspace",
+  backLabel,
   threadId,
   thread,
   isNewThread,
@@ -77,6 +88,7 @@ export function MobileChatHeader({
 }: MobileChatHeaderProps) {
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
+  const resolvedBackLabel = backLabel ?? t.pages.chats;
   // The thread's artifacts, published by the chat page (the desktop does the
   // same from `ChatBox`). `ArtifactTrigger` — the desktop header's entry point
   // — is gated on exactly this: an empty list means there is nothing to open,
@@ -102,11 +114,12 @@ export function MobileChatHeader({
 
   return (
     <header className="bg-background/95 sticky top-0 z-20 flex shrink-0 items-center gap-1 border-b px-1 py-1 supports-backdrop-filter:backdrop-blur">
-      {/* The public path: middleware re-lands this on `/m/workspace`, so the
-          address bar never shows the internal prefix. */}
+      {/* A public path (`/workspace`, or `/agents` on an agent chat): the
+          middleware re-lands it on the mobile tree, so the address bar never
+          shows the internal prefix. */}
       <Link
-        href="/workspace"
-        aria-label={t.pages.chats}
+        href={backHref}
+        aria-label={resolvedBackLabel}
         data-testid="mobile-chat-back"
         className="active:bg-accent flex size-11 shrink-0 items-center justify-center rounded-full"
       >

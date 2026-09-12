@@ -20,6 +20,55 @@ test.use({
   defaultBrowserType: "chromium",
 });
 
+declare global {
+  interface Window {
+    __deerflowShareCalls?: { title?: string; files?: string[] }[];
+  }
+}
+
+/**
+ * Puts a share sheet where the browser has none (A5).
+ *
+ * `accepts` is the answer `canShare({ files })` gives — the whole decision the
+ * action bar makes — and the recorded calls are what a real sheet would have
+ * received. Both are defined on the `navigator` *instance* so they shadow the
+ * platform's own: headless Chromium on macOS does expose `navigator.share`,
+ * and driving the real one is not something a test can do.
+ */
+async function installShareApi(page: Page, accepts: boolean) {
+  await page.addInitScript((acceptsFiles: boolean) => {
+    window.__deerflowShareCalls = [];
+    Object.defineProperty(navigator, "canShare", {
+      configurable: true,
+      value: () => acceptsFiles,
+    });
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: (data?: ShareData) => {
+        window.__deerflowShareCalls?.push({
+          title: data?.title,
+          files: Array.from(data?.files ?? []).map((file) => file.name),
+        });
+        return Promise.resolve();
+      },
+    });
+  }, accepts);
+}
+
+/** Takes the share API away: the platform the download fallback exists for. */
+async function removeShareApi(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(navigator, "canShare", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+}
+
 const CHAT_PATH = `/workspace/chats/${MOCK_THREAD_ID}`;
 
 const HTML_PATH = "/artifact-fixtures/report.html";
@@ -375,6 +424,79 @@ test.describe("Mobile artifact actions", () => {
     }
   });
 
+  test("分享 hands the artifact's file to the platform's share sheet", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await mockArtifactBytes(page);
+    await installShareApi(page, true);
+    await page.goto(artifactPath(HTML_PATH));
+
+    const share = page.getByTestId("mobile-artifact-share");
+    await expect(share).toBeVisible({ timeout: 15_000 });
+    await share.click();
+
+    // The bytes are fetched first — a share sheet takes files, not URLs — so
+    // this also pins that the file, and not the session-bound link, is what
+    // leaves the device.
+    await expect
+      .poll(() => page.evaluate(() => window.__deerflowShareCalls ?? []))
+      .toEqual([{ title: "report.html", files: ["report.html"] }]);
+  });
+
+  test("分享 falls back to the download where the platform cannot share", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await mockArtifactBytes(page);
+    await removeShareApi(page);
+
+    let requested = false;
+    await page.context().route(/download=true/, (route) => {
+      requested = true;
+      return route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        body: "ok",
+      });
+    });
+
+    await page.goto(artifactPath(HTML_PATH));
+
+    // A tap must never do nothing: with no share API the same button downloads.
+    const [popup] = await Promise.all([
+      page.waitForEvent("popup"),
+      page.getByTestId("mobile-artifact-share").click({ timeout: 15_000 }),
+    ]);
+    await expect.poll(() => requested).toBe(true);
+    expect(popup.url()).toContain("download=true");
+    await popup.close();
+  });
+
+  test("刷新 re-fetches the artifact's bytes", async ({ page }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    let fetches = 0;
+    await page.route(/\/api\/threads\/[^/]+\/artifacts\//, (route) => {
+      fetches += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: HTML_BODY,
+      });
+    });
+
+    await page.goto(artifactPath(HTML_PATH));
+
+    const refresh = page.getByTestId("mobile-artifact-refresh");
+    await expect(refresh).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => fetches).toBeGreaterThan(0);
+    const before = fetches;
+
+    await refresh.click();
+
+    await expect.poll(() => fetches).toBeGreaterThan(before);
+  });
+
   test("back returns to the chat", async ({ page }) => {
     mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
     await mockArtifactBytes(page);
@@ -400,8 +522,12 @@ test.describe("Mobile artifact actions", () => {
     await expect(page.getByTestId("mobile-artifact-actions")).toBeVisible({
       timeout: 15_000,
     });
-    // The screen is full-bleed: one bottom bar, not two (prototype ⑤).
-    await expect(page.getByRole("navigation")).toHaveCount(1);
+    // The screen is full-bleed: one bottom bar, not two (prototype ⑤). The
+    // action bar is a plain `div`, so the tab bar is the only `navigation`
+    // landmark this screen could have — and T17 makes its absence structure
+    // (the route sits in `(fullbleed)`, which does not render the bar) rather
+    // than a pathname test.
+    await expect(page.getByRole("navigation")).toHaveCount(0);
   });
 });
 
@@ -410,6 +536,83 @@ test.describe("Mobile artifact actions", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Mobile artifact switching", () => {
+  /**
+   * The geometry has to be measured on a *cold start* of this route.
+   *
+   * The file switcher is the model dialog, whose touch rules used to live in
+   * `chat-surface.css` — a stylesheet only the chat route imports. CSS is split
+   * per route, so arriving here from the chat kept that chunk in memory and
+   * every measurement passed, while a phone opening (or reloading) an artifact
+   * link got desktop geometry instead. That is why this test starts with
+   * `goto` and never with a click from the chat.
+   */
+  test("a cold load of the artifact URL gets the touch geometry", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await mockArtifactBytes(page);
+    await page.goto(artifactPath(HTML_PATH));
+
+    // `min-h-11` on the switcher — the title is now a control, not a heading.
+    const switcher = page.getByTestId("mobile-artifact-switcher");
+    await expect(switcher).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => (await switcher.boundingBox())?.height ?? 0)
+      .toBeGreaterThanOrEqual(44);
+
+    await switcher.click();
+
+    // Rows are the shared 36px (`h-9`), grown by `.mobile-model-dialog
+    // [role="option"]`'s min-height — which is exactly the rule that used to be
+    // missing here.
+    const rows = page.locator('.mobile-model-dialog [role="option"]');
+    await expect(rows).toHaveCount(ARTIFACT_THREAD.artifacts.length);
+    // Polled, not measured once: the dialog animates in (`zoom-in-95`, 200ms)
+    // and a box read mid-flight is the row scaled by ~0.96, i.e. 42.5px — a
+    // false alarm about a rule that is in fact loaded.
+    const rowHeights = () =>
+      rows.evaluateAll((elements) =>
+        elements.map((element) => element.getBoundingClientRect().height),
+      );
+    await expect
+      .poll(async () => Math.min(...(await rowHeights())))
+      .toBeGreaterThanOrEqual(44);
+
+    // Under 16px iOS zooms the whole page in when the search box takes focus.
+    await expect
+      .poll(() =>
+        page
+          .locator(".mobile-model-dialog input")
+          .evaluate((element) =>
+            parseFloat(getComputedStyle(element).fontSize),
+          ),
+      )
+      .toBeGreaterThanOrEqual(16);
+  });
+
+  test("picking the file that is already open closes the list", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await mockArtifactBytes(page);
+    await page.goto(artifactPath(HTML_PATH));
+
+    const switcher = page.getByTestId("mobile-artifact-switcher");
+    await expect(switcher).toBeVisible({ timeout: 15_000 });
+    await switcher.click();
+
+    const current = page.getByTestId("mobile-artifact-option-report.html");
+    await expect(current).toBeVisible();
+    await current.click();
+
+    // The URL does not change, so nothing else would tear the dialog down:
+    // cmdk reports the selection but never closes its parent dialog.
+    await expect(current).toHaveCount(0);
+    await expect(page.getByTestId("mobile-artifact-title")).toHaveText(
+      "report.html",
+    );
+  });
+
   test("the title's file name opens the switcher and lands on another file", async ({
     page,
   }) => {

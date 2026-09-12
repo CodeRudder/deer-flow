@@ -6,16 +6,11 @@ import {
   isTabActive,
   MobileTabBar,
   normalizeMobilePathname,
-  shouldHideMobileTabBar,
 } from "@/components/workspace/mobile/tab-bar";
 
 // The render assertions below need a pathname and translations; the pure
 // functions above ignore both.
 const mockPathname = rs.hoisted(() => ({ current: "/m/workspace" }));
-
-const THREAD_ID = "00000000-0000-0000-0000-000000000001";
-/** An artifact identifier is one percent-encoded segment (`artifactHref`). */
-const ENCODED_ARTIFACT = "%2Fmnt%2Fuser-data%2Foutputs%2Freport.html";
 
 rs.mock("next/navigation", () => ({
   usePathname: () => mockPathname.current,
@@ -84,58 +79,11 @@ describe("isTabActive", () => {
 });
 
 /**
- * The bar is rendered from `app/m/(app)/layout.tsx`, so the signed-out screens
- * never reach it — "no bar on sign-in" is route-group structure, not a pathname
- * test. The only screen that still hides it by path is the full-screen artifact
- * view.
- */
-describe("shouldHideMobileTabBar", () => {
-  test("hides it on the full-screen artifact view (T6)", () => {
-    // The artifact screen owns the bottom edge: it has an action bar and
-    // carries the safe-area inset, so a tab bar underneath would stack two
-    // bars (prototype ⑤ has none).
-    expect(
-      shouldHideMobileTabBar(
-        `/m/workspace/chats/${THREAD_ID}/artifacts/${ENCODED_ARTIFACT}`,
-      ),
-    ).toBe(true);
-    // The same screen on the pre-rewrite path `usePathname()` reports.
-    expect(
-      shouldHideMobileTabBar(
-        `/workspace/chats/${THREAD_ID}/artifacts/${ENCODED_ARTIFACT}`,
-      ),
-    ).toBe(true);
-  });
-
-  test("keeps the bar on every other signed-in screen", () => {
-    // The pattern matches the artifact segment only — a `startsWith` on the
-    // chat path would take the chat screen's bar away with it.
-    expect(shouldHideMobileTabBar(`/m/workspace/chats/${THREAD_ID}`)).toBe(
-      false,
-    );
-    expect(shouldHideMobileTabBar("/m/workspace/chats/new")).toBe(false);
-    expect(shouldHideMobileTabBar("/m/workspace")).toBe(false);
-    expect(shouldHideMobileTabBar("/workspace/chats/abc")).toBe(false);
-    expect(shouldHideMobileTabBar("/m/agents")).toBe(false);
-    expect(shouldHideMobileTabBar("/m/settings/profile")).toBe(false);
-  });
-
-  test("does not hide on a path that merely shares a prefix", () => {
-    expect(shouldHideMobileTabBar(`/m/workspace/chats/${THREAD_ID}/artifact`)).toBe(
-      false,
-    );
-    expect(
-      shouldHideMobileTabBar(
-        `/m/workspace/chats/${THREAD_ID}/xartifacts/a.html`,
-      ),
-    ).toBe(false);
-  });
-});
-
-/**
- * The guard must not change what the bar renders anywhere else. When
- * `shouldHideMobileTabBar` is false the component falls through to the exact
- * branch it had before the guard was added.
+ * There is deliberately no "should the bar render here" test: that decision is
+ * no longer this component's. `(tabbed)/layout.tsx` renders the bar and
+ * `(fullbleed)` / `(auth)` do not, so the property is the route tree's, and the
+ * E2E suite is where it is asserted (the artifact screen has no bar, the list /
+ * chat / agents / settings screens do).
  */
 describe("MobileTabBar rendering", () => {
   test("still renders all three tabs on a workspace screen", () => {
@@ -165,11 +113,5 @@ describe("MobileTabBar rendering", () => {
     for (const href of hrefs) {
       expect(href?.startsWith("/m/")).toBe(false);
     }
-  });
-
-  test("renders nothing on the full-screen artifact view", () => {
-    mockPathname.current = `/workspace/chats/${THREAD_ID}/artifacts/${ENCODED_ARTIFACT}`;
-    const { container } = render(createElement(MobileTabBar));
-    expect(container.querySelector("nav")).toBeNull();
   });
 });

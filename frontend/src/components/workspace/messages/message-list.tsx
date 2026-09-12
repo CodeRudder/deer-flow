@@ -71,6 +71,7 @@ import {
 } from "./message-token-usage";
 import { MessageListSkeleton } from "./skeleton";
 import { SubtaskCard } from "./subtask-card";
+import { useGetThinkingMessage } from "./thinking-message";
 
 export const MESSAGE_LIST_DEFAULT_PADDING_BOTTOM = 24;
 
@@ -232,6 +233,7 @@ export function MessageList({
   ) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
 }) {
   const { t } = useI18n();
+  const getThinkingMessage = useGetThinkingMessage();
   const [turnStartTime, setTurnStartTime] = useState<number | null>(null);
   const prevIsLoading = useRef(thread.isLoading);
 
@@ -790,6 +792,7 @@ export function MessageList({
                     key={`thinking-group-${message.id ?? `${groupKey}-${messageIndex}`}`}
                     messages={[message]}
                     isLoading={groupIsLoading}
+                    collapsedSteps={collapsedSteps}
                     tokenDebugSteps={tokenDebugSteps.filter(
                       (step) => step.messageId === message.id,
                     )}
@@ -854,7 +857,10 @@ export function MessageList({
           !hasActiveAssistantText && (
             <div className="w-full">
               <Reasoning isStreaming={true} startTimeProp={turnStartTime}>
-                <ReasoningTrigger hasContent={false} />
+                <ReasoningTrigger
+                  hasContent={false}
+                  getThinkingMessage={getThinkingMessage}
+                />
               </Reasoning>
             </div>
           )}

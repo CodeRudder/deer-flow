@@ -31,19 +31,28 @@ export const ModelSelectorTrigger = (props: ModelSelectorTriggerProps) => (
 
 export type ModelSelectorContentProps = ComponentProps<typeof DialogContent> & {
   title?: ReactNode;
+  /**
+   * Screen-reader description of the dialog. Defaults to the registry's own
+   * sentence, so omitting it changes nothing; a caller that is not a model
+   * picker (the artifact screen's file switcher reuses this dialog) passes
+   * its own wording instead of announcing itself as a model chooser.
+   */
+  description?: ReactNode;
 };
+
+/** The registry's original description, kept as the default verbatim. */
+const DEFAULT_DESCRIPTION = "Search and choose a model for this conversation.";
 
 export const ModelSelectorContent = ({
   className,
   children,
   title = "Model Selector",
+  description = DEFAULT_DESCRIPTION,
   ...props
 }: ModelSelectorContentProps) => (
   <DialogContent className={cn("p-0", className)} {...props}>
     <DialogTitle className="sr-only">{title}</DialogTitle>
-    <DialogDescription className="sr-only">
-      Search and choose a model for this conversation.
-    </DialogDescription>
+    <DialogDescription className="sr-only">{description}</DialogDescription>
     <Command className="**:data-[slot=command-input-wrapper]:h-auto">
       {children}
     </Command>

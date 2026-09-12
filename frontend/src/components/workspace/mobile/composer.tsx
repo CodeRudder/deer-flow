@@ -373,11 +373,12 @@ export function MobileComposer({
   return (
     <div
       data-testid="mobile-composer"
-      // No bottom safe-area inset here on purpose: the tab bar below the
-      // composer already carries it on this route (`app/m/layout.tsx` renders
-      // the two as siblings), and adding it twice would leave a dead gap above
-      // the home indicator.
-      className="bg-background/95 shrink-0 border-t px-2 pt-1.5 pb-1.5 supports-backdrop-filter:backdrop-blur"
+      // The composer owns the bottom edge: the thread route lives in
+      // `(app)/(fullbleed)`, so there is no tab bar underneath to carry the
+      // inset for it (prototype ② draws it straight onto the home indicator).
+      // On the tabbed roots this element is not rendered at all, so the inset
+      // can never be applied twice.
+      className="bg-background/95 shrink-0 border-t px-2 pt-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] supports-backdrop-filter:backdrop-blur"
     >
       {showSkillSuggestions && (
         <div

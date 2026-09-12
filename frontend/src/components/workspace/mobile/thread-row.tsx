@@ -56,6 +56,30 @@ type ThreadRowProps = {
 };
 
 /**
+ * True when the thread has a run in flight (prototype ①'s「● 生成中」).
+ *
+ * No extra request: `threads.search` already returns a per-thread `status`
+ * (the gateway's `ThreadResponse.status`, read straight off `threads_meta`).
+ * The gateway writes `running` when the run is created
+ * (`app/gateway/services.py`) and resets the row to `idle` — or to the run's
+ * terminal status — when it ends (`deerflow/runtime/runs/worker.py`), with a
+ * startup reconciliation marking crash-orphaned runs `error`
+ * (`app/gateway/deps.py`). `busy` is the LangGraph Platform word for the same
+ * state, which is what `useThreadStream`'s optimistic `onCreated` upsert writes
+ * into the thread caches, so both are accepted.
+ *
+ * Read as a plain string: the SDK types `status` as `ThreadStatus`
+ * (`idle | busy | interrupted | error`), a narrower union than the gateway's
+ * run-lifecycle values, so narrowing to either dialect would not type-check.
+ */
+export function isThreadGenerating(
+  thread: Pick<AgentThread, "status">,
+): boolean {
+  const status: string = thread.status;
+  return status === "running" || status === "busy";
+}
+
+/**
  * One row of the mobile thread list (prototype ①).
  *
  * The desktop sidebar hangs its actions off a `DropdownMenu` that only appears
@@ -147,6 +171,7 @@ export function ThreadRow({
   }, []);
 
   const preview = lastMessagePreview(thread);
+  const isGenerating = isThreadGenerating(thread);
   const updatedAtAgo = thread.updated_at
     ? formatTimeAgo(thread.updated_at, locale)
     : null;
@@ -166,7 +191,11 @@ export function ThreadRow({
       data-thread-id={thread.thread_id}
       // The action button is a flex sibling rather than an overlay: positioned
       // absolutely it would sit on top of the timestamp on a 390px column.
-      className="flex items-center"
+      //
+      // A running thread tints the *whole* row — prototype ① paints
+      // `background: var(--accent)` on the row, not just the link — so the
+      // highlight also covers the ⋯ button's column.
+      className={cn("flex items-center", isGenerating && "bg-accent")}
     >
       <Link
         href={pathOfThread(thread)}
@@ -208,9 +237,23 @@ export function ThreadRow({
               {titleOfThread(thread)}
             </span>
           </span>
-          {preview && (
-            <span className="text-muted-foreground truncate text-[13px]">
-              {preview}
+          {(preview !== null || isGenerating) && (
+            // Prototype ① reads `…● 生成中` on one line: the preview keeps as
+            // much width as it can and the state follows the text rather than
+            // being pushed to the far edge. A brand-new thread whose first run
+            // is still in flight has no preview at all, so the state alone is
+            // enough to draw the line.
+            <span className="text-muted-foreground flex min-w-0 items-center gap-1 text-[13px]">
+              {preview && <span className="min-w-0 truncate">{preview}</span>}
+              {isGenerating && (
+                <span
+                  data-testid="mobile-thread-generating"
+                  className="flex shrink-0 items-center gap-1"
+                >
+                  <span aria-hidden="true">●</span>
+                  {t.chats.generating}
+                </span>
+              )}
             </span>
           )}
         </span>

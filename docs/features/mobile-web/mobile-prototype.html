@@ -225,6 +225,86 @@ body{
 .send.off{opacity:.35}
 .send.stop{background:var(--destructive)}
 
+/* 待办列表（C11，帧 ⑨⑩）—— 数据来自 thread state（`thread.values.todos`）。
+   面板是输入框**上方的一张独立卡片**：外层左右缩进 8px、上下各留 6px，
+   四角圆整（--radius-xl）。默认折叠。
+
+   为什么不是共享组件出厂时那种「贴进输入框下沿」的形态：`todo-list.tsx`
+   原本靠 translate-y-4 + 去掉下边框、只留上沿两角圆，把自己塞进桌面输入框
+   底下；手机上输入区自带 border-t，那个形态会撞成双线。移动端因此用作用域
+   CSS 把它改回独立卡片 —— 与 chat-surface.css 的 `.mobile-todo-panel` 一一对应。 */
+.todos{flex:0 0 auto;padding:6px 8px}
+.todos .panel{border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden}
+.todos .thd{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  min-height:44px;padding:0 14px;font-size:13px;color:var(--muted-foreground);cursor:pointer;
+  background:var(--accent);
+}
+.todos .thd .l{display:flex;align-items:center;gap:8px}
+.todos .thd .r{display:flex;align-items:center;gap:10px}
+/* 处理进度三桶计数：已完成 / 执行中 / 待执行。
+   tabular-nums 让它们逐条变化时不跳字。 */
+.todos .thd .c{display:flex;align-items:center;gap:9px;font-variant-numeric:tabular-nums;font-size:12px}
+.todos .thd .c span{display:flex;align-items:center;gap:3px}
+.todos .thd .c .d{color:var(--muted-foreground)}
+.todos .thd .c .p{color:var(--foreground);opacity:.85}
+.todos .thd .c .w{color:var(--muted-foreground);opacity:.65}
+.todos .thd .caret{font-size:11px;transition:transform .25s}
+/* 组件里是 ChevronUpIcon：折叠时不旋转（朝上），展开时 rotate-180（朝下）。 */
+.todos.open .thd .caret{transform:rotate(180deg)}
+/* 「正在执行」那一行：折叠态也保留 —— 这正是「看一眼进度」要的那一眼。
+   多个执行中的任务时纵向轮换（见下面的 .rot 动画）。 */
+.todos .now{
+  display:flex;align-items:center;gap:8px;padding:0 14px 10px;
+  background:var(--accent);font-size:12.5px;color:var(--muted-foreground);
+}
+.todos .now .bdot{width:6px;height:6px;border-radius:50%;background:var(--foreground);opacity:.62;flex:0 0 auto}
+.todos .rot{flex:1;min-width:0;height:18px;overflow:hidden}
+/* display:block 是必需的 —— `transform` 对非替换的行内元素无效，
+   少了这一行动画会静默地完全不动（实测踩过）。 */
+.todos .rot .rail{display:block;animation:rot 20s ease-in-out infinite}
+.todos .rot .rail>span{
+  display:block;height:18px;line-height:18px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* 两个名字交替，每个停留 10s：20s 一轮，其中 9s 静置 + 1s 滑动。
+   末帧与首帧都是 A，所以循环回跳看不出来。
+   实现时**必须**尊重 prefers-reduced-motion（下面那条），只留静态首项。 */
+@keyframes rot{
+  0%,45%{transform:translateY(0)}
+  50%,95%{transform:translateY(-18px)}
+  100%{transform:translateY(-36px)}
+}
+@media (prefers-reduced-motion:reduce){.todos .rot .rail{animation:none}}
+.todos .tbody{display:flex;padding:0 8px 12px;background:var(--accent)}
+.todos.open .tbody{padding:8px 8px 14px}
+.todos:not(.open) .inner{display:none}
+.todos .inner{
+  width:100%;max-height:112px;overflow-y:auto;padding:6px 0;
+  background:var(--background);border-radius:12px;
+}
+.todos .td{display:flex;align-items:center;gap:10px;padding:7px 14px;font-size:13.5px;color:var(--foreground)}
+/* 任务耗时。正文让位并截断，耗时列不换行 —— 与列表行的做法一致。
+   只显示时长、不显示具体时刻：时刻对「做到哪一步」没有增量信息，
+   却在 390px 上占掉一半宽度。 */
+.todos .td .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.todos .tm{
+  flex:0 0 auto;font-size:11.5px;color:var(--muted-foreground);
+  font-variant-numeric:tabular-nums;
+}
+.todos .td.cur .tm{color:var(--foreground);opacity:.62}
+/* 「正在执行」那一行右侧的实时耗时：与列表行同源，但更亮一档 ——
+   它是折叠态下唯一在动的数字。 */
+.todos .now .tm{font-size:12px;color:var(--foreground);opacity:.62}
+.todos .td .dot{
+  width:15px;height:15px;border-radius:50%;border:1.5px solid var(--border);flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--primary-foreground);
+}
+.todos .td.done .dot{background:var(--primary);border-color:var(--primary)}
+.todos .td.done .tx{text-decoration:line-through;color:var(--muted-foreground)}
+.todos .td.cur .dot{background:var(--foreground);opacity:.62;border-color:transparent}
+.todos .td.cur .tx{color:var(--muted-foreground)}
+
 /* 附带的「+」展开面板 */
 .sheet{
   position:absolute;inset:0;background:oklch(0 0 0 / .42);display:flex;flex-direction:column;justify-content:flex-end;z-index:20;
@@ -805,6 +885,155 @@ body{
   </div></div>
 </figure>
 
+<!-- ══════════════════ 9. 待办列表（展开） ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑨ 待办列表 · 展开</h2>
+    <p class="why"><span class="tag new">补充</span>C11：待办常驻在<b>输入框上方</b>（数据同桌面，取自 <code>thread.values.todos</code>）。标题行右侧是<b>三桶计数</b>：<b>✓ 已完成 · ◐ 执行中 · ○ 待执行</b>；下一行是<b>正在执行的任务名 + 它的实时耗时</b>，多个执行中时纵向定时轮换（原型里是真的在动，<b>每个停留 10 秒</b>）。列表里<b>已完成与执行中的行右侧显示该任务的耗时</b>：已完成是总耗时，执行中是从开始到现在（会走）。待执行没有耗时，留空不占位。只给时长不给具体时刻 —— 时刻对「做到哪一步」没有增量信息，却要在 390px 上占掉近一半宽度。「看一眼进度」是移动端两个核心场景之一，不该逼用户展开列表才知道做到哪一步。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算入门</div>
+      <button class="iconbtn" title="文件">🗂</button>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px">
+      <div class="msg user"><div class="bubble">帮我讲讲量子计算</div></div>
+      <div class="msg ai">
+        <div class="disc open">
+          <div class="disc-hd"><span class="caret">▸</span><span class="grow">执行了 4 步 · 3 个工具</span><span class="n">✓</span></div>
+          <div class="disc-bd">
+            <div class="step"><span class="ico">🔍</span><span class="txt"><span class="st">web_search</span><span class="sd">quantum computing basics</span></span></div>
+            <div class="step"><span class="ico">📄</span><span class="txt"><span class="st">web_fetch</span><span class="sd">en.wikipedia.org/wiki/Quantum_computing</span></span></div>
+            <div class="step"><span class="ico">✓</span><span class="txt"><span class="st">整理答案</span></span></div>
+          </div>
+        </div>
+        <div class="bubble"><p>正在按计划整理，先给出叠加与纠缠的通俗解释…</p></div>
+      </div>
+    </div>
+    <div class="todos open">
+      <div class="panel">
+        <div class="thd">
+          <span class="l">☑ 待办</span>
+          <span class="r">
+            <span class="c"><span class="d">✓ 2</span><span class="p">◐ 2</span><span class="w">○ 1</span></span>
+            <span class="caret">▴</span>
+          </span>
+        </div>
+        <div class="now">
+          <span class="bdot"></span>
+          <span class="rot"><span class="rail">
+            <span>整理叠加与纠缠的通俗解释</span>
+            <span>交叉核对两张对照表</span>
+            <span>整理叠加与纠缠的通俗解释</span>
+          </span></span>
+          <span class="tm">3m</span>
+        </div>
+        <div class="tbody">
+          <div class="inner">
+            <div class="td done"><span class="dot">✓</span><span class="tx">梳理量子比特与经典比特的差异</span><span class="tm">12m</span></div>
+            <div class="td done"><span class="dot">✓</span><span class="tx">检索公开资料并核对来源</span><span class="tm">8m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">整理叠加与纠缠的通俗解释</span><span class="tm">3m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">交叉核对两张对照表</span><span class="tm">1m</span></div>
+            <div class="td"><span class="dot"></span><span class="tx">补充实际应用与局限</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="cbox">
+        <textarea placeholder="继续提问…"></textarea>
+        <div class="crow">
+          <button class="iconbtn" style="width:34px;height:34px;font-size:18px">＋</button>
+          <button class="pill">⚡ 思考 ▾</button>
+          <button class="pill">⚙ GLM-5.3 Flash ▾</button>
+          <span class="grow"></span>
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 10. 待办列表（折叠） ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑩ 待办列表 · 折叠（默认）</h2>
+    <p class="why"><span class="tag new">补充</span><b>默认就是折叠态</b>（组件内 <code>useState(true)</code>），收起明细列表 —— 待办是背景信息，不该一进对话就占掉 112px 的正文高度。但<b>进度不跟着折叠</b>：三桶计数与「正在执行」那一行（含它的实时耗时）都保留，所以收起时依然能一眼看出做到哪一步、卡在哪一项、已经跑了多久 —— 不必为了看这些而展开列表。这也是折叠态唯一值得占位的两组信息。点标题行展开/收起。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算入门</div>
+      <button class="iconbtn" title="文件">🗂</button>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px">
+      <div class="msg user"><div class="bubble">帮我讲讲量子计算</div></div>
+      <div class="msg ai">
+        <div class="disc">
+          <div class="disc-hd"><span class="caret">▸</span><span class="grow">执行了 4 步 · 3 个工具</span></div>
+        </div>
+        <div class="bubble">
+          <p>量子计算利用 <strong>叠加</strong> 与 <strong>纠缠</strong> 两个特性处理信息：</p>
+          <p>· <strong>叠加</strong>：量子比特可同时处于 0 和 1 的叠加态<br>
+             · <strong>纠缠</strong>：多个比特状态关联，改变一个即刻影响另一个</p>
+        </div>
+        <div class="acts"><button>⧉ 复制</button><button>↻ 重新生成</button></div>
+      </div>
+      <div class="anno">折叠态只留标题行，正文区一点没被挤占。展开后列表区固定 112px、内部滚动 —— <b>条目多少都不改变输入区的位置</b>。</div>
+    </div>
+    <div class="todos">
+      <div class="panel">
+        <div class="thd">
+          <span class="l">☑ 待办</span>
+          <span class="r">
+            <span class="c"><span class="d">✓ 2</span><span class="p">◐ 2</span><span class="w">○ 1</span></span>
+            <span class="caret">▴</span>
+          </span>
+        </div>
+        <div class="now">
+          <span class="bdot"></span>
+          <span class="rot"><span class="rail">
+            <span>整理叠加与纠缠的通俗解释</span>
+            <span>交叉核对两张对照表</span>
+            <span>整理叠加与纠缠的通俗解释</span>
+          </span></span>
+          <span class="tm">3m</span>
+        </div>
+        <div class="tbody">
+          <div class="inner">
+            <div class="td done"><span class="dot">✓</span><span class="tx">梳理量子比特与经典比特的差异</span><span class="tm">12m</span></div>
+            <div class="td done"><span class="dot">✓</span><span class="tx">检索公开资料并核对来源</span><span class="tm">8m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">整理叠加与纠缠的通俗解释</span><span class="tm">3m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">交叉核对两张对照表</span><span class="tm">1m</span></div>
+            <div class="td"><span class="dot"></span><span class="tx">补充实际应用与局限</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="cbox">
+        <textarea placeholder="继续提问…"></textarea>
+        <div class="crow">
+          <button class="iconbtn" style="width:34px;height:34px;font-size:18px">＋</button>
+          <button class="pill">⚡ 思考 ▾</button>
+          <button class="pill">⚙ GLM-5.3 Flash ▾</button>
+          <span class="grow"></span>
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
 </div>
 
 <div class="note">
@@ -828,6 +1057,31 @@ body{
   <p style="font-size:13px;color:var(--muted-foreground);margin:0">
     <b style="color:var(--foreground)">2. 产物是「全屏页」还是「底部抽屉」。</b>原型按全屏页出图。
     全屏利于看 HTML 报告与图片；底部抽屉的好处是能一边看对话一边看产物。二者可后续按产物类型分：图片走灯箱、HTML 走全屏。
+  </p>
+  <h3 style="margin-top:22px">⑨ 的任务时间：数据从哪来</h3>
+  <p style="font-size:13px;color:var(--muted-foreground);margin:0 0 16px">
+    <code>Todo</code> 本体<b>没有任何时间字段</b> —— 它是上游 LangChain 的 TypedDict，
+    只有 <code>{content, status}</code>；转录里的消息也没有时间戳。所以图上那个耗时
+    需要后端补：在 <code>todo_middleware.py</code> 调用 <code>apply_todo_ops</code> 的
+    收口点，给转成 <code>in_progress</code> 的打 <code>started_at</code>、
+    转成 <code>completed</code> 的打 <code>completed_at</code> ——
+    耗时 = 两者之差（执行中则 = 现在 − <code>started_at</code>）。
+    即便是只显示时长，两个戳也都要有。
+    <br><br>
+    <b style="color:var(--foreground)">口径提醒：</b>这个窗口是「计划里把它标为进行中 → 标成完成」，
+    含空转（agent 可能先标了进行中再去做别的），<b>不等于实际工时</b>。
+    真正接近工时的是子代理会话的 <code>started_at/completed_at</code>（已有数据，
+    在 <code>/api/threads/&#123;id&#125;/subagents</code>），但它与 todo 之间
+    <b>没有任何关联字段</b>，且只覆盖派给子代理的任务 —— 要按 todo 显示实际工时，
+    得再新增一层关联。
+  </p>
+
+  <h3 style="margin-top:22px">原型与实现已知的文案缺口</h3>
+  <p style="font-size:13px;color:var(--muted-foreground);margin:0">
+    ⑨⑩ 的标题按中文出图（<b>待办</b>），但共享组件 <code>todo-list.tsx</code> 里这一行是<b>硬编码英文
+    <code>To-dos</code></b>，不读 locale —— 与 <code>Reasoning</code> 触发文案的
+    <code>Thought for 12s</code> 是同一类缺口（见 <code>DEVELOPMENT_PLAN.md</code> T19 / §1.3 例外 #3）。
+    原型按「应该长成什么样」出图，实现要补齐这处 i18n。
   </p>
 </div>
 

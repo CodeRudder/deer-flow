@@ -301,6 +301,7 @@ export const enUS: Translations = {
       "This agent only exists in the legacy shared layout and is not scoped to your user, so it cannot be edited here.",
     loadDetailFailed:
       "Failed to load agent details. Showing the stale gallery data instead.",
+    loadFailed: "Agents could not be loaded.",
     createChoiceDescription: "Choose how to create your agent",
     createChoiceManualTitle: "Create manually",
     createChoiceManualDescription:
