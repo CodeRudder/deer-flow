@@ -69,3 +69,7 @@ config.yaml.bak
 
 # 远程同步工具的本地状态标记（scripts/windows-remote/sync-to-windows.sh）
 .sync-state/
+
+# 模型配置界面的写入协议产物（models_section.commit_config_update）
+config.yaml.work
+config.yaml.bak.*
