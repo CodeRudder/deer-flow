@@ -24,10 +24,18 @@ Only stdlib + PyYAML are used (the harness layer must stay importable on its own
 Byte-identity guarantee
 -----------------------
 Everything outside the managed region — comments, blank lines, sections after
-``models:``, line endings — is copied through untouched. There is exactly one
-documented exception: when the file's final line is an unterminated ``models:``
-(it has no trailing newline), a newline is appended so the inserted region cannot
-merge into the key. Every other input shape is preserved verbatim.
+``models:``, line endings — is copied through untouched. There are exactly two
+documented exceptions, both confined to the ``models:`` key line itself:
+
+1. An inline value on the key line (``models: []``, ``models: null``) is
+   discarded, because a value cannot coexist with the block sequence the region
+   introduces — ``models: []`` followed by ``  - name: x`` is invalid YAML. Any
+   trailing comment is preserved (``models: []  # hi`` → ``models:  # hi``).
+2. When the file's final line is an unterminated ``models:`` (no trailing
+   newline), a newline is appended so the inserted region cannot merge into the
+   key.
+
+Every other input shape is preserved verbatim.
 """
 
 from __future__ import annotations
@@ -108,22 +116,73 @@ def replace_managed_section(text: str, models: list[dict]) -> str:
 
     begin = _find_marker(lines, MANAGED_BEGIN)
     end = _find_marker(lines, MANAGED_END)
+    block = find_models_block(lines)
 
     if begin is None and end is None:
-        block = find_models_block(lines)
         if block is None:
             raise ValueError("config text has no top-level 'models:' section to anchor the managed region to")
         anchor = block[0] + 1
-        if not lines[block[0]].endswith(("\n", "\r")):
-            # Only possible when `models:` is the last line and unterminated;
-            # terminate it so the inserted region does not merge into the key.
-            lines[block[0]] = lines[block[0]] + newline
+        lines[block[0]] = _bare_models_key_line(lines[block[0]], newline)
         return "".join(lines[:anchor] + rendered + lines[anchor:])
 
     if begin is None or end is None or end < begin:
         raise ValueError(f"config text has unbalanced managed-region markers ({MANAGED_BEGIN!r} / {MANAGED_END!r})")
 
+    if block is not None and block[0] < begin:
+        # Same inline-value hazard on the already-marked path: `models: []` above
+        # an existing region is just as unparseable as one above an inserted one.
+        lines[block[0]] = _bare_models_key_line(lines[block[0]], newline)
+
     return "".join(lines[:begin] + rendered + lines[end + 1 :])
+
+
+def _bare_models_key_line(line: str, newline: str) -> str:
+    """Collapse an inline-valued ``models:`` line to a bare key.
+
+    ``models: []  # hi`` → ``models:  # hi``: the inline value is dropped because
+    the managed region supersedes it, while any trailing comment (and the line
+    ending) is preserved. Lines already shaped as a bare key — with or without a
+    comment — are returned unchanged, so well-formed configs stay byte-identical.
+    """
+    suffix = ""
+    body = line
+    for ending in ("\r\n", "\n", "\r"):
+        if line.endswith(ending):
+            suffix, body = ending, line[: -len(ending)]
+            break
+
+    value, comment = _split_inline_comment(body[len("models:") :])
+    if not value.strip():
+        # Already a bare key (optionally with a comment) — leave it alone.
+        normalised = body
+    else:
+        normalised = "models:" + (f" {comment}" if comment else "")
+
+    if not suffix:
+        # Unterminated final line: terminate it so the inserted region cannot
+        # merge into the key.
+        suffix = newline
+
+    return normalised + suffix
+
+
+def _split_inline_comment(text: str) -> tuple[str, str]:
+    """Split *text* into ``(value, comment)``, comment including its leading ``#``.
+
+    A ``#`` only opens a comment when it is outside quotes and preceded by
+    whitespace, per the YAML comment rule — so ``["#nope"]`` and ``[a]#b`` keep
+    their ``#`` in the value.
+    """
+    quote: str | None = None
+    for index, char in enumerate(text):
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "#" and index > 0 and text[index - 1] in " \t":
+            return text[:index], text[index:]
+    return text, ""
 
 
 def _find_marker(lines: list[str], marker: str) -> int | None:

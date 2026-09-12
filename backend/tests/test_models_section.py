@@ -429,3 +429,158 @@ def test_unicode_display_names_survive():
     assert "豆包 · Seed" in out
     parsed = yaml.safe_load("\n".join(line.rstrip("\n") for line in out.splitlines() if not line.strip().startswith("#")))
     assert parsed["models"] == models
+
+
+# --------------------------------------------------------------------------- #
+# Inline values on the `models:` line
+#
+# `models: []` carries a flow value on the key line itself. Inserting a block
+# sequence after it produces `models: []` followed by `  - name: x`, which YAML
+# rejects ("expected <block end>, but found '<block sequence start>'"). Since the
+# app reloads config without an exception guard, that would break every request.
+# The editor must normalise such a key line back to a bare `models:` before
+# inserting, discarding the value (the managed region supersedes it) while
+# keeping any trailing comment.
+# --------------------------------------------------------------------------- #
+
+INLINE_KEY_LINES = [
+    "models: []",
+    "models: null",
+    "models: []  # hi",
+    "models:  # hi",
+    "models:",
+]
+
+#: Key lines that carry an actual value which must be dropped on normalisation.
+INLINE_VALUE_CASES = ["models: []", "models: null", "models: []  # hi"]
+
+
+def _has_inline_value(line: str) -> bool:
+    rest = line.split("models:", 1)[1].strip()
+    return bool(rest) and not rest.startswith("#")
+
+
+def _assert_only_models_key_line_changed(text: str, models: list[dict]) -> tuple[list[str], str]:
+    """Assert byte-identity everywhere except the `models:` key line.
+
+    Returns ``(output_lines, normalised_key_line)``. The key line is the one
+    documented exception: an inline value cannot coexist with the inserted
+    block sequence, so it is collapsed to a bare key.
+    """
+    in_lines = text.splitlines(keepends=True)
+    out_lines = replace_managed_section(text, models).splitlines(keepends=True)
+
+    key_index = find_models_block(in_lines)[0]
+    out_begin = next(i for i, line in enumerate(out_lines) if line.strip() == MANAGED_BEGIN)
+    out_end = next(i for i, line in enumerate(out_lines) if line.strip() == MANAGED_END)
+
+    # The key line is the last line before the region...
+    assert out_lines[out_begin - 1].startswith("models:"), out_lines[out_begin - 1]
+    # ...everything before it is untouched...
+    assert out_lines[: out_begin - 1] == in_lines[:key_index]
+    # ...and everything after the region is the original tail, verbatim.
+    assert out_lines[out_end + 1 :] == in_lines[key_index + 1 :]
+
+    return out_lines, out_lines[out_begin - 1]
+
+
+def _inline_document(key_line: str, *, with_markers: bool, body: str = "  - name: old\n") -> str:
+    if not with_markers:
+        return f"a: 1\n{key_line}\nb: 2\n"
+    return f"a: 1\n{key_line}\n{MANAGED_BEGIN}\n{body}{MANAGED_END}\nb: 2\n"
+
+
+@pytest.mark.parametrize("key_line", INLINE_KEY_LINES)
+@pytest.mark.parametrize("with_markers", [False, True], ids=["insert", "replace"])
+def test_inline_models_key_parses_after_replace(key_line, with_markers):
+    text = _inline_document(key_line, with_markers=with_markers)
+
+    out = replace_managed_section(text, SAMPLE_MODELS)
+
+    parsed = yaml.safe_load(out)
+    assert parsed["models"] == SAMPLE_MODELS
+    assert parsed["a"] == 1 and parsed["b"] == 2
+
+
+@pytest.mark.parametrize("key_line", INLINE_VALUE_CASES)
+def test_inline_value_is_discarded_and_comment_preserved(key_line):
+    text = f"a: 1\n{key_line}\nb: 2\n"
+
+    out_lines, key_out = _assert_only_models_key_line_changed(text, SAMPLE_MODELS)
+
+    assert key_out.strip() == "models:" or key_out.strip().startswith("models: #"), key_out
+    assert _has_inline_value(key_out) is False, f"inline value survived: {key_out!r}"
+    if "#" in key_line:
+        assert "# hi" in key_out, "trailing comment was dropped"
+        assert key_out.index("# hi") > key_out.index("models:")
+    assert out_lines.count("models:\n") + out_lines.count("models: # hi\n") >= 1
+
+
+@pytest.mark.parametrize("key_line", INLINE_KEY_LINES)
+def test_inline_key_case_outside_region_is_byte_identical(key_line):
+    text = f"a: 1\n{key_line}\nb: 2\n"
+
+    out_lines = replace_managed_section(text, SAMPLE_MODELS).splitlines(keepends=True)
+
+    # The only permitted change is the key line itself.
+    in_lines = text.splitlines(keepends=True)
+    assert out_lines[0] == in_lines[0]  # "a: 1"
+    assert out_lines[-1] == in_lines[-1]  # "b: 2"
+    assert out_lines[-2].strip() == MANAGED_END
+    assert out_lines[1].strip().startswith("models:")
+
+
+@pytest.mark.parametrize("key_line", INLINE_KEY_LINES)
+def test_inline_key_case_comment_survives_on_bare_key(key_line):
+    text = f"models:{key_line.split('models:', 1)[1]}\n"
+
+    out_lines = replace_managed_section(text, SAMPLE_MODELS).splitlines(keepends=True)
+
+    prefix = out_lines[0]
+    if "# hi" in key_line:
+        assert "# hi" in prefix
+        assert prefix.strip() != "models:"  # comment kept on the key line
+    else:
+        assert prefix.rstrip() == "models:"
+
+
+def test_inline_empty_list_renders_empty_region_and_parses():
+    text = "a: 1\nmodels: []\nb: 2\n"
+
+    out = replace_managed_section(text, [])
+
+    parsed = yaml.safe_load(out)
+    assert parsed["a"] == 1 and parsed["b"] == 2
+    assert "models" not in parsed or parsed["models"] is None
+    assert MANAGED_BEGIN in out and MANAGED_END in out
+
+
+def test_inline_value_with_crlf_keeps_crlf_and_parses():
+    text = "a: 1\r\nmodels: []  # hi\r\nb: 2\r\n"
+
+    out = replace_managed_section(text, SAMPLE_MODELS)
+
+    assert out.count("\n") == out.count("\r\n")
+    assert "# hi" in out
+    parsed = yaml.safe_load(out)
+    assert parsed["models"] == SAMPLE_MODELS
+    assert parsed["a"] == 1 and parsed["b"] == 2
+
+
+def test_inline_value_on_unterminated_last_line_parses():
+    text = "a: 1\nmodels: []"
+
+    out = replace_managed_section(text, SAMPLE_MODELS)
+
+    parsed = yaml.safe_load(out)
+    assert parsed["a"] == 1
+    assert parsed["models"] == SAMPLE_MODELS
+
+
+def test_quoted_hash_in_inline_value_is_not_treated_as_comment():
+    text = 'a: 1\nmodels: ["#not-a-comment"]\nb: 2\n'
+
+    out = replace_managed_section(text, SAMPLE_MODELS)
+
+    assert "#not-a-comment" not in out  # value discarded
+    assert yaml.safe_load(out)["models"] == SAMPLE_MODELS
