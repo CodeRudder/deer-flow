@@ -19,7 +19,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "e2e:models": "playwright test --config playwright.models.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:live": "playwright test --config=playwright.live.config.ts"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

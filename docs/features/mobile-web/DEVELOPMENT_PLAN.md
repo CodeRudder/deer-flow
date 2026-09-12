@@ -28,6 +28,67 @@
 > 曾考虑「同路由内运行时判断」，因首帧会闪一下桌面布局而被否决；
 > middleware 在服务端决定，无闪烁。
 
+### 1.1.1 登录流程与路由分组（T5/T6 复查后补，纠正 T1 的结构）
+
+T1 把标签栏放在 `app/m/layout.tsx`、把**鉴权守卫与 provider 放在
+`app/m/workspace/layout.tsx`**。这个切分是错的：`/m/agents`、`/m/settings` 是
+标签栏的根屏幕，却不在这层守卫之下 —— 一旦做出来就是**未登录可访问**。
+而 `app/m/layout.tsx` 又刻意不含守卫，于是「未登录 → 跳登录页」这条规则
+只覆盖了 `/m/workspace/**`。
+
+**正确的切分是按「是否已登录」分组，不是按「是否在 workspace 下」分组。**
+
+```
+app/m/
+├── layout.tsx              100dvh 外壳 + viewport（不含守卫、不含标签栏）
+├── (auth)/                 未登录分支 —— 全屏、无标签栏
+│   ├── layout.tsx
+│   ├── login/  setup/  auth/callback/
+└── (app)/                  已登录分支 —— 守卫 + provider + 标签栏
+    ├── layout.tsx          ← 守卫（照抄 app/workspace/layout.tsx 的五个分支）
+    │                         + QueryClient / AuthProvider / Toaster / MobileTabBar
+    ├── workspace/
+    │   ├── page.tsx                会话列表
+    │   └── chats/[thread_id]/
+    │       ├── page.tsx
+    │       └── artifacts/[path]/page.tsx
+    ├── agents/page.tsx             智能体（P1，先占位）
+    └── settings/page.tsx           设置（P1，先占位）
+```
+
+路由组 `(auth)` / `(app)` **不进入 URL**，公开地址一个都不变：
+
+| 公开 URL | 移动端渲染 | 桌面端 |
+|---|---|---|
+| `/login`、`/setup`、`/auth/callback` | `(auth)/*` | 已有 |
+| `/workspace` | `(app)/workspace/page.tsx` | 已有 |
+| `/workspace/chats/{id}` | `(app)/workspace/chats/[thread_id]/` | 已有 |
+| `/workspace/chats/{id}/artifacts/{p}` | `(app)/.../artifacts/[path]/` | 已有 |
+| `/agents` | `(app)/agents/page.tsx` | **无此路由**（桌面是 `/workspace/agents`） |
+| `/settings` | `(app)/settings/page.tsx` | **无此路由**（桌面设置是弹窗） |
+
+守卫行为完全对齐桌面 `app/workspace/layout.tsx`：
+
+| `getServerSideUser()` | 动作 |
+|---|---|
+| `authenticated` | 渲染（provider + 标签栏） |
+| `unauthenticated` | `redirect("/login")` |
+| `needs_setup` / `system_setup_required` | `redirect("/setup")` |
+| `gateway_unavailable` | `GatewayOfflineFallback` |
+| `config_error` | `throw` |
+
+重定向目标一律写**公开路径**（`/login`、`/setup`、`/workspace`），由 middleware
+把下一个请求落回移动端树 —— 这是 §1.2.1「地址栏不出现 `/m/`」的同一个机制。
+
+**标签栏归属随之改变**：从 `app/m/layout.tsx` 移进 `(app)/layout.tsx`。
+`shouldHideMobileTabBar()` 及其单测因此失去用途 —— 未登录分支根本不渲染标签栏，
+「隐藏」由路由分组在结构上表达，比按 pathname 前缀判断更可靠，故一并删除。
+
+> **已知不对称**：`/agents`、`/settings` 是**只在移动端存在**的公开路径。
+> 桌面 UA 直接访问会 404（桌面智能体是 `/workspace/agents`，设置是弹窗）。
+> 这是「同一个地址按设备分流」在移动端独有屏幕上的必然结果，接受。
+> 若日后要求桌面也能开这两个地址，需另开任务把桌面入口也迁过去。
+
 ### 1.2 三层拆分：什么共享、什么分开
 
 这是本计划的核心约束。上一版计划的错误在于把移动端逻辑塞进同一个
@@ -226,7 +287,64 @@ useModels / useI18n / useRouter ...
 
 ---
 
-### T7 · 测试与验收
+### T7 · 登录流程收敛与路由分组重构
+
+T5/T6 复查时发现 T1 的切分有误（见 §1.1.1），此任务纠正它。
+
+| 项 | 内容 |
+|---|---|
+| 重构 | `app/m/` 拆成 `(auth)/` 与 `(app)/` 两个路由组；`workspace/` 移入 `(app)/` |
+| 新增 | `app/m/(app)/layout.tsx` — 守卫 + provider + `MobileTabBar` |
+| 新增 | `app/m/(app)/{agents,settings}/page.tsx` — P1 屏幕，**先给一个空白页**（不再是 404，也不再漏出未鉴权内容）。空白页只渲染标题占位，不假装功能可用的空状态 |
+| 修改 | `app/m/layout.tsx` — 去掉 `MobileTabBar`，只留 100dvh 外壳 + viewport |
+| 删除 | `shouldHideMobileTabBar()` 及其单测 —— 未登录分支结构上就不渲染标签栏 |
+
+**验收**：
+- 未登录访问 `/workspace`、`/agents`、`/settings` 一律 `redirect("/login")`，
+  且地址栏是 `/login`（不含 `/m/`）—— 用真浏览器实测，不看代码推断
+- 已登录时三个标签都能打开，地址栏分别为 `/workspace`、`/agents`、`/settings`
+- 桌面端不受影响：桌面 E2E 失败集合不扩大
+- `(auth)/*` 仍然无守卫（否则登录页自己也进不去）
+
+---
+
+### T9 · 移动端智能体（P1，从空白页变成真页面）
+
+> 用户 2026-09-12：**空白页是需要实现的，不是最终交付结果。** `/agents` 目前是
+> 空白页，本节把它做出来。设置页账号区同理由此实现（见 §6 进度）。
+
+范围取自 `FEATURE_LIST.md` §1.3，与桌面一一对应，只换形态。
+
+| 项 | 桌面现状 | 移动端 |
+|---|---|---|
+| 列表 | 1/2/3/4 列卡片网格（`agent-gallery.tsx`） | **单列**，其余复用 `useAgents()` + `AgentCard` |
+| 新建 | 二选一弹窗 → 表单 Sheet 或对话式引导 | 选择弹窗改为底部 Sheet；表单改**全屏页** |
+| 编辑 | 右侧抽屉（SOUL.md / 描述 / 模型） | **全屏页**，复用 `useUpdateAgent` 与三态只读语义 |
+| 与智能体对话 | `/workspace/agents/[name]/chats/[id]` | 同路径，middleware 重写；复用 `useChatPage()` 的 agent 变体 |
+
+**新增**：
+`app/m/(app)/agents/page.tsx`（列表）、`agents/new/page.tsx`（表单创建）、
+`agents/[agent_name]/edit/page.tsx`（编辑）、
+`components/workspace/mobile/agents/*`（卡片、创建选项 Sheet、表单）
+
+**要点**：
+- 标签栏 href 仍是公开路径 `/agents` —— **不要**改成 `/workspace/agents`。
+  `isTabActive` 按前缀判活跃，「对话」标签的 href 是 `/workspace`，
+  两者会同时点亮（`/m/workspace/agents` 同时以 `/m/workspace` 开头）。
+  这是 §1.1.1 里 `/agents` 作为移动端独有公开路径的原因之一。
+- 智能体**对话**仍在 `/m/workspace/agents/[name]/chats/[id]`（公开路径
+  `/workspace/agents/...`，与桌面同址），与列表的 `/agents` 是两棵树。
+- 表单里的 SOUL.md 是长文本 → 全屏页 + 等宽字体，不要塞进 Sheet。
+- 复用 `isValidAgentName` / `checkAgentName` / `MODEL_DEFAULT_VALUE` 哨兵，
+  校验逻辑一律不重写。
+
+**验收**：单列卡片列表渲染；空态与加载态正确；表单创建成功后列表刷新；
+编辑页三态（null=继承全部 / []=无 / 列表=白名单）只读语义正确；
+点卡片进入该智能体的对话页且地址栏无 `/m/`；桌面 E2E 失败集合不扩大。
+
+---
+
+### T8 · 测试与验收
 
 | 项 | 内容 |
 |---|---|
@@ -292,7 +410,8 @@ useModels / useI18n / useRouter ...
 | T4 | 会话列表 | 1 天 |
 | T5 | 对话页 | 1.5 天 |
 | T6 | 产物全屏页 | 1 天 |
-| T7 | 测试与验收 | 1.5 天 |
+| T7 | 登录流程收敛 + 路由分组重构 | 0.5 天 |
+| T8 | 测试与验收 | 1.5 天 |
 | | **合计** | **7.5 天** |
 
 ## 5. 明确不做
@@ -314,5 +433,8 @@ useModels / useI18n / useRouter ...
 - [x] T3 移动端登录
 - [x] T4 会话列表
 - [x] T5 对话页
-- [ ] T6 产物全屏页
-- [ ] T7 测试与验收
+- [x] T6 产物全屏页（含入口接线 —— 原计划只写了全屏页，实测发现移动端两个产物入口都点了没反应）
+- [x] T7 登录流程收敛 + 路由分组重构（`(auth)` / `(app)`；补 `/agents`、`/settings` 空白页）
+- [x] 设置页账号区 S1（改密 + 退出登录）—— 原为空白页，用户要求实现
+- [ ] T9 移动端智能体（`/agents` 从空白页变成真页面）
+- [ ] T8 测试与验收
