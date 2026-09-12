@@ -18,12 +18,18 @@ import {
   buildManagedModelWrite,
   deriveApiKeyVarName,
   EMPTY_MODEL_DRAFT,
+  draftProviderFor,
   isManagedModelDraftComplete,
+  type ManagedModelDraft,
   maskedKeyLabel,
   ModelSettingsPage,
 } from "@/components/workspace/settings/model-settings-page";
 import { ModelConfigRequestError } from "@/core/models/api";
-import type { ManagedModel } from "@/core/models/types";
+import type {
+  ManagedModel,
+  ManagedModelWrite,
+  ModelProvider,
+} from "@/core/models/types";
 
 // The page imports the admin API client (fetcher/config) at module scope; stub
 // the network layer so the import never reaches for a real backend.
@@ -40,6 +46,7 @@ const modelsState = rs.hoisted(() => ({
 
 rs.mock("@/core/models/hooks", () => ({
   useManagedModels: () => modelsState.current,
+  useModelProviders: () => ({ providers: PROVIDERS, isLoading: false, error: undefined }),
   useSaveManagedModel: () => ({ mutate: rs.fn(), isPending: false }),
   useDeleteManagedModel: () => ({ mutate: rs.fn(), isPending: false }),
   useTestManagedModel: () => ({ mutate: rs.fn(), isPending: false }),
@@ -183,13 +190,48 @@ describe("maskedKeyLabel", () => {
   });
 });
 
+/** Minimal preset table mirroring the backend's `/api/models/providers`. */
+const PROVIDERS: ModelProvider[] = [
+  {
+    key: "openai",
+    label: "OpenAI",
+    use: "langchain_openai:ChatOpenAI",
+    default_api_base: null,
+    available: true,
+    reason: null,
+  },
+  {
+    key: "openai-compatible",
+    label: "OpenAI-compatible",
+    use: "langchain_openai:ChatOpenAI",
+    default_api_base: null,
+    available: true,
+    reason: null,
+  },
+  {
+    key: "doubao",
+    label: "Doubao",
+    use: "deerflow.models.patched_deepseek:PatchedChatDeepSeek",
+    default_api_base: "https://ark.cn-beijing.volces.com/api/v3",
+    available: true,
+    reason: null,
+  },
+];
+
+/** Test-local shim: the provider table is fixed here, so bind it once. */
+const buildWrite = (
+  draft: ManagedModelDraft,
+  original?: ManagedModel,
+): ManagedModelWrite => buildManagedModelWrite(draft, PROVIDERS, original);
+
+
 describe("isManagedModelDraftComplete", () => {
   it("requires name, use and model", () => {
     expect(
       isManagedModelDraftComplete({
         ...EMPTY_MODEL_DRAFT,
         name: "gpt-4o",
-        use: "langchain_openai:ChatOpenAI",
+        provider: "openai",
         model: "gpt-4o",
       }),
     ).toBe(true);
@@ -204,7 +246,7 @@ describe("isManagedModelDraftComplete", () => {
       isManagedModelDraftComplete({
         ...EMPTY_MODEL_DRAFT,
         name: " ",
-        use: " langchain_openai:ChatOpenAI ",
+        provider: " openai ",
         model: "\t",
       }),
     ).toBe(false);
@@ -255,12 +297,12 @@ describe("buildManagedModelWrite (single key field)", () => {
   const complete = {
     ...EMPTY_MODEL_DRAFT,
     name: "gpt-4o",
-    use: "langchain_openai:ChatOpenAI",
+    provider: "openai",
     model: "gpt-4o",
   };
 
   it("trims the required fields", () => {
-    const write = buildManagedModelWrite({
+    const write = buildWrite({
       ...complete,
       name: " gpt-4o ",
       model: " gpt-4o ",
@@ -270,13 +312,13 @@ describe("buildManagedModelWrite (single key field)", () => {
   });
 
   it("omits both key fields when the user did not retype a key", () => {
-    const write = buildManagedModelWrite(complete);
+    const write = buildWrite(complete);
     expect(write).not.toHaveProperty("api_key");
     expect(write).not.toHaveProperty("api_key_value");
   });
 
   it("does not prefill a key when editing an entry with a stored secret", () => {
-    const write = buildManagedModelWrite(complete, {
+    const write = buildWrite(complete, {
       index: 0,
       name: "gpt-4o",
       model: "gpt-4o",
@@ -289,7 +331,7 @@ describe("buildManagedModelWrite (single key field)", () => {
   });
 
   it("stores a typed literal in .env behind a derived name, never in config.yaml", () => {
-    const write = buildManagedModelWrite({
+    const write = buildWrite({
       ...complete,
       name: "doubao-seed-1.8",
       api_key: "sk-live-1234",
@@ -300,7 +342,7 @@ describe("buildManagedModelWrite (single key field)", () => {
   });
 
   it("derives the name from the edited entry's name", () => {
-    const write = buildManagedModelWrite(
+    const write = buildWrite(
       { ...complete, name: "renamed-entry", api_key: "sk-live-1234" },
       {
         index: 0,
@@ -313,7 +355,7 @@ describe("buildManagedModelWrite (single key field)", () => {
   });
 
   it("passes a typed $VAR reference through untouched, with no cleartext", () => {
-    const write = buildManagedModelWrite({
+    const write = buildWrite({
       ...complete,
       api_key: "$BRAND_NEW_KEY",
     });
@@ -322,7 +364,7 @@ describe("buildManagedModelWrite (single key field)", () => {
   });
 
   it("keeps provider-specific extras an edit does not expose", () => {
-    const write = buildManagedModelWrite(complete, {
+    const write = buildWrite(complete, {
       index: 2,
       name: "gpt-4o",
       model: "gpt-4o",
@@ -339,9 +381,9 @@ describe("buildManagedModelWrite (single key field)", () => {
   });
 
   it("normalizes a blank display_name to null", () => {
-    expect(buildManagedModelWrite(complete).display_name).toBeNull();
+    expect(buildWrite(complete).display_name).toBeNull();
     expect(
-      buildManagedModelWrite({ ...complete, display_name: " GPT-4o " })
+      buildWrite({ ...complete, display_name: " GPT-4o " })
         .display_name,
     ).toBe("GPT-4o");
   });
@@ -376,5 +418,66 @@ describe("buildManagedModelProbe", () => {
     );
     expect(probe.base_url).toBe("https://example.test/v1");
     expect(probe).not.toHaveProperty("index");
+  });
+});
+
+describe("provider picker", () => {
+  it("uses the selected provider's class path", () => {
+    const write = buildWrite({
+      ...EMPTY_MODEL_DRAFT,
+      name: "doubao-seed-1.8",
+      model: "doubao-seed-1-8-251228",
+      provider: "doubao",
+    });
+    expect(write.use).toBe("deerflow.models.patched_deepseek:PatchedChatDeepSeek");
+    // A recognized provider must NOT be stored as an override.
+    expect(write.use).not.toBe("langchain_openai:ChatOpenAI");
+  });
+
+  it("maps a known class path back to its provider on edit", () => {
+    expect(
+      draftProviderFor(PROVIDERS, "deerflow.models.patched_deepseek:PatchedChatDeepSeek"),
+    ).toEqual({ provider: "doubao", useOverride: "" });
+  });
+
+  it("does not reverse-map the openai-compatible fallback label", () => {
+    // It shares OpenAI's class path, so mapping it back would relabel a
+    // perfectly ordinary OpenAI entry as "other OpenAI-compatible".
+    expect(draftProviderFor(PROVIDERS, "langchain_openai:ChatOpenAI")).toEqual({
+      provider: "openai",
+      useOverride: "",
+    });
+  });
+
+  it("PRESERVES an unrecognised class path verbatim on edit", () => {
+    // The critical rule: a hand-written advanced entry must survive an edit.
+    // The UI cannot label it, but it must not rewrite it either.
+    const exotic = "deerflow.models.mindie_provider:MindIEChatModel";
+    const draft = { ...EMPTY_MODEL_DRAFT, name: "mindie", model: "m", ...draftProviderFor(PROVIDERS, exotic) };
+    expect(draft.provider).toBe("openai-compatible");
+
+    const write = buildWrite(draft);
+    expect(write.use).toBe(exotic);
+  });
+
+  it("clears the preserved override once a provider is picked explicitly", () => {
+    const exotic = "some.custom:Model";
+    const draft = { ...EMPTY_MODEL_DRAFT, name: "x", model: "m", ...draftProviderFor(PROVIDERS, exotic) };
+    // Simulate the Select's onChange.
+    const picked = { ...draft, provider: "doubao", useOverride: "" };
+    expect(buildWrite(picked).use).toBe("deerflow.models.patched_deepseek:PatchedChatDeepSeek");
+  });
+
+  it("sends an explicit empty api_base when the field is cleared", () => {
+    const write = buildWrite({ ...EMPTY_MODEL_DRAFT, name: "x", model: "m", provider: "openai", api_base: "" });
+    expect(write.api_base).toBe("");
+  });
+
+  it("passes the typed base URL through", () => {
+    const write = buildWrite({
+      ...EMPTY_MODEL_DRAFT, name: "x", model: "m",
+      provider: "openai-compatible", api_base: " https://example.test/v1 ",
+    });
+    expect(write.api_base).toBe("https://example.test/v1");
   });
 });

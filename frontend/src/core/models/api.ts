@@ -7,6 +7,8 @@ import type {
   ManagedModel,
   ManagedModelsResponse,
   ManagedModelWrite,
+  ModelProvider,
+  ModelProvidersResponse,
   ModelTestResult,
   ModelsResponse,
 } from "./types";
@@ -77,6 +79,26 @@ function jsonInit(method: string, body: unknown): RequestInit {
 /** Read the whole managed model region. */
 export async function loadManagedModels(): Promise<ManagedModel[]> {
   return requestModels("/config", undefined, "Failed to load models");
+}
+
+/**
+ * Read the provider presets the model form renders as a dropdown.
+ *
+ * Admin-only, like the rest of the model-config endpoints — the page only calls
+ * it once the managed list has loaded, which already implies admin.
+ */
+export async function loadModelProviders(): Promise<ModelProvider[]> {
+  const response = await fetchWithAuth(
+    `${getBackendBaseURL()}/api/models/providers`,
+  );
+  if (!response.ok) {
+    throw new ModelConfigRequestError(
+      response.status,
+      await readErrorDetail(response, "Failed to load providers"),
+    );
+  }
+  const data = (await response.json()) as ModelProvidersResponse;
+  return data.providers;
 }
 
 /** Replace the whole managed model region in one write. */

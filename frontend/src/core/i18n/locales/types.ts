@@ -504,8 +504,15 @@ export interface Translations {
       deleteSuccess: string;
       name: string;
       namePlaceholder: string;
-      use: string;
-      usePlaceholder: string;
+      provider: string;
+      providerPlaceholder: string;
+      providerUnavailable: string;
+      providerUnavailableHint: string;
+      apiBase: string;
+      apiBasePlaceholder: string;
+      apiBaseOptionalHint: string;
+      apiBaseRequiredHint: string;
+      apiBaseRequired: string;
       model: string;
       modelPlaceholder: string;
       displayName: string;
@@ -516,6 +523,8 @@ export interface Translations {
       apiKeyStoredAsHint: string;
       keyNotSet: string;
       required: string;
+      requiredForProvider: string;
+      editTitleProviderFallback: string;
     };
     tools: {
       title: string;

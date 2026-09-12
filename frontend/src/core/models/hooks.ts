@@ -5,6 +5,7 @@ import {
   createManagedModel,
   deleteManagedModel,
   loadManagedModels,
+  loadModelProviders,
   loadModels,
   testManagedModel,
   updateManagedModel,
@@ -13,6 +14,9 @@ import type { ManagedModelWrite } from "./types";
 
 /** Query key for the managed model region (`GET /api/models/config`). */
 export const MANAGED_MODELS_QUERY_KEY = ["managedModels"] as const;
+
+/** Query key for the provider presets (`GET /api/models/providers`). */
+export const MODEL_PROVIDERS_QUERY_KEY = ["modelProviders"] as const;
 
 /**
  * Query key of the public model list the chat model picker reads.
@@ -49,6 +53,24 @@ export function useManagedModels({
       !(error instanceof ModelConfigRequestError) && count < 3,
   });
   return { models: data ?? [], isLoading, error };
+}
+
+export function useModelProviders({
+  enabled = true,
+}: { enabled?: boolean } = {}) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: MODEL_PROVIDERS_QUERY_KEY,
+    queryFn: () => loadModelProviders(),
+    enabled,
+    // The endpoint is admin-only, so a 403 is a stable answer — retrying it
+    // three times only delays the error state. Same rule as `useManagedModels`.
+    retry: (count, error) =>
+      !(error instanceof ModelConfigRequestError) && count < 3,
+    // The preset table is static apart from installed packages; a focus refetch
+    // buys nothing.
+    refetchOnWindowFocus: false,
+  });
+  return { providers: data ?? [], isLoading, error };
 }
 
 /**

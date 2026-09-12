@@ -603,8 +603,6 @@ export const enUS: Translations = {
       deleteSuccess: "Model config deleted.",
       name: "Name",
       namePlaceholder: "e.g. gpt-4o",
-      use: "Provider class path",
-      usePlaceholder: "langchain_openai:ChatOpenAI",
       model: "Model ID",
       modelPlaceholder: "gpt-4o",
       displayName: "Display name",
@@ -615,7 +613,20 @@ export const enUS: Translations = {
       apiKeyStoredAsHint:
         "The key is saved to .env as {name}; the config file keeps only the reference.",
       keyNotSet: "Not set",
-      required: "Name, provider class path, and model ID are required.",
+      required: "Name, provider, and model ID are required.",
+      requiredForProvider: "Enter a base URL before saving.",
+      provider: "Provider",
+      providerPlaceholder: "Select a provider",
+      providerUnavailable: "Unavailable",
+      providerUnavailableHint:
+        "This provider's package is not installed; install it to select it.",
+      apiBase: "Base URL",
+      apiBasePlaceholder: "https://api.example.com/v1",
+      apiBaseOptionalHint: "Leave blank to use the provider's default endpoint.",
+      apiBaseRequiredHint: "An OpenAI-compatible provider requires a base URL.",
+      apiBaseRequired: "A base URL is required for an OpenAI-compatible provider.",
+      editTitleProviderFallback:
+        "This model uses a custom provider class path; it is preserved as-is on save.",
     },
     tools: {
       title: "Tools",

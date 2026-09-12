@@ -30,44 +30,125 @@ import {
   ItemDescription,
   ItemTitle,
 } from "@/components/ui/item";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useI18n } from "@/core/i18n/hooks";
 import { ModelConfigRequestError } from "@/core/models/api";
 import {
   useDeleteManagedModel,
   useManagedModels,
+  useModelProviders,
   useSaveManagedModel,
   useTestManagedModel,
 } from "@/core/models/hooks";
 import type {
   ManagedModel,
   ManagedModelWrite,
+  ModelProvider,
   ModelTestResult,
 } from "@/core/models/types";
 import { cn } from "@/lib/utils";
 
 import { SettingsSection } from "./settings-section";
 
+/**
+ * Radix Select forbids an empty item value, so "no provider picked yet" and the
+ * fallback for an unrecognised class path share one sentinel.
+ */
+export const PROVIDER_FALLBACK_KEY = "openai-compatible";
+
 /** Form state for the add/edit panel. Every field is a string; blanks are unset. */
 export interface ManagedModelDraft {
   name: string;
-  use: string;
   model: string;
+  /**
+   * The selected provider *key*, not a class path. `use` is derived from it on
+   * save (or, for an unrecognised stored entry, preserved verbatim by the
+   * `useOverride` below) so the operator never sees a class path.
+   */
+  provider: string;
+  /**
+   * The stored `use` of an entry the preset table does not recognise.
+   *
+   * Load-bearing: a hand-crafted entry using a class path outside the presets
+   * must survive an edit byte-for-byte. When set, it wins over the provider's
+   * own `use` on save; when blank, the provider's `use` is used.
+   */
+  useOverride: string;
+  api_base: string;
   display_name: string;
   api_key: string;
 }
 
 export const EMPTY_MODEL_DRAFT: ManagedModelDraft = {
   name: "",
-  use: "",
   model: "",
+  provider: "",
+  useOverride: "",
+  api_base: "",
   display_name: "",
   api_key: "",
 };
 
-/** `name`/`use`/`model` are required; the rest are optional. */
+/**
+ * The provider preset matching a stored class path, or `null`.
+ *
+ * The `openai-compatible` row is skipped deliberately: it shares
+ * `langchain_openai:ChatOpenAI` with `openai` but is a *fallback label*, not the
+ * reverse mapping — otherwise an advanced entry would silently relabel itself.
+ */
+export function findProviderByUse(
+  providers: ModelProvider[],
+  use: string,
+): ModelProvider | null {
+  return (
+    providers.find(
+      (provider) =>
+        provider.key !== PROVIDER_FALLBACK_KEY && provider.use === use,
+    ) ?? null
+  );
+}
+
+/**
+ * The provider-draft state for an existing entry.
+ *
+ * A recognised class path reverse-maps to its provider. An unrecognised one
+ * falls back to the `openai-compatible` label for display but records the
+ * original `use` in `useOverride`, so saving keeps exactly what was stored.
+ */
+export function draftProviderFor(
+  providers: ModelProvider[],
+  use: string,
+): Pick<ManagedModelDraft, "provider" | "useOverride"> {
+  const match = findProviderByUse(providers, use);
+  if (match) {
+    return { provider: match.key, useOverride: "" };
+  }
+  return { provider: PROVIDER_FALLBACK_KEY, useOverride: use };
+}
+
+/** Whether the selected provider requires an explicit base URL. */
+function providerRequiresApiBase(provider: string): boolean {
+  return provider === PROVIDER_FALLBACK_KEY;
+}
+
+/**
+ * `name`/`model`/`provider` are required, plus a base URL for the
+ * OpenAI-compatible provider (which has no default endpoint to fall back on).
+ * The rest are optional.
+ */
 export function isManagedModelDraftComplete(draft: ManagedModelDraft): boolean {
-  return [draft.name, draft.use, draft.model].every(
-    (value) => value.trim().length > 0,
+  return (
+    [draft.name, draft.model, draft.provider].every(
+      (value) => value.trim().length > 0,
+    ) &&
+    (!providerRequiresApiBase(draft.provider) ||
+      draft.api_base.trim().length > 0)
   );
 }
 
@@ -94,6 +175,10 @@ const NON_ROUND_TRIP_KEYS = new Set([
   "api_key_masked",
   "api_key",
   "api_key_value",
+  // The form now owns the endpoint; it is rebuilt from the draft on save so a
+  // cleared field actually removes the stored value instead of being carried
+  // over by `carriedOver`.
+  "api_base",
 ]);
 
 /**
@@ -148,15 +233,30 @@ export function deriveApiKeyVarName(name: string): string {
  */
 export function buildManagedModelWrite(
   draft: ManagedModelDraft,
+  providers: ModelProvider[],
   original?: ManagedModel,
 ): ManagedModelWrite {
+  // An unrecognised class path (a hand-written entry) is carried in
+  // `useOverride` and wins; otherwise the class path comes from the selected
+  // provider preset. This is what lets an advanced entry survive an edit
+  // instead of being silently rewritten to the fallback provider's class path.
+  const override = draft.useOverride.trim();
+  const presetUse = providers.find((p) => p.key === draft.provider)?.use ?? "";
+  const use = override !== "" ? override : presetUse;
+
   const write: ManagedModelWrite = {
     ...carriedOver(original),
     name: draft.name.trim(),
-    use: draft.use.trim(),
+    use,
     model: draft.model.trim(),
     display_name: draft.display_name.trim() || null,
   };
+
+  // The form owns the endpoint: send it when non-blank, and send an explicit
+  // empty string when the operator cleared it, so a stored `api_base` is
+  // removed rather than carried over by `carriedOver`.
+  write.api_base = draft.api_base.trim();
+
   const apiKey = draft.api_key.trim();
   if (apiKey) {
     if (apiKey.startsWith("$")) {
@@ -195,6 +295,9 @@ export function buildManagedModelProbe(model: ManagedModel): ManagedModelWrite {
 export function ModelSettingsPage() {
   const { t } = useI18n();
   const { models, isLoading, error } = useManagedModels();
+  // Providers are only fetched for an admin; the form needs them to render the
+  // dropdown, and the reverse mapping needs them to label an existing entry.
+  const { providers } = useModelProviders();
   const adminRequired =
     error instanceof ModelConfigRequestError && error.isAdminRequired;
 
@@ -214,13 +317,19 @@ export function ModelSettingsPage() {
           {t.settings.models.loadError.replace("{detail}", error.message)}
         </div>
       ) : (
-        <ManagedModelList models={models} />
+        <ManagedModelList models={models} providers={providers} />
       )}
     </SettingsSection>
   );
 }
 
-function ManagedModelList({ models }: { models: ManagedModel[] }) {
+function ManagedModelList({
+  models,
+  providers,
+}: {
+  models: ManagedModel[];
+  providers: ModelProvider[];
+}) {
   const { t } = useI18n();
   const { mutate: saveModel, isPending: isSaving } = useSaveManagedModel();
   const { mutate: deleteModel, isPending: isDeleting } =
@@ -242,12 +351,17 @@ function ManagedModelList({ models }: { models: ManagedModel[] }) {
 
   const openEdit = (model: ManagedModel) => {
     setEditing(model);
+    const apiBase =
+      typeof model.api_base === "string" ? model.api_base : "";
     setDraft({
       ...EMPTY_MODEL_DRAFT,
       name: model.name,
-      use: model.use,
+      // Reverse-maps the stored class path to a provider label; an unrecognised
+      // path lands in `useOverride` so saving keeps it verbatim.
+      ...draftProviderFor(providers, model.use),
       model: model.model,
       display_name: model.display_name ?? "",
+      api_base: apiBase,
     });
   };
 
@@ -265,7 +379,7 @@ function ManagedModelList({ models }: { models: ManagedModel[] }) {
       return;
     }
     // `editing` addresses the stored entry; `draft.name` may have been changed.
-    const payload = buildManagedModelWrite(draft, editing ?? undefined);
+    const payload = buildManagedModelWrite(draft, providers, editing ?? undefined);
     saveModel(
       { name: editing?.name, model: payload },
       {
@@ -345,6 +459,7 @@ function ManagedModelList({ models }: { models: ManagedModel[] }) {
           draft={draft}
           isSaving={isSaving}
           maskedKey={editing ? maskedKeyLabel(editing) : null}
+          providers={providers}
           onChange={setDraft}
           onClose={closeForm}
           onSave={handleSave}
@@ -492,6 +607,7 @@ function ManagedModelList({ models }: { models: ManagedModel[] }) {
 function ModelFormPanel({
   draft,
   maskedKey,
+  providers,
   title,
   isSaving,
   onChange,
@@ -500,6 +616,7 @@ function ModelFormPanel({
 }: {
   draft: ManagedModelDraft;
   maskedKey: string | null;
+  providers: ModelProvider[];
   title: string;
   isSaving: boolean;
   onChange: (draft: ManagedModelDraft) => void;
@@ -548,13 +665,47 @@ function ModelFormPanel({
             {...field("display_name")}
           />
         </Field>
-        <Field label={t.settings.models.use}>
-          <Input
-            autoComplete="off"
-            className="font-mono"
-            placeholder={t.settings.models.usePlaceholder}
-            {...field("use")}
-          />
+        <Field label={t.settings.models.provider}>
+          <Select
+            value={draft.provider}
+            onValueChange={(provider) => {
+              const preset = providers.find((p) => p.key === provider);
+              onChange({
+                ...draft,
+                provider,
+                // Picking a provider clears any preserved class path — the
+                // operator has explicitly chosen a different one.
+                useOverride: "",
+                // Prefill the endpoint only when the preset has one and the
+                // operator has not typed their own.
+                api_base:
+                  preset?.default_api_base ?? draft.api_base,
+              });
+            }}
+          >
+            <SelectTrigger id="model-provider" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {providers.map((provider) => (
+                <SelectItem
+                  key={provider.key}
+                  value={provider.key}
+                  disabled={!provider.available}
+                >
+                  {provider.label}
+                  {!provider.available && (
+                    // The package is not installed, so the save path would
+                    // reject this provider. Say why rather than offering a
+                    // dead end.
+                    <span className="text-muted-foreground ml-2 text-xs">
+                      {t.settings.models.providerUnavailable}
+                    </span>
+                  )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
         <Field label={t.settings.models.model}>
           <Input
@@ -562,6 +713,22 @@ function ModelFormPanel({
             className="font-mono"
             placeholder={t.settings.models.modelPlaceholder}
             {...field("model")}
+          />
+        </Field>
+        <Field
+          className="sm:col-span-2"
+          hint={
+            providerRequiresApiBase(draft.provider)
+              ? t.settings.models.apiBaseRequiredHint
+              : t.settings.models.apiBaseOptionalHint
+          }
+          label={t.settings.models.apiBase}
+        >
+          <Input
+            autoComplete="off"
+            className="font-mono"
+            placeholder={t.settings.models.apiBasePlaceholder}
+            {...field("api_base")}
           />
         </Field>
         <Field
