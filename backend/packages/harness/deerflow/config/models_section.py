@@ -63,6 +63,34 @@ No failure path may modify ``config_path``. ``commit_config_update`` reads the
 original into memory first, writes the backup, and only then stages the work
 file — and if staging or the final ``os.replace`` fails it removes both the work
 file and the backup it just wrote, so the directory is left exactly as it was.
+
+Writing a brand-new credential
+------------------------------
+A model entry may point at a ``$VAR`` that does not exist yet, so saving it has to
+produce three things: the ``.env`` entry, the process environment, and the
+``config.yaml`` reference. ``load_dotenv()`` runs once, at import
+(``app_config.py:44``), which means a key appended to ``.env`` *afterwards* is
+invisible to the running process — ``$VAR`` resolves to ``None``,
+``resolve_env_variables`` raises, and since the reload path has no exception guard
+the next request fails. Writing the file alone is therefore never enough;
+``upsert_env_var`` also assigns ``os.environ[key]``.
+
+The order of the whole operation is fixed by a second constraint: validation runs
+*before* the config is swapped in, so a key written after validation can never be
+referenced by the candidate that is being validated::
+
+    1. upsert_env_var(.env, key, value)   — the file first, then os.environ
+    2. surgical replace on a copy
+    3. validate the copy                  — $NEW_KEY now resolves
+    4. backup
+    5. atomic replace
+
+The cost of that order is a residue: if steps 2–5 fail, ``.env`` keeps the new key
+while ``config.yaml`` is unchanged. That is harmless — an unreferenced environment
+variable changes nothing about how the app runs — and it is deliberately **not**
+rolled back. Rewriting ``.env`` to undo it would race with, and could clobber, the
+other values the operator typed by hand; a stray unused key is far cheaper than a
+lost credential. Tests pin both the residue and the ordering.
 """
 
 from __future__ import annotations
@@ -91,6 +119,9 @@ MANAGED_END = "# <<< DeerFlow Web UI 托管区域结束 <<<"
 _TOP_LEVEL_KEY_RE = re.compile(r"[a-zA-Z_]")
 
 _MODELS_KEY_RE = re.compile(r"models:")
+
+#: A dotenv variable name: letters, digits and underscores, not starting with a digit.
+_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _INDENT = "  "
 
@@ -562,3 +593,132 @@ def _discard(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:  # pragma: no cover - defensive; a leftover file is not fatal
         logger.warning("Could not remove staging file %s", path, exc_info=True)
+
+
+# --------------------------------------------------------------------------- #
+# Writing a new credential: the dotenv file, then the running process
+# --------------------------------------------------------------------------- #
+
+
+def upsert_env_var(env_path: Path, key: str, value: str) -> None:
+    """Set ``key=value`` in the dotenv file at *env_path*, then make it visible to
+    the running process via ``os.environ``.
+
+    Both halves are one operation on purpose. ``load_dotenv()`` runs once, at
+    import time (``app_config.py:44``), so a key appended to ``.env`` after
+    startup is invisible to the running process: ``$VAR`` resolves to ``None`` and
+    ``resolve_env_variables`` raises. Because config reload has no exception
+    guard, that one unresolvable reference would break every subsequent request.
+    Updating ``os.environ`` here closes that window.
+
+    ``os.environ`` is assigned rather than defaulted, so a stale in-process value
+    cannot shadow the key the operator just saved. ``load_dotenv()`` never
+    overrides an existing variable, so once the process picks the value up from
+    the file on the next restart, memory and disk agree.
+
+    Like the config editor this is a line-level edit: an existing assignment is
+    rewritten in place and every other line — comments, blank lines, unrelated
+    variables, the file's line ending style and permissions — is preserved
+    byte-for-byte. A missing key is appended. The write itself goes through a
+    temp file plus ``os.replace`` so a failed write cannot leave a truncated
+    ``.env`` behind, which would cost the operator every other credential in it.
+
+    Values needing quotes are quoted the way ``Write-DotEnv`` in
+    ``scripts/windows/DeerFlow.Common.psm1`` does it — double quotes, except that
+    a value carrying a double quote *or* a backslash is single-quoted instead,
+    since python-dotenv expands escape sequences inside double quotes (a Windows
+    path like ``C:\\dir\\note`` would come back with a real newline in it).
+
+    Raises ``ValueError`` for a key that is not a valid environment variable name
+    or a value that is not a single-line string.
+    """
+    if not isinstance(key, str) or not _ENV_KEY_RE.fullmatch(key):
+        raise ValueError(f"invalid environment variable name: {key!r}")
+    if not isinstance(value, str):
+        raise ValueError(f"environment variable {key} must be a string, got {type(value).__name__}")
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"environment variable {key} must not contain a newline")
+
+    env_path = Path(env_path)
+    # Bytes, not `read_text`: Python's text mode translates newlines, which would
+    # silently convert a CRLF file (what the Windows deployment's `Write-DotEnv`
+    # produces) to LF and mangle it on the way back out.
+    text = env_path.read_bytes().decode("utf-8") if env_path.is_file() else ""
+    newline = _detect_newline(text.splitlines(keepends=True))
+
+    _write_env_text(env_path, _upsert_env_line(text, key, f"{key}={_format_env_value(value)}", newline))
+
+    # Only after the value is durable on disk. A process-local value with no
+    # matching file entry would vanish on restart, silently reverting the key.
+    os.environ[key] = value
+
+
+def _upsert_env_line(text: str, key: str, assignment: str, newline: str) -> str:
+    """Return *text* with *key*'s assignment set to *assignment*.
+
+    Only the last assignment is rewritten: python-dotenv keeps the last one, so
+    rewriting an earlier duplicate would leave the stale value in charge. A key
+    that is absent is appended, terminating an unterminated final line first —
+    appending blindly would fuse the two into one bogus entry.
+    """
+    # `KEY=` only: the trailing `[ \t]*=` is what keeps OPENAI_API_KEY from
+    # matching OPENAI_API_KEY_EXTRA.
+    pattern = re.compile(rf"^(?:export[ \t]+)?{re.escape(key)}[ \t]*=")
+    lines = text.splitlines(keepends=True)
+
+    target: int | None = None
+    for index, line in enumerate(lines):
+        if pattern.match(line):
+            target = index
+
+    if target is not None:
+        lines[target] = assignment + newline
+        return "".join(lines)
+
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] += newline
+    return "".join(lines) + assignment + newline
+
+
+def _format_env_value(value: str) -> str:
+    """Quote *value* the way the Windows deployment's ``Write-DotEnv`` does."""
+    if value == "" or re.search(r"[\s#]", value):
+        if '"' in value or "\\" in value:
+            # Double quotes expand escapes; a path would lose its backslashes.
+            if "'" not in value:
+                return f"'{value}'"
+            # Neither quote character can wrap this value safely.
+            logger.warning("Environment value contains both quote characters; writing it unquoted")
+            return value
+        return f'"{value}"'
+    return value
+
+
+def _write_env_text(env_path: Path, new_text: str) -> None:
+    """Atomically replace *env_path* with *new_text*.
+
+    The temp file is created in the target directory so ``os.replace`` stays on
+    one filesystem. An existing file's mode is carried over; a new one gets the
+    mode a plain ``open()`` would have produced, so creating ``.env`` here looks
+    no different from an operator creating it by hand.
+    """
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = (env_path.stat().st_mode & 0o777) if env_path.is_file() else None
+
+    handle, temp_name = tempfile.mkstemp(dir=env_path.parent, prefix=".env-upsert-", suffix=".tmp")
+    os.close(handle)
+    temp_path = Path(temp_name)
+    try:
+        temp_path.write_bytes(new_text.encode("utf-8"))
+        os.chmod(temp_path, existing_mode if existing_mode is not None else _default_file_mode())
+        os.replace(temp_path, env_path)
+    except BaseException:
+        _discard(temp_path)
+        raise
+
+
+def _default_file_mode() -> int:
+    """The mode a plain ``open(path, "w")`` would create: ``0o666`` minus umask."""
+    umask = os.umask(0)
+    os.umask(umask)
+    return 0o666 & ~umask

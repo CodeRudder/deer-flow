@@ -9,6 +9,14 @@ The second half covers the read/mask/validate/commit helpers the admin model
 endpoints are built on. The load-bearing property there is that **no failure
 path may modify ``config.yaml``**: validation happens on a copy, and the
 original is only ever replaced after a timestamped backup has been written.
+
+The last section covers ``upsert_env_var``. ``load_dotenv()`` runs once at import
+(``app_config.py:44``), so a key appended to ``.env`` is invisible to the running
+process — ``$NEW_KEY`` would resolve to ``None`` and ``resolve_env_variables``
+would raise. Because config reload has no exception guard, that one bad reload
+would break every subsequent request. These tests therefore pin the full
+ordering constraint: the ``.env`` write has to land *before* the candidate config
+is validated.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from dotenv import dotenv_values
 
 from deerflow.config import models_section
 from deerflow.config.app_config import AppConfig
@@ -37,6 +46,7 @@ from deerflow.config.models_section import (
     render_managed_section,
     replace_managed_section,
     to_public,
+    upsert_env_var,
     validate_candidate_text,
 )
 
@@ -1223,3 +1233,405 @@ def test_commit_config_update_prunes_to_the_keep_limit(tmp_path: Path):
     assert backups[-1].name in remaining, "the newest backup must survive pruning"
     assert config.read_text(encoding="utf-8") == "v12\n"
     assert _stray_work_files(tmp_path) == []
+
+
+# --------------------------------------------------------------------------- #
+# upsert_env_var — writing .env and syncing the running process
+#
+# `load_dotenv()` is called once, at import (`app_config.py:44`), so a key that
+# lands in `.env` after startup is invisible to the running process: `$NEW_KEY`
+# resolves to None, `resolve_env_variables` raises, and — since config reload has
+# no exception guard — every later request fails. Writing the file is therefore
+# never enough on its own; `os.environ` must be updated by the same call.
+#
+# The write order matters too. Validation of a candidate config happens *before*
+# the config is swapped in, so `.env` has to be written first or adding a model
+# that references a new key can never be saved at all. The accepted consequence
+# is that a failure after step 1 leaves an unreferenced key behind in `.env`;
+# that residue is harmless and is deliberately not rolled back (rolling back
+# could clobber values the operator typed by hand).
+# --------------------------------------------------------------------------- #
+
+#: `.env` keys these tests may write into the process environment.
+ENV_TEST_KEYS = (
+    "OPENAI_API_KEY",
+    "VOLCENGINE_API_KEY",
+    "EMPTY",
+    "EXPORTED",
+    "APPENDED_KEY",
+    "SPACED_KEY",
+    "HASH_KEY",
+    "QUOTED_KEY",
+    "DUPLICATE_KEY",
+    "NEW_MODEL_KEY",
+    "REPLACED_KEY",
+)
+
+#: A `.env` shaped like one an operator would hand-edit: comments, blank lines,
+#: an exported entry, a quoted value, and a trailing empty value.
+ENV_SAMPLE = """\
+# DeerFlow environment
+OPENAI_API_KEY=sk-existing
+
+# a comment
+VOLCENGINE_API_KEY="quoted value"
+EMPTY=
+export EXPORTED=hello
+OPENAI_API_KEY_EXTRA=untouched
+"""
+
+
+@pytest.fixture(autouse=True)
+def _clean_process_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the keys these tests write out of the process environment.
+
+    ``upsert_env_var`` sets ``os.environ`` on purpose, so a leak would be visible
+    to every later test in the suite (and a stray ``OPENAI_API_KEY`` could change
+    unrelated behaviour). ``monkeypatch`` restores the original value — or
+    absence — once the test finishes.
+    """
+    for key in ENV_TEST_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def _env_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+
+def _assert_only_env_line_changed(before: str, after: str, *, key: str) -> int:
+    """Assert every ``.env`` line except *key*'s is byte-identical.
+
+    Returns the index of the rewritten line. This is the same guarantee the
+    config editor makes for ``config.yaml``, applied to the dotenv file: only the
+    addressed line may move.
+    """
+    in_lines = before.splitlines(keepends=True)
+    out_lines = after.splitlines(keepends=True)
+    index = next(i for i, line in enumerate(in_lines) if line.startswith(f"{key}="))
+
+    assert out_lines[:index] == in_lines[:index], "lines before the rewritten key changed"
+    assert out_lines[index + 1 :] == in_lines[index + 1 :], "lines after the rewritten key changed"
+    assert len(out_lines) == len(in_lines), "no line may be added or removed by an in-place rewrite"
+    return index
+
+
+def test_upsert_env_var_replaces_existing_key_in_place(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    upsert_env_var(env_path, "OPENAI_API_KEY", "sk-new")
+
+    after = env_path.read_text(encoding="utf-8")
+    index = _assert_only_env_line_changed(ENV_SAMPLE, after, key="OPENAI_API_KEY")
+    assert after.splitlines(keepends=True)[index] == "OPENAI_API_KEY=sk-new\n"
+
+
+def test_upsert_env_var_replaces_the_whole_line_not_just_the_value(tmp_path: Path):
+    """No stale quoting survives: ``"quoted value"`` is rewritten as a bare value."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    upsert_env_var(env_path, "VOLCENGINE_API_KEY", "plain")
+
+    line = next(line for line in _env_lines(env_path) if line.startswith("VOLCENGINE_API_KEY="))
+    assert line == "VOLCENGINE_API_KEY=plain\n"
+
+
+def test_upsert_env_var_appends_a_missing_key(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    before = "APPENDED_KEY_NEIGHBOUR=1\n"
+    env_path.write_text(before, encoding="utf-8")
+
+    upsert_env_var(env_path, "APPENDED_KEY", "2")
+
+    assert env_path.read_text(encoding="utf-8") == before + "APPENDED_KEY=2\n"
+
+
+def test_upsert_env_var_terminates_a_file_without_a_trailing_newline(tmp_path: Path):
+    """The one documented exception: an unterminated last line gets a newline.
+
+    Appending directly would produce ``A=1APPENDED_KEY=2``, which dotenv reads as
+    a single bogus entry.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("A=1", encoding="utf-8")
+
+    upsert_env_var(env_path, "APPENDED_KEY", "2")
+
+    assert env_path.read_text(encoding="utf-8") == "A=1\nAPPENDED_KEY=2\n"
+
+
+def test_upsert_env_var_preserves_crlf_line_endings(tmp_path: Path):
+    """The Windows writer emits CRLF; the editor must not mix in lone LFs.
+
+    Read as bytes on purpose: ``Path.read_text`` translates newlines and would
+    hide a CRLF file being silently converted to LF.
+    """
+    env_path = tmp_path / ".env"
+    before = ENV_SAMPLE.replace("\n", "\r\n")
+    env_path.write_bytes(before.encode("utf-8"))
+
+    upsert_env_var(env_path, "OPENAI_API_KEY", "sk-new")
+
+    after_bytes = env_path.read_bytes()
+    assert after_bytes.count(b"\n") == after_bytes.count(b"\r\n"), "a lone LF was introduced"
+    assert b"OPENAI_API_KEY=sk-new\r\n" in after_bytes
+    assert after_bytes.startswith(b"# DeerFlow environment\r\n")
+
+
+def test_upsert_env_var_appends_with_crlf_for_a_crlf_file(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(b"A=1\r\n")
+
+    upsert_env_var(env_path, "APPENDED_KEY", "2")
+
+    assert env_path.read_bytes() == b"A=1\r\nAPPENDED_KEY=2\r\n"
+
+
+def test_upsert_env_var_keeps_an_lf_file_as_lf(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(b"A=1\n")
+
+    upsert_env_var(env_path, "APPENDED_KEY", "2")
+
+    assert env_path.read_bytes() == b"A=1\nAPPENDED_KEY=2\n"
+
+
+def test_upsert_env_var_is_idempotent(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    upsert_env_var(env_path, "SPACED_KEY", "abc def")
+    once = env_path.read_text(encoding="utf-8")
+    upsert_env_var(env_path, "SPACED_KEY", "abc def")
+
+    assert env_path.read_text(encoding="utf-8") == once, "a second identical write must be a no-op"
+    assert sum(line.startswith("SPACED_KEY=") for line in once.splitlines()) == 1
+
+
+def test_upsert_env_var_is_idempotent_for_an_existing_key(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    upsert_env_var(env_path, "OPENAI_API_KEY", "sk-new")
+    once = env_path.read_text(encoding="utf-8")
+    upsert_env_var(env_path, "OPENAI_API_KEY", "sk-new")
+
+    assert env_path.read_text(encoding="utf-8") == once
+    assert sum(line.startswith("OPENAI_API_KEY=") for line in once.splitlines()) == 1
+
+
+def test_upsert_env_var_rewrites_the_last_duplicate_assignment(tmp_path: Path):
+    """dotenv keeps the *last* assignment, so that is the one that must win.
+
+    A hand-edited file can carry the same key twice; rewriting the first would
+    leave the stale value in charge after the next restart.
+    """
+    env_path = tmp_path / ".env"
+    before = "DUPLICATE_KEY=old\n# keep me\nDUPLICATE_KEY=stale\n"
+    env_path.write_text(before, encoding="utf-8")
+
+    upsert_env_var(env_path, "DUPLICATE_KEY", "fresh")
+
+    after = env_path.read_text(encoding="utf-8")
+    assert after == "DUPLICATE_KEY=old\n# keep me\nDUPLICATE_KEY=fresh\n"
+    assert dotenv_values(env_path)["DUPLICATE_KEY"] == "fresh"
+
+
+def test_upsert_env_var_syncs_the_running_process(tmp_path: Path):
+    """The whole point of the task: the running process must see the new key."""
+    env_path = tmp_path / ".env"
+    assert "SPACED_KEY" not in os.environ, "test isolation fixture failed to clear the key"
+
+    upsert_env_var(env_path, "SPACED_KEY", "sk-live-value")
+
+    assert os.environ["SPACED_KEY"] == "sk-live-value"
+
+
+def test_upsert_env_var_overwrites_a_stale_process_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """``os.environ`` is overwritten, not merely filled when absent.
+
+    ``load_dotenv()`` never overrides an existing variable, so a stale in-process
+    value would otherwise shadow the key the operator just saved.
+    """
+    monkeypatch.setenv("SPACED_KEY", "stale")
+    env_path = tmp_path / ".env"
+    env_path.write_text("SPACED_KEY=stale\n", encoding="utf-8")
+
+    upsert_env_var(env_path, "SPACED_KEY", "fresh")
+
+    assert os.environ["SPACED_KEY"] == "fresh"
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("SPACED_KEY", "abc def"),
+        ("HASH_KEY", "abc#def"),
+        ("HASH_KEY", "abc #def"),
+        ("QUOTED_KEY", ""),
+        ("QUOTED_KEY", "sk-plain"),
+    ],
+)
+def test_upsert_env_var_round_trips_values_through_dotenv(tmp_path: Path, key: str, value: str):
+    env_path = tmp_path / ".env"
+
+    upsert_env_var(env_path, key, value)
+
+    raw = next(line for line in _env_lines(env_path) if line.startswith(f"{key}="))
+    if value == "" or re.search(r"[\s#]", value):
+        assert raw[len(key) + 1] in "\"'", f"a value needing quotes was written bare: {raw!r}"
+    assert dotenv_values(env_path)[key] == value
+
+
+def test_upsert_env_var_quotes_like_write_dotenv(tmp_path: Path):
+    """Quoting rules mirror ``Write-DotEnv`` in DeerFlow.Common.psm1."""
+    env_path = tmp_path / ".env"
+
+    upsert_env_var(env_path, "SPACED_KEY", "abc def")
+    upsert_env_var(env_path, "HASH_KEY", "abc#def")
+    upsert_env_var(env_path, "QUOTED_KEY", 'has "quotes" and a space')
+
+    lines = dict(line.rstrip("\r\n").split("=", 1) for line in _env_lines(env_path))
+    assert lines["SPACED_KEY"] == '"abc def"'
+    assert lines["HASH_KEY"] == '"abc#def"'
+    # A value containing a double quote is single-quoted; double quotes would
+    # mangle backslashes, so they are never used when the value has one.
+    assert lines["QUOTED_KEY"] == "'has \"quotes\" and a space'"
+
+
+def test_upsert_env_var_prefers_single_quotes_for_backslash_values(tmp_path: Path):
+    """Double quotes would turn ``\\note`` into a newline."""
+    env_path = tmp_path / ".env"
+
+    upsert_env_var(env_path, "SPACED_KEY", "C:\\dir name\\note")
+
+    assert dotenv_values(env_path)["SPACED_KEY"] == "C:\\dir name\\note"
+
+
+def test_upsert_env_var_preserves_the_existing_file_mode(tmp_path: Path):
+    """Rewriting must not silently tighten permissions on a shared .env."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("A=1\n", encoding="utf-8")
+    os.chmod(env_path, 0o644)
+
+    upsert_env_var(env_path, "APPENDED_KEY", "2")
+
+    assert (env_path.stat().st_mode & 0o777) == 0o644
+
+
+def test_upsert_env_var_preserves_unrelated_content(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    upsert_env_var(env_path, "APPENDED_KEY", "new")
+
+    after = env_path.read_text(encoding="utf-8")
+    preserved = (
+        "# DeerFlow environment\n",
+        "# a comment\n",
+        "\n",
+        'VOLCENGINE_API_KEY="quoted value"\n',
+        "EMPTY=\n",
+        "export EXPORTED=hello\n",
+        "OPENAI_API_KEY_EXTRA=untouched\n",
+    )
+    for line in preserved:
+        assert line in after, f"{line!r} was lost"
+    assert after.startswith("# DeerFlow environment\n")
+    assert after.endswith("APPENDED_KEY=new\n")
+
+
+def test_upsert_env_var_creates_the_file_and_parent_directories(tmp_path: Path):
+    env_path = tmp_path / "src" / "nested" / ".env"
+    assert not env_path.parent.exists()
+
+    upsert_env_var(env_path, "APPENDED_KEY", "value")
+
+    assert env_path.read_text(encoding="utf-8") == "APPENDED_KEY=value\n"
+    # No BOM: python-dotenv would read "KEY" as a different key name.
+    assert not env_path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_upsert_env_var_creates_a_utf8_file(tmp_path: Path):
+    env_path = tmp_path / "src" / ".env"
+
+    upsert_env_var(env_path, "APPENDED_KEY", "值 with space")
+
+    assert dotenv_values(env_path)["APPENDED_KEY"] == "值 with space"
+
+
+def test_upsert_env_var_rejects_an_invalid_key(tmp_path: Path):
+    env_path = tmp_path / ".env"
+
+    with pytest.raises(ValueError):
+        upsert_env_var(env_path, "NOT A KEY", "v")
+
+    assert not env_path.exists(), "a rejected key must not create the file"
+
+
+def test_upsert_env_var_rejects_a_multiline_value(tmp_path: Path):
+    """A value with a newline cannot be represented on one line; refuse it."""
+    env_path = tmp_path / ".env"
+
+    with pytest.raises(ValueError):
+        upsert_env_var(env_path, "APPENDED_KEY", "line1\nline2")  # noqa: SIM905 - a newline is the point
+
+    assert not env_path.exists()
+
+
+def test_upsert_env_var_leaves_no_staging_file_behind(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("A=1\n", encoding="utf-8")
+
+    upsert_env_var(env_path, "APPENDED_KEY", "2")
+
+    assert _listing(tmp_path) == [".env"]
+
+
+# --------------------------------------------------------------------------- #
+# The ordering constraint: .env before validation
+# --------------------------------------------------------------------------- #
+
+
+def test_new_env_key_must_land_before_the_candidate_is_validated(config_dir: Path):
+    """End-to-end regression for the ordering constraint.
+
+    ``validate_candidate_text`` runs *before* the config is swapped in, and
+    ``resolve_env_variables`` is a hard failure on an unresolvable ``$VAR``. So
+    the ``.env`` write has to come first — otherwise adding a model that
+    references a new key could never be saved. The first half below proves the
+    failure is real; the second half proves the ordering fixes it.
+    """
+    env_path = config_dir / "src" / ".env"
+    new_entry = {"name": "x", "use": "langchain_openai:ChatOpenAI", "model": "gpt-4o", "api_key": "$NEW_MODEL_KEY"}
+
+    candidate = replace_managed_section(_config_text(VALID_MODELS), [new_entry])
+
+    # Before the .env write the key cannot resolve — this is the bug this task
+    # exists to prevent.
+    with pytest.raises(ValueError, match="NEW_MODEL_KEY"):
+        validate_candidate_text(candidate, dir_path=config_dir)
+
+    upsert_env_var(env_path, "NEW_MODEL_KEY", "sk-test-123")
+
+    parsed = validate_candidate_text(candidate, dir_path=config_dir)
+    assert [model.name for model in parsed.models] == ["x"]
+    assert parsed.models[0].api_key == "sk-test-123"
+
+
+def test_failed_validation_leaves_the_env_key_in_place(config_dir: Path):
+    """The accepted residue, pinned: `.env` keeps the new key when config.yaml cannot be written.
+
+    An unreferenced environment variable changes nothing about how the app runs,
+    and rolling one back risks clobbering values the operator typed by hand —
+    which is a far worse failure than a stray unused key.
+    """
+    env_path = config_dir / "src" / ".env"
+    upsert_env_var(env_path, "NEW_MODEL_KEY", "sk-test-123")
+
+    with pytest.raises(ValueError):
+        validate_candidate_text("models:\n  - name: [oops\n", dir_path=config_dir)
+
+    assert dotenv_values(env_path)["NEW_MODEL_KEY"] == "sk-test-123"
+    assert os.environ["NEW_MODEL_KEY"] == "sk-test-123"
