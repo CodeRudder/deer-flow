@@ -330,6 +330,31 @@ Windows 上装工具链时如需代理，**必须写 `socks5://` 或 `socks5h://
 目标机本机有 Shadowsocks 监听 `127.0.0.1:1080`，但**实测不需要代理**——
 PyPI 与国内镜像（清华/阿里/腾讯/中科大）直连均可达，npm 走 npmmirror 也直连。
 
+### 12. ⚠️ `config.yaml` 里的托管区域是机器管理的，**不要手工编辑**
+
+`config.yaml` 的 `models:` 段下有一段被标记围起来的区域，由网页端「设置 → 模型」整体管理：
+
+```yaml
+# >>> DeerFlow Web UI 托管区域 — 界面会整体重写，请勿手工编辑 >>>
+  - name: my-model
+    ...
+# <<< DeerFlow Web UI 托管区域结束 <<<
+```
+
+**规则**：
+
+- **区域内**：界面每次保存会**整体重写**。手工加进去的条目/注释会被下一次保存抹掉。
+  要改模型请走界面（管理员登录 → 设置 → 模型）。
+- **区域外**：**完全不受影响**。这正是该功能的设计目标 —— `config.yaml` 有 1400+ 行
+  注释，写入时必须逐字保留。写入走的是「外科手术式」文本替换，不是 YAML 反序列化后重
+  序列化（后者会把全部注释吃掉）。
+- 新增模型时，密钥写进 `.env`，`config.yaml` 里只留 `$变量名` 引用（见 `docs/windows-deployment.md` §4.6）。
+
+**每次成功保存都会先备份**成 `config.yaml.bak.<YYYYMMDD-HHMMSS>`（同目录，保留最近 10 份），
+回滚命令见 `docs/windows-deployment.md` §4.7。校验失败的写入**不会**产生备份，也不会
+碰原始文件。相关实现：`backend/packages/harness/deerflow/config/models_section.py`、
+`backend/app/gateway/routers/models.py`。
+
 ---
 
 ## 七、环境配置要点

@@ -567,6 +567,10 @@ D:\deer-flow\src\.env            ← 填 *_API_KEY
 > `init-config.ps1` 已把**所有**被引用的变量名补进 `.env` 并置空 —— 补上真实 key 即可，
 > **不必改 `config.yaml`**。缺失的变量会让后端启动直接失败（硬校验），所以不要手工删 `.env` 里的键。
 
+> 💡 **更好的办法：从界面配，不用改文件也不用重启**。管理员登录后进「设置」→「模型」，
+> 可视化增删改模型，密钥自动落到 `.env`、`config.yaml` 只留 `$变量名` 引用，并且每次保存
+> 前自动备份。详见 §4.6 与 §4.7。下面的手工做法仍然有效，适合批量导入或界面不可用时。
+
 ---
 
 ### 最终验收清单
@@ -958,6 +962,85 @@ Copy-Item '<备份目录>\.env'            -Destination 'D:\deer-flow\src' -Forc
 > ⚠️ `.env` 里的 `DEER_FLOW_INTERNAL_AUTH_TOKEN` / `BETTER_AUTH_SECRET` 与数据库里的会话数据相关。
 > 只还原数据库、不还原 `.env`（或反之）会导致**已登录用户全部掉线**（需重新登录，不影响数据）。
 > 要完整还原就两者一起。
+
+### 4.6 通过界面配置大模型
+
+管理员可以直接在网页上增删改模型，**不需要手工编辑 `config.yaml`，也不需要重启服务**。
+
+**入口**：左下角「设置和更多」→「设置」→ 左侧导航选「模型」。
+
+**权限**：该分区**仅管理员可见可用**。所有管理接口（`/api/models*`）在后端是 admin-only，
+非管理员调用一律返回 `403`：
+
+```json
+{"detail":"Admin privileges required to manage model configuration."}
+```
+
+普通用户仍然能在对话页顶部的模型选择器里看到和使用已配置的模型，只是打不开这个管理界面。
+
+**它管理的是什么**：只改 `config.yaml` 里 `models:` 段下被下面这对标记围起来的区域，
+区域外的**所有注释与配置一个字都不动**（这正是这个功能存在的意义）：
+
+```yaml
+models:
+# >>> DeerFlow Web UI 托管区域 — 界面会整体重写，请勿手工编辑 >>>
+  - name: my-model
+    ...
+# <<< DeerFlow Web UI 托管区域结束 <<<
+  # 下面这些示例注释不会被碰
+  # - name: doubao-seed-1.8
+```
+
+**保存后立即生效**：不用重启。保存成功会弹出「模型配置已保存」，对话页的模型选择器随即
+出现新模型（后端会在写入后原地热加载配置）。
+
+**添加模型需要填**：名称（唯一 id）、显示名称、提供方类路径（如
+`deerflow.models.patched_deepseek:PatchedChatDeepSeek`）、模型 ID、API Key。
+表单里的「测试连接」可以先探测再保存（探测失败不影响保存）。
+
+**API Key 的落盘方式**：界面上填的明文密钥**写进 `.env`**，`config.yaml` 里只保留
+`$变量名` 引用。变量名由模型名自动派生（模型名大写 + `_API_KEY`，如 `my-model` →
+`MY_MODEL_API_KEY`），界面在密钥输入框下方会直接提示目标变量名。这样 `config.yaml`
+可以安全地进版本库或发给别人。
+
+### 4.7 配置备份与回滚
+
+通过界面**每一次成功保存**，系统都会先把改动前的 `config.yaml` 备份一份，命名规则：
+
+```
+config.yaml.bak.<YYYYMMDD-HHMMSS>
+例：D:\deer-flow\src\config.yaml.bak.20260912-110231
+```
+
+| 特性 | 说明 |
+|---|---|
+| 位置 | 与 `config.yaml` 同目录（`D:\deer-flow\src\`） |
+| 内容 | 改动前的**原始文件，字节级一致**（含全部注释） |
+| 保留份数 | 最近 **10** 份，更早的自动清理 |
+| 写入被拒时 | **不产生备份**（校验在落盘前完成，原始文件根本没被碰过） |
+
+**回滚**：
+
+```powershell
+# 1) 看有哪些备份，按时间倒序
+Get-ChildItem D:\deer-flow\src\config.yaml.bak.* | Sort-Object LastWriteTime -Descending
+
+# 2) 停服
+& 'D:\deer-flow\src\scripts\windows\stop.ps1'
+
+# 3) 用选定的备份覆盖回去
+Copy-Item D:\deer-flow\src\config.yaml.bak.<ts> D:\deer-flow\src\config.yaml -Force
+
+# 4) 启回来并确认
+& 'D:\deer-flow\src\scripts\windows\start.ps1'
+& 'D:\deer-flow\src\scripts\windows\status.ps1'
+```
+
+> ℹ️ 回滚只覆盖 `config.yaml`。如果那次保存往 `.env` 里写过新密钥，该密钥会留在 `.env`
+> 里成为一条无人引用的孤儿项——不影响运行，介意的话手工删掉即可。
+>
+> ⚠️ 手工编辑 `config.yaml` 时，**不要动标记围起来的托管区域**（见 §4.6）。区域外的内容
+> 随便改；区域内的内容下次从界面保存时会被整体重写。
 
 ---
 
