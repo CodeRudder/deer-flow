@@ -92,16 +92,12 @@ async function cleanupModels(ctx: APIRequestContext): Promise<void> {
 
 /** 通过 UI 打开「设置 → 模型」。 */
 async function openModelSettings(page: Page): Promise<void> {
-  await page.goto("/workspace");
-  // 设置入口在侧边栏；不同版本文案可能是「设置」或齿轮图标。
-  const trigger = page
-    .getByRole("button", { name: /设置|Settings/ })
-    .or(page.getByLabel(/设置|Settings/))
-    .first();
-  await trigger.click();
-
-  await page.getByRole("button", { name: /^模型$|^Models$/ }).click();
-  await expect(page.getByText(/添加模型|Add model/)).toBeVisible();
+  // Sidebar footer button opens a dropdown; one of its items is "Settings".
+  await page.getByRole("button", { name: /Settings and more/ }).click();
+  await page.getByRole("menuitem", { name: /^Settings$/ }).click();
+  // The dialog lists sections; "Models" is the one under test.
+  await page.getByRole("button", { name: "Models", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Add model" })).toBeVisible();
 }
 
 // ---------------------------------------------------------------------------
@@ -246,22 +242,30 @@ test.describe("模型配置", () => {
     const ctx = await loginAsAdmin();
     const name = adminKey("ui");
     try {
+      // The deployment runs the English locale, so selectors use the en-US
+      // strings (src/core/i18n/locales/en-US.ts).
       await page.goto("/login");
-      await page.getByLabel(/邮箱|Email/i).fill(EMAIL);
-      await page.getByLabel(/密码|Password/i).fill(PASSWORD);
-      await page.getByRole("button", { name: /登录|Sign in/i }).click();
-      await page.waitForURL(/\/workspace/, { timeout: 15_000 });
+      await page.getByLabel("Email").fill(EMAIL);
+      await page.getByLabel("Password").fill(PASSWORD);
+      await page.getByRole("button", { name: "Sign In" }).click();
+      await page.waitForURL(/\/workspace/, { timeout: 20_000 });
 
       await openModelSettings(page);
 
-      await page.getByRole("button", { name: /添加模型|Add model/ }).click();
-      await page.getByPlaceholder(/模型名称|name/i).first().fill(name);
-      await page.getByPlaceholder(/提供方|provider|use/i).first().fill("langchain_openai:ChatOpenAI");
-      await page.getByPlaceholder(/^模型|model/i).first().fill("gpt-4o");
-      await page.getByRole("button", { name: /^保存|Save/ }).click();
+      await page.getByRole("button", { name: "Add model" }).click();
+      // 服务商是下拉框，不是文本框 —— 用户看不到也填不了类路径。
+      await page.locator("#model-provider").click();
+      await page.getByRole("option", { name: /OpenAI/ }).first().click();
+      // 表单在对话框内；用 label 精确定位，避免与页面上其它 gpt-4o 占位符冲突。
+      // 表单里的 Field 未把 label 与 input 关联，输入框的可访问名来自
+      // placeholder；页面上另有同名占位符（模型菜单等），故用 exact 锚定。
+      await page.getByPlaceholder("e.g. gpt-4o").fill(name);
+      await page.getByPlaceholder("gpt-4o", { exact: true }).fill("gpt-4o");
+      await page.getByRole("button", { name: "Save" }).click();
 
       // 保存成功后列表里应出现该模型（等后端往返）。
-      await expect(page.getByText(name)).toBeVisible({ timeout: 15_000 });
+      // 用 first()：表单在关闭前也会回显同一个名称。
+      await expect(page.getByText(name).first()).toBeVisible({ timeout: 15_000 });
 
       // 用 API 复核：UI 显示的和磁盘上的一致。
       expect((await listModels(ctx)).map((m) => m.name)).toContain(name);

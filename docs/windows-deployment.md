@@ -845,11 +845,30 @@ Get-Content D:\deer-flow\logs\frontend.log -Tail 100
 > ⚠️ **`config.yaml` 与 `.env` 不要被新代码覆盖**。大多数同步/覆盖方式会连它们一起刷掉；
 > 覆盖前先备份，覆盖后确认这两个文件还在、内容未变。
 >
-> 只改了前端且依赖没变时，可只重跑构建：
-> `& '...\install.ps1' -SkipBackend -SkipFrontend`
+> 只改了前端且依赖没变时，可只重建前端：
+> `& '...\install.ps1' -SkipBackend -Force`
+> （`-Force` 跳过「产物已就绪」的幂等判断；`-SkipFrontend` 是**不**碰前端，别写错。）
 >
 > 全新代码库首次部署（含依赖变更）：直接 `& '...\deploy.ps1'`，它会按顺序做完
 > 配置 → 依赖 → 启动 → 自检，中途失败会停在那一步并给出补救命令。
+
+> ⚠️ **在服务运行期间重建前端会导致页面全崩**（实测踩过）。
+>
+> 症状：`:3000` 仍返回 200、`status.ps1` 显示服务健康，但浏览器白屏 / 报
+> `ChunkLoadError: Failed to load chunk /_next/static/chunks/<hash>.js`。
+>
+> 根因：`next start` 在**启动时**固化 `.next` 的构建清单。运行中重建会删掉
+> 旧 chunk、写入新的哈希文件名，而进程仍按旧清单去找已不存在的文件 → 500。
+>
+> 这**不是代码 bug，是操作顺序问题**：`install.ps1` 与 `deploy.ps1` 都不会自动停服
+> （新机器上无所谓，已上线的部署必须手动先停）。上面的升级流程已经包含停服步骤，
+> 单独跑 `install.ps1` 时务必先 `stop.ps1`。
+>
+> 快速判定是否踩坑——取浏览器控制台报的那个 chunk：
+> ```bash
+> curl -s -o /dev/null -w "%{http_code}\n" http://<IP>:3000/_next/static/chunks/<文件名>
+> ```
+> 返回 500 且磁盘上确实没有该文件，就是这个问题；停服重建即可。
 
 ### 4.4 常用运维命令速查
 
