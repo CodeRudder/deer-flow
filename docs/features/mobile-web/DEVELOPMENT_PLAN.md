@@ -61,6 +61,35 @@ useModels / useI18n / useRouter ...
 
 抽成 `useChatPage()` 后，两边 page 都只剩「取 hook 结果 → 摆布局」。
 
+### 1.2.1 客户端跳转与 middleware 的真实关系（T2 实测澄清）
+
+初稿这里写错了一次，记录正确结论以免后续任务照错的做。
+
+**实测**（dev server，带 `RSC: 1` 头，即 `router.replace` 实际发出的请求）：
+
+```
+移动 UA + RSC 头  →  x-middleware-rewrite: /m/workspace/chats/new
+桌面 UA + RSC 头  →  200，无 rewrite
+```
+
+结论分两类，**不要混为一谈**：
+
+| 动作 | 是否发请求 | 是否经 middleware | 结果 |
+|---|---|---|---|
+| `<Link>` / `router.push` / `router.replace` | ✅ 发 RSC 请求 | ✅ **经过** | 自动落到正确的树，**无需** `basePath` |
+| `history.replaceState` | ❌ 不发请求 | — | 只改地址栏，**写什么就是什么** |
+
+**因此真正的约束是：**
+
+> `history.replaceState` 写入的必须是**公开 URL**（`/workspace/...`），
+> 绝不能写 `/m/...` —— 那会把内部前缀泄漏到地址栏，
+> 破坏「同一个访问地址」的设计，也让链接变成设备相关。
+
+即：**地址栏里永远不该出现 `/m/`**。`useChatPage()` 的 `basePath`
+在两个树上都取默认值 `/workspace`，无论哪个树都不需要传 `/m/workspace`。
+
+`basePath` 选项保留为逃生舱口（附带单测），但当前 T5 **不应使用它**。
+
 ### 1.3 桌面端隔离策略
 
 **PC 端 JSX 一行不动**（已与用户确认）。唯一例外是 T2：把内联的 hooks 调用

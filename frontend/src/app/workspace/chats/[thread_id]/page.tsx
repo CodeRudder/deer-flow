@@ -2,18 +2,9 @@
 // new header indicators / message-list features must be added to both pages.
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
-
-import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
-import {
-  ChatBox,
-  useHumanInput,
-  useSpecificChatMode,
-  useThreadChat,
-} from "@/components/workspace/chats";
+import { ChatBox, useChatPage } from "@/components/workspace/chats";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { InputBox } from "@/components/workspace/input-box";
 import {
@@ -28,162 +19,41 @@ import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
-import { useModels } from "@/core/models/hooks";
-import { useNotification } from "@/core/notification/hooks";
-import { useLocalSettings, useThreadSettings } from "@/core/settings";
-import {
-  useThreadMetadata,
-  useThreadStream,
-  useThreadTokenUsage,
-} from "@/core/threads/hooks";
-import { threadTokenUsageToTokenUsage } from "@/core/threads/token-usage";
-import { textOfMessage } from "@/core/threads/utils";
-import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 export default function ChatPage() {
   const { t } = useI18n();
-  const router = useRouter();
-  const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
-    useThreadChat();
-  // `isNewThread` tracks whether the backend has the thread yet — gates the
-  // SDK's history fetch (see issue #2746).  `isWelcomeMode` is the visual
-  // welcome layout (centered input, hero, quick actions); we flip it to false
-  // the moment the user submits so the UI animates immediately, even though
-  // `isNewThread` stays true until the backend actually creates the thread.
-  const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
-  const [settings, setSettings] = useThreadSettings(threadId);
-  const [localSettings, setLocalSettings] = useLocalSettings();
-  const { tokenUsageEnabled } = useModels();
-  const threadTokenUsage = useThreadTokenUsage(
-    isNewThread || isMock ? undefined : threadId,
-    { enabled: tokenUsageEnabled && !isMock },
-  );
-  const threadMetadata = useThreadMetadata(threadId, {
-    enabled: !isNewThread && !isMock,
-    isMock,
-  });
-  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
-  const mountedRef = useRef(false);
-  useSpecificChatMode();
-
-  useEffect(() => {
-    mountedRef.current = true;
-  }, []);
-
-  // Keep welcome layout in sync when navigating between threads (sidebar
-  // clicks, "new chat" button).  Submitting in /chats/new flips the layout
-  // via onSend below — `isNewThread` stays true until onStart, so this effect
-  // is harmless during the submit transition.
-  useEffect(() => {
-    setIsWelcomeMode(isNewThread);
-  }, [isNewThread]);
-
-  const { showNotification } = useNotification();
-
+  // All streaming state, settings, effects and composer callbacks live in the
+  // shared hook so the mobile chat page can reuse them verbatim — only the
+  // layout below is desktop-specific. See `use-chat-page.ts`.
   const {
+    threadId,
+    isMock,
+    isNewThread,
+    isWelcomeMode,
     thread,
     pendingUsageMessages,
-    sendMessage,
-    regenerateMessage,
-    isUploading,
+    backendTokenUsage,
+    tokenUsageEnabled,
+    tokenUsageInlineMode,
+    settings,
+    setSettings,
+    localSettings,
+    setLocalSettings,
     isHistoryLoading,
     hasMoreHistory,
     loadMoreHistory,
-  } = useThreadStream({
-    threadId: isNewThread ? undefined : threadId,
-    displayThreadId: threadId,
-    context: settings.context,
-    isMock,
-    // onSend only animates the UI; do NOT flip `isNewThread` here — the
-    // LangGraph SDK eagerly fetches /history the moment it receives a
-    // thread id and assumes the thread exists on the backend (issue #2746).
-    onSend: () => {
-      setIsWelcomeMode(false);
-    },
-    onStart: (createdThreadId) => {
-      // ! Important: Never use next.js router for navigation in this case, otherwise it will cause the thread to re-mount and lose all states. Use native history API instead.
-      history.replaceState(null, "", `/workspace/chats/${createdThreadId}`);
-      setThreadId(createdThreadId);
-      setIsNewThread(false);
-    },
-    onFinish: (state) => {
-      if (document.hidden || !document.hasFocus()) {
-        let body = "Conversation finished";
-        const lastMessage = state.messages.at(-1);
-        if (lastMessage) {
-          const textContent = textOfMessage(lastMessage);
-          if (textContent) {
-            body =
-              textContent.length > 200
-                ? textContent.substring(0, 200) + "..."
-                : textContent;
-          }
-        }
-        showNotification(state.title, { body });
-      }
-    },
-  });
-
-  const hasThreadMessages = thread.messages.length > 0;
-
-  useEffect(() => {
-    if (
-      !isNewThread &&
-      !isMock &&
-      threadMetadata.data === null &&
-      !threadMetadata.isLoading &&
-      !threadMetadata.isFetching &&
-      !isHistoryLoading &&
-      !hasMoreHistory &&
-      !hasThreadMessages
-    ) {
-      router.replace("/workspace/chats/new");
-    }
-  }, [
-    hasMoreHistory,
-    hasThreadMessages,
-    isHistoryLoading,
-    isMock,
-    isNewThread,
-    router,
-    threadMetadata.data,
-    threadMetadata.isFetching,
-    threadMetadata.isLoading,
-  ]);
-
-  const handleSubmit = useCallback(
-    (message: PromptInputMessage) => {
-      const sendPromise = sendMessage(threadId, message);
-      if (message.files.length > 0) {
-        return sendPromise;
-      }
-      void sendPromise;
-    },
-    [sendMessage, threadId],
-  );
-  const handleStop = useCallback(async () => {
-    await thread.stop();
-  }, [thread]);
-  const handleRegenerate = useCallback(
-    (messageId: string, supersededMessageIds: string[]) =>
-      regenerateMessage(threadId, messageId, supersededMessageIds),
-    [regenerateMessage, threadId],
-  );
-
-  const tokenUsageInlineMode = tokenUsageEnabled
-    ? localSettings.tokenUsage.inlineMode
-    : "off";
-  const hasTodos = (thread.values.todos?.length ?? 0) > 0;
-
-  // Strict mode: while a clarification card is open the composer is disabled
-  // and regenerate is blocked. See useHumanInput.
-  const { hasOpenHumanInputCard, handleSubmitHumanInput } = useHumanInput({
-    threadId,
-    sendMessage,
-    messages: thread.messages,
-    enabled: !isMock && env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true",
-  });
+    hasOpenHumanInputCard,
+    handleSubmitHumanInput,
+    handleSubmit,
+    handleStop,
+    handleRegenerate,
+    hasTodos,
+    mountedRef,
+    isDemoMode,
+    isInputDisabled,
+    canRegenerate,
+  } = useChatPage();
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -236,19 +106,10 @@ export default function ChatPage() {
                 loadMoreHistory={loadMoreHistory}
                 isHistoryLoading={isHistoryLoading}
                 tokenUsageInlineMode={tokenUsageInlineMode}
-                canRegenerate={
-                  !isNewThread &&
-                  !isMock &&
-                  env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
-                  !isUploading &&
-                  !thread.isLoading &&
-                  !hasOpenHumanInputCard
-                }
+                canRegenerate={canRegenerate}
                 onRegenerateMessage={handleRegenerate}
                 onSubmitHumanInput={
-                  isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
-                    ? undefined
-                    : handleSubmitHumanInput
+                  isMock || isDemoMode ? undefined : handleSubmitHumanInput
                 }
               />
             </div>
@@ -309,12 +170,7 @@ export default function ChatPage() {
                     extraHeader={
                       isWelcomeMode && <Welcome mode={settings.context.mode} />
                     }
-                    disabled={
-                      isMock ||
-                      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                      isUploading ||
-                      hasOpenHumanInputCard
-                    }
+                    disabled={isInputDisabled}
                     disabledPlaceholder={
                       hasOpenHumanInputCard
                         ? t.humanInput.inputDisabledHint
@@ -335,7 +191,7 @@ export default function ChatPage() {
                     )}
                   />
                 )}
-                {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
+                {isDemoMode && (
                   <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">
                     {t.common.notAvailableInDemoMode}
                   </div>
