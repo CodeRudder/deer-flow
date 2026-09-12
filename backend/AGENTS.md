@@ -288,7 +288,7 @@ CORS is same-origin by default when requests enter through nginx on port 2026. S
 
 | Router | Endpoints |
 |--------|-----------|
-| **Models** (`/api/models`) | `GET /` - list models; `GET /{name}` - model details |
+| **Models** (`/api/models`) | `GET /` - list models; `GET /{name}` - model details; `GET /config` - managed `models:` region of config.yaml (`api_key` masked, each entry carries `index`/`name`); `PUT /config` - replace the whole region; `POST /` - append one entry (409 on duplicate name); `PUT /{name}` - replace one entry (404 if unmanaged); `DELETE /{name}` - remove one entry (404 if unmanaged). All `/config` and write endpoints are admin-only and use the `deerflow.config.models_section` five-step protocol (`.env` upsert → surgical edit → validate → timestamped backup → atomic replace), so everything outside the marker-delimited region stays byte-identical and a rejected candidate leaves no backup behind. A masked or empty `api_key` keeps the stored value for an entry of the same name; `api_key_value` carries the cleartext for a new `$VAR` reference and is written to `.env`, never to config.yaml. Declared before `GET /{name}` so the greedy path cannot swallow `/config`. |
 | **MCP** (`/api/mcp`) | `GET /config` - get config; `PUT /config` - update config (saves to extensions_config.json) |
 | **Skills** (`/api/skills`) | `GET /` - list skills; `GET /{name}` - details; `PUT /{name}` - update enabled; `POST /install` - install from .skill archive (accepts standard optional frontmatter like `version`, `author`, `compatibility`) |
 | **Memory** (`/api/memory`) | `GET /` - memory data; `POST /reload` - force reload; `GET /config` - config; `GET /status` - config + data |
