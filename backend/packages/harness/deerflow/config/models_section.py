@@ -109,6 +109,7 @@ from pydantic import ValidationError
 
 from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
+from deerflow.reflection import resolve_class
 
 logger = logging.getLogger(__name__)
 
@@ -434,9 +435,10 @@ def validate_candidate_text(candidate_text: str, *, dir_path: Path) -> AppConfig
     against the same directory the live ``config.yaml`` lives in. The file is
     removed on both the success and the failure path.
 
-    Raises ``ValueError`` for a YAML syntax error, an unresolvable ``$VAR``, or
-    an entry that ``ModelConfig`` rejects — the original file is never read or
-    written here, so a rejected candidate costs nothing.
+    Raises ``ValueError`` for a YAML syntax error, an unresolvable ``$VAR``, an
+    entry that ``ModelConfig`` rejects, or a model ``use`` path that does not
+    resolve to a real class — the original file is never read or written here,
+    so a rejected candidate costs nothing.
     """
     dir_path = Path(dir_path)
     handle, temp_name = tempfile.mkstemp(dir=dir_path, prefix=".config-candidate-", suffix=".tmp")
@@ -446,13 +448,46 @@ def validate_candidate_text(candidate_text: str, *, dir_path: Path) -> AppConfig
     try:
         temp_path.write_text(candidate_text, encoding="utf-8")
         try:
-            return AppConfig.from_file(temp_path)
+            parsed = AppConfig.from_file(temp_path)
         except yaml.YAMLError as exc:
             # `yaml.YAMLError` is not a `ValueError`; normalise so callers only
             # have one exception type to handle for "this candidate is bad".
             raise ValueError(f"candidate config is not valid YAML: {exc}") from exc
     finally:
         _discard(temp_path)
+
+    # Only after the temp file is gone: resolving imports can be slow and can
+    # fail on an optional dependency, and neither belongs on the staging path.
+    _validate_model_use_paths(parsed)
+    return parsed
+
+
+def _validate_model_use_paths(config: AppConfig) -> None:
+    """Reject a config whose model ``use`` paths do not resolve to real classes.
+
+    ``ModelConfig.use`` is a bare ``str`` and nothing else checks it, so without
+    this a typo'd provider is saved successfully and only blows up on the first
+    chat turn, when ``create_chat_model`` calls ``resolve_class``. Rejecting at
+    save time keeps the pre-write backup from being the user's only way back.
+
+    Every managed entry is checked, not just the one being edited: the whole
+    candidate is what gets written.
+
+    ``base_class`` is deliberately left unset. Requiring ``BaseChatModel`` would
+    also assert subclass *shape*, which is a stronger claim than "the class
+    exists" — and the failure mode this guards against is a module/attribute typo,
+    which the plain class check already catches.
+    """
+    for model in config.models:
+        use_path = model.use
+        try:
+            resolve_class(use_path)
+        except Exception as exc:
+            # ImportError/AttributeError from the resolver, plus anything an
+            # imported provider module raises at import time (missing optional
+            # dependency, bad platform-specific code). All mean "this path is
+            # not usable"; none may escape as an unhandled 500.
+            raise ValueError(f"model '{model.name}' has an unresolvable 'use' path {use_path!r}: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- #

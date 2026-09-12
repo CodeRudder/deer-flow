@@ -430,3 +430,87 @@ def test_new_env_reference_works_through_the_whole_region_replace(admin: TestCli
     assert response.status_code == 200
     assert "ANOTHER_NEW_KEY=sk-other-1234" in (config_path.parent / ".env").read_text(encoding="utf-8")
     assert load_managed_models(config_path)[0]["api_key"] == "$ANOTHER_NEW_KEY"
+
+
+# --------------------------------------------------------------------------- #
+# 13. `use` must resolve — otherwise the save "succeeds" but the first chat fails
+# --------------------------------------------------------------------------- #
+
+
+def test_nonexistent_provider_module_is_rejected(admin: TestClient, config_path: Path):
+    """``ModelConfig.use`` is a bare string, so nothing else checks the class path.
+
+    Without this gate the save returns 200, config.yaml is rewritten, and the
+    breakage only surfaces on the first chat turn — by which point the pre-write
+    backup is the only way back.
+    """
+    original = config_path.read_bytes()
+
+    response = admin.post("/api/models", json={**MODEL_ENTRY, "use": "nonexistent.module:Nope"})
+
+    assert response.status_code == 400
+    assert "nonexistent.module:Nope" in response.json()["detail"]
+    assert config_path.read_bytes() == original
+    assert _backups(config_path) == []
+
+
+def test_provider_module_with_a_missing_attribute_is_rejected(admin: TestClient, config_path: Path):
+    """The module exists but the class does not — same 400, same clean rollback."""
+    original = config_path.read_bytes()
+
+    response = admin.post("/api/models", json={**MODEL_ENTRY, "use": "langchain_openai:NoSuchClass"})
+
+    assert response.status_code == 400
+    assert "langchain_openai:NoSuchClass" in response.json()["detail"]
+    assert config_path.read_bytes() == original
+    assert _backups(config_path) == []
+
+
+def test_unresolvable_use_is_rejected_through_the_whole_region_replace(admin: TestClient, config_path: Path):
+    """The full-region PUT validates every entry it would write, not just one."""
+    admin.post("/api/models", json=MODEL_ENTRY)
+    original = config_path.read_bytes()
+    backups_before = _backups(config_path)
+
+    response = admin.put("/api/models/config", json={"models": [MODEL_ENTRY, {**MODEL_ENTRY, "name": "bad", "use": "nonexistent.module:Nope"}]})
+
+    assert response.status_code == 400
+    assert "nonexistent.module:Nope" in response.json()["detail"]
+    assert config_path.read_bytes() == original
+    # The rejected PUT added no backup of its own.
+    assert _backups(config_path) == backups_before
+
+
+def test_a_valid_provider_class_still_saves(admin: TestClient, config_path: Path):
+    """The happy path must survive the new check — ChatOpenAI is the documented default."""
+    response = admin.post("/api/models", json={**MODEL_ENTRY, "use": "langchain_openai:ChatOpenAI", "api_key": "$OPENAI_API_KEY"})
+
+    assert response.status_code == 200
+    assert load_managed_models(config_path)[0]["use"] == "langchain_openai:ChatOpenAI"
+    assert [m.name for m in get_app_config().models] == ["tmp-model"]
+
+
+def test_unresolvable_use_and_a_new_env_reference_compose(admin: TestClient, config_path: Path):
+    """A payload can be wrong in both ways at once; both must be caught, and the
+    ``.env`` residue from the fixed ordering stays the accepted outcome."""
+    original = config_path.read_bytes()
+
+    response = admin.post("/api/models", json={**MODEL_ENTRY, "use": "nonexistent.module:Nope", "api_key": "$COMPOSED_NEW_KEY", "api_key_value": "sk-composed-1234"})
+
+    assert response.status_code == 400
+    assert "nonexistent.module:Nope" in response.json()["detail"]
+    assert config_path.read_bytes() == original
+    assert _backups(config_path) == []
+    # Intentional residue, documented in models_section: the key stays in .env
+    # while config.yaml is untouched. Never rolled back.
+    assert "COMPOSED_NEW_KEY=sk-composed-1234" in (config_path.parent / ".env").read_text(encoding="utf-8")
+
+
+def test_unresolvable_use_is_rejected_by_validate_candidate_text(config_path: Path):
+    """The gate lives in validation itself, not just in the router's payload path."""
+    from deerflow.config.models_section import replace_managed_section, validate_candidate_text
+
+    candidate = replace_managed_section(config_path.read_text(encoding="utf-8"), [{**MODEL_ENTRY, "use": "nonexistent.module:Nope"}])
+
+    with pytest.raises(ValueError, match="nonexistent.module:Nope"):
+        validate_candidate_text(candidate, dir_path=config_path.parent)
