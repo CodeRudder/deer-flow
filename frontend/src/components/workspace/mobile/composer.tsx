@@ -175,10 +175,16 @@ export function MobileComposer({
 
   const handlePicked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
-      const { files } = event.target;
+      // Snapshot the selection *before* resetting `value`. `input.files` hands
+      // back the same `FileList` object until the selection changes, and
+      // clearing `value` is exactly such a change — so a reference taken first
+      // would be the object this line just emptied, and every photo would be
+      // dropped silently. (`prompt-input.tsx`'s own hidden input for 文件
+      // snapshots the same way, which is why that entry works.)
+      const files = Array.from(event.target.files ?? []);
       // Allow re-picking the same file.
       event.target.value = "";
-      if (!files || files.length === 0) {
+      if (files.length === 0) {
         return;
       }
       // Same guard as the primitive's own hidden input: `.app` bundles are

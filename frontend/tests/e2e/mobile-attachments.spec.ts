@@ -23,11 +23,15 @@ import { MOCK_RUN_ID, MOCK_THREAD_ID, mockLangGraphAPI } from "./utils/mock-api"
  * which input each entry actually opens. `capture`/`accept` are read off the
  * real elements rather than trusted.
  *
- * ── Known defect (T5's 相册 / 拍照 entries) ──────────────────────────────────
- * 相册 and 拍照 drop the chosen file on the floor; only 文件 works. The two
- * broken entries are pinned by `test.fail()` tests below — they will turn red
- * the moment the bug is fixed, which is the point. The three entries' wiring is
- * *not* at fault: they do open three distinct inputs (asserted here).
+ * ── 相册 / 拍照 (T5 entries, fixed in T15) ──────────────────────────────────
+ * 相册 and 拍照 used to drop the chosen file on the floor; only 文件 worked.
+ * The fault was in `composer.tsx`'s `handlePicked`, not in the entries' wiring:
+ * it took `event.target.files` and then reset `value`, and the reset empties
+ * the very `FileList` object it had just taken. The handler now snapshots with
+ * `Array.from` first, so the two entries have real regression tests below
+ * instead of the `test.fail()` pins they carried while the bug was open. The
+ * three entries' wiring was never at fault: they open three distinct inputs
+ * (asserted here).
  *
  * Note on the failure test (4): the upload path is the one place
  * `handleSubmit`'s promise/void asymmetry genuinely applied, and T11 made
@@ -305,19 +309,19 @@ test.describe("Mobile attachments — picker wiring", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 相册 / 拍照 — currently broken, pinned as expected failures
+// 相册 / 拍照 — regression tests for the T15 fix
 // ---------------------------------------------------------------------------
 
-test.describe("Mobile attachments — 相册 / 拍照 (known defect)", () => {
+test.describe("Mobile attachments — 相册 / 拍照", () => {
   /*
-   * Mechanism (measured, not inferred).
+   * Mechanism the fix has to defeat (measured, not inferred).
    *
-   * `composer.tsx`'s `handlePicked` reads the FileList *object* and then resets
-   * the input to allow re-picking the same file:
+   * `composer.tsx`'s `handlePicked` used to read the FileList *object* and then
+   * reset the input to allow re-picking the same file:
    *
    *     const { files } = event.target;   // FileList object, not a copy
    *     event.target.value = "";          // empties that same object
-   *     if (!files || files.length === 0) return;   // → always 0, always bails
+   *     if (!files || files.length === 0) return;   // → always 0, always bailed
    *
    * Per the HTML spec the `files` getter returns *the same* FileList object
    * "until the list of selected files changes", and setting `value = ""` is
@@ -325,44 +329,34 @@ test.describe("Mobile attachments — 相册 / 拍照 (known defect)", () => {
    *
    *     {"before":1, "names":["probe.png"], "after":0, "sameAcrossAccess":true}
    *
-   * So both entries that route through `handlePicked` (相册 and 拍照) silently
-   * drop every file, while 文件 — which goes through `prompt-input.tsx`'s
+   * So both entries routing through `handlePicked` (相册 and 拍照) silently
+   * dropped every file, while 文件 — which goes through `prompt-input.tsx`'s
    * `handleChange` and snapshots the list (`Array.from`) *before* resetting —
-   * works. The fix is to snapshot first (`Array.from(event.target.files)`) or to
-   * reset the value after `attachments.add(...)`.
-   *
-   * These two tests therefore assert the *intended* behaviour and are marked
-   * `test.fail()`: they are green today only because Playwright expects them to
-   * fail, and they will go red (loudly) as soon as the defect is fixed.
+   * worked. `handlePicked` now snapshots the same way; these tests fail if that
+   * snapshot ever moves back below the reset.
    */
 
-  test.fail(
-    "a photo chosen from 相册 joins the pending list",
-    async ({ page }) => {
-      mockLangGraphAPI(page, { threads: [] });
-      await mockModels(page);
-      await openComposer(page);
+  test("a photo chosen from 相册 joins the pending list", async ({ page }) => {
+    mockLangGraphAPI(page, { threads: [] });
+    await mockModels(page);
+    await openComposer(page);
 
-      await page.locator(GALLERY_INPUT).setInputFiles(png("trip.png"));
+    await page.locator(GALLERY_INPUT).setInputFiles(png("trip.png"));
 
-      await expect(chips(page)).toHaveCount(1, { timeout: 5_000 });
-      await expect(chips(page)).toContainText("trip.png");
-    },
-  );
+    await expect(chips(page)).toHaveCount(1, { timeout: 5_000 });
+    await expect(chips(page)).toContainText("trip.png");
+  });
 
-  test.fail(
-    "a photo taken with 拍照 joins the pending list",
-    async ({ page }) => {
-      mockLangGraphAPI(page, { threads: [] });
-      await mockModels(page);
-      await openComposer(page);
+  test("a photo taken with 拍照 joins the pending list", async ({ page }) => {
+    mockLangGraphAPI(page, { threads: [] });
+    await mockModels(page);
+    await openComposer(page);
 
-      await page.locator(CAMERA_INPUT).setInputFiles(png("shot.png"));
+    await page.locator(CAMERA_INPUT).setInputFiles(png("shot.png"));
 
-      await expect(chips(page)).toHaveCount(1, { timeout: 5_000 });
-      await expect(chips(page)).toContainText("shot.png");
-    },
-  );
+    await expect(chips(page)).toHaveCount(1, { timeout: 5_000 });
+    await expect(chips(page)).toContainText("shot.png");
+  });
 });
 
 // ---------------------------------------------------------------------------
