@@ -478,6 +478,192 @@ T5/T6 复查时发现 T1 的切分有误（见 §1.1.1），此任务纠正它�
 
 ---
 
+### §1.3 例外登记表
+
+§1.3 规定「非 mobile 目录不改动」。**每条例外都必须在此登记**，并说明为什么
+CSS 或外层包裹做不到、以及桌面如何证明未变。
+
+| # | 文件 | 改法 | 为什么不能只在 mobile 目录解决 | 桌面不变如何证明 |
+|---|---|---|---|---|
+| 1 | `components/workspace/artifacts/context.tsx` | `ArtifactsProvider` 加可选 `onOpenChange` 回调（T6） | 产物面板由 provider 自己开合，移动端没有面板可开，只有一条路由要跳 | 回调可选，桌面不传 → 行为逐字节不变 |
+| 2 | `components/workspace/messages/message-group.tsx`、`message-list.tsx` | 加可选 `collapsedSteps` prop（T13） | 步骤是 `MessageGroup` 自己排的，外层包不住；纯 CSS 改不了「折叠为摘要」这个结构 | 默认 `false`，桌面不传 → 走原分支；`mobile-transcript.spec.ts` 的 desktop 用例断言的正是「桌面仍是密集面板、无折叠摘要」 |
+
+---
+
+### T17 · 收口工程偏差：标签栏改结构性隐藏 + 例外登记
+
+**背景**：T7 定下「标签栏的显隐由路由分组在结构上表达，不按 pathname 判断」，
+但 `shouldHideMobileTabBar()`（`tab-bar.tsx:73-83`）没删，产物页改用它按正则隐藏
+标签栏 —— 计划文本与代码不一致，且该正则是**需随路由手动同步的隐式契约**
+：新增一条全屏路由忘了改正则，标签栏就会压在产品操作条上。
+
+| 项 | 内容 |
+|---|---|
+| 重构 | `app/m/(app)/` 下再分两组：`(tabbed)/{workspace,agents,settings}` 与 `(fullbleed)/workspace/chats/[id]/artifacts/[path]`；标签栏只挂在 `(tabbed)/layout.tsx` |
+| 删除 | `shouldHideMobileTabBar()` 及其单测（`tab-bar.test.ts` 对应 describe） |
+| 修改 | `tab-bar.tsx` — 只留 `isTabActive()` 与渲染；不再读 pathname 决定「渲不渲染」 |
+| 文档 | 在 §1.3 补「例外登记表」（见上），把 T6/T13 两条已发生的例外补登记 |
+
+**验收**：
+- 产物页不渲染标签栏，会话页/列表/`/agents`/`/settings` 渲染 —— 由 E2E 断言，
+  不靠代码推断
+- 全仓 `grep -r shouldHideMobileTabBar src/ tests/` 为空
+- 新增一条全屏路由时不需要动任何「隐藏规则」（结构上就不在标签栏组里）
+- 桌面 E2E 失败集合不扩大
+
+---
+
+### T18 · 会话列表「生成中」标识
+
+**背景**：原型 ① 与 `FEATURE_LIST` §0 的第二个高频场景是「**看一眼进度**」，
+但 `thread-row.tsx` 全文没有任何 loading/generating 判断，正在跑的会话
+和三天前的会话长得一模一样。
+
+| 项 | 内容 |
+|---|---|
+| 修改 | `components/workspace/mobile/thread-row.tsx` — 行摘要位显示运行中状态；行背景用 `--accent` 高亮 |
+| 修改 | `app/m/(app)/workspace/page.tsx` — 把「哪些会话在跑」传下去 |
+| i18n | 「生成中」文案（zh/en/types 三处；若桌面已有等价 key 则复用，不新造） |
+
+**要点**：先查 `useThreads()` / thread 列表响应里是否已有运行中字段
+（桌面 `recent-chat-list.tsx` 若有同款判断，**照抄数据来源，不要新拉接口**）。
+拿不到就**停下来报告**，不要靠轮询或猜测造一个假状态。
+
+**验收**：一条正在跑的会话在列表里可被肉眼识别（E2E：mock 一条 running 线程，
+断言标识出现；一条非 running 线程断言标识不出现）。
+
+---
+
+### T19 · Reasoning 触发文案接 locale
+
+**背景**：原型 ② 是「思考了 12 秒」，实现是硬编码英文 —— 中文用户看到的是
+`Thought for 12s`。文案在 `components/ai-elements/reasoning.tsx:185,187`，
+而 `ai-elements/` 是 **registry 生成、不得手工编辑**。
+
+| 项 | 内容 |
+|---|---|
+| 新增 | mobile 目录下的包装组件，把 locale 文案喂给 `Reasoning` 的触发区 |
+| 修改 | `components/workspace/messages/*` 的调用点改用包装组件（若可行） |
+| i18n | `thoughtFor(duration)` / `thinking` 两处，zh/en/types 三处同步 |
+
+**要点**：不得改 `ai-elements/**`。若该组件的触发文案**没有**可从外部注入的
+prop / children 口子，那就**停下来报告**，用「改注册表文件」换文案是不划算的
+（下次 registry 更新会被冲掉）。
+
+**验收**：zh-CN 下渲染「思考了 N 秒」，en-US 下渲染 `Thought for Ns`；
+桌面视觉不变。
+
+---
+
+### T20 · C11 待办列表（plan mode）
+
+**背景**：`FEATURE_LIST` §1.1 C11 要求「输入框上方，可折叠」。桌面
+`app/workspace/chats/[thread_id]/page.tsx:18,145` 渲染了 `TodoList`，
+移动端 page 与 mobile 组件里**都没有** —— 计划模式开着却看不到待办。
+
+| 项 | 内容 |
+|---|---|
+| 修改 | `app/m/(app)/workspace/chats/[thread_id]/page.tsx` — 复用桌面 `TodoList`，位置照 `FEATURE_LIST`（输入框上方） |
+| 修改 | 必要时加移动端作用域 CSS（折叠态、44px 触控目标） |
+
+**要点**：`TodoList` 是共享组件 → 优先只用 CSS / 外层包裹；确需改它时按 §1.3
+走加法式可选 prop 并**登记到例外表**。
+
+**验收**：mock 一个带 todos 的线程，待办列表出现在输入框上方、可折叠、
+项数正确；无 todos 时不渲染任何空壳。
+
+---
+
+### T21 · A5 分享 + 产物操作条补齐
+
+| 项 | 内容 |
+|---|---|
+| 修改 | `components/workspace/mobile/artifact-actions.tsx` — 首键「分享」 |
+| 实现 | `navigator.share` 优先（`canShare({files})` 判定）；不支持则**兜底为下载**，不允许出现点了没反应的按钮 |
+| 修改 | 产物页 — 补「刷新」 |
+| i18n | `share` 文案（`common.share` 已有，先复用）；刷新文案三处同步 |
+
+**明确不做**：「全屏」（原型 ⑤ 的第四键）—— 手机浏览器地址栏会退不掉，
+收益为负；在计划里写清是**有意不做**，不是漏做。
+
+**验收**：E2E 断言分享按钮存在且触发 `navigator.share`（注入 stub）或
+回落到 `?download=true`；刷新按钮重新拉取产物内容。
+
+---
+
+### T22 · 设置页其余分区（S2–S9，G5）
+
+现状只有账号区 S1。原型 ⑦ 的分区列表：个人（账号/外观/通知/记忆）、
+连接（渠道）、模型与能力（模型只读/技能只读）、其他（关于）。
+
+| 项 | 内容 |
+|---|---|
+| 修改 | `app/m/(app)/settings/page.tsx` — 由「只有一块」改为分组列表（分组标题 + chevron 行） |
+| 新增 | `components/workspace/mobile/settings/*` — 各分区全屏子页 |
+| 复用 | 外观→既有主题/语言状态；通知→既有通知权限逻辑；记忆→`core/memory/**`；渠道→`core/channels/**` 只读态；模型/技能→只读列表 + 只读徽章；关于→版本号 |
+| 明确不做 | S7 MCP 工具入口（按 §1.4 移除） |
+
+**要点**：S5/S8 是**只读**（看已配置列表与启用状态，增删留桌面）；
+只读徽章要在行上可见，不做「点进去发现不能改」。
+
+**验收**：七行都可点开且不空转；只读区明确标注只读；
+`/settings` 地址栏不含 `/m/`；深色模式下分区页正常（E8 的一部分）。
+
+---
+
+### T23 · T9 移动端智能体页
+
+原样保留原 T9 描述（见上），此处仅记状态：`/agents` 目前是 `MobileBlankScreen`，
+**整屏缺失**，是本轮最大的单块未实现功能。
+
+---
+
+### T24 · 测试收口与执行环境
+
+**每次会话都要重新踩的坑，此节一次说清，后续任务照此执行。**
+
+#### 执行环境（本机）
+
+`:3000` 长期被用户自己的开发栈占用（实测为 `next start`，`BUILD_ID` 早于进程
+启动），而 `playwright.config.ts` 的 `baseURL` 是 3000 且
+`reuseExistingServer: !process.env.CI` —— 于是 `pnpm test:e2e` 会**静默接管**
+那台服务器。它没带 `DEER_FLOW_AUTH_DISABLED=1`，所有 spec 开局就被弹到
+`/login`，表现为「大面积莫名失败」。
+
+因此**不要在主工作区跑 E2E**：`pnpm build` 会重写 `.next/**`，正在运行的
+生产服务是按需从磁盘读 chunk 的，会被换掉。
+
+隔离副本做法（已验证可用，首次约 1–2 分钟，之后增量构建）：
+
+```bash
+# 一次性
+rsync -a --exclude node_modules --exclude .next --exclude test-results \
+  frontend/ /tmp/df-e2e/
+cp -al frontend/node_modules /tmp/df-e2e/node_modules
+# 改完代码后同步 + 跑
+rsync -a --exclude node_modules --exclude .next --exclude test-results \
+  frontend/ /tmp/df-e2e/
+cd /tmp/df-e2e                       # playwright.config.ts 已改为 3100 + 不复用
+pnpm build && pnpm exec playwright test tests/e2e/mobile-*.spec.ts
+```
+
+#### 本轮必须补的用例
+
+| # | 项 | 手段 |
+|---|---|---|
+| E2 | 全部触控目标 ≥44×44px | 目前只断言了产物页；扩到列表/对话/设置/智能体 |
+| E1 | 360px 窄屏不出现横向滚动 | `setViewportSize({360, 780})` + `scrollWidth === innerWidth` |
+| E4 | 无限滚动长列表 | 不重复请求、不跳位（桌面已有，移动端缺） |
+| E5 | 会话过期（N5） | mock 401 → 断言提示或重登，**不卡空白页** |
+| E7 | 请求中途返回 | 已发出消息不丢 |
+| E8 | 深色模式 | 三根屏幕 + 对话页 + 产物页 |
+
+#### 回归门槛
+
+桌面 E2E 失败集合恒为 §3.1 的 9 个；移动端 spec 全绿。**失败集合扩大即回滚**。
+
+---
+
 ### T8 · 测试与验收
 
 | 项 | 内容 |
@@ -546,7 +732,18 @@ T5/T6 复查时发现 T1 的切分有误（见 §1.1.1），此任务纠正它�
 | T6 | 产物全屏页 | 1 天 |
 | T7 | 登录流程收敛 + 路由分组重构 | 0.5 天 |
 | T8 | 测试与验收 | 1.5 天 |
-| | **合计** | **7.5 天** |
+| | *—— 以上为第一轮（已完成）——* | |
+| T9/T23 | 移动端智能体页（整屏） | 1.5 天 |
+| T13 | 会话内容页重设计 | 1 天 |
+| T16 | 输入区常驻模式/模型 pill | 0.5 天 |
+| T17 | 收口工程偏差 + 例外登记 | 0.5 天 |
+| T18 | 会话列表「生成中」标识 | 0.5 天 |
+| T19 | Reasoning 文案接 locale | 0.5 天 |
+| T20 | C11 待办列表 | 0.5 天 |
+| T21 | A5 分享 + 操作条刷新 | 0.5 天 |
+| T22 | 设置页 S2–S9 | 1 天 |
+| T24 | 测试收口（隔离环境 + 6 项缺口） | 1.5 天 |
+| | **第二轮合计** | **8.5 天** |
 
 ## 5. 明确不做
 
@@ -576,12 +773,37 @@ T5/T6 复查时发现 T1 的切分有误（见 §1.1.1），此任务纠正它�
 - [x] T14 修复「回到底部」在冷启动会话中不可用（T10 顺带发现）
 - [x] T12 附件上传 E2E（顺带发现 G10：相册/拍照丢文件）
 - [x] T15 修复 G10：相册/拍照静默丢弃选中的文件
-- [ ] T9 移动端智能体（`/agents` 从空白页变成真页面）
-- [ ] T13 会话内容页移动端重设计（C6 折叠步骤 / C10 横向 chip / 表格与代码块）
-- [ ] T16 输入区底部常驻模式/模型 pill + 点击切换（2026-09-13 用户决定，原型 ②③ 已更新）
-      —— 已实现于工作区（未提交），实机走查通过（REVIEW §5.1）。390/360px 真浏览器复测通过：
-      无整页横向滚动、pill 视觉 34px / 热区 ≥44px / 宽度受 134px 上限约束、模型名截断；
-      切模式与切模型都进入下一轮请求载荷（`mode` / `model_name`）；「＋」面板已无模式/模型行。
-      E2E 用例已改为经 pill 入口断言（`mobile-chat.spec.ts`），**但未在本机执行**——
-      `:3000` 被开发栈占用且未带 `DEER_FLOW_AUTH_DISABLED`，跑之前需先停栈。待提交。
-- [ ] 测试与验收
+- [x] **T13 会话内容页移动端重设计**（`bda47946`）——`collapsedSteps` 可选 prop 折叠
+      步骤、`useFollowups` 横滑 chip、长 markdown 不横溢；已登记为 §1.3 例外 #2
+- [x] **T16 输入区常驻模式/模型 pill**（`bda47946`）——实机走查通过（REVIEW §5.1）；
+      390/360px 复测无横溢、切模式与切模型都进请求载荷；「＋」面板已无这两行
+- [x] **文件入口改到标题栏 + 产物页文件名切换器**（`d6177297`）——原型 ⑤ 同步为
+      居中对话框；真机复测 12 项全通过
+- [ ] **T17 收口工程偏差**（标签栏结构性隐藏 + 例外登记）—— 未做
+- [ ] **T18 会话列表「生成中」标识** —— 未做
+- [ ] **T19 Reasoning 文案接 locale** —— 未做
+- [ ] **T20 C11 待办列表** —— 未做
+- [ ] **T21 A5 分享 + 操作条刷新** —— 未做
+- [ ] **T22 设置页 S2–S9** —— 未做
+- [ ] **T23 移动端智能体页（T9）** —— 未做，本轮最大单块
+- [ ] **T24 测试收口**（隔离 E2E 环境 + E1/E2/E4/E5/E7/E8）—— 未做
+
+> **未执行的测试**：`mobile-chat.spec.ts`、`mobile-transcript.spec.ts`、
+> `mobile-artifacts.spec.ts` 三份 spec 的改动**都还没有在本机跑过**（原因见 T24）。
+> 它们当前是「已写好但未验证」状态，不是绿灯。
+
+### 执行顺序（2026-09-13 编排）
+
+| 波次 | 任务 | 能并行的理由 |
+|---|---|---|
+| 1 | T17 ∥ T23 | 文件集不相交：T17 只碰 `tab-bar.tsx` + 文档；T23 只碰 `app/m/(app)/agents/**` 与 `components/workspace/mobile/agents/**`，且 `t.agents.*` 文案桌面已全量存在，无需新增 i18n |
+| 2 | T18 ∥ T20 | T18 碰 `thread-row.tsx` + 列表页；T20 碰对话页 + todo 相关。**两者都要写 i18n，必须串行收口 i18n 改动**（见下） |
+| 3 | T19 ∥ T21 / T22 | 同上下限约束 |
+| 最后 | T24 | 依赖全部代码改动落地，且要独占隔离构建 |
+
+**i18n 是唯一的写冲突点**：三份 locale 文件（`types.ts` / `zh-CN.ts` / `en-US.ts`）
+几乎每个任务都要追加 key。两条硬约束：
+
+1. 同一波次内**最多一个任务**可以改这三份文件；其余任务若发现缺 key，
+   **回报缺哪个 key**，由收口方统一补，不要各写各的。
+2. 并发任务的文件集必须不相交 —— 上述波次表已按此排过，不要临时打乱。
