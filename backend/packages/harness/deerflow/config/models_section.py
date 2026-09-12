@@ -503,16 +503,34 @@ def _validate_model_use_paths(config: AppConfig) -> None:
     which the plain class check already catches.
     """
     for model in config.models:
-        use_path = model.use
-        try:
-            cls = resolve_class(use_path)
-        except Exception as exc:
-            # ImportError/AttributeError from the resolver, plus anything an
-            # imported provider module raises at import time (missing optional
-            # dependency, bad platform-specific code). All mean "this path is
-            # not usable"; none may escape as an unhandled 500.
-            raise ValueError(f"model '{model.name}' has an unresolvable 'use' path {use_path!r}: {exc}") from exc
-        _validate_base_url_key(model, cls)
+        validate_model_entry(model)
+
+
+def validate_model_entry(model: ModelConfig) -> None:
+    """Check one entry's provider-specific settings against its provider class.
+
+    Split out so a caller that only cares about a single candidate — the model
+    probe, which must answer "would this entry work if saved?" without linting
+    every unrelated entry in the file — can ask that question directly.
+
+    Two checks, both of which decide whether the model can be built at all:
+
+    - ``use`` resolves to a real class;
+    - the endpoint key is one this provider class accepts.
+
+    Raises ``ValueError`` with the same message a save would surface, so a probe
+    and a save give the same answer for the same entry.
+    """
+    use_path = model.use
+    try:
+        cls = resolve_class(use_path)
+    except Exception as exc:
+        # ImportError/AttributeError from the resolver, plus anything an
+        # imported provider module raises at import time (missing optional
+        # dependency, bad platform-specific code). All mean "this path is
+        # not usable"; none may escape as an unhandled 500.
+        raise ValueError(f"model '{model.name}' has an unresolvable 'use' path {use_path!r}: {exc}") from exc
+    _validate_base_url_key(model, cls)
 
 
 #: Keys an entry may use to point a provider at a custom endpoint. The name is

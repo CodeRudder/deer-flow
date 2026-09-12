@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from app.gateway.auth.models import User
 from app.gateway.routers import models as models_router
-from deerflow.config.app_config import get_app_config, reset_app_config
+from deerflow.config.app_config import AppConfig, get_app_config, reset_app_config
 from deerflow.config.models_section import MANAGED_BEGIN, MANAGED_END, load_managed_models
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -917,6 +917,25 @@ def test_thinking_probe_reports_all_three_observations(admin: TestClient, monkey
     assert body["error"] is None
 
 
+def test_thinking_probe_never_sends_more_than_three_calls(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """探测最多发 3 次请求 —— 每次都是真实推理调用，操作员在等着。
+
+    回归护栏：这里曾为「关闭不生效」追加 2 次复测（共 5 次），最坏情况下
+    单次点击要等 25s 以上。用户明确要求 2-3 次即可。单次取样的代价是
+    「关闭无效」可能是误报（该端点偶发泄漏，实测 1/8 ~ 2/8），所以界面上
+    这条结论措辞为「观察到的现象」而非判定，点第二次即可复核。
+    """
+    calls = _fake_ask(True, True, True, True, True)
+    monkeypatch.setattr(models_router, "_ask_once", calls)
+
+    body = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY).json()
+
+    assert body["ok"] is True
+    assert len(calls.calls) == 3, f"最多 3 次调用，实际 {len(calls.calls)}"
+    # 单次取样：这一次说「仍在思考」就直接上报，不再复测。
+    assert body["respects_disabled"] is False
+
+
 def test_thinking_probe_reports_a_well_behaved_endpoint(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
     """正常的端点：默认不思考、开启才思考、关闭就停。"""
     monkeypatch.setattr(models_router, "_ask_once", _fake_ask(False, True, False))
@@ -925,6 +944,85 @@ def test_thinking_probe_reports_a_well_behaved_endpoint(admin: TestClient, monke
 
     assert body["ok"] is True
     assert (body["thinks_by_default"], body["respects_enabled"], body["respects_disabled"]) == (False, True, True)
+
+
+def test_thinking_probe_builds_the_disabled_call_with_thinking_off(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """第三次调用必须真的在测「关闭」，不能又测一遍「开启」。
+
+    回归护栏：`create_chat_model` 只在 `thinking_enabled=False` 时才去看
+    `when_thinking_disabled`。曾经这里传的是 `supports_thinking: True`，
+    于是第三次调用带着 payload 里的「开启」模板再次运行，
+    `when_thinking_disabled` 从未生效 —— 实测中它把一条**关闭有效**的端点
+    误报成 `respects_disabled: false`，正好是本功能要避免的假阴性。
+    """
+    seen: list[bool] = []
+
+    def fake_create(name, thinking_enabled=False, **kwargs):
+        seen.append(thinking_enabled)
+        return object()
+
+    monkeypatch.setattr(models_router.model_factory, "create_chat_model", fake_create)
+    monkeypatch.setattr(models_router, "_ask_once", _fake_ask(True, True, True))
+
+    body = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY).json()
+
+    assert body["ok"] is True
+    # 前三次依次是：默认、开启、关闭。第三次报「仍在思考」时会追加两次确认
+    # （见下），所以断言前缀而不是整体长度。
+    assert seen[:3] == [False, True, False], (
+        "三次调用依次应为：不带思考参数、开启思考、关闭思考；"
+        f"实际 thinking_enabled 序列 {seen}"
+    )
+    assert all(flag is False for flag in seen[3:]), "确认调用同样必须是「关闭」"
+
+
+def test_thinking_probe_measures_the_default_without_any_thinking_keys(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """第一次调用必须剥掉全部思考键，测的是端点的**默认**行为。
+
+    回归护栏：曾经 `build({})` 让 payload 自带的 `when_thinking_disabled`
+    一起流下去，于是这次调用实际测的是「关闭思考」，却把结果记作
+    `thinks_by_default` —— 实测把一个不传参数就会思考的端点报成了
+    `thinks_by_default: false`。
+    """
+    entries: list[dict] = []
+
+    def fake_create(name, thinking_enabled=False, **kwargs):
+        return object()
+
+    async def capture(model):
+        return False
+
+    # Capture the entry each call is built from.
+    real_build_cfg = models_router._probe_candidate_config
+
+    def spy(payload: dict):
+        entries.append({k: payload.get(k) for k in ("supports_thinking", "when_thinking_enabled", "when_thinking_disabled", "thinking")})
+        return real_build_cfg(payload)
+
+    monkeypatch.setattr(models_router, "_probe_candidate_config", spy)
+    monkeypatch.setattr(models_router.model_factory, "create_chat_model", fake_create)
+    monkeypatch.setattr(models_router, "_ask_once", capture)
+
+    body = admin.post(
+        "/api/models/probe-thinking",
+        json={
+            **_MINIMAL_ENTRY,
+            "supports_thinking": True,
+            "when_thinking_enabled": {"extra_body": {"thinking": {"type": "enabled"}}},
+            "when_thinking_disabled": {"extra_body": {"thinking": {"type": "disabled"}}},
+        },
+    ).json()
+
+    assert body["ok"] is True
+    # entries[0] is the initial validation of the posted payload; the probe's
+    # own calls start at entries[1].
+    first = entries[1]
+    assert first == {
+        "supports_thinking": None,
+        "when_thinking_enabled": None,
+        "when_thinking_disabled": None,
+        "thinking": None,
+    }, f"第一次调用不得携带任何思考键，实际 {first}"
 
 
 def test_thinking_probe_skips_the_disabled_call_when_it_never_reasons(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -957,7 +1055,10 @@ def test_thinking_probe_reports_a_bad_entry_as_a_business_result(admin: TestClie
 
 
 def test_thinking_probe_bounds_a_hung_provider(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(models_router, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    # Pins the thinking probe's OWN budget, not `/models/test`'s — the two are
+    # deliberately different constants (one one-token prompt vs. up to three
+    # reasoning prompts), and sharing one is the bug this guards.
+    monkeypatch.setattr(models_router, "_THINKING_PROBE_TIMEOUT_SECONDS", 0.05)
 
     async def hangs(model):
         await asyncio.sleep(5)
@@ -968,6 +1069,24 @@ def test_thinking_probe_bounds_a_hung_provider(admin: TestClient, monkeypatch: p
 
     assert body["ok"] is False
     assert "Timed out" in body["error"]
+
+
+def test_thinking_probe_budget_fits_a_real_reasoning_endpoint():
+    """The budget must fit a real reasoning endpoint, not just a fast one.
+
+    Regression guard: on the shared 15s budget this probe reported "timed out"
+    against a live endpoint whose three calls measured 9.0s + 8.1s + 1.9s = 19s
+    — a false negative on exactly the behaviour the feature exists to measure.
+    A reasoning model spends most of its latency inside the thinking block, so
+    the budget has to be sized for reasoning, not for `/models/test`'s one-token
+    `ping`.
+    """
+    assert (
+        models_router._THINKING_PROBE_TIMEOUT_SECONDS
+        > models_router._PROBE_TIMEOUT_SECONDS
+    )
+    # 19s measured end to end on glm-5.3-flash; the budget needs real headroom.
+    assert models_router._THINKING_PROBE_TIMEOUT_SECONDS >= 45.0
 
 
 @pytest.mark.parametrize(
@@ -1038,3 +1157,194 @@ def _fake_ask(*results: bool):
 
     fake.calls = calls  # type: ignore[attr-defined]
     return fake
+
+
+def test_probe_and_save_agree_about_a_mismatched_endpoint_key(admin: TestClient, config_path: Path):
+    """探测与保存对同一个条目的判断必须一致。
+
+    回归护栏：探测曾经跳过保存路径的「端点键必须是该服务商接受的键」校验，
+    于是同一个条目——保存会被 400 拒绝、并明确告知该用 anthropic_api_url——
+    探测却照样拿去调用，把 SDK 的原始报错甩给用户。实测在真实界面上编辑
+    glm-5.3-flash 点检测，看到的就是
+    "AsyncMessages.create() got an unexpected keyword argument 'openai_api_base'"。
+
+    用户视角：同一个条目，一个按钮给你人话，另一个按钮给你 SDK 栈——这不该发生。
+    """
+    bad_entry = {
+        "name": "mismatched",
+        "use": "langchain_anthropic:ChatAnthropic",
+        "model": "claude-sonnet-5",
+        # Anthropic 类不接受 openai_api_base；保存会被拒。
+        "openai_api_base": "https://example.test/v1",
+        # 用字面量密钥：本用例要走到端点键校验那一步，不该先被 $VAR 解析绊住。
+        "api_key": "sk-literal-for-this-test",
+    }
+
+    saved = admin.post("/api/models", json=bad_entry)
+    assert saved.status_code == 400, "保存应当拒绝错配的端点键"
+    save_detail = saved.json()["detail"]
+    assert "anthropic_api_url" in save_detail, f"保存应点名正确的键，实际：{save_detail}"
+
+    probed = admin.post("/api/models/probe-thinking", json=bad_entry)
+    # 业务结果，不是 500；且给出的理由与保存一致。
+    assert probed.status_code == 200
+    body = probed.json()
+    assert body["ok"] is False
+    assert "anthropic_api_url" in (body["error"] or ""), (
+        f"探测应当给出与保存同一条可读原因，实际：{body['error']!r}"
+    )
+
+
+def test_probe_carries_a_credential_for_an_edit(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """编辑已有模型点「检测」必须带上凭据，不能空手去连。
+
+    回归护栏：编辑表单只回显 `$VAR` 引用或掩码，从不回显明文，于是探测载荷
+    里没有可用密钥 —— 实测在真实界面上编辑 glm-5.3-flash 点检测，直接报
+    "Could not resolve authentication method"。保存路径早就有「掩码/空 =
+    沿用已存密钥」的规则（`_to_stored_entry`），探测是同一份保存的只读预演，
+    必须遵守同一条规则。
+
+    断言的是**契约**（送到模型构造器里的 api_key 是什么），不是某一层的实现
+    细节：`$VAR` → 明文这一步由 `AppConfig.resolve_env_variables` 完成，所以
+    这里只比较最终等价的值。
+    """
+    admin.post(
+        "/api/models",
+        json={
+            "name": "edit-me",
+            "use": "langchain_openai:ChatOpenAI",
+            "model": "gpt-4o",
+            "api_key": "$EDIT_ME_KEY",
+            "api_key_value": "sk-stored-secret",
+        },
+    )
+    stored_ref = next(
+        m["api_key"] for m in admin.get("/api/models/config").json()["models"]
+        if m["name"] == "edit-me"
+    )
+    assert stored_ref == "$EDIT_ME_KEY"
+
+    # Capture the credential the provider would truly receive.
+    built: list[object] = []
+    real_create = models_router.model_factory.create_chat_model
+
+    def spy_create(name, **kwargs):
+        model = real_create(name, **kwargs)
+        built.append(model)
+        return model
+
+    monkeypatch.setattr(models_router.model_factory, "create_chat_model", spy_create)
+    # Never actually call a provider.
+    monkeypatch.setattr(models_router, "_ask_once", _fake_ask(False))
+
+    def sent_key(model) -> str:
+        # ChatOpenAI keeps it in `openai_api_key` (a SecretStr); it has no plain
+        # `api_key` attribute.
+        secret = model.openai_api_key
+        return secret.get_secret_value() if secret else ""
+
+    # 1. The UI's edit payload: the form shows only the mask, plus the stored
+    #    reference under the private key.
+    body = admin.post(
+        "/api/models/probe-thinking",
+        json={
+            "name": "edit-me",
+            "use": "langchain_openai:ChatOpenAI",
+            "model": "gpt-4o",
+            "api_key": "sk-****cret",
+            "_stored_api_key": stored_ref,
+        },
+    ).json()
+    assert body["ok"] is True
+    assert built, "探测应当真的构建出模型"
+    assert sent_key(built[0]) == os.environ.get("EDIT_ME_KEY"), (
+        f"provider 拿到的应是已存密钥，实际 {sent_key(built[0])!r}"
+    )
+    assert "****" not in sent_key(built[0]), "掩码不是凭据，绝不能被当作密钥使用"
+
+    # 2. No reference sent, but the entry exists on disk → fall back to it.
+    built.clear()
+    admin.post(
+        "/api/models/probe-thinking",
+        json={
+            "name": "edit-me",
+            "use": "langchain_openai:ChatOpenAI",
+            "model": "gpt-4o",
+            "api_key": "sk-****cret",
+        },
+    )
+    assert sent_key(built[0]) == os.environ.get("EDIT_ME_KEY")
+
+    # 3. Nothing stored and no reference → no credential at all. The probe then
+    #    reports "could not resolve authentication method", which is the honest
+    #    answer for an entry that genuinely has no key.
+    built.clear()
+    admin.post(
+        "/api/models/probe-thinking",
+        json={
+            "name": "never-stored",
+            "use": "langchain_openai:ChatOpenAI",
+            "model": "gpt-4o",
+            "api_key": "sk-****cret",
+        },
+    )
+    assert "****" not in sent_key(built[0]), "掩码不得被当成密钥"
+
+
+def test_probe_candidate_config_replaces_an_entry_of_the_same_name(config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """候选条目必须**替换**同名条目，不能追加在它后面。
+
+    回归护栏：这里曾经是 append。`create_chat_model(name)` 走
+    `get_model_config(name)`，取的是**第一个**同名条目 —— 于是只要候选名与
+    已存模型重名（编辑已有模型并点「检测」，正是最常见的用法），查到的就是
+    **磁盘上那份旧配置**，探测把旧行为当成了新配置的结论。
+
+    实测（真实端点，glm-5.3-flash）：候选明确发送
+    `thinking: {type: disabled}` 且实测不返回思考块，仍被报成
+    `respects_disabled: false` —— 因为被调用的其实是已存条目。
+    """
+    from deerflow.config.model_config import ModelConfig
+    from deerflow.models.factory import create_chat_model
+
+    name = "collision-model"
+    # 磁盘上先有一条同名条目：无思考配置，模型是 gpt-4o。
+    stored = ModelConfig.model_validate(
+        {
+            "name": name,
+            "use": "langchain_openai:ChatOpenAI",
+            "model": "gpt-4o",
+            "api_key": "sk-stored-not-real",
+        }
+    )
+    # Compose a valid base config (the example carries the sandbox section)
+    # that already holds the colliding entry.
+    live = get_app_config().model_dump()
+    base = AppConfig.model_validate(
+        {**live, "models": [stored.model_dump()]},
+    )
+    assert base.get_model_config(name).model == "gpt-4o"
+
+    monkeypatch.setattr(models_router, "get_app_config", lambda: base)
+
+    # 候选同名，但换成了 Anthropic + 关闭思考的配置。
+    cfg, resolved = models_router._probe_candidate_config(
+        {
+            "name": name,
+            "use": "langchain_anthropic:ChatAnthropic",
+            "model": "claude-sonnet-5",
+            "api_key": "sk-candidate-not-real",
+            "supports_thinking": True,
+            "when_thinking_disabled": {"thinking": {"type": "disabled"}},
+        }
+    )
+
+    assert resolved == name
+    matched = [m for m in cfg.model_dump()["models"] if m["name"] == name]
+    assert len(matched) == 1, f"同名条目应只剩一条，实际 {len(matched)} 条"
+
+    # 解析出来的必须是候选，而不是磁盘上那条 —— 这正是本函数存在的意义。
+    model = create_chat_model(
+        name, thinking_enabled=False, app_config=cfg, attach_tracing=False
+    )
+    assert model.model == "claude-sonnet-5"
+    assert getattr(model, "thinking", None) == {"type": "disabled"}

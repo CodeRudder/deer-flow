@@ -12,7 +12,7 @@ from app.gateway.admin.quota_service import QuotaService
 from app.gateway.deps import get_config, require_admin_user
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.model_config import ModelConfig
-from deerflow.config.models_section import build_model_entry, commit_config_update, load_managed_models, read_config_text, replace_managed_section, to_public, upsert_env_var, validate_candidate_text
+from deerflow.config.models_section import build_model_entry, commit_config_update, load_managed_models, read_config_text, replace_managed_section, to_public, upsert_env_var, validate_candidate_text, validate_model_entry
 from deerflow.models import factory as model_factory
 from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
 from deerflow.models.video_generation import VideoGenerationModel, VideoGenerationProvider, VideoGenerationProvidersResponse, get_video_generation_providers
@@ -500,13 +500,34 @@ _PROBE_PROMPT = "ping"
 #: reliably provokes a reasoning block on models that reason at all.
 _THINKING_PROBE_PROMPT = "What is 17 * 23? Work through it step by step."
 
-#: Bounded probe budget. A live provider answers a one-token prompt in well
-#: under 3s, TLS handshake included, and the failures this endpoint exists to
-#: surface (DNS, connection refused, 401/404) come back faster still. 15s leaves
-#: headroom for a cold connection queued behind other traffic on a loaded
-#: gateway while keeping an admin request from hanging on a black-holed
+#: Bounded budget for `/models/test`. A live provider answers a one-token prompt
+#: in well under 3s, TLS handshake included, and the failures this endpoint
+#: exists to surface (DNS, connection refused, 401/404) come back faster still.
+#: 15s leaves headroom for a cold connection queued behind other traffic on a
+#: loaded gateway while keeping an admin request from hanging on a black-holed
 #: endpoint. Tests override this constant to exercise the timeout path quickly.
 _PROBE_TIMEOUT_SECONDS = 15.0
+
+#: Budget for the whole thinking probe — a different job from `/models/test`, so
+#: a different number. That one sends a single one-token prompt; this one sends
+#: two or three prompts that are *meant* to provoke reasoning, and reasoning is
+#: most of the latency.
+#:
+#: Measured against a live Anthropic-compatible reasoning endpoint
+#: (glm-5.3-flash via bigmodel.cn), the probe's calls end to end: 9.0s (no
+#: thinking params) + 8.1s (thinking enabled, budget 4096) + 1.9s (thinking
+#: disabled) ≈ 19-26s. The shared 15s budget could not fit even that first pass,
+#: so the probe reported "timed out" on an endpoint answering every call in
+#: under 10s — a false negative on exactly the case the feature exists to
+#: measure.
+#:
+#: 60s is ~2.5x the measured worst case, which covers a slower or loaded
+#: endpoint while still bounding an admin's wait on a black-holed one. It is a
+#: budget for the whole probe, not per call: per-call budgets would let a stuck
+#: endpoint cost 3x whatever number is chosen here. Every proxy in front of this
+#: route allows far more (nginx is configured at 600s), so this is the binding
+#: limit.
+_THINKING_PROBE_TIMEOUT_SECONDS = 60.0
 
 
 def _resolve_config_path() -> Path:
@@ -607,6 +628,45 @@ def _reject(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=400, detail=f"Invalid model configuration: {exc}")
 
 
+def _validate_candidate_matches_save(entry: dict) -> None:
+    """Reject an entry a SAVE would reject, using the save path's own checks.
+
+    Two of the save path's rules decide whether the provider call below can even
+    work, so the probe must apply them or it will report a raw SDK error where
+    Save would have given a readable 400:
+
+    - ``use`` must resolve to a real class;
+    - the endpoint key must be one the provider class accepts — the check that
+      turns ``AsyncMessages.create() got an unexpected keyword argument
+      'openai_api_base'`` into "use `anthropic_api_url` instead".
+
+    Scope matters: only THIS entry is checked. Reusing ``validate_candidate_text``
+    over the whole document would re-validate every unrelated stored entry, and a
+    probe must not fail because some other model in the file is misconfigured —
+    it is a question about one candidate, not a lint of the deployment.
+
+    Raises ``ValueError`` with the save path's own message, so the two agree.
+    """
+    validate_model_entry(ModelConfig.model_validate(entry))
+
+
+def _find_stored_entry(name: str) -> dict | None:
+    """The entry *name* currently has in the managed region, or ``None``.
+
+    Read straight from ``config.yaml`` rather than the cached ``AppConfig``:
+    an entry written moments ago must be visible to a probe that follows, and
+    only the file is guaranteed fresh. Returns ``None`` on any read/parse
+    failure — a probe reports that as "no credential", never as a 500.
+    """
+    try:
+        for entry in load_managed_models(_resolve_config_path()):
+            if entry.get("name") == name:
+                return entry
+    except Exception:  # noqa: BLE001 — an unreadable config just means "nothing stored"
+        return None
+    return None
+
+
 def _probe_candidate_config(payload: dict) -> tuple[AppConfig, str]:
     """Build an ``AppConfig`` carrying *payload* as an extra, unsaved model.
 
@@ -634,16 +694,73 @@ def _probe_candidate_config(payload: dict) -> tuple[AppConfig, str]:
     entry.pop(_API_KEY_VALUE_FIELD, None)
     for meta_key in _ENTRY_META_KEYS:
         entry.pop(meta_key, None)
+    name = entry["name"]
+
+    # The probe must carry a usable credential, the same way a SAVE would.
+    #
+    # The edit form never shows a stored key — only its `$VAR` reference or a
+    # mask — so a Detect click on an existing model posts no usable credential.
+    # Save already treats a mask/absent key as "keep the stored one" (see
+    # `_to_stored_entry`); the probe is a read-only preview of that same save and
+    # has to agree. Measured in the live UI: editing glm-5.3-flash and clicking
+    # Detect failed with "Could not resolve authentication method" against a
+    # model that works, because the probe arrived keyless.
+    #
+    # `$VAR` is resolved HERE, not by the AppConfig round trip below:
+    # `AppConfig.model_validate` does not run `resolve_env_variables` (only
+    # `from_file` does), so a reference reaching the provider unresolved is what
+    # the SDK reports as "could not resolve authentication method".
+    #
+    # A mask is not a credential at all, so it is dropped whenever there is no
+    # stored value to fall back on.
+    raw_key = entry.get("api_key")
+    if not raw_key or (isinstance(raw_key, str) and _MASK in raw_key):
+        # The UI sends the stored `$VAR` reference under this private key on an
+        # edit (it is not a secret — the read API already returns it). It is
+        # payload-only metadata and must never reach the model constructor,
+        # where an unknown kwarg would be forwarded to the SDK.
+        stored = payload.get("_stored_api_key")
+        if not isinstance(stored, str) or not stored:
+            existing = _find_stored_entry(name)
+            stored = existing.get("api_key") if existing else None
+        entry["api_key"] = stored if isinstance(stored, str) and stored else None
+    entry.pop("_stored_api_key", None)
 
     api_key = entry.get("api_key")
     if isinstance(api_key, str) and api_key.startswith("$"):
         secret = payload.get(_API_KEY_VALUE_FIELD)
         entry["api_key"] = secret if isinstance(secret, str) and secret else os.getenv(api_key[1:])
+    if not entry.get("api_key"):
+        entry.pop("api_key", None)
 
-    name = entry["name"]
+    # Run the same validation a SAVE would, before anything is built.
+    #
+    # The probe used to skip straight to `AppConfig.model_validate`, which is not
+    # the save path: save goes through `validate_candidate_text`, and that is
+    # where the base-URL key check lives. Skipping it let the probe build a model
+    # with an endpoint key its provider rejects and report the raw SDK error —
+    # measured in the live UI: "AsyncMessages.create() got an unexpected keyword
+    # argument 'openai_api_base'". Save would have rejected that entry with a
+    # readable 400 naming the correct key, so a Detect click disagreed with the
+    # Save button about the very same entry. Both must give the same answer.
+    _validate_candidate_matches_save(entry)
+
     base = get_app_config()
     dumped = base.model_dump()
-    return AppConfig.model_validate({**dumped, "models": [*dumped["models"], ModelConfig.model_validate(entry).model_dump()]}), name
+    candidate = ModelConfig.model_validate(entry).model_dump()
+    # REPLACE an entry of the same name rather than appending beside it.
+    #
+    # Appending was a silent measurement bug. `create_chat_model(name, ...)`
+    # resolves through `get_model_config`, which returns the FIRST entry with
+    # that name — so as soon as the payload's name matched a stored model (the
+    # normal case: the operator is editing an existing model and clicks Detect),
+    # the lookup found the STORED entry and the probe reported the old config's
+    # behaviour as the verdict on the new one. Measured on a live endpoint: a
+    # candidate that provably sends `thinking: {type: disabled}` and gets no
+    # thinking block back still reported `respects_disabled: false`, because the
+    # stored entry (no thinking config) was the one being called.
+    models = [m for m in dumped["models"] if m.get("name") != name]
+    return AppConfig.model_validate({**dumped, "models": [*models, candidate]}), name
 
 
 async def _run_probe(payload: dict) -> ModelTestResponse:
@@ -868,6 +985,12 @@ class ThinkingProbeResponse(BaseModel):
     when the parameters said ``disabled`` — so a single "supported: true" would
     have told the operator their thinking toggle works when it does not.
 
+    Produced from two or three real calls — never more, because each one is a
+    real reasoning request the operator waits on. ``respects_disabled`` is
+    therefore a single sample: on endpoints that leak a thinking block
+    intermittently it can read ``false`` for a toggle that does work, and the UI
+    words it as an observation for exactly that reason.
+
     ``error`` is set only when the probe could not run at all (bad entry,
     unreachable provider); the three booleans are then all ``false`` and mean
     "unknown", not "no".
@@ -885,7 +1008,7 @@ async def _ask_once(model: object) -> bool:
     """Send the thinking probe prompt once and report whether reasoning came back.
 
     Deliberately carries no timeout of its own — the budget belongs to the whole
-    probe (see ``_run_thinking_probe``), not to each of its up-to-three calls.
+    probe (see ``_run_thinking_probe``), not to each of its two-to-three calls.
     A per-call budget would let an admin wait 3 × 15s on a slow endpoint.
     """
     response = await model.ainvoke(_THINKING_PROBE_PROMPT)
@@ -893,11 +1016,14 @@ async def _ask_once(model: object) -> bool:
 
 
 async def _run_thinking_probe(payload: dict) -> ThinkingProbeResponse:
-    """Run up to three real calls and report what the endpoint actually does.
+    """Run two or three real calls and report what the endpoint actually does.
 
-    A "disabled" request is only issued when the first two calls showed the
-    endpoint thinks at all — no point spending a third call on an endpoint that
-    never reasons.
+    The third ("disabled") call is only issued when the first two showed the
+    endpoint thinks at all — no point spending it on an endpoint that never
+    reasons. Each call is a real reasoning request (6-9s measured), so the probe
+    never sends more than three: it is held to two-to-three calls on purpose,
+    and anything that would need a wider sample belongs in a repeated click, not
+    in this budget.
     """
     started = time.perf_counter()
     try:
@@ -907,33 +1033,65 @@ async def _run_thinking_probe(payload: dict) -> ThinkingProbeResponse:
     except Exception as exc:  # noqa: BLE001 — a bad entry is a business result, not a 500
         return ThinkingProbeResponse(ok=False, latency_ms=_elapsed_ms(started), error=_readable_error(exc))
 
-    def build(extra: dict) -> object:
-        entry = {**payload, **extra}
+    def build(entry: dict) -> object:
         cfg, _ = _probe_candidate_config(entry)
-        return model_factory.create_chat_model(name, thinking_enabled=bool(extra.get("supports_thinking")), app_config=cfg, attach_tracing=False)
+        return model_factory.create_chat_model(name, thinking_enabled=bool(entry.get("supports_thinking")), app_config=cfg, attach_tracing=False)
 
     async def observe() -> tuple[bool, bool, bool]:
-        # 1. No thinking configuration at all — does it reason unprompted?
-        thinks_by_default = await _ask_once(build({}))
+        thinking_keys = ("supports_thinking", "when_thinking_enabled", "when_thinking_disabled", "thinking")
+
+        # 1. The endpoint's OWN default. Every thinking key is stripped, so this
+        #    is what the model does when the operator configures nothing.
+        #    Without the strip the payload's own `when_thinking_disabled` rides
+        #    along and this call silently measures "thinking disabled" instead —
+        #    which reported `thinks_by_default: false` for an endpoint that
+        #    plainly reasons unprompted.
+        bare = {k: v for k, v in payload.items() if k not in thinking_keys}
+        thinks_by_default = await _ask_once(build(bare))
+
         # 2. Explicitly enabled.
-        enabled_entry = {
-            "supports_thinking": True,
-            "when_thinking_enabled": payload.get("when_thinking_enabled"),
-        }
-        respects_enabled = await _ask_once(build(enabled_entry))
+        respects_enabled = await _ask_once(
+            build(
+                {
+                    **payload,
+                    "supports_thinking": True,
+                    "when_thinking_disabled": None,
+                    "when_thinking_enabled": payload.get("when_thinking_enabled"),
+                }
+            )
+        )
+
         # 3. Explicitly disabled — only worth asking if it reasons at all.
         if not (thinks_by_default or respects_enabled):
             return thinks_by_default, respects_enabled, True
+
+        # `supports_thinking: False` is what makes this call actually test
+        # DISABLING: it is passed through as `create_chat_model(thinking_enabled=...)`,
+        # and the factory only consults `when_thinking_disabled` when that is
+        # false. Left `True`, the enabled template wins and the call re-measures
+        # "enabled" a second time.
         disabled_entry = {
-            "supports_thinking": True,
+            **payload,
+            "supports_thinking": False,
+            "when_thinking_enabled": None,
             "when_thinking_disabled": payload.get("when_thinking_disabled"),
         }
-        return thinks_by_default, respects_enabled, not await _ask_once(build(disabled_entry))
+        # One sample, three calls total. Deliberately NOT repeated: each call is
+        # a real reasoning request at 6-9s, and the operator is waiting on it.
+        #
+        # The cost of a single sample is that this endpoint leaks a thinking
+        # block on a disabled request part of the time (measured: glm-5.3-flash
+        # 2/8, glm-5.3 1/8), so `respects_disabled: false` can be a false alarm.
+        # That is why the UI words it as an observation ("still returned thinking
+        # blocks with thinking disabled") rather than a verdict, and why the
+        # check is cheap to repeat by clicking Detect again.
+        still_thinks = await _ask_once(build(disabled_entry))
+        return thinks_by_default, respects_enabled, not still_thinks
 
     try:
         # One budget for the whole probe, so the worst case an admin waits is
-        # bounded by `_PROBE_TIMEOUT_SECONDS` rather than three times it.
-        thinks_by_default, respects_enabled, respects_disabled = await asyncio.wait_for(observe(), timeout=_PROBE_TIMEOUT_SECONDS)
+        # bounded by a single number rather than three times a per-call one.
+        thinks_by_default, respects_enabled, respects_disabled = await asyncio.wait_for(observe(), timeout=_THINKING_PROBE_TIMEOUT_SECONDS)
         del app_config
     except TimeoutError:
         return ThinkingProbeResponse(ok=False, latency_ms=_elapsed_ms(started), error=f"Timed out after {_elapsed_ms(started) / 1000:.1f}s waiting for the provider to answer.")

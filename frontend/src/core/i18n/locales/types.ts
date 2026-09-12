@@ -525,6 +525,22 @@ export interface Translations {
       required: string;
       requiredForProvider: string;
       editTitleProviderFallback: string;
+      supportsThinking: string;
+      supportsThinkingHint: string;
+      probeThinking: string;
+      thinkingUnavailable: string;
+      budgetTokens: string;
+      budgetHint: string;
+      maxTokens: string;
+      maxTokensHint: string;
+      thinkNotProbed: string;
+      thinkProbing: string;
+      thinkProbeFailed: string;
+      thinkEnabled: string;
+      thinkNotEnabled: string;
+      thinkDisables: string;
+      thinkIgnoresDisable: string;
+      thinkAlwaysOn: string;
     };
     tools: {
       title: string;

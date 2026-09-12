@@ -627,6 +627,29 @@ export const enUS: Translations = {
       apiBaseRequired: "A base URL is required for an OpenAI-compatible provider.",
       editTitleProviderFallback:
         "This model uses a custom provider class path; it is preserved as-is on save.",
+      supportsThinking: "This model supports thinking",
+      supportsThinkingHint:
+        "Ticking this writes the provider's thinking parameters. Left unticked, the chat thinking toggle does nothing for this model — turning it off will not stop the reasoning.",
+      probeThinking: "Detect",
+      thinkingUnavailable:
+        "This provider has no thinking parameters, so it cannot be enabled.",
+      budgetTokens: "Thinking budget (budget_tokens)",
+      budgetHint: "Upper bound on thinking output. Defaults to 4096.",
+      maxTokens: "Max output (max_tokens)",
+      maxTokensHint: "Must exceed the thinking budget. Defaults to 8192.",
+      thinkNotProbed:
+        "Not detected yet — run Detect to confirm this endpoint really supports thinking.",
+      thinkProbing:
+        "Detecting… — sending 2–3 real requests; this usually takes 10–30 seconds. Please keep this window open.",
+      thinkProbeFailed: "Detection failed.",
+      thinkEnabled: "The response with thinking enabled contains thinking blocks.",
+      thinkNotEnabled:
+        "No thinking blocks came back with thinking enabled — this endpoint may not support it.",
+      thinkDisables: "Thinking blocks stop when thinking is disabled, so the toggle works.",
+      thinkIgnoresDisable:
+        "This run still returned thinking blocks with thinking disabled — the toggle may have no effect. Some endpoints do this intermittently; run Detect again to confirm.",
+      thinkAlwaysOn:
+        "This endpoint thinks even without thinking parameters, so thinking is always on.",
     },
     tools: {
       title: "Tools",

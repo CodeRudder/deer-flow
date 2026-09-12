@@ -601,6 +601,26 @@ export const zhCN: Translations = {
       apiBaseRequired: "使用 OpenAI 兼容服务时必须填写 Base URL。",
       editTitleProviderFallback:
         "该模型使用了自定义的提供方类路径，保存时会原样保留。",
+      supportsThinking: "该模型支持思考",
+      supportsThinkingHint:
+        "勾选后会写入该服务商的思考参数。不勾选时，对话界面的思考开关对本模型无效 —— 关掉它也不会停止思考。",
+      probeThinking: "检测",
+      thinkingUnavailable: "该服务商不支持思考参数，无法开启。",
+      budgetTokens: "思考预算 budget_tokens",
+      budgetHint: "思考内容的上限，默认 4096。",
+      maxTokens: "最大输出 max_tokens",
+      maxTokensHint: "须大于思考预算，默认 8192。",
+      thinkNotProbed:
+        "未检测 — 建议先点「检测」，确认该端点是否真的支持思考。",
+      thinkProbing:
+        "检测中… —— 正在发送 2 到 3 次真实请求，通常需要 10 到 30 秒，请不要关闭窗口。",
+      thinkProbeFailed: "检测失败。",
+      thinkEnabled: "启用思考后的响应中包含思考内容块。",
+      thinkNotEnabled: "启用思考后仍未返回思考内容块 —— 该端点可能不支持思考。",
+      thinkDisables: "关闭思考后不再返回思考块，开关有效。",
+      thinkIgnoresDisable:
+        "本次检测中，关闭思考后仍返回了思考块 —— 该开关可能无效。部分端点会偶发如此，可再点一次「检测」复核。",
+      thinkAlwaysOn: "该端点不传思考参数也会思考，思考始终开启。",
     },
     tools: {
       title: "工具",

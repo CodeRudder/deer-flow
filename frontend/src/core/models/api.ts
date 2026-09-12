@@ -11,6 +11,7 @@ import type {
   ModelProvidersResponse,
   ModelTestResult,
   ModelsResponse,
+  ThinkingProbeResult,
 } from "./types";
 
 /**
@@ -164,6 +165,29 @@ const STATIC_MODELS_RESPONSE: ModelsResponse = {
   vision_models: [],
   token_usage: { enabled: false },
 };
+
+/**
+ * Ask an endpoint what it actually does with thinking.
+ *
+ * Distinct from `testManagedModel`: that one asks "does it connect", this one
+ * asks "does reasoning happen, and can it be turned off". A failed connection
+ * here is still HTTP 200 with `ok: false` — a normal answer, not a server fault.
+ */
+export async function probeManagedModelThinking(
+  model: ManagedModelWrite,
+): Promise<ThinkingProbeResult> {
+  const response = await fetchWithAuth(
+    `${getBackendBaseURL()}/api/models/probe-thinking`,
+    jsonInit("POST", model),
+  );
+  if (!response.ok) {
+    throw new ModelConfigRequestError(
+      response.status,
+      await readErrorDetail(response, "Failed to probe thinking"),
+    );
+  }
+  return (await response.json()) as ThinkingProbeResult;
+}
 
 export async function loadModels(): Promise<ModelsResponse> {
   if (isStaticWebsiteOnly()) {

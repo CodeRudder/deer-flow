@@ -110,6 +110,44 @@ export interface ModelProvider {
   api_base_field: string | null;
   available: boolean;
   reason: string | null;
+  /** Whether this provider has a thinking template at all. */
+  supports_thinking: boolean;
+  /**
+   * The `when_thinking_enabled` block to write verbatim when thinking is on.
+   * The shape is per-provider (Anthropic `thinking`, OpenAI-compatible
+   * `extra_body.thinking`, Google `thinking_budget`, vLLM
+   * `chat_template_kwargs`) — never build one by hand.
+   */
+  thinking_enabled: Record<string, unknown> | null;
+  /** The matching `when_thinking_disabled` block. */
+  thinking_disabled: Record<string, unknown> | null;
+  /** True when the provider's API requires an explicit thinking budget. */
+  thinking_needs_budget: boolean;
+  /** Prefill for the budget input; null when the provider does not need one. */
+  default_budget_tokens: number | null;
+}
+
+/**
+ * What an endpoint actually does with thinking.
+ *
+ * Three independent observations rather than one boolean, because "supports
+ * thinking" is not a yes/no question in practice: a live Anthropic-compatible
+ * gateway was measured returning reasoning even when the request carried no
+ * thinking parameters, and again when they said `disabled`. A single
+ * `supported: true` would have told the operator their thinking toggle works
+ * when it does nothing.
+ */
+export interface ThinkingProbeResult {
+  /** False when the probe could not run; the three findings then mean "unknown". */
+  ok: boolean;
+  /** Reasoning appeared with no thinking parameters at all. */
+  thinks_by_default: boolean;
+  /** Reasoning appeared when thinking was explicitly enabled. */
+  respects_enabled: boolean;
+  /** Reasoning was absent when thinking was explicitly disabled. */
+  respects_disabled: boolean;
+  latency_ms: number;
+  error: string | null;
 }
 
 /** Envelope returned by `GET /api/models/providers`. */

@@ -7,6 +7,7 @@ import {
   loadManagedModels,
   loadModelProviders,
   loadModels,
+  probeManagedModelThinking,
   testManagedModel,
   updateManagedModel,
 } from "./api";
@@ -124,5 +125,17 @@ export function useDeleteManagedModel() {
 export function useTestManagedModel() {
   return useMutation({
     mutationFn: (model: ManagedModelWrite) => testManagedModel(model),
+  });
+}
+
+/**
+ * Observe what an endpoint does with thinking.
+ *
+ * Like `useTestManagedModel`, this writes nothing, so it invalidates no query.
+ */
+export function useProbeManagedModelThinking() {
+  return useMutation({
+    mutationFn: (model: ManagedModelWrite) =>
+      probeManagedModelThinking(model),
   });
 }

@@ -43,6 +43,7 @@ import {
   useDeleteManagedModel,
   useManagedModels,
   useModelProviders,
+  useProbeManagedModelThinking,
   useSaveManagedModel,
   useTestManagedModel,
 } from "@/core/models/hooks";
@@ -51,6 +52,7 @@ import type {
   ManagedModelWrite,
   ModelProvider,
   ModelTestResult,
+  ThinkingProbeResult,
 } from "@/core/models/types";
 import { cn } from "@/lib/utils";
 
@@ -83,6 +85,15 @@ export interface ManagedModelDraft {
   api_base: string;
   display_name: string;
   api_key: string;
+  /** Whether the operator ticked "this model supports thinking". */
+  supports_thinking: boolean;
+  /**
+   * Thinking budget, as text. Only meaningful when the provider's API requires
+   * one (Anthropic, Google) — other providers reject it and it is not written.
+   */
+  budget_tokens: string;
+  /** Output ceiling, as text. Written whenever non-blank. */
+  max_tokens: string;
 }
 
 export const EMPTY_MODEL_DRAFT: ManagedModelDraft = {
@@ -93,6 +104,11 @@ export const EMPTY_MODEL_DRAFT: ManagedModelDraft = {
   api_base: "",
   display_name: "",
   api_key: "",
+  supports_thinking: false,
+  // Prefilled from the provider preset on selection; Anthropic requires an
+  // explicit budget and pairs it with a larger max_tokens (budget must be less).
+  budget_tokens: "",
+  max_tokens: "",
 };
 
 /**
@@ -135,6 +151,63 @@ export function draftProviderFor(
 /** Whether the selected provider requires an explicit base URL. */
 function providerRequiresApiBase(provider: string): boolean {
   return provider === PROVIDER_FALLBACK_KEY;
+}
+
+/**
+ * Overlay the operator's budget onto a provider's thinking template.
+ *
+ * The budget lives at a different path for each family — Anthropic nests it as
+ * `thinking.budget_tokens`, Google puts it at the top level as
+ * `thinking_budget` — so this walks the known shapes rather than assuming one.
+ * Providers that take no budget (`needsBudget` false, e.g. OpenAI-compatible
+ * `extra_body.thinking`) get the template unchanged: sending them a budget would
+ * be an unrecognised key, which `ModelConfig`'s `extra="allow"` would pass
+ * straight through to the SDK.
+ *
+ * A blank or non-numeric budget also leaves the template alone, keeping the
+ * preset's own default (4096).
+ */
+export function readBudget(
+  template: Record<string, unknown> | null,
+): string {
+  if (!template) {
+    return "";
+  }
+  const nested = template.thinking;
+  if (nested && typeof nested === "object") {
+    const value = (nested as Record<string, unknown>).budget_tokens;
+    if (typeof value === "number") {
+      return String(value);
+    }
+  }
+  const flat = template.thinking_budget;
+  return typeof flat === "number" ? String(flat) : "";
+}
+
+export function withBudget(
+  template: Record<string, unknown> | null,
+  budget: string,
+  needsBudget: boolean,
+): Record<string, unknown> | null {
+  if (!template || !needsBudget) {
+    return template;
+  }
+  const parsed = Number(budget.trim());
+  if (!budget.trim() || !Number.isFinite(parsed) || parsed <= 0) {
+    return template;
+  }
+
+  const next = structuredClone(template);
+  const nested = next.thinking;
+  if (nested && typeof nested === "object" && "budget_tokens" in nested) {
+    (nested as Record<string, unknown>).budget_tokens = parsed;
+    return next;
+  }
+  if ("thinking_budget" in next) {
+    next.thinking_budget = parsed;
+    return next;
+  }
+  return next;
 }
 
 /**
@@ -286,6 +359,55 @@ export function buildManagedModelWrite(
     if (key !== baseUrlKey) delete write[key];
   }
 
+  // Thinking. The checkbox only decides when the provider can actually express
+  // thinking; otherwise the stored keys are carried over untouched.
+  //
+  // - checked → write the trio from the preset. The block shapes are never
+  //   synthesised here — they differ per provider (`thinking` /
+  //   `extra_body.thinking` / `thinking_budget` / `chat_template_kwargs`).
+  // - unchecked after having been on (`supports_thinking: true` stored) → drop
+  //   every thinking key. This is the only route the operator has to turn
+  //   thinking off, and `supports_thinking` is the flag DeerFlow actually
+  //   consults, so leaving it behind would keep thinking on while the UI said
+  //   otherwise.
+  // - otherwise (never enabled, or the provider has no thinking template) →
+  //   leave whatever was stored. A hand-written `when_thinking_enabled` the
+  //   form cannot express survives an edit instead of being silently rewritten
+  //   to the preset or dropped.
+  if (provider?.supports_thinking) {
+    if (draft.supports_thinking) {
+      write.supports_thinking = true;
+      write.when_thinking_enabled = withBudget(
+        provider.thinking_enabled,
+        draft.budget_tokens,
+        provider.thinking_needs_budget,
+      );
+      // `thinking` is the legacy top-level alias; the preset supersedes it.
+      delete write.thinking;
+      if (provider.thinking_disabled) {
+        write.when_thinking_disabled = provider.thinking_disabled;
+      } else {
+        delete write.when_thinking_disabled;
+      }
+
+      // `max_tokens` is the thinking block's companion field: it has to clear
+      // the budget, and the form only shows it alongside the checkbox. Blank
+      // means "no explicit ceiling", so the stored value is removed rather than
+      // carried over.
+      delete write.max_tokens;
+      const maxTokens = draft.max_tokens.trim();
+      if (maxTokens) {
+        write.max_tokens = Number(maxTokens);
+      }
+    } else if (original?.supports_thinking === true) {
+      delete write.supports_thinking;
+      delete write.when_thinking_enabled;
+      delete write.when_thinking_disabled;
+      delete write.thinking;
+      delete write.max_tokens;
+    }
+  }
+
   const apiKey = draft.api_key.trim();
   if (apiKey) {
     if (apiKey.startsWith("$")) {
@@ -375,6 +497,8 @@ function ManagedModelList({
   const { mutate: deleteModel, isPending: isDeleting } =
     useDeleteManagedModel();
   const { mutate: testModel, isPending: isTesting } = useTestManagedModel();
+  const { mutate: probeThinking, isPending: isProbing } =
+    useProbeManagedModelThinking();
 
   const [draft, setDraft] = useState<ManagedModelDraft | null>(null);
   const [editing, setEditing] = useState<ManagedModel | null>(null);
@@ -383,13 +507,62 @@ function ManagedModelList({
     Record<string, ModelTestResult>
   >({});
   const [testingName, setTestingName] = useState<string | null>(null);
+  // A probe verdict is tied to the draft it was produced from; any edit clears it
+  // so a stale "supports thinking" can never be read as a fresh one.
+  const [thinkingProbe, setThinkingProbe] = useState<ThinkingProbeResult | null>(
+    null,
+  );
+
+  const updateDraft = (next: ManagedModelDraft | null) => {
+    setThinkingProbe(null);
+    setDraft(next);
+  };
+
+  const runThinkingProbe = () => {
+    if (!draft) {
+      return;
+    }
+    // An edit posts no credential — the form only ever shows the stored `$VAR`
+    // reference (or a mask), never the secret. Pass the reference along under a
+    // private key so the server can resolve it from `.env` the same way a save
+    // would; without it the probe authenticates with nothing and reports "could
+    // not resolve authentication method" for a perfectly good model.
+    const stored = editing?.api_key;
+    const probeEntry = buildManagedModelWrite(
+      draft,
+      providers,
+      editing ?? undefined,
+    );
+    if (!draft.api_key.trim() && typeof stored === "string") {
+      probeEntry._stored_api_key = stored;
+    }
+    probeThinking(probeEntry, {
+      onSuccess: (result) => setThinkingProbe(result),
+      onError: (probeError) =>
+        setThinkingProbe({
+          ok: false,
+          thinks_by_default: false,
+          respects_enabled: false,
+          respects_disabled: false,
+          latency_ms: 0,
+          error:
+            probeError instanceof Error
+              ? probeError.message
+              : String(probeError),
+        }),
+    });
+  };
 
   const openCreate = () => {
+    // A verdict from a previous form must not carry over: it describes a
+    // different entry, and the UI presents it as fact about this one.
+    setThinkingProbe(null);
     setEditing(null);
     setDraft({ ...EMPTY_MODEL_DRAFT });
   };
 
   const openEdit = (model: ManagedModel) => {
+    setThinkingProbe(null);
     setEditing(model);
     // The stored server may hold the endpoint under any of the provider keys
     // (or none), so read whichever one is present rather than assuming.
@@ -397,6 +570,13 @@ function ManagedModelList({
       (value): value is string => typeof value === "string" && value.length > 0,
     );
     const apiBase = storedBase ?? "";
+    // Thinking state is read back from whatever the entry actually stores —
+    // `supports_thinking` is the flag DeerFlow consults, so it is the source of
+    // truth. The budget is dug out of whichever shape this entry uses.
+    const storedThinking = (model.when_thinking_enabled ?? null) as Record<
+      string,
+      unknown
+    > | null;
     setDraft({
       ...EMPTY_MODEL_DRAFT,
       name: model.name,
@@ -406,6 +586,10 @@ function ManagedModelList({
       model: model.model,
       display_name: model.display_name ?? "",
       api_base: apiBase,
+      supports_thinking: model.supports_thinking === true,
+      budget_tokens: readBudget(storedThinking),
+      max_tokens:
+        typeof model.max_tokens === "number" ? String(model.max_tokens) : "",
     });
   };
 
@@ -503,10 +687,13 @@ function ManagedModelList({
           draft={draft}
           isSaving={isSaving}
           maskedKey={editing ? maskedKeyLabel(editing) : null}
-          providers={providers}
-          onChange={setDraft}
+          onChange={updateDraft}
           onClose={closeForm}
+          onProbe={runThinkingProbe}
           onSave={handleSave}
+          probe={thinkingProbe}
+          probing={isProbing}
+          providers={providers}
           title={
             editing ? t.settings.models.editTitle : t.settings.models.addTitle
           }
@@ -652,23 +839,30 @@ function ModelFormPanel({
   draft,
   maskedKey,
   providers,
+  probe,
+  probing,
   title,
   isSaving,
   onChange,
   onClose,
+  onProbe,
   onSave,
 }: {
   draft: ManagedModelDraft;
   maskedKey: string | null;
   providers: ModelProvider[];
+  probe: ThinkingProbeResult | null;
+  probing: boolean;
   title: string;
   isSaving: boolean;
   onChange: (draft: ManagedModelDraft) => void;
   onClose: () => void;
+  onProbe: () => void;
   onSave: () => void;
 }) {
   const { t } = useI18n();
   const complete = isManagedModelDraftComplete(draft);
+  const provider = providers.find((p) => p.key === draft.provider) ?? null;
   const typedKey = draft.api_key.trim();
 
   // A typed literal is stored in `.env` under a derived name — say which, so the
@@ -685,7 +879,16 @@ function ModelFormPanel({
       ? t.settings.models.apiKeyKeepHint
       : undefined;
 
-  const field = (key: keyof ManagedModelDraft) => ({
+  // Restricted to the string-valued keys, so the value/onChange pair always
+  // satisfies an <Input>. The boolean `supports_thinking` is driven by the
+  // checkbox in ThinkingFields instead.
+  type TextFieldKey = {
+    [K in keyof ManagedModelDraft]: ManagedModelDraft[K] extends string
+      ? K
+      : never;
+  }[keyof ManagedModelDraft];
+
+  const field = (key: TextFieldKey) => ({
     value: draft[key],
     onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
       onChange({ ...draft, [key]: event.target.value }),
@@ -787,6 +990,16 @@ function ModelFormPanel({
             {...field("api_key")}
           />
         </Field>
+
+        <ThinkingFields
+          canProbe={complete}
+          draft={draft}
+          onChange={onChange}
+          onProbe={onProbe}
+          probe={probe}
+          probing={probing}
+          provider={provider}
+        />
       </div>
       <div className="flex items-center justify-end gap-2">
         <Button onClick={onClose} size="sm" type="button" variant="ghost">
@@ -801,6 +1014,192 @@ function ModelFormPanel({
           {isSaving ? t.settings.models.saving : t.settings.models.save}
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The thinking block: a checkbox, an optional budget, and the probe button.
+ *
+ * The probe is manual (a real LLM call costs tokens and seconds), so the result
+ * is held in the parent and cleared whenever the form changes — a stale verdict
+ * would be worse than none.
+ */
+function ThinkingFields({
+  canProbe,
+  draft,
+  provider,
+  probe,
+  probing,
+  onChange,
+  onProbe,
+}: {
+  /** The draft has everything the probe call needs (name, provider, model). */
+  canProbe: boolean;
+  draft: ManagedModelDraft;
+  provider: ModelProvider | null;
+  probe: ThinkingProbeResult | null;
+  probing: boolean;
+  onChange: (draft: ManagedModelDraft) => void;
+  onProbe: () => void;
+}) {
+  const { t } = useI18n();
+  const available = Boolean(provider?.supports_thinking);
+
+  return (
+    <div className="sm:col-span-2 rounded-lg border bg-card p-3">
+      <div className="flex items-center justify-between gap-3">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input
+            checked={draft.supports_thinking}
+            className="size-4 accent-primary"
+            disabled={!available}
+            onChange={(event) =>
+              onChange({ ...draft, supports_thinking: event.target.checked })
+            }
+            type="checkbox"
+          />
+          {t.settings.models.supportsThinking}
+        </label>
+        <Button
+          disabled={probing || !available || !canProbe}
+          onClick={onProbe}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          {probing && <Loader2Icon className="size-3.5 animate-spin" />}
+          {t.settings.models.probeThinking}
+        </Button>
+      </div>
+
+      {available && (
+        <div className="text-muted-foreground mt-2 text-xs">
+          {t.settings.models.supportsThinkingHint}
+        </div>
+      )}
+
+      {!available && (
+        <div className="text-muted-foreground mt-2 text-xs">
+          {t.settings.models.thinkingUnavailable}
+        </div>
+      )}
+
+      {draft.supports_thinking && available && (
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          {provider?.thinking_needs_budget && (
+            <Field
+              hint={t.settings.models.budgetHint}
+              label={t.settings.models.budgetTokens}
+            >
+              <Input
+                autoComplete="off"
+                className="font-mono"
+                inputMode="numeric"
+                onChange={(event) =>
+                  onChange({ ...draft, budget_tokens: event.target.value })
+                }
+                placeholder="4096"
+                value={draft.budget_tokens}
+              />
+            </Field>
+          )}
+          <Field
+            hint={t.settings.models.maxTokensHint}
+            label={t.settings.models.maxTokens}
+          >
+            <Input
+              autoComplete="off"
+              className="font-mono"
+              inputMode="numeric"
+              onChange={(event) =>
+                onChange({ ...draft, max_tokens: event.target.value })
+              }
+              placeholder="8192"
+              value={draft.max_tokens}
+            />
+          </Field>
+        </div>
+      )}
+
+      <ThinkingProbeReport probe={probe} probing={probing} />
+    </div>
+  );
+}
+
+/** Renders the probe's three independent observations. */
+function ThinkingProbeReport({
+  probe,
+  probing,
+}: {
+  probe: ThinkingProbeResult | null;
+  /** A probe is in flight — the result below is stale, so don't show it. */
+  probing: boolean;
+}) {
+  const { t } = useI18n();
+  // A probe sends 3-5 real requests and takes 20-30s. Without this the panel
+  // kept showing "Not detected yet" for the whole wait, which reads as "the
+  // button did nothing" — the verdict then appeared all at once, seemingly
+  // unresponsive. Say what is happening and how long it takes.
+  if (probing) {
+    return (
+      <div className="text-muted-foreground mt-3 flex items-start gap-2 text-xs">
+        <Loader2Icon className="mt-px size-3.5 shrink-0 animate-spin" />
+        <span>{t.settings.models.thinkProbing}</span>
+      </div>
+    );
+  }
+  if (!probe) {
+    return (
+      <div className="text-muted-foreground mt-3 text-xs">
+        {t.settings.models.thinkNotProbed}
+      </div>
+    );
+  }
+  if (!probe.ok) {
+    return (
+      <div className="text-destructive mt-3 text-xs">
+        {probe.error
+          ? `${t.settings.models.thinkProbeFailed} ${probe.error}`
+          : t.settings.models.thinkProbeFailed}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-1.5 text-xs">
+      <ThinkFinding
+        ok={probe.respects_enabled}
+        text={probe.respects_enabled ? t.settings.models.thinkEnabled : t.settings.models.thinkNotEnabled}
+      />
+      {/* "Can it be turned off" is only meaningful once it thinks at all. */}
+      {probe.respects_enabled && (
+        <ThinkFinding
+          ok={probe.respects_disabled}
+          text={probe.respects_disabled ? t.settings.models.thinkDisables : t.settings.models.thinkIgnoresDisable}
+        />
+      )}
+      {probe.thinks_by_default && (
+        <div className="text-muted-foreground">
+          {t.settings.models.thinkAlwaysOn}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkFinding({ ok, text }: { ok: boolean; text: string }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span
+        className={cn(
+          "w-3.5 text-center font-bold",
+          ok ? "text-green-600" : "text-amber-600",
+        )}
+      >
+        {ok ? "✓" : "!"}
+      </span>
+      <span>{text}</span>
     </div>
   );
 }

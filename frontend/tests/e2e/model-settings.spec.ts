@@ -72,11 +72,23 @@ async function loginAsAdmin(): Promise<APIRequestContext> {
   return ctx;
 }
 
+/**
+ * 托管区里的一条模型记录。
+ *
+ * 索引签名是刻意的：`config.yaml` 的条目会带任意服务商专属字段
+ * （`when_thinking_enabled` / `max_tokens` / `api_base` ...），断言
+ * 「某键存在/不存在」时不该先把它强转成别的类型。
+ */
+interface ManagedModelEntry {
+  name: string;
+  [key: string]: unknown;
+}
+
 /** 列出托管区内的模型。 */
-async function listModels(ctx: APIRequestContext): Promise<Array<{ name: string }>> {
+async function listModels(ctx: APIRequestContext): Promise<ManagedModelEntry[]> {
   const res = await ctx.get("/api/models/config");
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as { models?: Array<{ name: string }> };
+  const body = (await res.json()) as { models?: ManagedModelEntry[] };
   return body.models ?? [];
 }
 
@@ -234,6 +246,157 @@ test.describe("模型配置", () => {
       expect(body).not.toContain("e2e-should-never-echo-back");
     } finally {
       await cleanupModels(ctx);
+      await ctx.dispose();
+    }
+  });
+
+  test("服务商表下发思考模板，且形态按服务商分叉", async () => {
+    const ctx = await loginAsAdmin();
+    try {
+      const res = await ctx.get("/api/models/providers");
+      expect(res.status()).toBe(200);
+      const body = (await res.json()) as {
+        providers: Array<Record<string, unknown>>;
+      };
+      const byKey = new Map(body.providers.map((p) => [p.key as string, p]));
+
+      // 每个 service 的思考参数写法不同，不能被统一成一种形状——这正是
+      // 界面不能自己拼参数、必须由预设表下发的原因。
+      const anthropic = byKey.get("anthropic");
+      expect(anthropic?.thinking_enabled).toEqual({
+        thinking: { type: "enabled", budget_tokens: 4096 },
+      });
+      expect(anthropic?.thinking_needs_budget).toBe(true);
+
+      const compatible = byKey.get("openai-compatible");
+      expect(compatible?.thinking_enabled).toEqual({
+        extra_body: { thinking: { type: "enabled" } },
+      });
+      // 不传 budget 的服务商不该拿到 budget 字段（ModelConfig extra="allow"
+      // 会把未知键直接透传给 SDK）。
+      expect(compatible?.thinking_needs_budget).toBe(false);
+
+      const google = byKey.get("google");
+      expect(google?.thinking_enabled).toEqual({ thinking_budget: 4096 });
+
+      // 每个支持思考的服务商都必须同时给出「关」的写法。
+      for (const p of body.providers) {
+        if (p.supports_thinking !== true) continue;
+        expect(p.thinking_enabled, `${String(p.key)} 缺少启用模板`).toBeTruthy();
+        expect(p.thinking_disabled, `${String(p.key)} 缺少关闭模板`).toBeTruthy();
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  test("思考配置能写进 config.yaml 并原样回读", async () => {
+    const ctx = await loginAsAdmin();
+    const name = adminKey("thinking");
+    try {
+      // 这就是界面上勾选「该模型支持思考」后发出的载荷。
+      const payload = {
+        name,
+        use: "langchain_anthropic:ChatAnthropic",
+        model: "claude-sonnet-5",
+        supports_thinking: true,
+        when_thinking_enabled: {
+          thinking: { type: "enabled", budget_tokens: 2048 },
+        },
+        when_thinking_disabled: { thinking: { type: "disabled" } },
+        max_tokens: 8192,
+        api_key: "$E2E_THINKING_KEY",
+        api_key_value: "sk-e2e-not-a-real-key",
+      };
+      const created = await ctx.post("/api/models", { data: payload });
+      expect(created.status(), await created.text()).toBe(200);
+
+      // Playwright 的 expect 不做类型收窄，所以显式抛一次。
+      const entry =
+        (await listModels(ctx)).find((m) => m.name === name) ?? null;
+      if (!entry) throw new Error(`${name} 保存后未出现在托管区`);
+      expect(entry.supports_thinking).toBe(true);
+      expect(entry.when_thinking_enabled).toEqual({
+        thinking: { type: "enabled", budget_tokens: 2048 },
+      });
+      expect(entry.when_thinking_disabled).toEqual({
+        thinking: { type: "disabled" },
+      });
+      expect(entry.max_tokens).toBe(8192);
+
+      // 关掉思考 = PUT 一个不带这三个键的载荷（界面 uncheck 后就是这么发的）。
+      // `supports_thinking` 是 DeerFlow 真正读取的开关，留着就等于没关掉。
+      const updated = await ctx.put(`/api/models/${encodeURIComponent(name)}`, {
+        data: { name, use: "langchain_anthropic:ChatAnthropic", model: "claude-sonnet-5" },
+      });
+      expect(updated.status(), await updated.text()).toBe(200);
+
+      const after = (await listModels(ctx)).find((m) => m.name === name) ?? null;
+      if (!after) throw new Error(`${name} 在更新后消失了`);
+      expect(after).not.toHaveProperty("supports_thinking");
+      expect(after).not.toHaveProperty("when_thinking_enabled");
+      expect(after).not.toHaveProperty("when_thinking_disabled");
+      expect(after).not.toHaveProperty("max_tokens");
+    } finally {
+      await cleanupModels(ctx);
+      await ctx.dispose();
+    }
+  });
+
+  test("探测端点不写任何文件，坏端点返回业务结果而不是 500", async () => {
+    const ctx = await loginAsAdmin();
+    try {
+      const before = JSON.stringify(await listModels(ctx));
+
+      // 指向一个必然连不上的端点：探测必须把失败当成一条业务结论
+      // 返回（ok:false + error），而不是抛 500 —— 管理界面上那是
+      // 一次正常作答，不是服务器故障。
+      const res = await ctx.post("/api/models/probe-thinking", {
+        data: {
+          name: adminKey("probe"),
+          use: "langchain_openai:ChatOpenAI",
+          model: "does-not-exist",
+          openai_api_base: "http://127.0.0.1:1/v1",
+          api_key: "$E2E_PROBE_KEY",
+        },
+      });
+      expect(res.status(), await res.text()).toBe(200);
+      const body = (await res.json()) as {
+        ok: boolean;
+        respects_enabled: boolean;
+        respects_disabled: boolean;
+        thinks_by_default: boolean;
+        error: string | null;
+      };
+      expect(body.ok).toBe(false);
+      expect(body.error).toBeTruthy();
+      // 探测失败时三个结论都必须是 false —— 它们表示「未知」，不是「否」。
+      expect(body.respects_enabled).toBe(false);
+      expect(body.respects_disabled).toBe(false);
+      expect(body.thinks_by_default).toBe(false);
+
+      // 探测是只读的：托管区一个字节都不能变。
+      expect(JSON.stringify(await listModels(ctx))).toBe(before);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  test("探测端点需要管理员", async () => {
+    const ctx = await loginAsAdmin();
+    try {
+      // 未带会话 cookie 的裸请求应被拒，且不能因为探测而落盘。
+      const res = await ctx.post("/api/models/probe-thinking", {
+        data: {
+          name: adminKey("anon"),
+          use: "langchain_openai:ChatOpenAI",
+          model: "gpt-4o",
+        },
+        headers: { Cookie: "", "X-CSRF-Token": "" },
+      });
+      expect([401, 403, 422]).toContain(res.status());
+      expect(res.status()).not.toBe(200);
+    } finally {
       await ctx.dispose();
     }
   });

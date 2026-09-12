@@ -44,12 +44,18 @@ const modelsState = rs.hoisted(() => ({
   },
 }));
 
+// Drive the probe hook's pending state from a test: the "still waiting" copy is
+// only reachable while a probe is in flight, and a probe takes 20-30s of real
+// network time, so it cannot be waited out in a unit test.
+const probeState = rs.hoisted(() => ({ pending: false }));
+
 rs.mock("@/core/models/hooks", () => ({
   useManagedModels: () => modelsState.current,
   useModelProviders: () => ({ providers: PROVIDERS, isLoading: false, error: undefined }),
   useSaveManagedModel: () => ({ mutate: rs.fn(), isPending: false }),
   useDeleteManagedModel: () => ({ mutate: rs.fn(), isPending: false }),
   useTestManagedModel: () => ({ mutate: rs.fn(), isPending: false }),
+  useProbeManagedModelThinking: () => ({ mutate: rs.fn(), isPending: probeState.pending }),
 }));
 
 rs.mock("@/core/i18n/hooks", () => ({
@@ -92,6 +98,9 @@ rs.mock("@/core/i18n/hooks", () => ({
           saveSuccess: "模型已保存。",
           deleteSuccess: "模型已删除。",
           loadError: "加载失败：{detail}",
+          supportsThinking: "该模型支持思考",
+          thinkNotProbed: "未检测 — 建议先点「检测」。",
+          thinkProbing: "检测中… 正在发送 3 到 5 次真实请求。",
         },
       },
     },
@@ -101,6 +110,7 @@ rs.mock("@/core/i18n/hooks", () => ({
 afterEach(() => {
   cleanup();
   modelsState.current = { models: [], isLoading: false, error: undefined };
+  probeState.pending = false;
 });
 
 function managedModel(overrides: Partial<ManagedModel> = {}): ManagedModel {
@@ -162,6 +172,41 @@ describe("ModelSettingsPage admin gating", () => {
   });
 });
 
+describe("thinking probe progress", () => {
+  async function openProbePanel() {
+    modelsState.current = {
+      models: [managedModel({ use: "langchain_anthropic:ChatAnthropic" })],
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ModelSettingsPage />);
+    (await screen.findByRole("button", { name: "编辑" })).click();
+    const checkbox = await screen.findByRole("checkbox");
+    if (!(checkbox as HTMLInputElement).checked) {
+      (checkbox as HTMLInputElement).click();
+    }
+  }
+
+  it("shows progress instead of the stale verdict while a probe is in flight", async () => {
+    // Regression: the panel kept showing "Not detected yet" for the whole 20-30s
+    // wait, so the button read as unresponsive and the verdict then appeared all
+    // at once. The wait has to be visible.
+    probeState.pending = true;
+    await openProbePanel();
+
+    expect(screen.getByText(/检测中/)).toBeTruthy();
+    expect(screen.queryByText(/未检测/)).toBeNull();
+  });
+
+  it("falls back to the not-detected hint once the probe settles", async () => {
+    probeState.pending = false;
+    await openProbePanel();
+
+    expect(screen.getByText(/未检测/)).toBeTruthy();
+    expect(screen.queryByText(/检测中/)).toBeNull();
+  });
+});
+
 describe("maskedKeyLabel", () => {
   it("prefers a masked string carried on api_key_masked", () => {
     expect(
@@ -198,6 +243,11 @@ const PROVIDERS: ModelProvider[] = [
     use: "langchain_openai:ChatOpenAI",
     api_base_field: "openai_api_base",
     default_api_base: null,
+    supports_thinking: true,
+    thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
+    thinking_disabled: { extra_body: { thinking: { type: "disabled" } } },
+    thinking_needs_budget: false,
+    default_budget_tokens: 4096,
     available: true,
     reason: null,
   },
@@ -207,6 +257,11 @@ const PROVIDERS: ModelProvider[] = [
     use: "langchain_openai:ChatOpenAI",
     api_base_field: "openai_api_base",
     default_api_base: null,
+    supports_thinking: true,
+    thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
+    thinking_disabled: { extra_body: { thinking: { type: "disabled" } } },
+    thinking_needs_budget: false,
+    default_budget_tokens: 4096,
     available: true,
     reason: null,
   },
@@ -216,6 +271,27 @@ const PROVIDERS: ModelProvider[] = [
     use: "deerflow.models.patched_deepseek:PatchedChatDeepSeek",
     api_base_field: "api_base",
     default_api_base: "https://ark.cn-beijing.volces.com/api/v3",
+    supports_thinking: true,
+    thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
+    thinking_disabled: { extra_body: { thinking: { type: "disabled" } } },
+    thinking_needs_budget: false,
+    default_budget_tokens: 4096,
+    available: true,
+    reason: null,
+  },
+  {
+    // Anthropic is the only preset whose thinking block carries a budget, so it
+    // is the one that exercises `withBudget`/`readBudget` end to end.
+    key: "anthropic",
+    label: "Anthropic Claude",
+    use: "langchain_anthropic:ChatAnthropic",
+    api_base_field: "anthropic_api_url",
+    default_api_base: null,
+    supports_thinking: true,
+    thinking_enabled: { thinking: { type: "enabled", budget_tokens: 4096 } },
+    thinking_disabled: { thinking: { type: "disabled" } },
+    thinking_needs_budget: true,
+    default_budget_tokens: 4096,
     available: true,
     reason: null,
   },
@@ -391,6 +467,129 @@ describe("buildManagedModelWrite (single key field)", () => {
       buildWrite({ ...complete, display_name: " GPT-4o " })
         .display_name,
     ).toBe("GPT-4o");
+  });
+});
+
+describe("buildManagedModelWrite (thinking)", () => {
+  const anthropic = {
+    ...EMPTY_MODEL_DRAFT,
+    name: "claude-sonnet",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+  };
+  const openai = {
+    ...EMPTY_MODEL_DRAFT,
+    name: "gpt-4o",
+    provider: "openai",
+    model: "gpt-4o",
+  };
+  /** The stored entry `buildWrite`'s `original` argument expects. */
+  const storedEntry = (overrides: Partial<ManagedModel> = {}): ManagedModel => ({
+    index: 0,
+    name: "gpt-4o",
+    model: "gpt-4o",
+    use: "langchain_openai:ChatOpenAI",
+    ...overrides,
+  });
+
+  it("writes the provider's own block shape, not a synthesised one", () => {
+    const write = buildWrite({
+      ...anthropic,
+      supports_thinking: true,
+      budget_tokens: "",
+    });
+    expect(write.supports_thinking).toBe(true);
+    // Anthropic nests the budget; an OpenAI-compatible preset must not get this.
+    expect(write.when_thinking_enabled).toEqual({
+      thinking: { type: "enabled", budget_tokens: 4096 },
+    });
+    expect(write.when_thinking_disabled).toEqual({
+      thinking: { type: "disabled" },
+    });
+  });
+
+  it("substitutes the typed budget without touching the rest of the block", () => {
+    const write = buildWrite({
+      ...anthropic,
+      supports_thinking: true,
+      budget_tokens: "2048",
+    });
+    expect(write.when_thinking_enabled).toEqual({
+      thinking: { type: "enabled", budget_tokens: 2048 },
+    });
+  });
+
+  it("ignores a blank or non-numeric budget instead of writing NaN", () => {
+    for (const budget_tokens of ["", "  ", "abc", "0", "-5"]) {
+      const write = buildWrite({
+        ...anthropic,
+        supports_thinking: true,
+        budget_tokens,
+      });
+      expect(write.when_thinking_enabled).toEqual({
+        thinking: { type: "enabled", budget_tokens: 4096 },
+      });
+    }
+  });
+
+  it("writes the OpenAI-compatible shape under extra_body", () => {
+    const write = buildWrite({ ...openai, supports_thinking: true });
+    expect(write.when_thinking_enabled).toEqual({
+      extra_body: { thinking: { type: "enabled" } },
+    });
+  });
+
+  it("writes no thinking keys on a create that never enabled it", () => {
+    const write = buildWrite(openai);
+    expect(write).not.toHaveProperty("supports_thinking");
+    expect(write).not.toHaveProperty("when_thinking_enabled");
+    expect(write).not.toHaveProperty("when_thinking_disabled");
+  });
+
+  it("clears every thinking key when the box is unchecked on a think-enabled entry", () => {
+    const write = buildWrite(
+      { ...openai, supports_thinking: false },
+      storedEntry({
+        supports_thinking: true,
+        when_thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
+        when_thinking_disabled: { extra_body: { thinking: { type: "disabled" } } },
+        max_tokens: 8192,
+      }),
+    );
+    // `supports_thinking` is the flag DeerFlow reads, so it must not survive.
+    expect(write).not.toHaveProperty("supports_thinking");
+    expect(write).not.toHaveProperty("when_thinking_enabled");
+    expect(write).not.toHaveProperty("when_thinking_disabled");
+    expect(write).not.toHaveProperty("max_tokens");
+  });
+
+  it("keeps a hand-written thinking block the form cannot express", () => {
+    const write = buildWrite(
+      openai,
+      storedEntry({
+        when_thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
+        max_tokens: 4096,
+      }),
+    );
+    // Never enabled by the form, so the entry is left exactly as stored.
+    expect(write.when_thinking_enabled).toEqual({
+      extra_body: { thinking: { type: "enabled" } },
+    });
+    expect(write.max_tokens).toBe(4096);
+  });
+
+  it("drops the legacy top-level thinking alias when the form takes over", () => {
+    const write = buildWrite(
+      { ...openai, supports_thinking: true },
+      storedEntry({
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        supports_thinking: true,
+      }),
+    );
+    expect(write).not.toHaveProperty("thinking");
+    expect(write.when_thinking_enabled).toEqual({
+      extra_body: { thinking: { type: "enabled" } },
+    });
   });
 });
 
