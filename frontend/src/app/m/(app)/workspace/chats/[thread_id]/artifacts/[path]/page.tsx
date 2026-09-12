@@ -3,12 +3,25 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  FileIcon,
+} from "lucide-react";
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import {
+  ModelSelector,
+  ModelSelectorContent,
+  ModelSelectorInput,
+  ModelSelectorItem,
+  ModelSelectorList,
+  ModelSelectorTrigger,
+} from "@/components/ai-elements/model-selector";
 import { ArtifactFilePreview } from "@/components/workspace/artifacts";
 import { ImageLightbox } from "@/components/workspace/artifacts/image-lightbox";
 import { ThreadContext } from "@/components/workspace/messages/context";
@@ -21,6 +34,7 @@ import {
   isDownloadableArtifact,
   resolvedArtifactPath,
 } from "@/components/workspace/mobile/artifact-navigation";
+import { modelOptionRowClassName } from "@/components/workspace/model-menu";
 import { getAPIClient } from "@/core/api";
 import { useArtifactContent } from "@/core/artifacts/hooks";
 import { isWriteFileArtifact } from "@/core/artifacts/preview";
@@ -120,6 +134,7 @@ function ArtifactScreen({
   threadId: string;
 }) {
   const { t } = useI18n();
+  const router = useRouter();
   const [wrap, setWrap] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
@@ -196,13 +211,94 @@ function ArtifactScreen({
         >
           <ArrowLeftIcon className="size-5" />
         </Link>
+        {/* The current file is the switcher (prototype ⑤): tapping the name
+            opens the thread's file list. The desktop does the same thing with a
+            file `Select` in the panel header, so this is the mobile form of an
+            existing control rather than a new one.
+
+            The layer is the model picker's own `ModelSelector` — a `Command`
+            list with a search box — because a thread can easily write a dozen
+            files and a plain menu has no way to find one. It is a dialog rather
+            than a dropdown anchored under the title: `ui/popover.tsx` does not
+            exist in this repo and `ui/` is registry-generated, so an anchored
+            popover is not a component this tree may hand-roll. The trigger is
+            still the title, which is what the plan asks for.
+
+            One file, one label — no chevron and no picker, because there is
+            nothing to switch to. */}
         <div className="min-w-0 flex-1">
-          <h1
-            data-testid="mobile-artifact-title"
-            className="truncate text-[15px] font-medium"
-          >
-            {displayName}
-          </h1>
+          {artifacts.length > 1 ? (
+            <ModelSelector>
+              <ModelSelectorTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="mobile-artifact-switcher"
+                  aria-label={t.artifactViewer.switchFile(displayName)}
+                  className="active:bg-accent flex max-w-full min-w-0 items-center gap-1 rounded-lg py-1 text-left"
+                >
+                  <span
+                    data-testid="mobile-artifact-title"
+                    className="min-w-0 truncate text-[15px] font-medium"
+                  >
+                    {displayName}
+                  </span>
+                  <ChevronDownIcon
+                    aria-hidden="true"
+                    className="text-muted-foreground size-4 shrink-0"
+                  />
+                </button>
+              </ModelSelectorTrigger>
+              <ModelSelectorContent
+                className="mobile-model-dialog"
+                title={t.common.artifacts}
+              >
+                <ModelSelectorInput
+                  placeholder={t.artifactViewer.searchFiles}
+                />
+                <ModelSelectorList className="max-h-80 p-1">
+                  {artifacts.map((artifact) => (
+                    <ModelSelectorItem
+                      key={artifact}
+                      // `value` is what the search box matches on, so it carries
+                      // the whole identifier: the basename alone would miss a
+                      // file whose directories are what the operator remembers.
+                      value={`${artifactDisplayName(artifact)} ${artifact}`}
+                      data-testid={`mobile-artifact-option-${artifactDisplayName(artifact)}`}
+                      className={modelOptionRowClassName(
+                        artifact === resolvedPath,
+                      )}
+                      onSelect={() =>
+                        router.push(
+                          artifactHref(threadId, artifact, { isMock }),
+                        )
+                      }
+                    >
+                      <FileIcon
+                        aria-hidden="true"
+                        className="text-muted-foreground size-4 shrink-0"
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {artifactDisplayName(artifact)}
+                      </span>
+                      {artifact === resolvedPath && (
+                        <CheckIcon
+                          aria-hidden="true"
+                          className="size-4 shrink-0"
+                        />
+                      )}
+                    </ModelSelectorItem>
+                  ))}
+                </ModelSelectorList>
+              </ModelSelectorContent>
+            </ModelSelector>
+          ) : (
+            <h1
+              data-testid="mobile-artifact-title"
+              className="truncate text-[15px] font-medium"
+            >
+              {displayName}
+            </h1>
+          )}
           {artifacts.length > 0 && (
             <p className="text-muted-foreground truncate text-xs">
               {t.artifactViewer.count(artifacts.length)}
@@ -210,35 +306,6 @@ function ArtifactScreen({
           )}
         </div>
       </header>
-
-      {/* The thread's other artifacts (prototype ⑤'s tab strip); the desktop's
-          equivalent is the panel header's file `Select`. */}
-      {artifacts.length > 1 && (
-        <nav
-          aria-label={t.common.artifacts}
-          data-testid="mobile-artifact-tabs"
-          className="flex shrink-0 gap-1 overflow-x-auto border-b px-2"
-        >
-          {artifacts.map((artifact) => {
-            const active = artifact === resolvedPath;
-            return (
-              <Link
-                key={artifact}
-                href={artifactHref(threadId, artifact, { isMock })}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "flex min-h-11 shrink-0 items-center border-b-2 px-3 text-sm",
-                  active
-                    ? "border-foreground text-foreground font-medium"
-                    : "text-muted-foreground border-transparent",
-                )}
-              >
-                {artifactDisplayName(artifact)}
-              </Link>
-            );
-          })}
-        </nav>
-      )}
 
       <div className="relative min-h-0 flex-1">
         {mode === "html" && (

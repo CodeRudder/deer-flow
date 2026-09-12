@@ -79,11 +79,11 @@ function mockArtifactBytes(page: Page) {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point: the 产物 row in the ⋯ sheet
+// Entry point: the 文件 button in the title bar
 // ---------------------------------------------------------------------------
 
 test.describe("Mobile artifact entry point", () => {
-  test("the ⋯ sheet carries 产物 only when the thread has artifacts", async ({
+  test("the title bar carries 文件 only when the thread has artifacts", async ({
     page,
   }) => {
     mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
@@ -92,12 +92,13 @@ test.describe("Mobile artifact entry point", () => {
       timeout: 15_000,
     });
 
-    await page.getByTestId("mobile-chat-more").click();
-    await expect(page.getByTestId("mobile-chat-menu")).toBeVisible();
-    await expect(page.getByTestId("mobile-chat-artifacts")).toBeVisible();
+    await expect(page.getByTestId("mobile-chat-files")).toBeVisible();
+    // It is the header's own button now, not a row inside the ⋯ sheet — the
+    // sheet would be a second entry point to the same screen.
+    await expect(page.getByTestId("mobile-chat-artifacts")).toHaveCount(0);
   });
 
-  test("a thread without artifacts has no 产物 row", async ({ page }) => {
+  test("a thread without artifacts has no 文件 button", async ({ page }) => {
     mockLangGraphAPI(page, {
       threads: [{ thread_id: MOCK_THREAD_ID, title: "No artifacts" }],
     });
@@ -106,9 +107,7 @@ test.describe("Mobile artifact entry point", () => {
       timeout: 15_000,
     });
 
-    await page.getByTestId("mobile-chat-more").click();
-    await expect(page.getByTestId("mobile-chat-menu")).toBeVisible();
-    await expect(page.getByTestId("mobile-chat-artifacts")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-chat-files")).toHaveCount(0);
   });
 
   test("opening it lands on the public artifact URL, never on /m/", async ({
@@ -117,12 +116,11 @@ test.describe("Mobile artifact entry point", () => {
     mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
     await mockArtifactBytes(page);
     await page.goto(CHAT_PATH);
-    await expect(page.getByTestId("mobile-chat-more")).toBeVisible({
+    await expect(page.getByTestId("mobile-chat-files")).toBeVisible({
       timeout: 15_000,
     });
 
-    await page.getByTestId("mobile-chat-more").click();
-    await page.getByTestId("mobile-chat-artifacts").click();
+    await page.getByTestId("mobile-chat-files").click();
 
     await expect(page.getByTestId("mobile-artifact-title")).toBeVisible({
       timeout: 15_000,
@@ -412,18 +410,21 @@ test.describe("Mobile artifact actions", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Mobile artifact switching", () => {
-  test("the thread's other artifacts are one tap away", async ({ page }) => {
+  test("the title's file name opens the switcher and lands on another file", async ({
+    page,
+  }) => {
     mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
     await mockArtifactBytes(page);
     await page.goto(artifactPath(HTML_PATH));
 
-    const tabs = page.getByTestId("mobile-artifact-tabs");
-    await expect(tabs).toBeVisible({ timeout: 15_000 });
+    const switcher = page.getByTestId("mobile-artifact-switcher");
+    await expect(switcher).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId("mobile-artifact-title")).toHaveText(
       "report.html",
     );
 
-    await tabs.getByRole("link", { name: "data.json" }).click();
+    await switcher.click();
+    await page.getByTestId("mobile-artifact-option-data.json").click();
 
     await expect(page.getByTestId("mobile-artifact-code")).toBeVisible({
       timeout: 15_000,
@@ -432,5 +433,31 @@ test.describe("Mobile artifact switching", () => {
       "data.json",
     );
     expect(new URL(page.url()).pathname).not.toContain("/m/");
+  });
+
+  test("typing a keyword filters the file list", async ({ page }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await mockArtifactBytes(page);
+    await page.goto(artifactPath(HTML_PATH));
+
+    await page.getByTestId("mobile-artifact-switcher").click({
+      timeout: 15_000,
+    });
+    // All three are listed before anything is typed.
+    await expect(
+      page.getByTestId("mobile-artifact-option-chart.png"),
+    ).toBeVisible();
+
+    await page.getByPlaceholder("Filter files by name").fill("chart");
+
+    await expect(
+      page.getByTestId("mobile-artifact-option-chart.png"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("mobile-artifact-option-report.html"),
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId("mobile-artifact-option-data.json"),
+    ).toHaveCount(0);
   });
 });

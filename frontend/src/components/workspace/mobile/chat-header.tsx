@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/sheet";
 import { useArtifacts } from "@/components/workspace/artifacts";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
+import { artifactHref } from "@/components/workspace/mobile/artifact-navigation";
 import { QuotaIndicator } from "@/components/workspace/quota-indicator";
 import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
@@ -79,8 +80,8 @@ export function MobileChatHeader({
   // The thread's artifacts, published by the chat page (the desktop does the
   // same from `ChatBox`). `ArtifactTrigger` — the desktop header's entry point
   // — is gated on exactly this: an empty list means there is nothing to open,
-  // so the row would be an empty tap target.
-  const { artifacts, select: selectArtifact } = useArtifacts();
+  // so the button would be an empty tap target.
+  const { artifacts } = useArtifacts();
   // `QuotaIndicator` renders nothing at all without a quota payload, which
   // would leave a labelled row with nothing to tap. This is the same hook the
   // indicator uses (same query key, so no extra request) and the same
@@ -118,6 +119,26 @@ export function MobileChatHeader({
         {title || (isNewThread ? t.pages.newChat : t.pages.untitled)}
       </h1>
 
+      {/* 文件: one tap to the thread's files, rather than two taps through the
+          `⋯` sheet. It is a `Link`, like the back button above it — the target
+          is a route the middleware lands on the mobile tree, so a real anchor
+          gets prefetch and the long-press menu for free.
+
+          Opens the first artifact; the screen it lands on owns the file
+          switcher for the rest. Gated on a non-empty list for the same reason
+          the desktop trigger is: an empty list would make this an empty tap
+          target. */}
+      {artifacts.length > 0 && (
+        <Link
+          href={artifactHref(threadId, artifacts[0]!, { isMock })}
+          aria-label={t.common.artifacts}
+          data-testid="mobile-chat-files"
+          className="active:bg-accent text-muted-foreground flex size-11 shrink-0 items-center justify-center rounded-full"
+        >
+          <FilesIcon className="size-5" />
+        </Link>
+      )}
+
       <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
         <Button
           type="button"
@@ -143,33 +164,10 @@ export function MobileChatHeader({
             <SheetTitle className="text-base">{t.common.more}</SheetTitle>
           </SheetHeader>
           <div className="flex flex-col gap-1 px-2">
-            {/* 产物 (T6). The desktop header renders `ArtifactTrigger` next to
-                the other header tools; here it is one more row, and choosing
-                it navigates to the full-screen artifact screen — there is no
-                panel to open. The row opens the first artifact; the screen
-                itself carries the tab strip for the rest. */}
-            {artifacts.length > 0 && (
-              <button
-                type="button"
-                data-testid="mobile-chat-artifacts"
-                onClick={() => {
-                  setMenuOpen(false);
-                  selectArtifact(artifacts[0]!);
-                }}
-                className="active:bg-accent flex min-h-12 w-full items-center gap-3 rounded-md px-3 text-base"
-              >
-                <FilesIcon
-                  aria-hidden="true"
-                  className="text-muted-foreground size-4 shrink-0"
-                />
-                <span className="min-w-0 flex-1 text-left">
-                  {t.common.artifacts}
-                </span>
-                <span className="text-muted-foreground text-sm">
-                  {artifacts.length}
-                </span>
-              </button>
-            )}
+            {/* 产物 used to be a row here. It is the header's own button now
+                (see `mobile-chat-files`), and two entry points to the same
+                screen is one too many — the sheet keeps only the tools that
+                have nowhere else to live. */}
             {showSessionStatus && (
               <div
                 className={`flex min-h-12 items-center justify-between gap-3 px-3 ${CONTROL_ROW_CLASS}`}

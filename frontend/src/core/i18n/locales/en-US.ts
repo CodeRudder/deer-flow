@@ -89,6 +89,8 @@ export const enUS: Translations = {
       "This file type cannot be previewed in the browser. Download it to open it.",
     loadFailed: "This artifact could not be loaded.",
     back: "Back to chat",
+    switchFile: (current: string) => `Switch file (currently ${current})`,
+    searchFiles: "Filter files by name",
   },
 
   // Input Box

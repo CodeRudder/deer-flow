@@ -78,6 +78,13 @@ export interface Translations {
     loadFailed: string;
     /** Screen-reader label of the header back button. */
     back: string;
+    /**
+     * Accessible name of the header's file switcher, which is the filename
+     * itself followed by a chevron; the value says what tapping it does.
+     */
+    switchFile: (current: string) => string;
+    /** Placeholder of the file picker's search box. */
+    searchFiles: string;
   };
 
   // Input Box

@@ -87,6 +87,8 @@ export const zhCN: Translations = {
     downloadOnly: "该文件类型无法在浏览器中预览，请下载后查看。",
     loadFailed: "产物加载失败。",
     back: "返回对话",
+    switchFile: (current: string) => `切换文件（当前：${current}）`,
+    searchFiles: "输入关键字筛选文件",
   },
 
   // Input Box

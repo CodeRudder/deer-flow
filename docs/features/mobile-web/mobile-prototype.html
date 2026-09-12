@@ -212,6 +212,7 @@ body{
 .cbox textarea::placeholder{color:var(--muted-foreground)}
 .crow{display:flex;align-items:center;gap:2px;margin-top:6px}
 .crow .grow{flex:1}
+.crow .pill{min-width:0;max-width:134px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pill{
   display:flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:99px;
   padding:6px 11px;font-size:12.5px;min-height:34px;background:var(--card);cursor:pointer;color:var(--foreground);
@@ -311,6 +312,38 @@ body{
   color:var(--muted-foreground);white-space:nowrap;font-family:ui-monospace,Menlo,monospace;
 }
 .tabs .tb.on{background:var(--primary);color:var(--primary-foreground)}
+
+/* ⑤ 产物页的文件切换（取代上面的横向 tab 条）
+   形态＝居中对话框，不是锚定在标题下方的浮层：真实实现直接复用模型选择器的
+   ModelSelector（shadcn Dialog + Command），左中右各留 16px，即
+   `max-width: calc(100vw - 2rem)`；本仓库没有 ui/popover.tsx，锚定浮层
+   不是这套 registry 生成的组件树能手工搭的东西。 */
+.nav .title .caret{font-size:11px;color:var(--muted-foreground);vertical-align:2px}
+.switcher{
+  position:absolute;inset:0;z-index:8;background:oklch(0 0 0 / .42);
+  display:flex;align-items:center;justify-content:center;padding:0 16px;
+}
+.switcher .panel{
+  width:100%;max-height:72%;display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--border);border-radius:16px;background:var(--card);
+  box-shadow:0 18px 44px rgba(0,0,0,.24);padding:9px;
+}
+.switcher .dsearch{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;margin-bottom:7px;padding:0 12px;min-height:44px;
+  border:1px solid var(--border);border-radius:11px;background:var(--background);
+  font-size:16px;color:var(--muted-foreground);
+}
+.switcher .dlabel{flex:0 0 auto;padding:0 10px 6px;font-size:11.5px;color:var(--muted-foreground)}
+.switcher .dlist{min-height:0;overflow-y:auto}
+.switcher .ditem{
+  display:flex;align-items:center;gap:9px;width:100%;min-height:44px;padding:0 10px;
+  border:0;background:none;border-radius:10px;color:var(--foreground);font-size:13.5px;cursor:pointer;
+  font-family:ui-monospace,Menlo,monospace;text-align:left;
+}
+.switcher .ditem+.ditem{margin-top:2px}
+.switcher .ditem:active{background:var(--accent)}
+.switcher .ditem .dn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.switcher .ditem.on{color:var(--foreground);font-weight:600}
 
 /* 卡片网格（智能体） */
 .card{
@@ -463,7 +496,7 @@ body{
 <figure class="frame" style="margin:0">
   <figcaption>
     <h2>② 对话主界面</h2>
-    <p class="why"><span class="tag fix">改形态</span>顶部 6 个图标收进「⋯」；消息操作常驻不悬停；输入框主行只留附件/输入/发送。</p>
+    <p class="why"><span class="tag fix">改形态</span>顶部 6 个图标收进「⋯」（<b>文件</b>除外 —— 它是高频入口，单独留在标题栏右侧）；消息操作常驻不悬停；输入区底部常驻当前模式与模型，点击直接切换。</p>
   </figcaption>
   <div class="phone"><div class="screen">
     <div class="island"></div>
@@ -471,6 +504,7 @@ body{
     <div class="nav">
       <button class="iconbtn">‹</button>
       <div class="title">量子计算入门</div>
+      <button class="iconbtn" title="文件">🗂</button>
       <button class="iconbtn">⋯</button>
     </div>
     <div class="body" style="padding:2px 16px 16px">
@@ -521,7 +555,8 @@ body{
         <textarea placeholder="继续提问…"></textarea>
         <div class="crow">
           <button class="iconbtn" style="width:34px;height:34px;font-size:18px">＋</button>
-          <button class="pill">⚙ 默认模型 ▾</button>
+          <button class="pill">⚡ 思考 ▾</button>
+          <button class="pill">⚙ GLM-5.3 Flash ▾</button>
           <span class="grow"></span>
           <button class="send">↑</button>
         </div>
@@ -535,7 +570,7 @@ body{
 <figure class="frame" style="margin:0">
   <figcaption>
     <h2>③ 输入框「＋」面板</h2>
-    <p class="why"><span class="tag fix">改形态</span>桌面端底部一行塞了模式/图片/视频/推理强度/模型 5 个控件；手机上收进底部面板。</p>
+    <p class="why"><span class="tag fix">改形态</span>桌面端底部一行塞了模式/图片/视频/推理强度/模型 5 个控件；手机上模式与模型移到输入区底部快速切换（见 ②），其余收进本面板。</p>
   </figcaption>
   <div class="phone"><div class="screen">
     <div class="island"></div>
@@ -559,7 +594,6 @@ body{
           <button><span class="gl on">🧠</span>思考</button>
         </div>
         <div class="list">
-          <button><span>⚡</span>模式<span class="k">思考 ›</span></button>
           <button><span>🎨</span>图片生成模型<span class="k">未指定 ›</span></button>
           <button><span>🎬</span>视频生成模型<span class="k">未指定 ›</span></button>
           <button><span>📊</span>推理强度<span class="k">中 ›</span></button>
@@ -627,20 +661,26 @@ body{
 <figure class="frame" style="margin:0">
   <figcaption>
     <h2>⑤ 产物预览（全屏）</h2>
-    <p class="why"><span class="tag fix">改形态</span>桌面的可拖拽 60/40 分栏在手机上不可用；改为全屏页 + 底部操作条。</p>
+    <p class="why"><span class="tag fix">改形态</span>桌面的可拖拽 60/40 分栏在手机上不可用；改为全屏页 + 底部操作条。文件切换＝<b>点标题栏的文件名</b>（桌面用的是面板头部的文件 <code>Select</code>，这里是它的移动端形态），弹出<b>垂直居中、占满屏宽的对话框</b>，带关键字筛选 —— 一个会话写出十几个文件是常事，纯菜单没法找。</p>
   </figcaption>
   <div class="phone"><div class="screen">
     <div class="island"></div>
     <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
     <div class="nav">
       <button class="iconbtn">‹</button>
-      <div class="title">量子计算报告.html<small>3 个产物</small></div>
+      <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
       <button class="iconbtn">⋯</button>
     </div>
-    <div class="tabs">
-      <span class="tb on">report.html</span>
-      <span class="tb">chart.png</span>
-      <span class="tb">data.json</span>
+    <div class="switcher">
+      <div class="panel">
+        <div class="dsearch">🔍 输入关键字筛选文件</div>
+        <div class="dlabel">文件</div>
+        <div class="dlist">
+          <button class="ditem on"><span class="dn">report.html</span><span class="gl">✓</span></button>
+          <button class="ditem"><span class="dn">chart.png</span></button>
+          <button class="ditem"><span class="dn">data.json</span></button>
+        </div>
+      </div>
     </div>
     <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
       <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
@@ -773,7 +813,7 @@ body{
     <tr><th>#</th><th>桌面现状</th><th>移动端形态</th><th>出现于</th></tr>
     <tr><td>M1</td><td>产物是可拖拽的 60/40 分栏（<code>ResizablePanelGroup</code>）</td><td>全屏页 + 底部操作条</td><td>⑤</td></tr>
     <tr><td>M2</td><td>顶部 6 个图标按钮（状态/Token/额度/导出/产物…）</td><td>只留标题，「⋯」溢出菜单</td><td>②</td></tr>
-    <tr><td>M3</td><td>底部一行塞 5 个控件（模式/图片/视频/推理强度/模型）</td><td>主行只留「＋ / 输入 / 发送」，其余进面板</td><td>③</td></tr>
+    <tr><td>M3</td><td>底部一行塞 5 个控件（模式/图片/视频/推理强度/模型）</td><td>输入区底部常驻「模式 / 模型」pill，点击直接切换；其余进「＋」面板</td><td>② ③</td></tr>
     <tr><td>M4</td><td>消息操作 <code>opacity-0 group-hover:</code>，触屏没有 hover</td><td>操作条常驻；列表行改长按菜单</td><td>② ①</td></tr>
     <tr><td>M5</td><td>无 <code>viewport-fit</code>、无安全区变量</td><td><code>env(safe-area-inset-bottom)</code> 用于标签栏/输入区/操作条</td><td>全部</td></tr>
     <tr><td>M6</td><td>输入框 <code>autoFocus</code></td><td>移动端默认不聚焦（否则键盘一进页面遮半屏）</td><td>②</td></tr>
