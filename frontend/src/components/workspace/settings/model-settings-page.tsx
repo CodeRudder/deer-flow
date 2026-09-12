@@ -43,6 +43,7 @@ import type {
   ManagedModelWrite,
   ModelTestResult,
 } from "@/core/models/types";
+import { cn } from "@/lib/utils";
 
 import { SettingsSection } from "./settings-section";
 
@@ -53,7 +54,6 @@ export interface ManagedModelDraft {
   model: string;
   display_name: string;
   api_key: string;
-  api_key_value: string;
 }
 
 export const EMPTY_MODEL_DRAFT: ManagedModelDraft = {
@@ -62,7 +62,6 @@ export const EMPTY_MODEL_DRAFT: ManagedModelDraft = {
   model: "",
   display_name: "",
   api_key: "",
-  api_key_value: "",
 };
 
 /** `name`/`use`/`model` are required; the rest are optional. */
@@ -115,12 +114,37 @@ function carriedOver(original?: ManagedModel): Record<string, unknown> {
 }
 
 /**
+ * Derive the `.env` variable name a typed cleartext gets stored under.
+ *
+ * Uppercased, every non-alphanumeric run collapsed to a single `_`, and
+ * suffixed `_API_KEY` — `doubao-seed-1.8` → `DOUBAO_SEED_1_8_API_KEY`. A leading
+ * digit would make the name unusable in a shell, so it is prefixed with `_`, and
+ * a name with nothing usable left (`模型`) falls back to `MODEL`.
+ *
+ * Names that differ only in punctuation collapse to the same variable — which
+ * is why the UI shows the operator the derived name.
+ */
+export function deriveApiKeyVarName(name: string): string {
+  const normalized = name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const base = normalized || "MODEL";
+  return `${/^[0-9]/.test(base) ? `_${base}` : base}_API_KEY`;
+}
+
+/**
  * Build the wire payload for a save.
  *
- * Masked-key rule: when the user did not retype a key, `api_key` is omitted
- * entirely so the backend keeps the stored secret. `api_key_value` is the
- * write-only cleartext behind a *new* `$VAR` reference, so it is only sent
- * alongside a typed `$VAR` — a literal key carries its own secret.
+ * One key field, three cases — the operator types a credential, never a storage
+ * strategy:
+ *
+ * - blank → both key fields are omitted, so the backend keeps the stored secret;
+ * - `$VAR` → passed through as an environment reference;
+ * - anything else → a literal, stored in `.env` under a name derived from the
+ *   entry and referenced from `config.yaml`. Keeping cleartexts out of the
+ *   config file is the convention the deployment scripts already rely on.
  */
 export function buildManagedModelWrite(
   draft: ManagedModelDraft,
@@ -135,13 +159,37 @@ export function buildManagedModelWrite(
   };
   const apiKey = draft.api_key.trim();
   if (apiKey) {
-    write.api_key = apiKey;
-    const cleartext = draft.api_key_value.trim();
-    if (apiKey.startsWith("$") && cleartext) {
-      write.api_key_value = cleartext;
+    if (apiKey.startsWith("$")) {
+      write.api_key = apiKey;
+    } else {
+      write.api_key = `$${deriveApiKeyVarName(write.name)}`;
+      write.api_key_value = apiKey;
     }
   }
   return write;
+}
+
+/**
+ * Build the probe payload for a stored entry.
+ *
+ * The probe endpoint resolves a `$VAR` reference from the process environment
+ * server-side, so the stored reference is exactly what it needs. A stored
+ * literal only ever reaches the browser as a mask, so an entry whose key is a
+ * literal can only be probed after the operator retypes it into the form.
+ */
+export function buildManagedModelProbe(model: ManagedModel): ManagedModelWrite {
+  const probe: ManagedModelWrite = {
+    ...carriedOver(model),
+    name: model.name,
+    use: model.use,
+    model: model.model,
+    display_name: model.display_name ?? null,
+  };
+  const key = model.api_key;
+  if (typeof key === "string" && key.length > 0) {
+    probe.api_key = key;
+  }
+  return probe;
 }
 
 export function ModelSettingsPage() {
@@ -252,20 +300,10 @@ function ManagedModelList({ models }: { models: ManagedModel[] }) {
 
   const handleTest = (model: ManagedModel) => {
     setTestingName(model.name);
-    // The probe accepts the stored entry as-is; reusing the read shape keeps the
-    // stored secret in play (the backend resolves the masked/`$VAR` reference).
-    const payload = buildManagedModelWrite(
-      {
-        name: model.name,
-        use: model.use,
-        model: model.model,
-        display_name: model.display_name ?? "",
-        api_key: "",
-        api_key_value: "",
-      },
-      model,
-    );
-    testModel(payload, {
+    // The stored entry is the candidate — a `$VAR` reference is resolved from the
+    // server's environment, which is the only way the stored secret can reach a
+    // probe (literals only ever arrive here masked).
+    testModel(buildManagedModelProbe(model), {
       onSuccess: (result) => {
         setTestResults((current) => ({ ...current, [model.name]: result }));
       },
@@ -470,6 +508,21 @@ function ModelFormPanel({
 }) {
   const { t } = useI18n();
   const complete = isManagedModelDraftComplete(draft);
+  const typedKey = draft.api_key.trim();
+
+  // A typed literal is stored in `.env` under a derived name — say which, so the
+  // operator can find their key. A `$VAR` is already named by the operator, and
+  // an untouched field on an existing entry keeps the stored secret.
+  const apiKeyHint = typedKey
+    ? typedKey.startsWith("$")
+      ? undefined
+      : t.settings.models.apiKeyStoredAsHint.replace(
+          "{name}",
+          deriveApiKeyVarName(draft.name),
+        )
+    : maskedKey
+      ? t.settings.models.apiKeyKeepHint
+      : undefined;
 
   const field = (key: keyof ManagedModelDraft) => ({
     value: draft[key],
@@ -512,7 +565,8 @@ function ModelFormPanel({
           />
         </Field>
         <Field
-          hint={maskedKey ? t.settings.models.apiKeyKeepHint : undefined}
+          className="sm:col-span-2"
+          hint={apiKeyHint}
           label={t.settings.models.apiKey}
         >
           <Input
@@ -520,14 +574,6 @@ function ModelFormPanel({
             className="font-mono"
             placeholder={maskedKey ?? t.settings.models.apiKeyPlaceholder}
             {...field("api_key")}
-          />
-        </Field>
-        <Field label={t.settings.models.apiKeyValue}>
-          <Input
-            autoComplete="off"
-            className="font-mono"
-            placeholder={t.settings.models.apiKeyValuePlaceholder}
-            {...field("api_key_value")}
           />
         </Field>
       </div>
@@ -549,16 +595,18 @@ function ModelFormPanel({
 }
 
 function Field({
+  className,
   label,
   hint,
   children,
 }: {
+  className?: string;
   label: string;
   hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
+    <div className={cn("space-y-2", className)}>
       <div className="text-sm font-medium">{label}</div>
       {children}
       {hint && <div className="text-muted-foreground text-xs">{hint}</div>}

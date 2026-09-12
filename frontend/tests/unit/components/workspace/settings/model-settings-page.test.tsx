@@ -7,13 +7,16 @@
  * surfaces as `ModelConfigRequestError.isAdminRequired` — the page must turn
  * that into the "administrator required" copy, never render a raw error stack.
  * That gating branch is the failure-prone piece pinned here; the rest of the
- * suite covers the pure payload helpers (the masked-key rule) and row listing.
+ * suite covers the pure payload helpers (the single-key-field rule, which keeps
+ * cleartexts out of config.yaml) and row listing.
  */
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import {
+  buildManagedModelProbe,
   buildManagedModelWrite,
+  deriveApiKeyVarName,
   EMPTY_MODEL_DRAFT,
   isManagedModelDraftComplete,
   maskedKeyLabel,
@@ -75,8 +78,7 @@ rs.mock("@/core/i18n/hooks", () => ({
           displayNamePlaceholder: "GPT-4o",
           apiKey: "API Key",
           apiKeyPlaceholder: "sk-... 或 $OPENAI_API_KEY",
-          apiKeyValue: "新增 $VAR 的明文",
-          apiKeyValuePlaceholder: "留空以复用已有变量",
+          apiKeyStoredAsHint: "密钥将保存到 .env 的 {name}。",
           apiKeyKeepHint: "留空则保留已保存的密钥。",
           required: "名称、提供方类路径与模型均为必填项。",
           keyNotSet: "未设置",
@@ -209,7 +211,47 @@ describe("isManagedModelDraftComplete", () => {
   });
 });
 
-describe("buildManagedModelWrite (masked-key rule)", () => {
+describe("deriveApiKeyVarName", () => {
+  it("derives an env var name from the entry name", () => {
+    expect(deriveApiKeyVarName("doubao-seed-1.8")).toBe(
+      "DOUBAO_SEED_1_8_API_KEY",
+    );
+    expect(deriveApiKeyVarName("gpt-4o")).toBe("GPT_4O_API_KEY");
+    expect(deriveApiKeyVarName("DeepSeek_V3")).toBe("DEEPSEEK_V3_API_KEY");
+  });
+
+  it("collapses runs of separators instead of repeating underscores", () => {
+    expect(deriveApiKeyVarName("my  model/v2")).toBe("MY_MODEL_V2_API_KEY");
+    expect(deriveApiKeyVarName("--edge--")).toBe("EDGE_API_KEY");
+  });
+
+  it("never starts with a digit", () => {
+    const derived = deriveApiKeyVarName("1.8-model");
+    expect(derived).toBe("_1_8_MODEL_API_KEY");
+    expect(/^[0-9]/.test(derived)).toBe(false);
+  });
+
+  it("falls back to a stable name when nothing usable survives", () => {
+    expect(deriveApiKeyVarName("模型")).toBe("MODEL_API_KEY");
+    expect(deriveApiKeyVarName("   ")).toBe("MODEL_API_KEY");
+  });
+
+  it("only ever yields a POSIX-ish env name", () => {
+    for (const name of [
+      "doubao-seed-1.8",
+      "gpt-4o",
+      "1.8-model",
+      "模型",
+      "my  model/v2",
+      "--edge--",
+      "a.b:c d",
+    ]) {
+      expect(deriveApiKeyVarName(name)).toMatch(/^[A-Z_][A-Z0-9_]*$/);
+    }
+  });
+});
+
+describe("buildManagedModelWrite (single key field)", () => {
   const complete = {
     ...EMPTY_MODEL_DRAFT,
     name: "gpt-4o",
@@ -233,32 +275,67 @@ describe("buildManagedModelWrite (masked-key rule)", () => {
     expect(write).not.toHaveProperty("api_key_value");
   });
 
-  it("sends a typed literal key and no cleartext companion", () => {
-    const write = buildManagedModelWrite({
-      ...complete,
+  it("does not prefill a key when editing an entry with a stored secret", () => {
+    const write = buildManagedModelWrite(complete, {
+      index: 0,
+      name: "gpt-4o",
+      model: "gpt-4o",
+      use: "langchain_openai:ChatOpenAI",
       api_key: "sk-live-1234",
+      api_key_masked: "sk-****1234",
     });
-    expect(write.api_key).toBe("sk-live-1234");
+    expect(write).not.toHaveProperty("api_key");
     expect(write).not.toHaveProperty("api_key_value");
   });
 
-  it("pairs a typed $VAR reference with api_key_value", () => {
+  it("stores a typed literal in .env behind a derived name, never in config.yaml", () => {
+    const write = buildManagedModelWrite({
+      ...complete,
+      name: "doubao-seed-1.8",
+      api_key: "sk-live-1234",
+    });
+    expect(write.api_key).toBe("$DOUBAO_SEED_1_8_API_KEY");
+    expect(write.api_key_value).toBe("sk-live-1234");
+    expect(write.api_key).not.toContain("sk-live-1234");
+  });
+
+  it("derives the name from the edited entry's name", () => {
+    const write = buildManagedModelWrite(
+      { ...complete, name: "renamed-entry", api_key: "sk-live-1234" },
+      {
+        index: 0,
+        name: "gpt-4o",
+        model: "gpt-4o",
+        use: "langchain_openai:ChatOpenAI",
+      },
+    );
+    expect(write.api_key).toBe("$RENAMED_ENTRY_API_KEY");
+  });
+
+  it("passes a typed $VAR reference through untouched, with no cleartext", () => {
     const write = buildManagedModelWrite({
       ...complete,
       api_key: "$BRAND_NEW_KEY",
-      api_key_value: "sk-brand-new",
     });
     expect(write.api_key).toBe("$BRAND_NEW_KEY");
-    expect(write.api_key_value).toBe("sk-brand-new");
+    expect(write).not.toHaveProperty("api_key_value");
   });
 
-  it("does not send api_key_value for a $VAR without a typed secret", () => {
-    const write = buildManagedModelWrite({
-      ...complete,
-      api_key: "$OPENAI_API_KEY",
+  it("keeps provider-specific extras an edit does not expose", () => {
+    const write = buildManagedModelWrite(complete, {
+      index: 2,
+      name: "gpt-4o",
+      model: "gpt-4o",
+      use: "langchain_openai:ChatOpenAI",
+      base_url: "https://example.test/v1",
+      max_tokens: 4096,
+      api_key_masked: true,
     });
-    expect(write.api_key).toBe("$OPENAI_API_KEY");
-    expect(write).not.toHaveProperty("api_key_value");
+    expect(write.base_url).toBe("https://example.test/v1");
+    expect(write.max_tokens).toBe(4096);
+    // Server-owned addressing metadata never round-trips into the file.
+    expect(write).not.toHaveProperty("index");
+    expect(write).not.toHaveProperty("api_key_masked");
   });
 
   it("normalizes a blank display_name to null", () => {
@@ -267,5 +344,37 @@ describe("buildManagedModelWrite (masked-key rule)", () => {
       buildManagedModelWrite({ ...complete, display_name: " GPT-4o " })
         .display_name,
     ).toBe("GPT-4o");
+  });
+});
+
+describe("buildManagedModelProbe", () => {
+  function stored(overrides: Partial<ManagedModel> = {}): ManagedModel {
+    return {
+      index: 0,
+      name: "doubao-seed-1.8",
+      model: "doubao-seed-1.8",
+      use: "langchain_openai:ChatOpenAI",
+      ...overrides,
+    };
+  }
+
+  it("sends a stored $VAR reference so the server resolves it from .env", () => {
+    const probe = buildManagedModelProbe(
+      stored({ api_key: "$DOUBAO_API_KEY", api_key_masked: false }),
+    );
+    expect(probe.api_key).toBe("$DOUBAO_API_KEY");
+    expect(probe).not.toHaveProperty("api_key_value");
+  });
+
+  it("omits the key entirely when the entry stores none", () => {
+    expect(buildManagedModelProbe(stored())).not.toHaveProperty("api_key");
+  });
+
+  it("carries the entry's provider-specific extras into the probe", () => {
+    const probe = buildManagedModelProbe(
+      stored({ base_url: "https://example.test/v1" }),
+    );
+    expect(probe.base_url).toBe("https://example.test/v1");
+    expect(probe).not.toHaveProperty("index");
   });
 });

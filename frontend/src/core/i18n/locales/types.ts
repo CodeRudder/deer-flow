@@ -513,8 +513,7 @@ export interface Translations {
       apiKey: string;
       apiKeyPlaceholder: string;
       apiKeyKeepHint: string;
-      apiKeyValue: string;
-      apiKeyValuePlaceholder: string;
+      apiKeyStoredAsHint: string;
       keyNotSet: string;
       required: string;
     };

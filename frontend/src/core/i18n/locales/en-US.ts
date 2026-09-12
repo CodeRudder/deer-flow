@@ -612,8 +612,8 @@ export const enUS: Translations = {
       apiKey: "API key",
       apiKeyPlaceholder: "sk-... or $OPENAI_API_KEY",
       apiKeyKeepHint: "Leave blank to keep the stored key untouched.",
-      apiKeyValue: "Cleartext for a new $VAR",
-      apiKeyValuePlaceholder: "Only when the API key is a new $VAR",
+      apiKeyStoredAsHint:
+        "The key is saved to .env as {name}; the config file keeps only the reference.",
       keyNotSet: "Not set",
       required: "Name, provider class path, and model ID are required.",
     },
