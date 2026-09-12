@@ -58,5 +58,16 @@ export const config = {
    * (`/m`, so it can never be rewritten twice), and every static file that
    * carries an extension (`/favicon.ico`, `/logo.svg`, `/site.webmanifest`, …).
    */
-  matcher: ["/((?!_next/|api/|mock/|m/|.*\\.[^/]+$).*)"],
+  matcher: [
+    "/((?!_next/|api/|mock/|m/|.*\\.[^/]+$).*)",
+    /**
+     * The mobile artifact viewer is the one route whose last segment is a
+     * *file path*, so its URL routinely ends in an extension
+     * (`…/artifacts/report.html`) and the static-file exclusion above would
+     * skip it — leaving a phone on a desktop 404. It is a route, never a file,
+     * so it is matched back in explicitly. The encoded path is a single
+     * segment (`encodeURIComponent`), which `:path*` accepts.
+     */
+    "/workspace/chats/:thread_id/artifacts/:path*",
+  ],
 };

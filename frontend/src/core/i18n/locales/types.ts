@@ -63,6 +63,22 @@ export interface Translations {
     linkCopied: string;
   };
 
+  // Artifact viewer (mobile full-screen page, prototype ⑤)
+  artifactViewer: {
+    /** Header subtitle, e.g. "3 artifacts". */
+    count: (count: number) => string;
+    /** Code view toggle: long lines wrap onto the next line. */
+    wrapLines: string;
+    /** Code view toggle: long lines scroll horizontally instead. */
+    noWrapLines: string;
+    /** Fallback view for a file the browser cannot display. */
+    downloadOnly: string;
+    /** Shown when the thread or the artifact could not be fetched. */
+    loadFailed: string;
+    /** Screen-reader label of the header back button. */
+    back: string;
+  };
+
   // Input Box
   inputBox: {
     placeholder: string;

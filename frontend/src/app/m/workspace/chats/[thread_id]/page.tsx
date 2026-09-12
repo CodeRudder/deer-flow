@@ -1,17 +1,22 @@
 "use client";
 
 import { ArrowDownIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef } from "react";
 
 import { PromptInputProvider } from "@/components/ai-elements/prompt-input";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { ArtifactsProvider } from "@/components/workspace/artifacts";
+import {
+  ArtifactsProvider,
+  useArtifacts,
+} from "@/components/workspace/artifacts";
 import { useChatPage } from "@/components/workspace/chats";
 import {
   MessageList,
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { artifactHref } from "@/components/workspace/mobile/artifact-navigation";
 import { MobileChatHeader } from "@/components/workspace/mobile/chat-header";
 import { MobileComposer } from "@/components/workspace/mobile/composer";
 import { useScrollToBottom } from "@/components/workspace/mobile/use-scroll-to-bottom";
@@ -33,12 +38,68 @@ import "@/components/workspace/mobile/chat-surface.css";
  * keyboard would cover half the transcript the moment the page opens.
  */
 export default function MobileChatPage() {
+  const params = useParams<{ thread_id: string }>();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const threadId = params.thread_id;
+  const isMock = searchParams.get("mock") === "true";
+
+  /**
+   * Artifacts are a route on a phone, not a panel: the transcript's
+   * `write_file` steps and the desktop header's `ArtifactTrigger` both ask the
+   * artifacts context to "open" a selection, and there is nothing here to open
+   * — so those two moments become a navigation (T6).
+   *
+   * `select()` and `setOpen(true)` arrive as a pair from `message-group.tsx`
+   * (`select(url); setOpen(true)`), so the second call is deduped against the
+   * first; one tap must not push twice. The ref dies with this page when the
+   * artifact route takes over, so returning to the chat and re-opening the same
+   * artifact still works.
+   */
+  const pushedRef = useRef<string | null>(null);
+  const selectedRef = useRef<string | null>(null);
+  const openArtifact = useCallback(
+    (artifact: string) => {
+      // A brand-new chat has no thread to read the artifact from, and nothing
+      // can have selected an artifact in one.
+      if (!threadId || threadId === "new") {
+        return;
+      }
+      const href = artifactHref(threadId, artifact, { isMock });
+      if (pushedRef.current === href) {
+        return;
+      }
+      pushedRef.current = href;
+      router.push(href);
+    },
+    [isMock, router, threadId],
+  );
+  const handleArtifactSelect = useCallback(
+    (artifact: string) => {
+      selectedRef.current = artifact;
+      openArtifact(artifact);
+    },
+    [openArtifact],
+  );
+  const handleArtifactsOpenChange = useCallback(
+    (open: boolean) => {
+      const artifact = selectedRef.current;
+      if (open && artifact) {
+        openArtifact(artifact);
+      }
+    },
+    [openArtifact],
+  );
+
   // The providers have to sit *above* `useChatPage()`: the hook calls
   // `useSpecificChatMode()`, which reads the prompt-input controller.
   return (
     <SubtasksProvider>
       <SidebarProvider className="h-full min-h-0 flex-col">
-        <ArtifactsProvider>
+        <ArtifactsProvider
+          onSelect={handleArtifactSelect}
+          onOpenChange={handleArtifactsOpenChange}
+        >
           <PromptInputProvider>
             <MobileChatScreen />
           </PromptInputProvider>
@@ -46,6 +107,26 @@ export default function MobileChatPage() {
       </SidebarProvider>
     </SubtasksProvider>
   );
+}
+
+/**
+ * Publishes the thread's artifact list to the artifacts context.
+ *
+ * The desktop does this in `ChatBox`, which the mobile tree does not render —
+ * without it `useArtifacts().artifacts` stays empty, so the header's 产物 row
+ * (`ArtifactTrigger`'s `artifacts.length > 0` gate) would never appear and a
+ * `write-file:` detail would have no list to switch between.
+ */
+function ThreadArtifacts({ artifacts }: { artifacts: unknown }) {
+  const { setArtifacts } = useArtifacts();
+
+  useEffect(() => {
+    if (Array.isArray(artifacts)) {
+      setArtifacts(artifacts as string[]);
+    }
+  }, [artifacts, setArtifacts]);
+
+  return null;
 }
 
 /**
@@ -106,6 +187,7 @@ function MobileChatScreen() {
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
+      <ThreadArtifacts artifacts={thread.values.artifacts} />
       <div className="mobile-chat-surface flex h-full min-h-0 flex-col">
         <MobileChatHeader
           title={title}

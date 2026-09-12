@@ -78,6 +78,18 @@ export const enUS: Translations = {
     linkCopied: "Link copied to clipboard",
   },
 
+  // Artifact viewer (mobile full-screen page, prototype ⑤)
+  artifactViewer: {
+    count: (count: number) =>
+      count === 1 ? "1 artifact" : `${count} artifacts`,
+    wrapLines: "Wrap lines",
+    noWrapLines: "No wrap",
+    downloadOnly:
+      "This file type cannot be previewed in the browser. Download it to open it.",
+    loadFailed: "This artifact could not be loaded.",
+    back: "Back to chat",
+  },
+
   // Input Box
   inputBox: {
     placeholder: "How can I assist you today?",

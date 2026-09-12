@@ -1,0 +1,33 @@
+/*
+ * Touch fixes for the artifact screen's reused renderers.
+ *
+ * `ImageLightbox` is the desktop's lightbox: its overlay buttons are 32px
+ * (`size-8`) and its zoom stage is `touch-action: none`, which is right for a
+ * mouse (wheel zoom, drag pan) and wrong for a phone (no 44px target, no
+ * pinch). It is a shared component, so neither can be fixed by editing it.
+ *
+ * It is also rendered through `createPortal` onto `document.body`, which takes
+ * it out of this screen's subtree — a wrapper class here cannot reach it. So
+ * the page marks the body for exactly as long as the lightbox is open
+ * (`artifact-surface.css` is imported by that page only, and the desktop never
+ * sets the marker), and the two rules below live inside that window.
+ *
+ * `min-width`/`min-height` beat the component's fixed `size-8` without
+ * touching it, the same technique `chat-surface.css` uses on the shared sheet
+ * close button.
+ */
+.mobile-artifact-lightbox-open [role="dialog"][aria-modal="true"] button,
+.mobile-artifact-lightbox-open [role="dialog"][aria-modal="true"] a {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+/*
+ * `touch-action: none` on the zoom stage blocks the browser's pinch gesture.
+ * Restoring `pinch-zoom` is what gives the lightbox a two-finger zoom on a
+ * phone; drag-to-pan still arrives through the component's own pointer
+ * handlers, because `pinch-zoom` alone does not enable single-finger panning.
+ */
+.mobile-artifact-lightbox-open [role="dialog"] [class*="touch-none"] {
+  touch-action: pinch-zoom;
+}

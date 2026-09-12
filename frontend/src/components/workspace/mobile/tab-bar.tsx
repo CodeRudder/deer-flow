@@ -67,10 +67,25 @@ export function isTabActive(pathname: string, href: string): boolean {
  */
 const TAB_BAR_HIDDEN_PREFIXES = ["/login", "/setup", "/auth/callback"] as const;
 
+/**
+ * The full-screen artifact view (T6), which owns the bottom edge instead.
+ *
+ * Prototype ⑤ is a full-bleed screen with one action bar at the bottom; a tab
+ * bar under it would stack two bars and split the safe-area inset between
+ * them. It is matched by shape rather than by prefix because the thread id
+ * sits in the middle — a `startsWith("/workspace/chats")` would take the chat
+ * screen's bar away too.
+ */
+const TAB_BAR_HIDDEN_PATTERN =
+  /^\/m\/workspace\/chats\/[^/]+\/artifacts(?:\/|$)/;
+
 export function shouldHideMobileTabBar(pathname: string): boolean {
   // Normalize both sides: `pathname` may arrive either pre- or post-rewrite,
   // while the prefixes are written as the public paths a developer recognises.
   const normalized = normalizeMobilePathname(pathname);
+  if (TAB_BAR_HIDDEN_PATTERN.test(normalized)) {
+    return true;
+  }
   return TAB_BAR_HIDDEN_PREFIXES.some((prefix) => {
     const mobilePrefix = normalizeMobilePathname(prefix);
     return (

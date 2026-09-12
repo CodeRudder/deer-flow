@@ -78,6 +78,16 @@ export const zhCN: Translations = {
     linkCopied: "链接已复制到剪贴板",
   },
 
+  // Artifact viewer (mobile full-screen page, prototype ⑤)
+  artifactViewer: {
+    count: (count: number) => `${count} 个产物`,
+    wrapLines: "自动换行",
+    noWrapLines: "不换行",
+    downloadOnly: "该文件类型无法在浏览器中预览，请下载后查看。",
+    loadFailed: "产物加载失败。",
+    back: "返回对话",
+  },
+
   // Input Box
   inputBox: {
     placeholder: "今天我能为你做些什么？",

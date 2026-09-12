@@ -2,7 +2,7 @@
 
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeftIcon, FilesIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -13,6 +13,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useArtifacts } from "@/components/workspace/artifacts";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { QuotaIndicator } from "@/components/workspace/quota-indicator";
 import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
@@ -75,6 +76,11 @@ export function MobileChatHeader({
 }: MobileChatHeaderProps) {
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
+  // The thread's artifacts, published by the chat page (the desktop does the
+  // same from `ChatBox`). `ArtifactTrigger` — the desktop header's entry point
+  // — is gated on exactly this: an empty list means there is nothing to open,
+  // so the row would be an empty tap target.
+  const { artifacts, select: selectArtifact } = useArtifacts();
   // `QuotaIndicator` renders nothing at all without a quota payload, which
   // would leave a labelled row with nothing to tap. This is the same hook the
   // indicator uses (same query key, so no extra request) and the same
@@ -137,6 +143,33 @@ export function MobileChatHeader({
             <SheetTitle className="text-base">{t.common.more}</SheetTitle>
           </SheetHeader>
           <div className="flex flex-col gap-1 px-2">
+            {/* 产物 (T6). The desktop header renders `ArtifactTrigger` next to
+                the other header tools; here it is one more row, and choosing
+                it navigates to the full-screen artifact screen — there is no
+                panel to open. The row opens the first artifact; the screen
+                itself carries the tab strip for the rest. */}
+            {artifacts.length > 0 && (
+              <button
+                type="button"
+                data-testid="mobile-chat-artifacts"
+                onClick={() => {
+                  setMenuOpen(false);
+                  selectArtifact(artifacts[0]!);
+                }}
+                className="active:bg-accent flex min-h-12 w-full items-center gap-3 rounded-md px-3 text-base"
+              >
+                <FilesIcon
+                  aria-hidden="true"
+                  className="text-muted-foreground size-4 shrink-0"
+                />
+                <span className="min-w-0 flex-1 text-left">
+                  {t.common.artifacts}
+                </span>
+                <span className="text-muted-foreground text-sm">
+                  {artifacts.length}
+                </span>
+              </button>
+            )}
             {showSessionStatus && (
               <div
                 className={`flex min-h-12 items-center justify-between gap-3 px-3 ${CONTROL_ROW_CLASS}`}

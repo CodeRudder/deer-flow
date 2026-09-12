@@ -13,6 +13,10 @@ import {
 // functions above ignore both.
 const mockPathname = rs.hoisted(() => ({ current: "/m/workspace" }));
 
+const THREAD_ID = "00000000-0000-0000-0000-000000000001";
+/** An artifact identifier is one percent-encoded segment (`artifactHref`). */
+const ENCODED_ARTIFACT = "%2Fmnt%2Fuser-data%2Foutputs%2Freport.html";
+
 rs.mock("next/navigation", () => ({
   usePathname: () => mockPathname.current,
 }));
@@ -104,6 +108,33 @@ describe("shouldHideMobileTabBar", () => {
   test("does not hide on a path that merely shares a prefix", () => {
     expect(shouldHideMobileTabBar("/m/loginfo")).toBe(false);
     expect(shouldHideMobileTabBar("/m/setup-wizard")).toBe(false);
+  });
+
+  test("hides it on the full-screen artifact view (T6)", () => {
+    // The artifact screen owns the bottom edge: it has an action bar and
+    // carries the safe-area inset, so a tab bar underneath would stack two
+    // bars (prototype ⑤ has none).
+    expect(
+      shouldHideMobileTabBar(
+        `/m/workspace/chats/${THREAD_ID}/artifacts/${ENCODED_ARTIFACT}`,
+      ),
+    ).toBe(true);
+    // The same screen on the pre-rewrite path `usePathname()` reports.
+    expect(
+      shouldHideMobileTabBar(
+        `/workspace/chats/${THREAD_ID}/artifacts/${ENCODED_ARTIFACT}`,
+      ),
+    ).toBe(true);
+  });
+
+  test("still keeps the bar on the chat screen and the thread list", () => {
+    // The pattern matches the artifact segment only — a `startsWith` on the
+    // chat path would take the chat screen's bar away with it.
+    expect(shouldHideMobileTabBar(`/m/workspace/chats/${THREAD_ID}`)).toBe(
+      false,
+    );
+    expect(shouldHideMobileTabBar("/m/workspace/chats/new")).toBe(false);
+    expect(shouldHideMobileTabBar("/m/workspace")).toBe(false);
   });
 });
 
