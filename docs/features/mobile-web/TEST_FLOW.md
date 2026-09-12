@@ -165,19 +165,49 @@ HTTP 请求之前**返回一个合成的已登录用户。于是：
 | G8 | 流式进行中的状态零覆盖 | 逐字增长 / 停止按钮 / 回到底部浮标 / 自动跟随，一个都没测 | 现有 `/runs/stream` mock 把回复**一次性**放在单个 `values` 事件里，所以只证明了「发出去能渲染」，证明不了任何中途状态 |
 | G9 | 会话内容页是缩小的桌面页 | C6 折叠工具步骤、C10 横向 chip、表格/代码块移动端处理均未实现 | 见 `FEATURE_LIST.md` C6/C10。`chat.spec.ts:182`（长 markdown 横向溢出）就是这条的既有红灯 |
 
-### G7 详解：发送失败丢输入
+### G7 详解：发送失败丢输入（根因已修正）
 
-`src/components/workspace/chats/use-chat-page.ts:166-173` 的 `handleSubmit`
-在**无附件**路径里 `void sendPromise` 后返回 `undefined`；而
-`src/components/ai-elements/prompt-input.tsx:822-826` 把「返回值不是 promise」
-判定为同步成功，立刻调用 `clearSubmittedState()`，从而绕过了它自己的错误分支
-（`// Don't clear on error - user may want to retry`）。有附件时返回的是 promise，
-所以两条路径行为还不一致。
+> **勘误**：本节初稿把根因写成「`handleSubmit` 无附件路径返回 `undefined`，
+> 被 `prompt-input.tsx` 当成同步成功」。**这是错的**，T11 实测推翻了它：
+> 照着改完，bug 依旧 100% 复现。以下是插桩后的真实结论。
 
-实测：把 `/runs/stream` mock 成 500，点发送后 **100ms 内**输入框就从 `"Hello"`
-变成 `""`，而此时请求还在飞；错误 toast 要等 SDK 重试预算走完、
-**约 22 秒**后才出现。`sendMessage` 本身是 `throw error` 的，所以是页面层把
-promise 吞掉了。
+`langgraph-sdk` 的 `StreamManager.start` 是 **fire-and-forget**：
+
+```js
+// node_modules/@langchain/langgraph-sdk/dist/ui/manager.js:291
+start = async (action, options) => {
+  this.queueSize += 1;
+  this.queue = this.queue.then(() => this.enqueue(...));   // 只入队
+};
+```
+
+`submit` await 的是这个**入队**动作，所以 `sendMessage` 在 `/runs/stream`
+请求**发出之前**就已经 resolve —— **有附件时也一样**。于是：
+
+- 失败的 run 永远无法 reject 那个 promise；
+- `prompt-input.tsx` 自己的错误分支（`// Don't clear on error`）对 **run 失败
+  根本不可达**；
+- 原判断「promise vs void 两条路径不一致」只对**上传失败**成立，与本次现象无关。
+
+实测时间线（`/runs/stream` mock 成 500）：
+
+```
+handleSubmit 返回 promise = true
+promise 在 t+0 就 RESOLVED
+/stream 请求在 promise 之后 41ms 才发出     ← 关键
+t+77ms   输入框空（clearSubmittedState）
+t+23.2s  错误 toast 出现
+```
+
+**已修**（`use-chat-page.ts`）：暂存已提交文本，等 `thread.error` 出现时写回，
+且**绝不覆盖**用户之后新输入的内容。同时让 `handleSubmit` 两条路径都返回 promise，
+以修复上传失败路径的不一致。
+
+**遗留不足（诚实记录）**：输入框仍在 77ms 时被清空，**23 秒后**才把文字还回来 ——
+是「消失一下再回来」，不是「从头到尾不丢」。要真正做到不丢，只能改
+`prompt-input.tsx`（`ai-elements/**` 是注册表生成物，禁止手改），或者把清空
+推迟到「run 确认已开始」—— 但没有 per-run 的 started 信号（`onStart` 每个 thread
+只触发一次），推迟会导致第 2 条消息起输入框永不清空，那个回归更糟。
 
 ### 流式测试的技术前提（G8）
 

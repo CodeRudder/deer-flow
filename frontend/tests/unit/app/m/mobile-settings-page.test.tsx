@@ -152,18 +152,21 @@ describe("Mobile settings page", () => {
 
     const [call] = callsTo("/change-password");
     expect(call?.init?.method).toBe("POST");
-    expect(JSON.parse(String(call?.init?.body))).toEqual({
-      current_password: "old-password",
-      new_password: "new-password-1",
-    });
+    expect(call?.init?.body).toBe(
+      JSON.stringify({
+        current_password: "old-password",
+        new_password: "new-password-1",
+      }),
+    );
     // Same endpoint and CSRF header the desktop sends.
     expect(call?.url).toBe("/api/v1/auth/change-password");
-    expect(
-      (call?.init?.headers as Record<string, string>)?.["Content-Type"],
-    ).toBe("application/json");
+    expect(call?.init?.headers?.["Content-Type"]).toBe("application/json");
 
+    // Typed through the query's own generic rather than an `as` cast: the cast
+    // is required by TS (`getByLabelText` is `HTMLElement`) but rejected by
+    // `no-unnecessary-type-assertion`.
     const valueOf = (label: string) =>
-      (screen.getByLabelText(label) as HTMLInputElement).value;
+      screen.getByLabelText<HTMLInputElement>(label).value;
     expect(valueOf("Current password")).toBe("");
     expect(valueOf("New password")).toBe("");
     expect(valueOf("Confirm new password")).toBe("");

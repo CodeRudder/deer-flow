@@ -11,7 +11,10 @@ import {
   type RefObject,
 } from "react";
 
-import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import {
+  usePromptInputController,
+  type PromptInputMessage,
+} from "@/components/ai-elements/prompt-input";
 import {
   type HumanInputRequest,
   type HumanInputResponse,
@@ -100,6 +103,30 @@ export function useChatPage({
 
   const { showNotification } = useNotification();
 
+  // The composer's text lives in the prompt-input controller, and the primitive
+  // clears it as soon as the promise `handleSubmit` returns resolves. Keeping
+  // the controller in a ref lets the error effect below write back to it
+  // without re-subscribing on every keystroke (the controller object is rebuilt
+  // whenever the input changes).
+  const promptTextInput = usePromptInputController().textInput;
+  const promptTextInputRef = useRef(promptTextInput);
+  promptTextInputRef.current = promptTextInput;
+
+  /**
+   * Text of the message the composer last submitted, handed back if its run
+   * fails.
+   *
+   * Why this is needed at all: the prompt primitive treats the submit promise
+   * resolving as success and clears the composer, and the LangGraph SDK
+   * resolves that promise as soon as the run is *enqueued*
+   * (`StreamManager.start` is fire-and-forget — it chains onto an internal
+   * queue and returns). A run that fails later therefore cannot reject it, so
+   * `prompt-input.tsx`'s own error branch never runs and a failed send is
+   * indistinguishable from a successful one at the composer. Keeping the text
+   * here is what makes the failure recoverable.
+   */
+  const submittedTextRef = useRef<string | null>(null);
+
   const {
     thread,
     pendingUsageMessages,
@@ -173,15 +200,46 @@ export function useChatPage({
   ]);
 
   const handleSubmit = useCallback(
+    // Always hand the send promise back to the prompt primitive. It treats a
+    // non-promise return as synchronous success and clears the composer
+    // (`prompt-input.tsx`'s `clearSubmittedState`), so returning `undefined` on
+    // the no-attachment path made the two paths disagree — an upload failure
+    // kept the message, a plain send did not. Returning it keeps that
+    // consistency (and lets the primitive handle a rejection instead of
+    // leaving it unhandled).
+    //
+    // It is not sufficient on its own: see `submittedTextRef` — the SDK
+    // resolves this promise before the run even starts, so the failure path
+    // additionally has to hand the text back.
     (message: PromptInputMessage) => {
-      const sendPromise = sendMessage(threadId, message);
-      if (message.files.length > 0) {
-        return sendPromise;
-      }
-      void sendPromise;
+      submittedTextRef.current = message.text.trim() ? message.text : null;
+      return sendMessage(threadId, message);
     },
     [sendMessage, threadId],
   );
+
+  // A failed run cannot reject the submit promise (see `submittedTextRef`), so
+  // the composer is told about the failure here instead: the run's error state
+  // is the one place the send pipeline reports it. The text is put back only
+  // when the composer is still empty — never over something the user has typed
+  // since.
+  const threadError = thread.error;
+  useEffect(() => {
+    if (!threadError) {
+      return;
+    }
+    const text = submittedTextRef.current;
+    submittedTextRef.current = null;
+    if (!text || !mountedRef.current) {
+      return;
+    }
+    const input = promptTextInputRef.current;
+    if (input.value.trim()) {
+      return;
+    }
+    input.setInput(text);
+  }, [threadError]);
+
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);

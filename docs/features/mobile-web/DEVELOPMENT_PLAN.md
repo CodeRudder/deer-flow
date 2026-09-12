@@ -363,20 +363,27 @@ T5/T6 复查时发现 T1 的切分有误（见 §1.1.1），此任务纠正它�
 
 ---
 
-### T11 · 修复「发送失败丢掉已输入内容」（G7，先红后绿）
+### T11 · 修复「发送失败丢掉已输入内容」（G7，先红后绿）✅ 已完成
 
 | 项 | 内容 |
 |---|---|
-| 先写 | 复现用例：`/runs/stream` 返回 500 → 断言输入框**仍保留**用户输入 |
-| 再修 | `chats/use-chat-page.ts:166-173` `handleSubmit` 无附件路径返回值不一致 |
-| 回归 | 桌面端同源，必须跑全量 E2E 确认失败集合不扩大 |
+| 先写 | `tests/e2e/mobile-compose-failure.spec.ts` — `/runs/stream` 500 → 断言输入框仍保留用户输入（先红） |
+| 再修 | `chats/use-chat-page.ts` — 暂存已提交文本 + `thread.error` 出现时写回；两条路径都返回 promise |
 
-**根因**：无附件路径 `void sendPromise` 后返回 `undefined`，而
-`prompt-input.tsx:822` 把非 promise 返回判定为同步成功并 `clearSubmittedState()`，
-绕过了它自己的「失败时不要清空」分支。有附件路径返回 promise，两条路径行为不一致。
+**根因（初稿写错，已勘误）**：不是「返回值 promise/undefined 不一致」。真正的
+原因是 `langgraph-sdk` 的 `StreamManager.start` 是 fire-and-forget
+（`manager.js:291` 只把任务入队），所以 `sendMessage` 在 `/runs/stream` 请求发出
+**之前**就 resolve了 —— 有附件时也一样。失败的 run 无法 reject 该 promise，
+`prompt-input.tsx` 的错误分支对 run 失败**不可达**。详见 `TEST_FLOW.md` G7 详解。
 
-**验收**：失败后输入框内容仍在，且错误提示及时出现（不再等 SDK 22 秒重试预算）；
-有附件路径行为不变。
+**已达成**：失败后文字会被交还给输入框；上传失败路径也一致了；
+全量 E2E 111 passed（基线 110，+1 为本任务新增）。
+
+**未达成（诚实记录）**：错误提示**仍要 23 秒**才出现（SDK 自己重试 5 次，页面层
+够不着），且输入框是「先清空、23 秒后再填回」而非从头到尾不丢。要彻底解决需改
+`ai-elements/prompt-input.tsx`（禁止）或引入 per-run started 信号（当前没有，
+`onStart` 每 thread 只触发一次），代价是第 2 条消息起输入框不再清空 —— 已判定
+该回归更糟，因此保留现状。**若后续要根治，需先解决 started 信号。**
 
 ---
 
