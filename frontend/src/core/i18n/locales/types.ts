@@ -85,6 +85,8 @@ export interface Translations {
     switchFile: (current: string) => string;
     /** Placeholder of the file picker's search box. */
     searchFiles: string;
+    /** Re-fetches the artifact's bytes (prototype ⑤'s action bar). */
+    refresh: string;
   };
 
   // Input Box
@@ -310,6 +312,12 @@ export interface Translations {
     // status title, so it is spelled out here for both trees.
     sessionStatus: string;
     scrollToBottom: string;
+    /**
+     * Row state of a thread with a run in flight (prototype ①'s「● 生成中」).
+     * The mobile list's second core scenario is "see the progress at a
+     * glance", so a running thread must not look like a finished one.
+     */
+    generating: string;
   };
 
   // Channels
@@ -366,6 +374,19 @@ export interface Translations {
     clickToViewContent: string;
     writeTodos: string;
     skillInstallTooltip: string;
+    /**
+     * Reasoning trigger. `ReasoningTrigger` ships hardcoded English
+     * ("Thinking...", "Thought for 12s") and only exposes it through an
+     * injectable `getThinkingMessage`, so the localized wording has to come
+     * from the caller. These live here rather than in a mobile-only section
+     * because the hardcoded English is wrong on the desktop too.
+     */
+    thinking: string;
+    thoughtFor: (duration: string) => string;
+    thoughtBriefly: string;
+    /** Duration formatter for the two above; units are not universal. */
+    durationSeconds: (seconds: number) => string;
+    durationMinutes: (minutes: number, seconds: number) => string;
   };
 
   // Human Input (clarification cards)

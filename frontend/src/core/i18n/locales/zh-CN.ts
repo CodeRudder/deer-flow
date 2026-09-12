@@ -89,6 +89,7 @@ export const zhCN: Translations = {
     back: "返回对话",
     switchFile: (current: string) => `切换文件（当前：${current}）`,
     searchFiles: "输入关键字筛选文件",
+    refresh: "刷新",
   },
 
   // Input Box
@@ -344,6 +345,7 @@ export const zhCN: Translations = {
     // 移动端对话页（原型 ②）：头部「⋯」菜单与「回到底部」按钮。
     sessionStatus: "会话状态",
     scrollToBottom: "回到底部",
+    generating: "生成中",
   },
 
   // Channels
@@ -409,6 +411,12 @@ export const zhCN: Translations = {
     clickToViewContent: "点击查看文件内容",
     writeTodos: "更新 To-do 列表",
     skillInstallTooltip: "安装技能并使其可在 DeerFlow 中使用",
+    thinking: "思考中…",
+    thoughtFor: (duration: string) => `思考了 ${duration}`,
+    thoughtBriefly: "思考了几秒",
+    durationSeconds: (seconds: number) => `${seconds} 秒`,
+    durationMinutes: (minutes: number, seconds: number) =>
+      `${minutes} 分 ${seconds} 秒`,
   },
 
   humanInput: {

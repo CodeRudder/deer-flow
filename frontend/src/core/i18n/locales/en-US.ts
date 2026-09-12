@@ -91,6 +91,7 @@ export const enUS: Translations = {
     back: "Back to chat",
     switchFile: (current: string) => `Switch file (currently ${current})`,
     searchFiles: "Filter files by name",
+    refresh: "Refresh",
   },
 
   // Input Box
@@ -363,6 +364,7 @@ export const enUS: Translations = {
     // "back to bottom" affordance.
     sessionStatus: "Session status",
     scrollToBottom: "Back to bottom",
+    generating: "Generating",
   },
 
   // Channels
@@ -430,6 +432,12 @@ export const enUS: Translations = {
     clickToViewContent: "Click to view file content",
     writeTodos: "Update to-do list",
     skillInstallTooltip: "Install skill and make it available to DeerFlow",
+    thinking: "Thinking…",
+    thoughtFor: (duration: string) => `Thought for ${duration}`,
+    thoughtBriefly: "Thought for a few seconds",
+    durationSeconds: (seconds: number) => `${seconds}s`,
+    durationMinutes: (minutes: number, seconds: number) =>
+      `${minutes}m ${seconds}s`,
   },
 
   // Subtasks
