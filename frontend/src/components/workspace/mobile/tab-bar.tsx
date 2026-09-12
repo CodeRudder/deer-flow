@@ -10,11 +10,19 @@ import { cn } from "@/lib/utils";
 /**
  * Root screens of the mobile shell (prototype ①⑥⑦). Every other screen is
  * reached from one of these, so the bar carries exactly three entries.
+ *
+ * The hrefs are the **public** paths, not the `/m/*` ones. `<Link>` pushes its
+ * href straight into the address bar and no middleware runs for a client-side
+ * push of an already-`/m/` path (the matcher skips that prefix), so linking to
+ * `/m/workspace` would write the internal prefix into the URL the user sees,
+ * bookmarks and shares — verified in a real browser. Plan §1.2.1: the address
+ * bar must never show `/m/`. Linking to the public path lets the middleware
+ * re-land a phone on the mobile tree without the prefix ever surfacing.
  */
 const TABS = [
-  { href: "/m/workspace", icon: MessageSquareIcon, key: "chats" },
-  { href: "/m/agents", icon: BotIcon, key: "agents" },
-  { href: "/m/settings", icon: SettingsIcon, key: "settings" },
+  { href: "/workspace", icon: MessageSquareIcon, key: "chats" },
+  { href: "/agents", icon: BotIcon, key: "agents" },
+  { href: "/settings", icon: SettingsIcon, key: "settings" },
 ] as const;
 
 /**
@@ -32,10 +40,16 @@ export function normalizeMobilePathname(pathname: string): string {
   return `/m${pathname}`;
 }
 
-/** A tab stays lit on its descendants, so drilling in does not blank the bar. */
+/**
+ * A tab stays lit on its descendants, so drilling in does not blank the bar.
+ *
+ * Both sides are normalized: `pathname` arrives either pre- or post-rewrite,
+ * and `href` is the public path by design (see `TABS`).
+ */
 export function isTabActive(pathname: string, href: string): boolean {
   const normalized = normalizeMobilePathname(pathname);
-  return normalized === href || normalized.startsWith(`${href}/`);
+  const target = normalizeMobilePathname(href);
+  return normalized === target || normalized.startsWith(`${target}/`);
 }
 
 /**
@@ -46,6 +60,10 @@ export function isTabActive(pathname: string, href: string): boolean {
  * workspace yet — and on a 390px column the bar would eat ~56px of a form that
  * already has to clear the software keyboard. The shared auth layout takes over
  * the bottom safe-area inset it would otherwise carry.
+ *
+ * The chat screen (T5) keeps the bar on purpose — `shouldHideMobileTabBar` is
+ * pinned by `tests/unit/.../tab-bar.test.ts` as "the bar stays on workspace
+ * screens" — so the composer sits above it rather than replacing it.
  */
 const TAB_BAR_HIDDEN_PREFIXES = ["/login", "/setup", "/auth/callback"] as const;
 

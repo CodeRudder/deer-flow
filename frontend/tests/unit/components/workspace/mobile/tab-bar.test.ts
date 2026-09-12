@@ -47,25 +47,35 @@ describe("normalizeMobilePathname", () => {
 });
 
 describe("isTabActive", () => {
+  // The bar links to public paths (see TABS), so these are the real call
+  // shapes: a post-rewrite `usePathname()` on one side, a public href on the
+  // other.
   test("lights the tab whose root screen is showing", () => {
-    expect(isTabActive("/m/workspace", "/m/workspace")).toBe(true);
-    expect(isTabActive("/m/agents", "/m/agents")).toBe(true);
-    expect(isTabActive("/m/settings", "/m/settings")).toBe(true);
+    expect(isTabActive("/m/workspace", "/workspace")).toBe(true);
+    expect(isTabActive("/m/agents", "/agents")).toBe(true);
+    expect(isTabActive("/m/settings", "/settings")).toBe(true);
   });
 
   test("stays lit on descendants", () => {
-    expect(isTabActive("/m/workspace/chats/abc", "/m/workspace")).toBe(true);
+    expect(isTabActive("/m/workspace/chats/abc", "/workspace")).toBe(true);
+    expect(isTabActive("/workspace/chats/abc", "/workspace")).toBe(true);
   });
 
   test("does not light a sibling tab, nor a path that merely shares the prefix", () => {
-    expect(isTabActive("/m/settings", "/m/workspace")).toBe(false);
-    expect(isTabActive("/m/agentsx", "/m/agents")).toBe(false);
+    expect(isTabActive("/m/settings", "/workspace")).toBe(false);
+    expect(isTabActive("/m/agentsx", "/agents")).toBe(false);
+    expect(isTabActive("/m/loginfo", "/login")).toBe(false);
   });
 
   test("works on the pre-rewrite path a rewritten entry reports", () => {
-    expect(isTabActive("/workspace/chats/abc", "/m/workspace")).toBe(true);
-    expect(isTabActive("/settings", "/m/settings")).toBe(true);
-    expect(isTabActive("/workspace/chats/abc", "/m/agents")).toBe(false);
+    expect(isTabActive("/workspace/chats/abc", "/workspace")).toBe(true);
+    expect(isTabActive("/settings", "/settings")).toBe(true);
+    expect(isTabActive("/workspace/chats/abc", "/agents")).toBe(false);
+  });
+
+  test("still accepts an /m/ href, in case one is ever linked directly", () => {
+    expect(isTabActive("/m/workspace", "/m/workspace")).toBe(true);
+    expect(isTabActive("/m/workspace/chats/abc", "/m/workspace")).toBe(true);
   });
 });
 
@@ -115,6 +125,21 @@ describe("MobileTabBar rendering", () => {
     expect(
       screen.getByRole("link", { name: "Chats" }).getAttribute("aria-current"),
     ).toBe("page");
+  });
+
+  test("links to public paths so /m/ never reaches the address bar", () => {
+    mockPathname.current = "/m/workspace";
+    render(createElement(MobileTabBar));
+
+    // A `<Link>` push of an `/m/` path skips the middleware matcher (it
+    // excludes that prefix), so the internal path would land in the URL bar.
+    const hrefs = screen
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href"));
+    expect(hrefs).toEqual(["/workspace", "/agents", "/settings"]);
+    for (const href of hrefs) {
+      expect(href?.startsWith("/m/")).toBe(false);
+    }
   });
 
   test("renders nothing on the signed-out screens", () => {

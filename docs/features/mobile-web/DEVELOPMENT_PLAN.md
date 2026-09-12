@@ -232,7 +232,9 @@ useModels / useI18n / useRouter ...
 |---|---|
 | 新增 | `tests/e2e/mobile-*.spec.ts` — 用 `devices['iPhone 13']` 预设 |
 | 新增 | `tests/unit/lib/device.test.ts` 等纯函数单测 |
-| 回归 | 桌面 E2E 失败集合不扩大（基线 58 passed / 9 failed，见 §3.1） |
+| 回归 | 桌面 E2E 失败集合不扩大（失败集合恒为 §3.1 的 9 个，总数随移动端 spec 增长） |
+
+单测命令是 `pnpm test`（Rstest），**不是** `pnpm exec vitest run` —— 见 §3.1 的说明。
 
 移动端 E2E 沿用现有做法（`page.route()` 拦截后端），**不依赖真实服务**：
 
@@ -249,6 +251,17 @@ useModels / useI18n / useRouter ...
 
 当前分支 `feat/mobile-web` 起点的 E2E 实测为 **58 passed / 9 failed**。
 **这 9 个是既有失败，不是移动端改动造成的**，已用「收起全部改动再跑」独立验证。
+
+移动端 spec 落地后总数增长（T3 后 76/9，T5 后 87/9），**失败集合始终是下面这 9 个**。
+
+> **测试命令**：单测用 **`pnpm test`**（Rstest）。`pnpm exec vitest run` 在本仓库
+> 是错的 —— 用例按 Rstest API 编写，vitest 下 86 个文件里 80 个直接报
+> `Rstest API 'describe' is not registered yet`；`package.json` 里 vitest 已降级为
+> 陈旧的 `test:legacy`。
+>
+> **E2E 不要跑在 `pnpm dev` 上**：Turbopack 按需编译会让首个 spec 大面积超时
+> （实测 5/11 超时、整轮 12.3 分钟），同一份代码在生产构建下 32 秒通过。
+> 本地验证用 `pnpm build && pnpm start`，或接受首次运行的预热代价。
 
 | 类别 | 数量 | 说明 |
 |---|---|---|
@@ -296,4 +309,10 @@ useModels / useI18n / useRouter ...
 - [x] 功能清单 `FEATURE_LIST.md`
 - [x] 界面原型 `mobile-prototype.html`
 - [x] 技术方案 + 开发计划 ✅ 本文档
-- [ ] T1 → T2 → T3 → T4 → T5 → T6 → T7
+- [x] T1 middleware 分流 + `/m/*` 骨架
+- [x] T2 `useChatPage()` 抽取
+- [x] T3 移动端登录
+- [x] T4 会话列表
+- [x] T5 对话页
+- [ ] T6 产物全屏页
+- [ ] T7 测试与验收
