@@ -1,9 +1,35 @@
-import { describe, expect, test } from "@rstest/core";
+import { afterEach, describe, expect, rs, test } from "@rstest/core";
+import { cleanup, render, screen } from "@testing-library/react";
+import { createElement } from "react";
 
 import {
   isTabActive,
+  MobileTabBar,
   normalizeMobilePathname,
+  shouldHideMobileTabBar,
 } from "@/components/workspace/mobile/tab-bar";
+
+// The render assertions below need a pathname and translations; the pure
+// functions above ignore both.
+const mockPathname = rs.hoisted(() => ({ current: "/m/workspace" }));
+
+rs.mock("next/navigation", () => ({
+  usePathname: () => mockPathname.current,
+}));
+
+rs.mock("@/core/i18n/hooks", () => ({
+  useI18n: () => ({
+    t: {
+      sidebar: { chats: "Chats", agents: "Agents" },
+      settings: { title: "Settings" },
+    },
+  }),
+}));
+
+afterEach(() => {
+  cleanup();
+  mockPathname.current = "/m/workspace";
+});
 
 describe("normalizeMobilePathname", () => {
   test("leaves an already-mobile path alone", () => {
@@ -40,5 +66,63 @@ describe("isTabActive", () => {
     expect(isTabActive("/workspace/chats/abc", "/m/workspace")).toBe(true);
     expect(isTabActive("/settings", "/m/settings")).toBe(true);
     expect(isTabActive("/workspace/chats/abc", "/m/agents")).toBe(false);
+  });
+});
+
+describe("shouldHideMobileTabBar", () => {
+  test("hides the bar on the signed-out screens", () => {
+    expect(shouldHideMobileTabBar("/m/login")).toBe(true);
+    expect(shouldHideMobileTabBar("/m/setup")).toBe(true);
+    expect(shouldHideMobileTabBar("/m/auth/callback")).toBe(true);
+  });
+
+  test("hides it on the pre-rewrite paths the auth screens report", () => {
+    // A phone reaching /login has its URL rewritten, but usePathname() still
+    // reports the public path.
+    expect(shouldHideMobileTabBar("/login")).toBe(true);
+    expect(shouldHideMobileTabBar("/setup")).toBe(true);
+    expect(shouldHideMobileTabBar("/auth/callback")).toBe(true);
+  });
+
+  test("keeps the bar on workspace screens", () => {
+    expect(shouldHideMobileTabBar("/m/workspace")).toBe(false);
+    expect(shouldHideMobileTabBar("/workspace/chats/abc")).toBe(false);
+    expect(shouldHideMobileTabBar("/m/agents")).toBe(false);
+    expect(shouldHideMobileTabBar("/m/settings/profile")).toBe(false);
+  });
+
+  test("does not hide on a path that merely shares a prefix", () => {
+    expect(shouldHideMobileTabBar("/m/loginfo")).toBe(false);
+    expect(shouldHideMobileTabBar("/m/setup-wizard")).toBe(false);
+  });
+});
+
+/**
+ * The guard must not change what the bar renders anywhere else. When
+ * `shouldHideMobileTabBar` is false the component falls through to the exact
+ * branch it had before the guard was added.
+ */
+describe("MobileTabBar rendering", () => {
+  test("still renders all three tabs on a workspace screen", () => {
+    mockPathname.current = "/m/workspace";
+    render(createElement(MobileTabBar));
+
+    expect(screen.getAllByRole("link")).toHaveLength(3);
+    expect(screen.getByRole("link", { name: "Chats" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
+    // The active tab keeps its marker.
+    expect(
+      screen.getByRole("link", { name: "Chats" }).getAttribute("aria-current"),
+    ).toBe("page");
+  });
+
+  test("renders nothing on the signed-out screens", () => {
+    for (const pathname of ["/login", "/setup", "/auth/callback"]) {
+      mockPathname.current = pathname;
+      const { container } = render(createElement(MobileTabBar));
+      expect(container.querySelector("nav")).toBeNull();
+      cleanup();
+    }
   });
 });

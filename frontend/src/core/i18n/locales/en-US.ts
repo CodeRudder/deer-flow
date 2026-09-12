@@ -753,5 +753,27 @@ export const enUS: Translations = {
       account_disabled:
         "Your account has been disabled. Contact your administrator.",
     },
+    passwordsDoNotMatch: "Passwords do not match",
+    passwordTooShort: "Password must be at least 8 characters",
+    signingIn: "Signing you in…",
+    redirecting: "Redirecting…",
+    authFailedRedirecting: "Authentication failed. Redirecting to sign in…",
+    setup: {
+      createAdminTitle: "Create admin account",
+      createAdminDescription:
+        "Set up the administrator account to get started.",
+      passwordPlaceholder: "Password (min. 8 characters)",
+      confirmPassword: "Confirm Password",
+      confirmPasswordPlaceholder: "Confirm password",
+      creatingAccount: "Creating account…",
+      completeSetupTitle: "Complete account setup",
+      completeSetupDescription: "Set your real email and a new password.",
+      emailPlaceholder: "Your email",
+      currentPassword: "Current password",
+      newPassword: "New password",
+      confirmNewPassword: "Confirm new password",
+      settingUp: "Setting up…",
+      completeSetupAction: "Complete Setup",
+    },
   },
 };

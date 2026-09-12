@@ -171,7 +171,8 @@ useModels / useI18n / useRouter ...
 复用 `core/auth/**` 与现有表单校验逻辑；只重写布局与触控细节。
 
 **验收**：邮箱 `type=email`；输入框 ≥16px；SSO 按钮可达；待审批态可渲染；
-登录成功跳 `/m/workspace`。
+登录成功后**地址栏为 `/workspace`（不含 `/m/`）**，且服务端 rewrite 命中
+`/m/workspace`。（原写「跳 `/m/workspace`」是 §1.2.1 澄清前的笔误，已纠正。）
 
 ---
 

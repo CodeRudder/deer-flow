@@ -632,5 +632,32 @@ export interface Translations {
       registration_pending: string;
       account_disabled: string;
     };
+    // Password validation failures on the mobile setup screen. The desktop
+    // setup page hardcodes these English strings; the mobile page routes them
+    // through i18n like the rest of `login`.
+    passwordsDoNotMatch: string;
+    passwordTooShort: string;
+    // Mobile SSO callback screen states.
+    signingIn: string;
+    redirecting: string;
+    authFailedRedirecting: string;
+    // Mobile setup screen: admin bootstrap and the forced password change that
+    // follows a first login. The desktop page hardcodes its copy in English.
+    setup: {
+      createAdminTitle: string;
+      createAdminDescription: string;
+      passwordPlaceholder: string;
+      confirmPassword: string;
+      confirmPasswordPlaceholder: string;
+      creatingAccount: string;
+      completeSetupTitle: string;
+      completeSetupDescription: string;
+      emailPlaceholder: string;
+      currentPassword: string;
+      newPassword: string;
+      confirmNewPassword: string;
+      settingUp: string;
+      completeSetupAction: string;
+    };
   };
 }

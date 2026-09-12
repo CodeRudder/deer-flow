@@ -38,9 +38,36 @@ export function isTabActive(pathname: string, href: string): boolean {
   return normalized === href || normalized.startsWith(`${href}/`);
 }
 
+/**
+ * Screens that own the whole viewport and hide the tab bar.
+ *
+ * These are the signed-out routes: login, admin setup, and the SSO callback.
+ * None of the three has a meaningful tab to highlight — the user is not in the
+ * workspace yet — and on a 390px column the bar would eat ~56px of a form that
+ * already has to clear the software keyboard. The shared auth layout takes over
+ * the bottom safe-area inset it would otherwise carry.
+ */
+const TAB_BAR_HIDDEN_PREFIXES = ["/login", "/setup", "/auth/callback"] as const;
+
+export function shouldHideMobileTabBar(pathname: string): boolean {
+  // Normalize both sides: `pathname` may arrive either pre- or post-rewrite,
+  // while the prefixes are written as the public paths a developer recognises.
+  const normalized = normalizeMobilePathname(pathname);
+  return TAB_BAR_HIDDEN_PREFIXES.some((prefix) => {
+    const mobilePrefix = normalizeMobilePathname(prefix);
+    return (
+      normalized === mobilePrefix || normalized.startsWith(`${mobilePrefix}/`)
+    );
+  });
+}
+
 export function MobileTabBar({ className }: { className?: string }) {
   const pathname = usePathname();
   const { t } = useI18n();
+
+  if (shouldHideMobileTabBar(pathname)) {
+    return null;
+  }
 
   const labels = {
     chats: t.sidebar.chats,
