@@ -4,21 +4,40 @@ The editor must never reserialize config.yaml: the file is 80% comments that
 document operator intent, and ``yaml.dump`` would erase them. Every assertion
 about "byte-identical outside the managed region" below is the whole point of
 the module — a destructive rewrite would silently delete ~1471 comment lines.
+
+The second half covers the read/mask/validate/commit helpers the admin model
+endpoints are built on. The load-bearing property there is that **no failure
+path may modify ``config.yaml``**: validation happens on a copy, and the
+original is only ever replaced after a timestamped backup has been written.
 """
 
 from __future__ import annotations
 
+import builtins
+import json
+import os
+import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 import yaml
 
+from deerflow.config import models_section
+from deerflow.config.app_config import AppConfig
 from deerflow.config.models_section import (
+    DEFAULT_BACKUP_KEEP,
     MANAGED_BEGIN,
     MANAGED_END,
+    build_model_entry,
+    commit_config_update,
     find_models_block,
+    load_managed_models,
+    prune_backups,
     render_managed_section,
     replace_managed_section,
+    to_public,
+    validate_candidate_text,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -584,3 +603,623 @@ def test_quoted_hash_in_inline_value_is_not_treated_as_comment():
 
     assert "#not-a-comment" not in out  # value discarded
     assert yaml.safe_load(out)["models"] == SAMPLE_MODELS
+
+
+# --------------------------------------------------------------------------- #
+# Model entries: load from the managed region
+# --------------------------------------------------------------------------- #
+
+#: Backups are named `config.yaml.bak.<YYYYMMDD-HHMMSS>`, with a `-N` suffix only
+#: when two commits land in the same second.
+BACKUP_NAME_RE = re.compile(r"^config\.yaml\.bak\.\d{8}-\d{6}(-\d+)?$")
+
+#: A minimal config that `AppConfig.from_file` accepts: `sandbox` and `models`
+#: are required for model validation, everything else has a default.
+VALID_MODELS = [
+    {
+        "name": "m1",
+        "display_name": "Model One",
+        "use": "deerflow.models.patched_deepseek:PatchedChatDeepSeek",
+        "model": "doubao-seed-1-8-251228",
+        "api_key": "$TEST_MODEL_KEY",
+    }
+]
+
+
+def _config_text(entries: list[dict]) -> str:
+    """A minimal, AppConfig-valid config.yaml carrying a marked models region."""
+    return f"""\
+log_level: info
+
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+
+models:
+{"".join(render_managed_section(entries))}"""
+
+
+def _listing(directory: Path) -> list[str]:
+    return sorted(entry.name for entry in directory.iterdir())
+
+
+def _stray_work_files(directory: Path) -> list[str]:
+    """Any leftover staging file — the protocol must clean up on every path."""
+    return sorted(name for name in _listing(directory) if name.endswith((".work", ".tmp")))
+
+
+@pytest.fixture
+def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A directory holding a config.yaml plus an isolated extensions config.
+
+    ``AppConfig.from_file`` also loads ``extensions_config.json`` from the repo
+    root; pointing that lookup at an empty temp file keeps these tests
+    independent of the developer's gitignored local copy.
+    """
+    extensions = tmp_path / "extensions_config.json"
+    extensions.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("DEER_FLOW_EXTENSIONS_CONFIG_PATH", str(extensions))
+    monkeypatch.setenv("TEST_MODEL_KEY", "sk-test-value")
+
+    config = tmp_path / "config.yaml"
+    config.write_text(_config_text(VALID_MODELS), encoding="utf-8")
+    return tmp_path
+
+
+def test_load_managed_models_round_trips_replace(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(replace_managed_section(SAMPLE_TEXT, SAMPLE_MODELS), encoding="utf-8")
+
+    assert load_managed_models(config) == SAMPLE_MODELS
+
+
+def test_load_managed_models_returns_empty_without_markers(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(SAMPLE_TEXT, encoding="utf-8")
+
+    assert load_managed_models(config) == []
+
+
+def test_load_managed_models_returns_empty_for_empty_region(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(replace_managed_section(SAMPLE_TEXT, []), encoding="utf-8")
+
+    assert load_managed_models(config) == []
+
+
+def test_load_managed_models_returns_empty_when_only_one_marker_present(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(f"models:\n  {MANAGED_BEGIN}\n  - name: a\n", encoding="utf-8")
+
+    assert load_managed_models(config) == []
+
+
+def test_load_managed_models_ignores_the_comment_lines_around_it(tmp_path: Path):
+    """The real file is mostly comments; parsing only the region must survive it."""
+    if not CONFIG_EXAMPLE.exists():  # pragma: no cover - repo layout guard
+        pytest.skip("config.example.yaml not found")
+
+    original = CONFIG_EXAMPLE.read_text(encoding="utf-8")
+    assert original.count("#") > 1000, "expected a comment-heavy real config"
+
+    config = tmp_path / "config.yaml"
+    config.write_text(replace_managed_section(original, SAMPLE_MODELS), encoding="utf-8")
+
+    assert load_managed_models(config) == SAMPLE_MODELS
+
+
+def test_load_managed_models_keeps_unicode_and_nested_mappings(tmp_path: Path):
+    models = [
+        {
+            "name": "doubao",
+            "display_name": "豆包 · Seed",
+            "use": "x:Y",
+            "model": "m",
+            "when_thinking_enabled": {"extra_body": {"thinking": {"type": "enabled"}}},
+            "supports_vision": True,
+        }
+    ]
+    config = tmp_path / "config.yaml"
+    config.write_text(replace_managed_section(SAMPLE_TEXT, models), encoding="utf-8")
+
+    assert load_managed_models(config) == models
+
+
+def test_load_managed_models_reads_comments_inside_the_region(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"models:\n  {MANAGED_BEGIN}\n  # operator note\n  - name: a\n    use: x:Y\n    model: m\n  {MANAGED_END}\n",
+        encoding="utf-8",
+    )
+
+    assert load_managed_models(config) == [{"name": "a", "use": "x:Y", "model": "m"}]
+
+
+def test_load_managed_models_rejects_malformed_region(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(f"models:\n  {MANAGED_BEGIN}\n  - name: [oops\n  {MANAGED_END}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_managed_models(config)
+
+
+def test_load_managed_models_rejects_non_list_region(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text(f"models:\n  {MANAGED_BEGIN}\n  name: not-a-list\n  {MANAGED_END}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_managed_models(config)
+
+
+# --------------------------------------------------------------------------- #
+# to_public — masking before the model config reaches a browser
+# --------------------------------------------------------------------------- #
+
+
+def test_to_public_leaves_env_reference_untouched():
+    """``$VOLCENGINE_API_KEY`` is a pointer, not a secret."""
+    public = to_public({"name": "m", "api_key": "$VOLCENGINE_API_KEY"})
+
+    assert public["api_key"] == "$VOLCENGINE_API_KEY"
+
+
+def test_to_public_masks_literal_key_and_hides_its_middle():
+    public = to_public({"name": "m", "api_key": "sk-abcdefgh1234"})
+
+    assert public["api_key"] == "sk-****1234"
+    assert "abcdefgh" not in json.dumps(public)
+
+
+def test_to_public_fully_masks_values_too_short_to_partially_mask():
+    for value in ("sk", "ab", "1234567"):
+        public = to_public({"api_key": value})
+
+        assert public["api_key"] != value
+        assert set(public["api_key"]) == {"*"}, public
+
+
+def test_to_public_masks_long_values_without_leaking_the_middle():
+    public = to_public({"api_key": "sk-verylongsecretvalue-9tail"})
+
+    assert "verylongsecretvalue" not in json.dumps(public)
+    assert public["api_key"].startswith("sk-")
+    assert public["api_key"].endswith("tail")
+
+
+def test_to_public_is_a_noop_without_api_key():
+    model = {"name": "m", "use": "x:Y", "model": "g"}
+
+    assert to_public(model) == model
+
+
+def test_to_public_passes_through_non_string_api_keys():
+    assert to_public({"api_key": None}) == {"api_key": None}
+
+
+def test_to_public_returns_a_deep_copy():
+    model = {"api_key": "sk-abcdefgh1234", "when_thinking_enabled": {"nested": {"x": 1}}}
+
+    public = to_public(model)
+
+    assert model["api_key"] == "sk-abcdefgh1234"
+    public["when_thinking_enabled"]["nested"]["x"] = 2
+    assert model["when_thinking_enabled"]["nested"]["x"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# build_model_entry
+# --------------------------------------------------------------------------- #
+
+
+def test_build_model_entry_rejects_missing_use():
+    with pytest.raises(ValueError, match=r"required field\(s\): use"):
+        build_model_entry({"name": "m", "model": "gpt-4"})
+
+
+def test_build_model_entry_rejects_missing_model():
+    with pytest.raises(ValueError, match=r"required field\(s\): model"):
+        build_model_entry({"name": "m", "use": "langchain_openai:ChatOpenAI"})
+
+
+def test_build_model_entry_lists_every_missing_required_field():
+    with pytest.raises(ValueError, match=r"required field\(s\): use, model"):
+        build_model_entry({"name": "m"})
+
+
+def test_build_model_entry_treats_blank_required_fields_as_missing():
+    with pytest.raises(ValueError, match=r"required field\(s\): use"):
+        build_model_entry({"name": "m", "use": "   ", "model": "gpt-4"})
+
+
+def test_build_model_entry_rejects_non_mapping_payload():
+    with pytest.raises(ValueError):
+        build_model_entry(["not", "a", "mapping"])
+
+
+def test_build_model_entry_defaults_name_to_model():
+    entry = build_model_entry({"use": "langchain_openai:ChatOpenAI", "model": "gpt-4"})
+
+    assert entry["name"] == "gpt-4"
+
+
+def test_build_model_entry_passes_optional_fields_through():
+    payload = {
+        "name": "m1",
+        "use": "langchain_openai:ChatOpenAI",
+        "model": "gpt-4",
+        "api_key": "$TEST_MODEL_KEY",
+        "supports_vision": True,
+        "max_tokens": 4096,
+        "when_thinking_enabled": {"extra_body": {"thinking": {"type": "enabled"}}},
+    }
+
+    entry = build_model_entry(payload)
+
+    assert set(entry) == set(payload)
+    assert entry["supports_vision"] is True
+    assert entry["max_tokens"] == 4096
+    assert entry["when_thinking_enabled"] == {"extra_body": {"thinking": {"type": "enabled"}}}
+
+
+def test_build_model_entry_does_not_mutate_the_payload():
+    payload = {"use": "x:Y", "model": "g"}
+
+    build_model_entry(payload)
+
+    assert payload == {"use": "x:Y", "model": "g"}
+
+
+def test_build_model_entry_rejects_wrongly_typed_fields():
+    with pytest.raises(ValueError):
+        build_model_entry({"use": "x:Y", "model": "g", "when_thinking_enabled": ["not", "a", "mapping"]})
+
+
+def test_build_model_entry_round_trips_through_validation(config_dir: Path):
+    """build -> render -> validate is the exact path the write endpoint takes."""
+    entry = build_model_entry({"name": "m1", "use": "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "model": "doubao-seed-1-8-251228", "api_key": "$TEST_MODEL_KEY", "supports_vision": True})
+
+    parsed = validate_candidate_text(_config_text([entry]), dir_path=config_dir)
+
+    assert [model.name for model in parsed.models] == ["m1"]
+    assert parsed.models[0].use == "deerflow.models.patched_deepseek:PatchedChatDeepSeek"
+    assert parsed.models[0].supports_vision is True
+
+
+# --------------------------------------------------------------------------- #
+# validate_candidate_text — the candidate is parsed from a throwaway file
+# --------------------------------------------------------------------------- #
+
+
+def test_validate_candidate_text_returns_the_parsed_config(config_dir: Path):
+    before = _listing(config_dir)
+
+    parsed = validate_candidate_text(_config_text(VALID_MODELS), dir_path=config_dir)
+
+    assert isinstance(parsed, AppConfig)
+    assert [model.name for model in parsed.models] == ["m1"]
+    assert _listing(config_dir) == before, "validation must not leave a temp file behind"
+
+
+def test_validate_candidate_text_parses_the_given_text(config_dir: Path):
+    other = [{**VALID_MODELS[0], "name": "renamed"}]
+
+    parsed = validate_candidate_text(_config_text(other), dir_path=config_dir)
+
+    assert [model.name for model in parsed.models] == ["renamed"]
+
+
+def test_validate_candidate_text_rejects_unresolvable_env_var(config_dir: Path):
+    before = _listing(config_dir)
+    broken = [{**VALID_MODELS[0], "api_key": "$TEST_MISSING_MODEL_KEY"}]
+
+    with pytest.raises(ValueError, match="TEST_MISSING_MODEL_KEY"):
+        validate_candidate_text(_config_text(broken), dir_path=config_dir)
+
+    assert _listing(config_dir) == before, "temp file must be removed on the failure path"
+
+
+def test_validate_candidate_text_rejects_malformed_yaml(config_dir: Path):
+    before = _listing(config_dir)
+
+    with pytest.raises(ValueError):
+        validate_candidate_text("models:\n  - name: [oops\n", dir_path=config_dir)
+
+    assert _listing(config_dir) == before
+
+
+def test_validate_candidate_text_rejects_invalid_model_entry(config_dir: Path):
+    before = _listing(config_dir)
+    missing_use = [{"name": "m", "model": "gpt-4"}]
+
+    with pytest.raises(ValueError):
+        validate_candidate_text(_config_text(missing_use), dir_path=config_dir)
+
+    assert _listing(config_dir) == before
+
+
+def test_validate_candidate_text_writes_the_candidate_inside_dir_path(config_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    """Relative paths inside config.yaml resolve against the config's directory."""
+    seen: list[tuple[Path, bool]] = []
+    real_from_file = AppConfig.from_file
+
+    def spy(cls, config_path=None):  # noqa: ANN001, ANN202 - mirrors the classmethod signature
+        path = Path(config_path)
+        # Existence has to be sampled inside the call: the protocol removes the
+        # candidate before it returns, so a later check would always be False.
+        seen.append((path, path.exists()))
+        return real_from_file(config_path)
+
+    monkeypatch.setattr(AppConfig, "from_file", classmethod(spy))
+
+    validate_candidate_text(_config_text(VALID_MODELS), dir_path=config_dir)
+
+    assert len(seen) == 1
+    assert seen[0][0].parent == config_dir
+    assert seen[0][1], "the candidate must exist while it is being parsed"
+
+
+def test_validate_candidate_text_overwrites_nothing_in_the_config_dir(config_dir: Path):
+    config = config_dir / "config.yaml"
+    untouched = config.read_text(encoding="utf-8")
+
+    validate_candidate_text(_config_text([{**VALID_MODELS[0], "name": "other"}]), dir_path=config_dir)
+
+    assert config.read_text(encoding="utf-8") == untouched
+
+
+# --------------------------------------------------------------------------- #
+# commit_config_update — steps 4-5 of the write protocol
+# --------------------------------------------------------------------------- #
+
+
+def test_commit_config_update_replaces_the_file_and_returns_the_backup(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    original = "log_level: info\nmodels:\n"
+    config.write_text(original, encoding="utf-8")
+    new_text = original + "  # added\n"
+
+    backup = commit_config_update(config, new_text)
+
+    assert config.read_text(encoding="utf-8") == new_text
+    assert backup.parent == tmp_path
+    assert BACKUP_NAME_RE.match(backup.name), backup.name
+    assert backup.read_text(encoding="utf-8") == original, "the backup must hold the pre-replace original"
+    assert _stray_work_files(tmp_path) == []
+    assert _listing(tmp_path) == sorted(["config.yaml", backup.name])
+
+
+def test_two_successive_commits_produce_two_distinct_backups(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v1\n", encoding="utf-8")
+
+    first = commit_config_update(config, "v2\n")
+    second = commit_config_update(config, "v3\n")
+
+    assert first != second, "a fixed backup name would clobber the earlier backup"
+    assert first.read_text(encoding="utf-8") == "v1\n"
+    assert second.read_text(encoding="utf-8") == "v2\n"
+    assert config.read_text(encoding="utf-8") == "v3\n"
+
+
+def test_commit_config_update_preserves_bytes_outside_the_written_text(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_bytes(b"# comment\r\nlog_level: info\r\n")
+    new_text = "# comment\r\nlog_level: debug\r\n"
+
+    commit_config_update(config, new_text)
+
+    assert config.read_bytes() == new_text.encode("utf-8")
+
+
+def test_backup_failure_leaves_config_byte_identical(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = tmp_path / "config.yaml"
+    original = b"log_level: info\nmodels:\n"
+    config.write_bytes(original)
+    real_open = builtins.open
+
+    def guarded_open(file, *args, **kwargs):  # noqa: ANN001, ANN202 - mirrors builtins.open
+        if ".bak." in str(file):
+            raise OSError(28, "No space left on device")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+
+    with pytest.raises(OSError):
+        commit_config_update(config, "log_level: debug\n")
+
+    assert config.read_bytes() == original
+    assert _listing(tmp_path) == ["config.yaml"], "a failed commit must not leave staging files behind"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory write permissions")
+def test_backup_failure_in_read_only_dir_leaves_config_untouched(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    original = "log_level: info\n"
+    config.write_text(original, encoding="utf-8")
+
+    os.chmod(tmp_path, 0o500)
+    try:
+        with pytest.raises(OSError):
+            commit_config_update(config, "log_level: debug\n")
+        assert config.read_text(encoding="utf-8") == original
+    finally:
+        os.chmod(tmp_path, 0o700)
+
+    assert _listing(tmp_path) == ["config.yaml"]
+
+
+def test_replace_failure_leaves_config_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = tmp_path / "config.yaml"
+    original = b"log_level: info\nmodels:\n"
+    config.write_bytes(original)
+
+    def failing_replace(src, dst, *args, **kwargs):  # noqa: ANN001, ANN202 - mirrors os.replace
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError):
+        commit_config_update(config, "log_level: debug\n")
+
+    assert config.read_bytes() == original
+    assert _listing(tmp_path) == ["config.yaml"], "a failed commit must not leave staging files behind"
+
+
+def test_commit_config_update_requires_an_existing_config(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        commit_config_update(tmp_path / "config.yaml", "log_level: info\n")
+
+
+def test_staging_failure_leaves_config_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The live file is only replaced after the staged copy lands."""
+    config = tmp_path / "config.yaml"
+    original = b"log_level: info\nmodels:\n"
+    config.write_bytes(original)
+    real_open = builtins.open
+
+    def guarded_open(file, *args, **kwargs):  # noqa: ANN001, ANN202 - mirrors builtins.open
+        if str(file).endswith(".work"):
+            raise OSError(28, "No space left on device")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+
+    with pytest.raises(OSError):
+        commit_config_update(config, "log_level: debug\n")
+
+    assert config.read_bytes() == original
+    assert _listing(tmp_path) == ["config.yaml"], "the staged copy must not survive the failure"
+
+
+def test_prune_failure_after_the_replace_keeps_the_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A failed prune must not roll back a commit that already landed.
+
+    The backup is the only copy of the pre-commit original once ``os.replace``
+    has run, so a prune error must leave both the new file and that backup in
+    place instead of unwinding the write.
+    """
+    config = tmp_path / "config.yaml"
+    config.write_text("v1\n", encoding="utf-8")
+
+    def failing_prune(config_path, keep=DEFAULT_BACKUP_KEEP):  # noqa: ANN001, ANN202 - mirrors the real signature
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(models_section, "prune_backups", failing_prune)
+
+    backup = commit_config_update(config, "v2\n")
+
+    assert config.read_text(encoding="utf-8") == "v2\n"
+    assert backup.read_text(encoding="utf-8") == "v1\n", "the rollback copy must survive a prune failure"
+
+
+def test_commit_config_update_accepts_an_injectable_clock(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v1\n", encoding="utf-8")
+
+    backup = commit_config_update(config, "v2\n", now=datetime(2026, 9, 12, 14, 30, 0))
+
+    assert backup.name == "config.yaml.bak.20260912-143000"
+    assert backup.read_text(encoding="utf-8") == "v1\n"
+
+
+# --------------------------------------------------------------------------- #
+# prune_backups — keep the last N timestamped backups
+# --------------------------------------------------------------------------- #
+
+
+def _make_backup(directory: Path, stamp: str, *, name: str = "config.yaml", content: str | None = None) -> Path:
+    """Create a backup file whose mtime agrees with its timestamped name.
+
+    *stamp* may carry a same-second ``-N`` suffix; only the leading
+    ``YYYYMMDD-HHMMSS`` is a strptime-able timestamp.
+    """
+    path = directory / f"{name}.bak.{stamp}"
+    path.write_text(content if content is not None else f"backup {stamp}\n", encoding="utf-8")
+    moment = datetime.strptime(stamp[:15], "%Y%m%d-%H%M%S").timestamp()
+    os.utime(path, (moment, moment))
+    return path
+
+
+def test_prune_backups_deletes_the_oldest_beyond_keep(tmp_path: Path):
+    live = tmp_path / "config.yaml"
+    live.write_text("live\n", encoding="utf-8")
+    moments = [datetime(2026, 1, 1) + timedelta(seconds=index) for index in range(12)]
+    stamps = [moment.strftime("%Y%m%d-%H%M%S") for moment in moments]
+    # Created newest first, so passing this test requires real ordering.
+    for stamp in reversed(stamps):
+        _make_backup(tmp_path, stamp)
+
+    deleted = prune_backups(live, keep=10)
+
+    assert sorted(path.name for path in deleted) == [f"config.yaml.bak.{stamps[0]}", f"config.yaml.bak.{stamps[1]}"]
+    assert sorted(path.name for path in tmp_path.glob("config.yaml.bak.*")) == [f"config.yaml.bak.{stamps[index]}" for index in range(2, 12)]
+    assert live.read_text(encoding="utf-8") == "live\n"
+
+
+def test_prune_backups_keeps_everything_when_under_keep(tmp_path: Path):
+    live = tmp_path / "config.yaml"
+    live.write_text("live\n", encoding="utf-8")
+    backups = [_make_backup(tmp_path, f"2026010{index + 1}-000000") for index in range(3)]
+
+    assert prune_backups(live, keep=10) == []
+
+    assert sorted(tmp_path.glob("config.yaml.bak.*")) == sorted(backups)
+
+
+def test_prune_backups_deletes_everything_when_keep_is_zero(tmp_path: Path):
+    live = tmp_path / "config.yaml"
+    live.write_text("live\n", encoding="utf-8")
+    _make_backup(tmp_path, "20260101-000000")
+    _make_backup(tmp_path, "20260102-000000")
+
+    deleted = prune_backups(live, keep=0)
+
+    assert len(deleted) == 2
+    assert list(tmp_path.glob("config.yaml.bak.*")) == []
+    assert live.exists()
+
+
+def test_prune_backups_never_deletes_unrelated_files(tmp_path: Path):
+    live = tmp_path / "config.yaml"
+    live.write_text("live\n", encoding="utf-8")
+    unrelated = []
+    for name in ("notes.txt", "config.yaml.bak", "config.yaml.backup", "config.yaml.tmp"):
+        path = tmp_path / name
+        path.write_text("keep me\n", encoding="utf-8")
+        unrelated.append(path)
+    unrelated.append(_make_backup(tmp_path, "20260101-000000", name="other.yaml"))
+    _make_backup(tmp_path, "20260101-120000")
+    _make_backup(tmp_path, "20260102-000000")
+
+    deleted = prune_backups(live, keep=1)
+
+    assert [path.name for path in deleted] == ["config.yaml.bak.20260101-120000"]
+    assert all(path.exists() for path in unrelated), "a non-backup file was deleted"
+    assert live.read_text(encoding="utf-8") == "live\n"
+
+
+def test_prune_backups_orders_same_second_backups(tmp_path: Path):
+    """Two commits inside one second get `-N` suffixes; newest still wins."""
+    live = tmp_path / "config.yaml"
+    live.write_text("live\n", encoding="utf-8")
+    _make_backup(tmp_path, "20260101-120000")
+    _make_backup(tmp_path, "20260101-120000-1")
+    _make_backup(tmp_path, "20260101-120000-2")
+
+    deleted = prune_backups(live, keep=1)
+
+    assert [path.name for path in deleted] == ["config.yaml.bak.20260101-120000", "config.yaml.bak.20260101-120000-1"]
+    assert [path.name for path in tmp_path.glob("config.yaml.bak.*")] == ["config.yaml.bak.20260101-120000-2"]
+
+
+def test_commit_config_update_prunes_to_the_keep_limit(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("v0\n", encoding="utf-8")
+
+    backups = [commit_config_update(config, f"v{index + 1}\n") for index in range(12)]
+
+    assert len(backups) == len(set(backups)), "every commit must produce its own backup"
+    remaining = sorted(path.name for path in tmp_path.glob("config.yaml.bak.*"))
+    assert len(remaining) == 10
+    assert backups[-1].name in remaining, "the newest backup must survive pruning"
+    assert config.read_text(encoding="utf-8") == "v12\n"
+    assert _stray_work_files(tmp_path) == []
