@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 /**
  * Distance from the bottom (px) still counted as "at the bottom". Matches the
@@ -33,8 +33,9 @@ export function findTranscriptScroller(
 /**
  * Floating "back to bottom" affordance for the mobile chat page.
  *
- * `resetKey` (the thread id) re-binds the listener when the page swaps
- * threads, because the transcript element is replaced on that route change.
+ * `resetKey` (the thread id) re-resolves the transcript when the page swaps
+ * threads, because `MessageList` re-mounts around it. It is not the only way
+ * the transcript changes, though: see the effect below.
  */
 export function useScrollToBottom(
   rootRef: RefObject<HTMLElement | null>,
@@ -42,16 +43,56 @@ export function useScrollToBottom(
 ) {
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // Mirrors `scroller` so a resolution can be compared against the current one
+  // without making the observer re-subscribe on every change.
+  const scrollerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    // One frame after render: `MessageList` may have replaced the transcript
-    // skeleton with the real list during this commit.
-    const raf = requestAnimationFrame(() => {
-      setScroller(findTranscriptScroller(rootRef.current));
-    });
-    return () => cancelAnimationFrame(raf);
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+
+    const sync = () => {
+      const next = findTranscriptScroller(root);
+      if (next === scrollerRef.current) {
+        return;
+      }
+      scrollerRef.current = next;
+      setScroller(next);
+    };
+
+    // Resolve now as well as on mutation: this effect also re-runs when the
+    // thread id changes, and by then the transcript may already be on screen.
+    sync();
+
+    // On a cold load of `/workspace/chats/{id}` — tapping a conversation from
+    // the thread list, the normal way in — `MessageList` is still painting
+    // `MessageListSkeleton` when this effect runs, so the first resolution
+    // finds nothing. The thread id never changes for an existing thread, so
+    // there is no second chance for the life of the page: one probe is not
+    // enough, and the affordance stays unreachable until the first send
+    // happens to change the id. Watch the surface instead — the
+    // skeleton→transcript swap, and any later replacement of the scroll node,
+    // are childList mutations under it.
+    //
+    // Cheap during a stream: observer callbacks are coalesced per microtask
+    // checkpoint, `characterData` is not observed (so the tokens that stream
+    // into a message do not notify at all), and `sync` is an identity compare
+    // plus one scoped `querySelector`.
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      scrollerRef.current = null;
+    };
   }, [resetKey, rootRef]);
 
+  // Rebinding `scroller` (a replacement transcript, or the skeleton coming
+  // back) tears this effect down first: React runs the cleanup below with the
+  // previous `scroller` in scope, so the detached node loses its listener and
+  // its `ResizeObserver` before the new one is bound.
   useEffect(() => {
     if (!scroller) {
       return;

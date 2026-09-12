@@ -2,19 +2,14 @@ import { describe, expect, test } from "@rstest/core";
 
 import { leadingSlashQuery } from "@/components/workspace/mobile/composer";
 import { resolveMode } from "@/components/workspace/mobile/composer-mode";
-import {
-  AT_BOTTOM_TOLERANCE_PX,
-  findTranscriptScroller,
-} from "@/components/workspace/mobile/use-scroll-to-bottom";
 
 /**
- * The pure parts of the mobile chat page.
+ * The pure parts of the composer.
  *
- * The composer and the sticky-scroll hook are the only new mobile files with
- * branching that no E2E assertion can pin precisely: the mode resolution has a
- * one-way coercion, the slash parser has to reject `a/b` and `a b` alike, and
- * the scroller lookup walks a DOM shape owned by an external library. All three
- * are exported for this file.
+ * The mode resolution has a one-way coercion and the slash parser has to
+ * reject `a/b` and `a b` alike; both are exported so this file can pin them.
+ * The sticky-scroll hook's own helpers live next to it
+ * (`use-scroll-to-bottom.test.ts`).
  */
 
 describe("resolveMode", () => {
@@ -70,43 +65,5 @@ describe("leadingSlashQuery", () => {
   test("treats a lone slash as an empty query", () => {
     // Stable and cheap: the caller reads it as "show everything".
     expect(leadingSlashQuery("/")).toBe("");
-  });
-});
-
-describe("findTranscriptScroller", () => {
-  /** The shape `MessageList` renders: a `role="log"` root wrapping the scroller. */
-  function buildRoot(firstChild: Node | null) {
-    const root = document.createElement("div");
-    const log = document.createElement("div");
-    log.setAttribute("role", "log");
-    if (firstChild) {
-      log.appendChild(firstChild);
-    }
-    root.appendChild(log);
-    return root;
-  }
-
-  test("returns the first element child of the role=log node", () => {
-    const scroller = document.createElement("div");
-    expect(findTranscriptScroller(buildRoot(scroller))).toBe(scroller);
-  });
-
-  test("returns null when the root or the log node is absent", () => {
-    expect(findTranscriptScroller(null)).toBeNull();
-    expect(findTranscriptScroller(undefined)).toBeNull();
-    expect(findTranscriptScroller(document.createElement("div"))).toBeNull();
-  });
-
-  test("returns null for a text-only child, which has no scroll properties", () => {
-    expect(
-      findTranscriptScroller(buildRoot(document.createTextNode("…"))),
-    ).toBeNull();
-  });
-});
-
-describe("AT_BOTTOM_TOLERANCE_PX", () => {
-  test("is tight enough that a real scroll-away still shows the button", () => {
-    expect(AT_BOTTOM_TOLERANCE_PX).toBeGreaterThan(0);
-    expect(AT_BOTTOM_TOLERANCE_PX).toBeLessThanOrEqual(32);
   });
 });

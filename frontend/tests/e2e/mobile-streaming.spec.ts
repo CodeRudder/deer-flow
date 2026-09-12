@@ -419,10 +419,10 @@ test.describe("Mobile chat streaming", () => {
     loopback = await startLoopbackSse();
     await routeStreamTo(page, loopback.origin);
 
-    // The flow is a send, not a cold load: `useScrollToBottom()` binds its
-    // scroll listener from a one-shot `requestAnimationFrame` keyed on the
-    // thread id, and the thread id only settles once the run starts. See the
-    // `test.fail()` case below for the cold-load path this cannot cover.
+    // The flow is a send, not a cold load: this page starts on `/chats/new`,
+    // so the thread id settles with the run and `useScrollToBottom()`
+    // re-resolves the transcript then. The case below covers the other way in,
+    // where the id never changes after the page paints.
     await page.goto(NEW_CHAT_PATH);
     await openComposer(page);
     await send(page, "Please stream the reply");
@@ -468,62 +468,62 @@ test.describe("Mobile chat streaming", () => {
   });
 
   /**
-   * Known defect, not a flaky test — do not "fix" this by loosening it.
+   * The way in that used to be broken: a conversation opened from the thread
+   * list, so the thread id is known on the first paint and never changes.
    *
    * `useScrollToBottom()` (`src/components/workspace/mobile/use-scroll-to-bottom.ts`)
-   * resolves the transcript element from a single `requestAnimationFrame`
-   * scheduled by an effect keyed on `[resetKey, rootRef]`. On a chat page that
-   * is opened with the thread already known (`/workspace/chats/{id}`, the
-   * normal way in from the thread list) the transcript has not rendered yet at
-   * that frame: `MessageList` is still painting `MessageListSkeleton`, so
-   * `findTranscriptScroller()` returns null, the effect never runs again
-   * (the thread id never changes), no scroll listener is ever attached and
-   * `isAtBottom` stays `true` forever — the affordance is unreachable for as
-   * long as the page lives.
+   * used to resolve the transcript element from a single
+   * `requestAnimationFrame` in an effect keyed on `[resetKey, rootRef]`. Here
+   * that frame lands while `MessageList` is still painting
+   * `MessageListSkeleton`, so `findTranscriptScroller()` returns null and — the
+   * thread id never changing — the effect never runs again: no scroll listener,
+   * `isAtBottom` stuck at `true`, the affordance unreachable for the life of
+   * the page. The hook now watches the surface for the skeleton→transcript
+   * swap instead of probing once, so no scroll gymnastics are needed to reach
+   * it.
    *
-   * Measured on this branch: after `scrollTop = 0` (and after a real
-   * `mouse.wheel`), the scroller sits at 0 while the button count is 0; a
-   * per-frame probe shows `[role="log"]` absent for the first 9 frames and
-   * present from frame 10, i.e. the hook's frame ran against the skeleton.
-   * The test above passes only because the thread id changes mid-page
-   * (`/chats/new` → created id), which re-runs the effect once the transcript
-   * exists. Fixing this turns this test red: drop the `test.fail()` marker
-   * then.
+   * Keep this test cold: opening the same transcript via `/chats/new` + send
+   * makes the thread id change mid-page, which is exactly the path that
+   * masked the defect (the sibling test above).
    */
-  test.fail(
-    "an existing conversation loaded cold also offers back-to-bottom",
-    async ({ page }) => {
-      const thread: MockThread = {
-        thread_id: MOCK_THREAD_ID,
-        title: "A long conversation",
-        messages: longTranscript(24),
-      };
-      mockLangGraphAPI(page, { threads: [thread] });
-      await mockModels(page);
-      await page.goto(CHAT_PATH);
-      await openComposer(page);
-      await expect(page.getByText("Answer number 23")).toBeVisible({
-        timeout: 15_000,
-      });
+  test("an existing conversation loaded cold also offers back-to-bottom", async ({
+    page,
+  }) => {
+    const thread: MockThread = {
+      thread_id: MOCK_THREAD_ID,
+      title: "A long conversation",
+      messages: longTranscript(24),
+    };
+    mockLangGraphAPI(page, { threads: [thread] });
+    await mockModels(page);
+    await page.goto(CHAT_PATH);
+    await openComposer(page);
+    await expect(page.getByText("Answer number 23")).toBeVisible({
+      timeout: 15_000,
+    });
 
-      const transcript = scroller(page);
-      await expect
-        .poll(
-          () =>
-            transcript.evaluate((element) =>
-              Math.round(
-                element.scrollHeight - element.scrollTop - element.clientHeight,
-              ),
+    const transcript = scroller(page);
+    await expect
+      .poll(
+        () =>
+          transcript.evaluate((element) =>
+            Math.round(
+              element.scrollHeight - element.scrollTop - element.clientHeight,
             ),
-          { timeout: 15_000 },
-        )
-        .toBeLessThanOrEqual(16);
+          ),
+        { timeout: 15_000 },
+      )
+      .toBeLessThanOrEqual(16);
 
-      await transcript.evaluate((element) => {
-        element.scrollTop = 0;
-      });
+    // The scroller starts at the bottom, so the affordance must be absent:
+    // the assertion below is about a real scroll-away, not about a hook that
+    // never binds.
+    await expect(scrollBottomButton(page)).toHaveCount(0);
 
-      await expect(scrollBottomButton(page)).toBeVisible({ timeout: 5_000 });
-    },
-  );
+    await transcript.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+
+    await expect(scrollBottomButton(page)).toBeVisible({ timeout: 5_000 });
+  });
 });
