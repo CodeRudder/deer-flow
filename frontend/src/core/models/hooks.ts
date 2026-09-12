@@ -1,10 +1,30 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { loadModels } from "./api";
+import {
+  ModelConfigRequestError,
+  createManagedModel,
+  deleteManagedModel,
+  loadManagedModels,
+  loadModels,
+  testManagedModel,
+  updateManagedModel,
+} from "./api";
+import type { ManagedModelWrite } from "./types";
+
+/** Query key for the managed model region (`GET /api/models/config`). */
+export const MANAGED_MODELS_QUERY_KEY = ["managedModels"] as const;
+
+/**
+ * Query key of the public model list the chat model picker reads.
+ *
+ * Shared with `useModels` below — a write here must invalidate it too, or the
+ * picker keeps serving the pre-edit list until a reload.
+ */
+export const MODELS_QUERY_KEY = ["models"] as const;
 
 export function useModels({ enabled = true }: { enabled?: boolean } = {}) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["models"],
+    queryKey: MODELS_QUERY_KEY,
     queryFn: () => loadModels(),
     enabled,
     refetchOnWindowFocus: false,
@@ -16,4 +36,71 @@ export function useModels({ enabled = true }: { enabled?: boolean } = {}) {
     isLoading,
     error,
   };
+}
+
+export function useManagedModels({
+  enabled = true,
+}: { enabled?: boolean } = {}) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: MANAGED_MODELS_QUERY_KEY,
+    queryFn: () => loadManagedModels(),
+    enabled,
+    retry: (count, error) =>
+      !(error instanceof ModelConfigRequestError) && count < 3,
+  });
+  return { models: data ?? [], isLoading, error };
+}
+
+/**
+ * Invalidate both the managed list and the picker's model list after a write.
+ *
+ * The picker reads `["models"]`, so invalidating only the managed key leaves it
+ * stale.
+ */
+function useInvalidateModelConfig() {
+  const queryClient = useQueryClient();
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: MANAGED_MODELS_QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: MODELS_QUERY_KEY }),
+    ]);
+}
+
+/**
+ * Create or update a managed model.
+ *
+ * Passing a `name` updates the entry addressed by it (`PUT /{name}`);
+ * omitting it appends a new entry (`POST /`).
+ */
+export function useSaveManagedModel() {
+  const invalidate = useInvalidateModelConfig();
+  return useMutation({
+    mutationFn: ({
+      name,
+      model,
+    }: {
+      name?: string;
+      model: ManagedModelWrite;
+    }) => (name ? updateManagedModel(name, model) : createManagedModel(model)),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+export function useDeleteManagedModel() {
+  const invalidate = useInvalidateModelConfig();
+  return useMutation({
+    mutationFn: (name: string) => deleteManagedModel(name),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/** Probe a candidate entry for connectivity. Writes nothing — no invalidation. */
+export function useTestManagedModel() {
+  return useMutation({
+    mutationFn: (model: ManagedModelWrite) => testManagedModel(model),
+  });
 }
