@@ -196,6 +196,7 @@ const PROVIDERS: ModelProvider[] = [
     key: "openai",
     label: "OpenAI",
     use: "langchain_openai:ChatOpenAI",
+    api_base_field: "openai_api_base",
     default_api_base: null,
     available: true,
     reason: null,
@@ -204,6 +205,7 @@ const PROVIDERS: ModelProvider[] = [
     key: "openai-compatible",
     label: "OpenAI-compatible",
     use: "langchain_openai:ChatOpenAI",
+    api_base_field: "openai_api_base",
     default_api_base: null,
     available: true,
     reason: null,
@@ -212,6 +214,7 @@ const PROVIDERS: ModelProvider[] = [
     key: "doubao",
     label: "Doubao",
     use: "deerflow.models.patched_deepseek:PatchedChatDeepSeek",
+    api_base_field: "api_base",
     default_api_base: "https://ark.cn-beijing.volces.com/api/v3",
     available: true,
     reason: null,
@@ -369,11 +372,13 @@ describe("buildManagedModelWrite (single key field)", () => {
       name: "gpt-4o",
       model: "gpt-4o",
       use: "langchain_openai:ChatOpenAI",
-      base_url: "https://example.test/v1",
+      when_thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
       max_tokens: 4096,
       api_key_masked: true,
     });
-    expect(write.base_url).toBe("https://example.test/v1");
+    expect(write.when_thinking_enabled).toEqual({
+      extra_body: { thinking: { type: "enabled" } },
+    });
     expect(write.max_tokens).toBe(4096);
     // Server-owned addressing metadata never round-trips into the file.
     expect(write).not.toHaveProperty("index");
@@ -468,16 +473,46 @@ describe("provider picker", () => {
     expect(buildWrite(picked).use).toBe("deerflow.models.patched_deepseek:PatchedChatDeepSeek");
   });
 
-  it("sends an explicit empty api_base when the field is cleared", () => {
-    const write = buildWrite({ ...EMPTY_MODEL_DRAFT, name: "x", model: "m", provider: "openai", api_base: "" });
-    expect(write.api_base).toBe("");
-  });
-
-  it("passes the typed base URL through", () => {
+  it("writes the endpoint under the provider's own field, not a shared api_base", () => {
+    // OpenAI 类的字段名是 openai_api_base；共享 api_base 会被静默塞进
+    // model_kwargs，直到第一次调用才炸。
     const write = buildWrite({
       ...EMPTY_MODEL_DRAFT, name: "x", model: "m",
-      provider: "openai-compatible", api_base: " https://example.test/v1 ",
+      provider: "openai", api_base: "https://example.test/v1",
     });
-    expect(write.api_base).toBe("https://example.test/v1");
+    expect(write.openai_api_base).toBe("https://example.test/v1");
+    expect(write.api_base).toBeUndefined();
+  });
+
+  it("uses api_base for the patched providers that declare it", () => {
+    const write = buildWrite({
+      ...EMPTY_MODEL_DRAFT, name: "x", model: "m",
+      provider: "doubao", api_base: "https://ark.test/api/v3",
+    });
+    expect(write.api_base).toBe("https://ark.test/api/v3");
+    expect(write.openai_api_base).toBeUndefined();
+  });
+
+  it("drops stale endpoint keys when the provider changes", () => {
+    // 从 doubao（api_base）切到 openai（openai_api_base）时，
+    // 旧的 api_base 不能残留，否则两个键同时存在。
+    const original = {
+      index: 0, name: "x", model: "m",
+      use: "deerflow.models.patched_deepseek:PatchedChatDeepSeek",
+      api_base: "https://ark.test/api/v3",
+    };
+    const write = buildWrite(
+      { ...EMPTY_MODEL_DRAFT, name: "x", model: "m", provider: "openai", api_base: "https://oai.test/v1" },
+      original,
+    );
+    expect(write.openai_api_base).toBe("https://oai.test/v1");
+    expect(write.api_base).toBeUndefined();
+  });
+
+  it("still writes the endpoint key when the field is blank, so clearing removes it", () => {
+    const write = buildWrite({
+      ...EMPTY_MODEL_DRAFT, name: "x", model: "m", provider: "openai", api_base: "",
+    });
+    expect(write.openai_api_base).toBe("");
   });
 });

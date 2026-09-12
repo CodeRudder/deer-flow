@@ -97,6 +97,17 @@ export interface ModelProvider {
   use: string;
   /** Endpoint prefilled when the provider has one; `null` means the SDK default. */
   default_api_base: string | null;
+  /**
+   * The constructor key this provider accepts for its endpoint — it is NOT
+   * shared: OpenAI wants `openai_api_base`, Anthropic `anthropic_api_url`,
+   * Google `base_url`, the patched DeepSeek/MiniMax family `api_base`.
+   *
+   * Writing a key the provider does not accept is silent (`ModelConfig` is
+   * `extra="allow"`), so the value lands in the SDK's model_kwargs and only
+   * fails on the first real call. Always write the endpoint under this key.
+   * `null` means the provider takes no direct endpoint field.
+   */
+  api_base_field: string | null;
   available: boolean;
   reason: string | null;
 }

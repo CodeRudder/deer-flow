@@ -689,7 +689,7 @@ def test_test_endpoint_stays_200_when_the_config_file_is_missing(admin: TestClie
 # --------------------------------------------------------------------------- #
 
 #: The full key set every entry must carry.
-_PROVIDER_KEYS = {"key", "label", "use", "default_api_base", "available", "reason"}
+_PROVIDER_KEYS = {"key", "label", "use", "default_api_base", "api_base_field", "available", "reason"}
 
 
 def _providers_by_key(client: TestClient) -> dict[str, dict]:
@@ -765,3 +765,69 @@ def test_ollama_is_listed_with_its_install_hint(admin: TestClient, config_path: 
         assert entry["reason"] is None
     else:
         assert entry["reason"] and "langchain_ollama" in entry["reason"]
+
+
+def test_provider_presets_declare_the_field_their_class_actually_accepts(admin: TestClient):
+    """每个预设的 `api_base_field` 必须是该 provider 真接受的构造参数。
+
+    这是本表最易错的一点：`ModelConfig` 是 extra="allow"，写错键名不会在保存时
+    报错，而是被塞进 model_kwargs，直到第一次真正调用才炸
+    （实测：AsyncMessages.create() got an unexpected keyword argument 'api_base'）。
+    所以逐个拿 provider 类的 model_fields 核对。
+    """
+    from deerflow.reflection import resolve_class
+
+    for entry in _providers_by_key(admin).values():
+        field = entry["api_base_field"]
+        if field is None:
+            continue
+        # 依赖未安装的 provider 无法取到类；它本来就被标为 available=false，
+        # 这里跳过即可（可用性本身由另一个用例覆盖）。
+        if not entry["available"]:
+            continue
+        cls = resolve_class(entry["use"])
+        assert field in cls.model_fields, (
+            f"provider {entry['key']} declares api_base_field={field!r}, "
+            f"but {entry['use']} has no such field"
+        )
+
+
+def test_anthropic_preset_uses_anthropic_api_url_not_api_base(admin: TestClient):
+    """回归：用户给 ChatAnthropic 填 base URL 时踩的坑。
+
+    共享一个 `api_base` 键曾让 Anthropic 条目把该值透传给 SDK 而失败。
+    """
+    entry = _providers_by_key(admin)["anthropic"]
+    assert entry["api_base_field"] == "anthropic_api_url"
+    assert entry["api_base_field"] != "api_base"
+
+
+def test_rejects_a_base_url_key_the_provider_does_not_accept(admin: TestClient, config_path):
+    """写错 base URL 键名应在保存时被拒，而不是留到第一次对话。"""
+    before = config_path.read_bytes()
+    response = admin.post(
+        "/api/models",
+        json={
+            "name": "bad-base-url",
+            "use": "langchain_anthropic:ChatAnthropic",
+            "model": "claude-x",
+            "api_base": "https://open.bigmodel.cn/api/anthropic",
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert config_path.read_bytes() == before, "被拒绝的候选不得改动 config.yaml"
+
+
+def test_accepts_the_correct_base_url_key_for_anthropic(admin: TestClient, config_path):
+    """用对了键名就应当保存成功。"""
+    response = admin.post(
+        "/api/models",
+        json={
+            "name": "e2e-anthropic-key",
+            "use": "langchain_anthropic:ChatAnthropic",
+            "model": "claude-x",
+            "anthropic_api_url": "https://open.bigmodel.cn/api/anthropic",
+        },
+    )
+    assert response.status_code == 200, response.text
+    admin.delete("/api/models/e2e-anthropic-key")

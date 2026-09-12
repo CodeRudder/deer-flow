@@ -505,13 +505,63 @@ def _validate_model_use_paths(config: AppConfig) -> None:
     for model in config.models:
         use_path = model.use
         try:
-            resolve_class(use_path)
+            cls = resolve_class(use_path)
         except Exception as exc:
             # ImportError/AttributeError from the resolver, plus anything an
             # imported provider module raises at import time (missing optional
             # dependency, bad platform-specific code). All mean "this path is
             # not usable"; none may escape as an unhandled 500.
             raise ValueError(f"model '{model.name}' has an unresolvable 'use' path {use_path!r}: {exc}") from exc
+        _validate_base_url_key(model, cls)
+
+
+#: Keys an entry may use to point a provider at a custom endpoint. The name is
+#: per-provider (``openai_api_base`` / ``anthropic_api_url`` / ``base_url`` /
+#: ``api_base``), so a wrong guess cannot be detected structurally — only the
+#: provider class knows. Kept here as the single list both the check and the
+#: error message reason about.
+_BASE_URL_KEYS = ("api_base", "base_url", "openai_api_base", "anthropic_api_url")
+
+
+def _validate_base_url_key(model: ModelConfig, cls: type) -> None:
+    """Reject an entry whose base-URL key its provider does not accept.
+
+    ``ModelConfig`` is ``extra="allow"``, so an unrecognised key is accepted at
+    save time and forwarded into the provider's ``model_kwargs``. The failure
+    surfaces only on the first real request, as a confusing SDK error::
+
+        AsyncMessages.create() got an unexpected keyword argument 'api_base'
+
+    That is exactly the trap a shared ``api_base`` key creates: only some
+    providers accept it (the ``deerflow.models.patched_*`` ones do;
+    ``langchain_anthropic`` wants ``anthropic_api_url``, ``langchain_openai``
+    wants ``openai_api_base``, ``langchain_google_genai`` wants ``base_url``).
+
+    Warning, not an error, when the provider accepts *none* of the known keys:
+    those providers (e.g. patched MiniMax) take the endpoint through
+    ``model_kwargs``, and the config may well be intentional. A key the provider
+    *demonstrably* rejects is unambiguous, though, so that is a hard failure.
+    """
+    supplied = [key for key in _BASE_URL_KEYS if getattr(model, key, None) is not None]
+    if not supplied:
+        return
+
+    fields = getattr(cls, "model_fields", None)
+    if not isinstance(fields, dict):  # not a pydantic model — cannot judge
+        return
+
+    accepted = [key for key in supplied if key in fields]
+    if accepted:
+        return
+
+    # Nothing the entry supplied is a real field. If the class exposes some
+    # other base-URL field, the entry almost certainly meant that one.
+    hint = next((name for name in fields if "url" in name.lower() or name.lower() == "base_url"), None)
+    suggestion = f" Use '{hint}' instead." if hint else ""
+    raise ValueError(
+        f"model '{model.name}' sets {supplied} but provider '{model.use}' accepts none of them.{suggestion} "
+        f"An unrecognised key is silently forwarded to the SDK and only fails when the model is first called."
+    )
 
 
 # --------------------------------------------------------------------------- #

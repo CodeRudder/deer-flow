@@ -236,12 +236,33 @@ class _ProviderPreset(NamedTuple):
     endpoint to prefill when the provider has one (``None`` means "the SDK's own
     default" — the form leaves the field empty). Values come from the commented
     examples in ``config.example.yaml``; none are invented here.
+
+    ``api_base_field`` is the **constructor keyword the provider actually
+    accepts**, and it is NOT the same across providers — measured against each
+    class's ``model_fields``:
+
+        openai      -> openai_api_base
+        anthropic   -> anthropic_api_url
+        google      -> base_url
+        deepseek et al. (patched) -> api_base
+
+    Writing the wrong key is silent: ``ModelConfig`` is ``extra="allow"``, so
+    the value is accepted at save time and forwarded into the SDK's
+    ``model_kwargs``, failing only when a request is actually made — e.g.
+    ``AsyncMessages.create() got an unexpected keyword argument 'api_base'``.
+    Hence the per-provider field name rather than one shared ``api_base``.
+
+    ``None`` means the provider exposes no direct base-URL constructor field;
+    ``api_base_in_model_kwargs`` then carries the value through ``model_kwargs``
+    instead.
     """
 
     key: str
     label: str
     use: str
     default_api_base: str | None = None
+    api_base_field: str | None = "api_base"
+    api_base_in_model_kwargs: bool = False
 
 
 #: The provider dropdown, in display order. Extending the form means adding one
@@ -250,15 +271,16 @@ class _ProviderPreset(NamedTuple):
 #: `use` matches no row: the UI shows that label but keeps the stored class path
 #: verbatim, so an advanced configuration survives an edit untouched.
 _PROVIDER_PRESETS: tuple[_ProviderPreset, ...] = (
-    _ProviderPreset("openai", "OpenAI", "langchain_openai:ChatOpenAI"),
-    _ProviderPreset("openai-compatible", "其他 OpenAI 兼容 (OpenAI-compatible)", "langchain_openai:ChatOpenAI"),
-    _ProviderPreset("doubao", "豆包 (火山方舟)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://ark.cn-beijing.volces.com/api/v3"),
-    _ProviderPreset("deepseek", "DeepSeek", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.deepseek.com/v1"),
-    _ProviderPreset("kimi", "Kimi (Moonshot)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.moonshot.cn/v1"),
-    _ProviderPreset("minimax", "MiniMax", "deerflow.models.patched_minimax:PatchedChatMiniMax"),
-    _ProviderPreset("anthropic", "Anthropic Claude", "langchain_anthropic:ChatAnthropic"),
-    _ProviderPreset("google", "Google Gemini", "langchain_google_genai:ChatGoogleGenerativeAI"),
-    _ProviderPreset("ollama", "Ollama (本地)", "langchain_ollama:ChatOllama"),
+    _ProviderPreset("openai", "OpenAI", "langchain_openai:ChatOpenAI", None, "openai_api_base"),
+    _ProviderPreset("openai-compatible", "其他 OpenAI 兼容 (OpenAI-compatible)", "langchain_openai:ChatOpenAI", None, "openai_api_base"),
+    _ProviderPreset("doubao", "豆包 (火山方舟)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://ark.cn-beijing.volces.com/api/v3", "api_base"),
+    _ProviderPreset("deepseek", "DeepSeek", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.deepseek.com/v1", "api_base"),
+    _ProviderPreset("kimi", "Kimi (Moonshot)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.moonshot.cn/v1", "api_base"),
+    # MiniMax subclasses ChatOpenAI, so it takes the OpenAI-compatible field.
+    _ProviderPreset("minimax", "MiniMax", "deerflow.models.patched_minimax:PatchedChatMiniMax", None, "openai_api_base"),
+    _ProviderPreset("anthropic", "Anthropic Claude", "langchain_anthropic:ChatAnthropic", None, "anthropic_api_url"),
+    _ProviderPreset("google", "Google Gemini", "langchain_google_genai:ChatGoogleGenerativeAI", None, "base_url"),
+    _ProviderPreset("ollama", "Ollama (本地)", "langchain_ollama:ChatOllama", None, "base_url"),
 )
 
 
@@ -269,6 +291,14 @@ class ModelProviderPreset(BaseModel):
     label: str = Field(..., description="Human-readable provider name")
     use: str = Field(..., description="Class path an entry using this provider carries")
     default_api_base: str | None = Field(None, description="Endpoint to prefill; null means the SDK default")
+    api_base_field: str | None = Field(
+        None,
+        description=(
+            "Constructor keyword this provider accepts for its endpoint (e.g. `openai_api_base`, `anthropic_api_url`, "
+            "`base_url`). The form writes the base URL under THIS key — writing a shared `api_base` silently lands in "
+            "the SDK's model_kwargs and only fails at request time. Null when the provider has no such field."
+        ),
+    )
     available: bool = Field(..., description="True when the class path resolves in this process")
     reason: str | None = Field(None, description="Why the class path did not resolve; null when it did")
 

@@ -169,16 +169,31 @@ export function maskedKeyLabel(model: ManagedModel): string | null {
   return null;
 }
 
+/**
+ * Every endpoint key a provider class may accept.
+ *
+ * Not shared: OpenAI takes `openai_api_base`, Anthropic `anthropic_api_url`,
+ * Google `base_url`, the patched DeepSeek/MiniMax family `api_base`. The form
+ * writes exactly one of these (the one the selected provider declares) and must
+ * drop the others, or a provider switch would leave a stale endpoint behind.
+ */
+export const BASE_URL_KEYS = [
+  "api_base",
+  "base_url",
+  "openai_api_base",
+  "anthropic_api_url",
+] as const;
+
 //: Server-owned / write-only fields that must never be written back verbatim.
-const NON_ROUND_TRIP_KEYS = new Set([
+const NON_ROUND_TRIP_KEYS = new Set<string>([
   "index",
   "api_key_masked",
   "api_key",
   "api_key_value",
-  // The form now owns the endpoint; it is rebuilt from the draft on save so a
+  // The form owns the endpoint; it is rebuilt from the draft on save so a
   // cleared field actually removes the stored value instead of being carried
   // over by `carriedOver`.
-  "api_base",
+  ...BASE_URL_KEYS,
 ]);
 
 /**
@@ -252,10 +267,24 @@ export function buildManagedModelWrite(
     display_name: draft.display_name.trim() || null,
   };
 
-  // The form owns the endpoint: send it when non-blank, and send an explicit
-  // empty string when the operator cleared it, so a stored `api_base` is
-  // removed rather than carried over by `carriedOver`.
-  write.api_base = draft.api_base.trim();
+  // The endpoint goes under the key THIS provider accepts — it is not shared
+  // (`openai_api_base` / `anthropic_api_url` / `base_url` / `api_base`).
+  // Writing a key the provider does not take is silent: ModelConfig is
+  // `extra="allow"`, so the value is forwarded into the SDK's model_kwargs and
+  // only fails on the first real request. The backend rejects a mismatched key
+  // at save time, but carrying the override's class path means the provider
+  // lookup above may miss — in that case fall back to `api_base`, which is
+  // what a hand-written entry most likely already uses.
+  const provider = providers.find((p) => p.key === draft.provider);
+  const baseUrlKey = provider?.api_base_field ?? "api_base";
+  // Always write the key, even when blank, so a cleared field removes the
+  // stored endpoint instead of letting `carriedOver` restore it.
+  write[baseUrlKey] = draft.api_base.trim();
+  // Drop any endpoint key left over from a previous provider selection (or
+  // carried over from the original entry), so only the chosen one remains.
+  for (const key of BASE_URL_KEYS) {
+    if (key !== baseUrlKey) delete write[key];
+  }
 
   const apiKey = draft.api_key.trim();
   if (apiKey) {
@@ -285,6 +314,17 @@ export function buildManagedModelProbe(model: ManagedModel): ManagedModelWrite {
     model: model.model,
     display_name: model.display_name ?? null,
   };
+  // The probe must exercise the entry AS STORED — including its endpoint.
+  // `carriedOver` strips every BASE_URL_KEYS entry (the form owns that field on
+  // save), so re-attach whichever key this entry actually uses; otherwise the
+  // probe would test against the SDK default and could report a false failure
+  // for a custom endpoint.
+  for (const baseUrlKey of BASE_URL_KEYS) {
+    const value = model[baseUrlKey];
+    if (typeof value === "string" && value.length > 0) {
+      probe[baseUrlKey] = value;
+    }
+  }
   const key = model.api_key;
   if (typeof key === "string" && key.length > 0) {
     probe.api_key = key;
@@ -351,8 +391,12 @@ function ManagedModelList({
 
   const openEdit = (model: ManagedModel) => {
     setEditing(model);
-    const apiBase =
-      typeof model.api_base === "string" ? model.api_base : "";
+    // The stored server may hold the endpoint under any of the provider keys
+    // (or none), so read whichever one is present rather than assuming.
+    const storedBase = BASE_URL_KEYS.map((key) => model[key]).find(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+    const apiBase = storedBase ?? "";
     setDraft({
       ...EMPTY_MODEL_DRAFT,
       name: model.name,
