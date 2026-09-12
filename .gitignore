@@ -73,3 +73,13 @@ config.yaml.bak
 # 模型配置界面的写入协议产物（models_section.commit_config_update）
 config.yaml.work
 config.yaml.bak.*
+
+# 根级 Electron 桌面端项目（deer-flow-desktop）。它是与本仓库并列的独立
+# npm 工程，源码与产物都暂不入库；如需纳入版本管理，删掉本节即可。
+/node_modules/
+/build/
+/release/
+/test-results/
+
+# 编辑器本地历史
+.history/
