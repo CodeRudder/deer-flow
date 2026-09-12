@@ -25,6 +25,12 @@ router = APIRouter(prefix="/api", tags=["models"])
 
 _ADMIN_REQUIRED_DETAIL = "Admin privileges required to manage model configuration."
 
+#: Default thinking budget prefill. The operator asked for "thinking output should
+#: not exceed 4k by default"; Anthropic also wants budget < max_tokens, and
+#: ChatAnthropic's own max_tokens default is exactly 4096 (measured) — equal, not
+#: less — so the form pairs this with an 8192 max_tokens default.
+DEFAULT_BUDGET_TOKENS = 4096
+
 
 class ModelResponse(BaseModel):
     """Response model for model information."""
@@ -263,24 +269,75 @@ class _ProviderPreset(NamedTuple):
     default_api_base: str | None = None
     api_base_field: str | None = "api_base"
     api_base_in_model_kwargs: bool = False
+    thinking: "_ThinkingPreset | None" = None
+
+
+class _ThinkingPreset(NamedTuple):
+    """How one provider spells "turn thinking on".
+
+    The shape is NOT shared — same lesson as ``api_base_field``. Measured against
+    the commented examples in ``config.example.yaml``:
+
+        anthropic / openai-compatible -> ``thinking`` / ``extra_body.thinking``
+        google                        -> ``thinking_budget``
+        vllm (Qwen)                   -> ``extra_body.chat_template_kwargs``
+
+    ``needs_budget`` marks providers whose API requires an explicit thinking
+    budget (Anthropic: min 1024 and must be < max_tokens). The form only shows
+    the budget input for those.
+
+    ``enabled`` / ``disabled`` are written verbatim as ``when_thinking_enabled``
+    / ``when_thinking_disabled``.
+    """
+
+    enabled: dict
+    disabled: dict
+    needs_budget: bool = False
+
+
+#: Bytes-level templates, one per provider family. Referenced by the rows below
+#: so the table stays readable.
+_THINKING_EXTRA_BODY = _ThinkingPreset(
+    enabled={"extra_body": {"thinking": {"type": "enabled"}}},
+    disabled={"extra_body": {"thinking": {"type": "disabled"}}},
+)
+_THINKING_ANTHROPIC = _ThinkingPreset(
+    # budget_tokens is required by the Anthropic API whenever type=enabled and
+    # has no server default; the form overrides the 4096 below when the operator
+    # edits the field.
+    enabled={"thinking": {"type": "enabled", "budget_tokens": 4096}},
+    disabled={"thinking": {"type": "disabled"}},
+    needs_budget=True,
+)
+_THINKING_GOOGLE = _ThinkingPreset(
+    enabled={"thinking_budget": 4096},
+    disabled={"thinking_budget": 0},
+    needs_budget=True,
+)
+_THINKING_VLLM = _ThinkingPreset(
+    enabled={"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}},
+    disabled={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+)
 
 
 #: The provider dropdown, in display order. Extending the form means adding one
-#: row here — the availability probe and the endpoint are generic over the table.
+#: row here — the availability probe, the endpoint key and the thinking template
+#: are all generic over the table.
 #: `openai-compatible` is the deliberate fallback for a hand-crafted entry whose
 #: `use` matches no row: the UI shows that label but keeps the stored class path
 #: verbatim, so an advanced configuration survives an edit untouched.
 _PROVIDER_PRESETS: tuple[_ProviderPreset, ...] = (
-    _ProviderPreset("openai", "OpenAI", "langchain_openai:ChatOpenAI", None, "openai_api_base"),
-    _ProviderPreset("openai-compatible", "其他 OpenAI 兼容 (OpenAI-compatible)", "langchain_openai:ChatOpenAI", None, "openai_api_base"),
-    _ProviderPreset("doubao", "豆包 (火山方舟)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://ark.cn-beijing.volces.com/api/v3", "api_base"),
-    _ProviderPreset("deepseek", "DeepSeek", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.deepseek.com/v1", "api_base"),
-    _ProviderPreset("kimi", "Kimi (Moonshot)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.moonshot.cn/v1", "api_base"),
+    _ProviderPreset("openai", "OpenAI", "langchain_openai:ChatOpenAI", None, "openai_api_base", thinking=_THINKING_EXTRA_BODY),
+    _ProviderPreset("openai-compatible", "其他 OpenAI 兼容 (OpenAI-compatible)", "langchain_openai:ChatOpenAI", None, "openai_api_base", thinking=_THINKING_EXTRA_BODY),
+    _ProviderPreset("doubao", "豆包 (火山方舟)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://ark.cn-beijing.volces.com/api/v3", "api_base", thinking=_THINKING_EXTRA_BODY),
+    _ProviderPreset("deepseek", "DeepSeek", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.deepseek.com/v1", "api_base", thinking=_THINKING_EXTRA_BODY),
+    _ProviderPreset("kimi", "Kimi (Moonshot)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.moonshot.cn/v1", "api_base", thinking=_THINKING_EXTRA_BODY),
     # MiniMax subclasses ChatOpenAI, so it takes the OpenAI-compatible field.
-    _ProviderPreset("minimax", "MiniMax", "deerflow.models.patched_minimax:PatchedChatMiniMax", None, "openai_api_base"),
-    _ProviderPreset("anthropic", "Anthropic Claude", "langchain_anthropic:ChatAnthropic", None, "anthropic_api_url"),
-    _ProviderPreset("google", "Google Gemini", "langchain_google_genai:ChatGoogleGenerativeAI", None, "base_url"),
-    _ProviderPreset("ollama", "Ollama (本地)", "langchain_ollama:ChatOllama", None, "base_url"),
+    _ProviderPreset("minimax", "MiniMax", "deerflow.models.patched_minimax:PatchedChatMiniMax", None, "openai_api_base", thinking=_THINKING_EXTRA_BODY),
+    _ProviderPreset("anthropic", "Anthropic Claude", "langchain_anthropic:ChatAnthropic", None, "anthropic_api_url", thinking=_THINKING_ANTHROPIC),
+    _ProviderPreset("google", "Google Gemini", "langchain_google_genai:ChatGoogleGenerativeAI", None, "base_url", thinking=_THINKING_GOOGLE),
+    _ProviderPreset("vllm", "vLLM (Qwen 等)", "deerflow.models.vllm_provider:VllmChatModel", None, "openai_api_base", thinking=_THINKING_VLLM),
+    _ProviderPreset("ollama", "Ollama (本地)", "langchain_ollama:ChatOllama", None, "base_url", thinking=_THINKING_VLLM),
 )
 
 
@@ -301,6 +358,18 @@ class ModelProviderPreset(BaseModel):
     )
     available: bool = Field(..., description="True when the class path resolves in this process")
     reason: str | None = Field(None, description="Why the class path did not resolve; null when it did")
+    supports_thinking: bool = Field(False, description="Whether this provider has a thinking template at all")
+    thinking_enabled: dict | None = Field(
+        None,
+        description=(
+            "The `when_thinking_enabled` block to write verbatim when the operator ticks 'supports thinking'. "
+            "The shape is per-provider (Anthropic `thinking`, OpenAI-compatible `extra_body.thinking`, "
+            "Google `thinking_budget`, vLLM `chat_template_kwargs`) — there is no shared form."
+        ),
+    )
+    thinking_disabled: dict | None = Field(None, description="The matching `when_thinking_disabled` block.")
+    thinking_needs_budget: bool = Field(False, description="True when the provider's API requires an explicit thinking budget.")
+    default_budget_tokens: int | None = Field(None, description="Prefill for the budget input; null when the provider does not need one.")
 
 
 class ModelProvidersResponse(BaseModel):
@@ -318,11 +387,26 @@ def _probe_preset(preset: _ProviderPreset) -> ModelProviderPreset:
     Reporting ``available: false`` + the resolver's install hint turns that dead
     end into guidance.
     """
+    thinking = preset.thinking
+    # Flattened explicitly rather than via `preset._asdict()`: the preset carries
+    # a nested `_ThinkingPreset`, which is not a field of the response model.
+    response = {
+        "key": preset.key,
+        "label": preset.label,
+        "use": preset.use,
+        "default_api_base": preset.default_api_base,
+        "api_base_field": preset.api_base_field,
+        "supports_thinking": thinking is not None,
+        "thinking_enabled": thinking.enabled if thinking else None,
+        "thinking_disabled": thinking.disabled if thinking else None,
+        "thinking_needs_budget": bool(thinking and thinking.needs_budget),
+        "default_budget_tokens": (thinking.enabled.get("thinking", {}).get("budget_tokens") or DEFAULT_BUDGET_TOKENS) if thinking else None,
+    }
     try:
         resolve_class(preset.use)
     except Exception as exc:  # noqa: BLE001 — any import/attribute failure is the availability answer
-        return ModelProviderPreset(**preset._asdict(), available=False, reason=str(exc) or exc.__class__.__name__)
-    return ModelProviderPreset(**preset._asdict(), available=True, reason=None)
+        return ModelProviderPreset(**response, available=False, reason=str(exc) or exc.__class__.__name__)
+    return ModelProviderPreset(**response, available=True, reason=None)
 
 
 @router.get(
@@ -409,6 +493,12 @@ class ModelTestResponse(BaseModel):
 #: URL, credential, and model name all work. Plain string, no tools, no system
 #: prompt: the point is provider validation, not an answer.
 _PROBE_PROMPT = "ping"
+
+#: The thinking probe needs a prompt that actually elicits reasoning — "ping"
+#: may be answered without any deliberation, which would read as "no thinking"
+#: even on an endpoint that supports it. A short arithmetic-with-steps question
+#: reliably provokes a reasoning block on models that reason at all.
+_THINKING_PROBE_PROMPT = "What is 17 * 23? Work through it step by step."
 
 #: Bounded probe budget. A live provider answers a one-token prompt in well
 #: under 3s, TLS handshake included, and the failures this endpoint exists to
@@ -727,6 +817,157 @@ async def test_managed_model(request: Request, entry: ManagedModelEntry) -> Mode
     # admin request never returns 500. A missing config.yaml surfaces from
     # `get_app_config()` inside the probe as `ok: false` with the same message.
     return await _run_probe(entry.model_dump(exclude_none=True))
+
+
+def _has_thinking_content(message: object) -> bool:
+    """True when a response actually contains reasoning, not just a finished answer.
+
+    The decisive observation from a live Anthropic-compatible endpoint: with
+    thinking on, ``content`` is a list of typed blocks including ``thinking``;
+    with it off, ``content`` is a plain string. So the presence of a thinking
+    block IS the signal — "the request did not error" is not, because a
+    compatible gateway can accept the parameters and answer without reasoning.
+
+    Checked across every carrier the supported providers use, since they differ:
+    an Anthropic-style ``content`` block list, and the ``reasoning_content`` /
+    ``thinking`` keys OpenAI-compatible and patched providers put on
+    ``additional_kwargs``.
+    """
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                return True
+            # Some providers emit the dict without a `type` discriminator.
+            if isinstance(block, dict) and "thinking" in block:
+                return True
+
+    extra = getattr(message, "additional_kwargs", None) or {}
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "thinking"):
+            value = extra.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+
+    metadata = getattr(message, "response_metadata", None) or {}
+    if isinstance(metadata, dict):
+        for key in ("reasoning_content", "thinking"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
+
+
+class ThinkingProbeResponse(BaseModel):
+    """Result of ``POST /api/models/probe-thinking``.
+
+    Three INDEPENDENT observations rather than one boolean, because "does this
+    endpoint support thinking" is not a yes/no question in practice. Measured on
+    a live Anthropic-compatible gateway: it returned thinking blocks even when
+    the request carried NO thinking parameters at all, and still returned them
+    when the parameters said ``disabled`` — so a single "supported: true" would
+    have told the operator their thinking toggle works when it does not.
+
+    ``error`` is set only when the probe could not run at all (bad entry,
+    unreachable provider); the three booleans are then all ``false`` and mean
+    "unknown", not "no".
+    """
+
+    ok: bool = Field(..., description="False when the probe could not run; the findings are then all false and mean unknown")
+    thinks_by_default: bool = Field(False, description="The endpoint produced reasoning with no thinking parameters at all")
+    respects_enabled: bool = Field(False, description="Reasoning appeared when thinking was explicitly enabled")
+    respects_disabled: bool = Field(False, description="Reasoning was absent when thinking was explicitly disabled")
+    latency_ms: int = Field(0, description="Total wall-clock duration of the probe calls")
+    error: str | None = Field(None, description="Why the probe could not run; null on success")
+
+
+async def _ask_once(model: object) -> bool:
+    """Send the thinking probe prompt once and report whether reasoning came back.
+
+    Deliberately carries no timeout of its own — the budget belongs to the whole
+    probe (see ``_run_thinking_probe``), not to each of its up-to-three calls.
+    A per-call budget would let an admin wait 3 × 15s on a slow endpoint.
+    """
+    response = await model.ainvoke(_THINKING_PROBE_PROMPT)
+    return _has_thinking_content(response)
+
+
+async def _run_thinking_probe(payload: dict) -> ThinkingProbeResponse:
+    """Run up to three real calls and report what the endpoint actually does.
+
+    A "disabled" request is only issued when the first two calls showed the
+    endpoint thinks at all — no point spending a third call on an endpoint that
+    never reasons.
+    """
+    started = time.perf_counter()
+    try:
+        app_config, name = _probe_candidate_config(payload)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a bad entry is a business result, not a 500
+        return ThinkingProbeResponse(ok=False, latency_ms=_elapsed_ms(started), error=_readable_error(exc))
+
+    def build(extra: dict) -> object:
+        entry = {**payload, **extra}
+        cfg, _ = _probe_candidate_config(entry)
+        return model_factory.create_chat_model(name, thinking_enabled=bool(extra.get("supports_thinking")), app_config=cfg, attach_tracing=False)
+
+    async def observe() -> tuple[bool, bool, bool]:
+        # 1. No thinking configuration at all — does it reason unprompted?
+        thinks_by_default = await _ask_once(build({}))
+        # 2. Explicitly enabled.
+        enabled_entry = {
+            "supports_thinking": True,
+            "when_thinking_enabled": payload.get("when_thinking_enabled"),
+        }
+        respects_enabled = await _ask_once(build(enabled_entry))
+        # 3. Explicitly disabled — only worth asking if it reasons at all.
+        if not (thinks_by_default or respects_enabled):
+            return thinks_by_default, respects_enabled, True
+        disabled_entry = {
+            "supports_thinking": True,
+            "when_thinking_disabled": payload.get("when_thinking_disabled"),
+        }
+        return thinks_by_default, respects_enabled, not await _ask_once(build(disabled_entry))
+
+    try:
+        # One budget for the whole probe, so the worst case an admin waits is
+        # bounded by `_PROBE_TIMEOUT_SECONDS` rather than three times it.
+        thinks_by_default, respects_enabled, respects_disabled = await asyncio.wait_for(observe(), timeout=_PROBE_TIMEOUT_SECONDS)
+        del app_config
+    except TimeoutError:
+        return ThinkingProbeResponse(ok=False, latency_ms=_elapsed_ms(started), error=f"Timed out after {_elapsed_ms(started) / 1000:.1f}s waiting for the provider to answer.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any provider failure is a business result here
+        return ThinkingProbeResponse(ok=False, latency_ms=_elapsed_ms(started), error=_readable_error(exc))
+
+    return ThinkingProbeResponse(
+        ok=True,
+        thinks_by_default=thinks_by_default,
+        respects_enabled=respects_enabled,
+        respects_disabled=respects_disabled,
+        latency_ms=_elapsed_ms(started),
+        error=None,
+    )
+
+
+@router.post(
+    "/models/probe-thinking",
+    response_model=ThinkingProbeResponse,
+    summary="Probe Thinking Behaviour",
+    description=(
+        "Make one to three real chat requests against a candidate entry and report what the endpoint actually does with thinking (admin only). "
+        "Unlike `/models/test`, the question is not 'does it connect' but 'does reasoning happen, and can it be turned off'. "
+        "The answer is three independent observations, because a single boolean misleads: a compatible gateway was measured returning reasoning even when "
+        "the request carried no thinking parameters, and again when they said `disabled` — so `respects_disabled: false` is the signal that the UI's thinking "
+        "toggle has no effect on that endpoint. Nothing is written to config.yaml or .env."
+    ),
+)
+async def probe_model_thinking(request: Request, entry: ManagedModelEntry) -> ThinkingProbeResponse:
+    """Observe thinking behaviour on one candidate entry without persisting anything."""
+    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
+    return await _run_thinking_probe(entry.model_dump(exclude_none=True))
 
 
 # Declared after `/models/config` on purpose: FastAPI matches routes in

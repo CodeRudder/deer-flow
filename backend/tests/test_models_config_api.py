@@ -689,7 +689,20 @@ def test_test_endpoint_stays_200_when_the_config_file_is_missing(admin: TestClie
 # --------------------------------------------------------------------------- #
 
 #: The full key set every entry must carry.
-_PROVIDER_KEYS = {"key", "label", "use", "default_api_base", "api_base_field", "available", "reason"}
+_PROVIDER_KEYS = {
+    "key",
+    "label",
+    "use",
+    "default_api_base",
+    "api_base_field",
+    "supports_thinking",
+    "thinking_enabled",
+    "thinking_disabled",
+    "thinking_needs_budget",
+    "default_budget_tokens",
+    "available",
+    "reason",
+}
 
 
 def _providers_by_key(client: TestClient) -> dict[str, dict]:
@@ -786,10 +799,7 @@ def test_provider_presets_declare_the_field_their_class_actually_accepts(admin: 
         if not entry["available"]:
             continue
         cls = resolve_class(entry["use"])
-        assert field in cls.model_fields, (
-            f"provider {entry['key']} declares api_base_field={field!r}, "
-            f"but {entry['use']} has no such field"
-        )
+        assert field in cls.model_fields, f"provider {entry['key']} declares api_base_field={field!r}, but {entry['use']} has no such field"
 
 
 def test_anthropic_preset_uses_anthropic_api_url_not_api_base(admin: TestClient):
@@ -831,3 +841,200 @@ def test_accepts_the_correct_base_url_key_for_anthropic(admin: TestClient, confi
     )
     assert response.status_code == 200, response.text
     admin.delete("/api/models/e2e-anthropic-key")
+
+
+# --------------------------------------------------------------------------- #
+# 思考模板与思考探测
+# --------------------------------------------------------------------------- #
+
+
+def test_every_thinking_capable_preset_ships_an_enabled_and_disabled_template(admin: TestClient):
+    """勾了「支持思考」就要能写出完整的开/关两个块。
+
+    形态按 provider 分叉（Anthropic `thinking`、OpenAI 兼容 `extra_body.thinking`、
+    Google `thinking_budget`、vLLM `chat_template_kwargs`），所以这里不校验形状，
+    只校验"两个块都在、且都非空"。
+    """
+    for entry in _providers_by_key(admin).values():
+        if not entry["supports_thinking"]:
+            assert entry["thinking_enabled"] is None and entry["thinking_disabled"] is None
+            continue
+        assert entry["thinking_enabled"], f"{entry['key']} 缺 thinking_enabled"
+        assert entry["thinking_disabled"], f"{entry['key']} 缺 thinking_disabled"
+        assert entry["thinking_enabled"] != entry["thinking_disabled"]
+
+
+def test_anthropic_preset_declares_a_budget_and_a_default(admin: TestClient):
+    """Anthropic 必须暴露预算输入，且默认值可用（4096）。"""
+    entry = _providers_by_key(admin)["anthropic"]
+    assert entry["thinking_needs_budget"] is True
+    assert entry["default_budget_tokens"] == 4096
+    # 预算写在模板里，不是让用户自己拼。
+    assert entry["thinking_enabled"]["thinking"]["budget_tokens"] == 4096
+
+
+def test_openai_compatible_preset_does_not_ask_for_a_budget(admin: TestClient):
+    """OpenAI 兼容类用 extra_body.thinking，不需要预算输入。"""
+    entry = _providers_by_key(admin)["deepseek"]
+    assert entry["thinking_needs_budget"] is False
+    assert entry["thinking_enabled"] == {"extra_body": {"thinking": {"type": "enabled"}}}
+
+
+def test_thinking_probe_requires_admin(user: TestClient):
+    response = user.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY)
+    assert response.status_code == 403
+
+
+def test_thinking_probe_writes_nothing(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """探测是只读的：不动 config.yaml，不产生备份，不写 .env。"""
+    monkeypatch.setattr(models_router, "_ask_once", _fake_ask(True))
+    before = config_path.read_bytes()
+    env_path = config_path.parent / ".env"
+    env_before = env_path.read_bytes() if env_path.exists() else None
+
+    response = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY)
+
+    assert response.status_code == 200
+    assert config_path.read_bytes() == before
+    assert list(config_path.parent.glob("config.yaml.bak.*")) == []
+    assert (env_path.read_bytes() if env_path.exists() else None) == env_before
+
+
+def test_thinking_probe_reports_all_three_observations(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """三项独立观察都要如实上报。
+
+    `_fake_ask` 依次模拟三次调用：默认思考、开启思考、关闭思考后仍思考。
+    最后一项是关键 —— 它对应实测到的兼容端点行为（disabled 不生效）。
+    """
+    monkeypatch.setattr(models_router, "_ask_once", _fake_ask(True, True, True))
+
+    body = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY).json()
+
+    assert body["ok"] is True
+    assert body["thinks_by_default"] is True
+    assert body["respects_enabled"] is True
+    assert body["respects_disabled"] is False, "关闭后仍思考必须如实报告"
+    assert body["error"] is None
+
+
+def test_thinking_probe_reports_a_well_behaved_endpoint(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """正常的端点：默认不思考、开启才思考、关闭就停。"""
+    monkeypatch.setattr(models_router, "_ask_once", _fake_ask(False, True, False))
+
+    body = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY).json()
+
+    assert body["ok"] is True
+    assert (body["thinks_by_default"], body["respects_enabled"], body["respects_disabled"]) == (False, True, True)
+
+
+def test_thinking_probe_skips_the_disabled_call_when_it_never_reasons(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """从不思考的端点不必再花第三次调用。"""
+    calls: list[object] = []
+
+    async def counting(model):
+        calls.append(model)
+        return False
+
+    monkeypatch.setattr(models_router, "_ask_once", counting)
+    body = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY).json()
+
+    assert body["ok"] is True
+    assert len(calls) == 2, f"应当只调用两次，实际 {len(calls)}"
+    assert body["respects_disabled"] is True  # 没思考 = 关闭是"生效"的
+
+
+def test_thinking_probe_reports_a_bad_entry_as_a_business_result(admin: TestClient):
+    """use 路径不可解析 → ok:false，HTTP 仍 200（业务结果，非服务端故障）。"""
+    response = admin.post(
+        "/api/models/probe-thinking",
+        json={"name": "bad", "use": "nonexistent.module:Nope", "model": "x"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]
+    assert body["thinks_by_default"] is False
+
+
+def test_thinking_probe_bounds_a_hung_provider(admin: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(models_router, "_PROBE_TIMEOUT_SECONDS", 0.05)
+
+    async def hangs(model):
+        await asyncio.sleep(5)
+        return False
+
+    monkeypatch.setattr(models_router, "_ask_once", hangs)
+    body = admin.post("/api/models/probe-thinking", json=_MINIMAL_ENTRY).json()
+
+    assert body["ok"] is False
+    assert "Timed out" in body["error"]
+
+
+@pytest.mark.parametrize(
+    ("content", "additional", "metadata", "expected"),
+    [
+        # Anthropic 路径：content 是结构化块列表，含 type=thinking
+        ([{"type": "thinking", "thinking": "..."}, {"type": "text", "text": "391"}], {}, {}, True),
+        # 无 type 判别键，但有 thinking 键
+        ([{"thinking": "..."}], {}, {}, True),
+        # 纯文本回答 = 没思考
+        ("391", {}, {}, False),
+        ([{"type": "text", "text": "391"}], {}, {}, False),
+        # OpenAI 兼容路径
+        ("391", {"reasoning_content": "..."}, {}, True),
+        ("391", {"thinking": "..."}, {}, True),
+        # 空串不算
+        ("391", {"reasoning_content": "   "}, {}, False),
+        # response_metadata 路径
+        ("391", {}, {"reasoning_content": "..."}, True),
+    ],
+)
+def test_has_thinking_content_recognises_every_carrier(content, additional, metadata, expected):
+    """各 provider 承载思考的位置不同，判据必须全都认。
+
+    判据是"响应里真的出现思考内容"，不是"请求没报错" —— 实测有兼容端点
+    不传思考参数也思考、传 disabled 也照样思考，只看有没有异常会误判。
+    """
+
+    class Msg:
+        pass
+
+    msg = Msg()
+    msg.content = content
+    msg.additional_kwargs = additional
+    msg.response_metadata = metadata
+    assert models_router._has_thinking_content(msg) is expected
+
+
+def test_literal_model_subroutes_are_not_shadowed_by_the_model_name_route(admin: TestClient):
+    """回归：`/models/{model_name}` 曾把 `/models/config` 吞掉过（返回 405）。
+
+    FastAPI 按注册顺序匹配，字面量子路径必须排在贪婪参数路径之前。
+    GET 与 POST 分别校验 —— 跨方法不会冲突，但同类方法之间会。
+    """
+    assert admin.get("/api/models/providers").status_code == 200
+    assert admin.get("/api/models/config").status_code == 200
+    # POST 类：一个无效条目也应返回 400（说明到达了处理器），而不是被吞成 404/405。
+    response = admin.post("/api/models/probe-thinking", json={"name": "x"})
+    assert response.status_code in (200, 400, 422), f"疑似被 /models/{{model_name}} 路由吞掉: {response.status_code}"
+
+
+#: 一个最小可用条目，供探测用例复用。
+_MINIMAL_ENTRY = {"name": "probe-target", "use": "langchain_openai:ChatOpenAI", "model": "gpt-4o"}
+
+
+def _fake_ask(*results: bool):
+    """返回一个按调用次序吐出 *results* 的 `_ask_once` 替身。
+
+    探测会按需发 2~3 次调用，用序列而不是固定值，
+    才能分别模拟「默认思考」「开启思考」「关闭后仍思考」。
+    """
+    calls: list[int] = []
+
+    async def fake(model):
+        index = len(calls)
+        calls.append(index)
+        return results[index] if index < len(results) else results[-1]
+
+    fake.calls = calls  # type: ignore[attr-defined]
+    return fake
