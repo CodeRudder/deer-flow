@@ -204,9 +204,15 @@ def replace_managed_section(text: str, models: list[dict]) -> str:
 
     When the markers are present only the lines between them are replaced. When
     they are absent the region is inserted immediately after the ``models:``
-    line, above the commented templates. Everything else is preserved verbatim,
-    including line endings. Raises ``ValueError`` when the file has no ``models:``
-    section or carries only one of the two markers.
+    line, and the section's existing *entries* are removed — the region is the
+    section's value now, so leaving them behind would put two sequences under
+    one key. Comment-only lines (the ``config.example.yaml`` templates) are kept
+    where they are, since a comment contributes no value and dropping them would
+    throw away the operator's own notes.
+
+    Everything else is preserved verbatim, including line endings. Raises
+    ``ValueError`` when the file has no ``models:`` section or carries only one
+    of the two markers.
     """
     lines = text.splitlines(keepends=True)
     newline = _detect_newline(lines)
@@ -221,7 +227,8 @@ def replace_managed_section(text: str, models: list[dict]) -> str:
             raise ValueError("config text has no top-level 'models:' section to anchor the managed region to")
         anchor = block[0] + 1
         lines[block[0]] = _bare_models_key_line(lines[block[0]], newline)
-        return "".join(lines[:anchor] + rendered + lines[anchor:])
+        kept = [line for line in lines[anchor : block[1]] if _is_comment_or_blank(line)]
+        return "".join(lines[:anchor] + rendered + kept + lines[block[1] :])
 
     if begin is None or end is None or end < begin:
         raise ValueError(f"config text has unbalanced managed-region markers ({MANAGED_BEGIN!r} / {MANAGED_END!r})")
@@ -232,6 +239,17 @@ def replace_managed_section(text: str, models: list[dict]) -> str:
         lines[block[0]] = _bare_models_key_line(lines[block[0]], newline)
 
     return "".join(lines[:begin] + rendered + lines[end + 1 :])
+
+
+def _is_comment_or_blank(line: str) -> bool:
+    """True when *line* carries no YAML value of its own.
+
+    Used by the insertion path to decide what survives from a section it is
+    about to take over: comments and blank lines do, everything else is the old
+    value and goes.
+    """
+    stripped = line.strip()
+    return not stripped or stripped.startswith("#")
 
 
 def _bare_models_key_line(line: str, newline: str) -> str:
@@ -576,10 +594,7 @@ def _validate_base_url_key(model: ModelConfig, cls: type) -> None:
     # other base-URL field, the entry almost certainly meant that one.
     hint = next((name for name in fields if "url" in name.lower() or name.lower() == "base_url"), None)
     suggestion = f" Use '{hint}' instead." if hint else ""
-    raise ValueError(
-        f"model '{model.name}' sets {supplied} but provider '{model.use}' accepts none of them.{suggestion} "
-        f"An unrecognised key is silently forwarded to the SDK and only fails when the model is first called."
-    )
+    raise ValueError(f"model '{model.name}' sets {supplied} but provider '{model.use}' accepts none of them.{suggestion} An unrecognised key is silently forwarded to the SDK and only fails when the model is first called.")
 
 
 # --------------------------------------------------------------------------- #

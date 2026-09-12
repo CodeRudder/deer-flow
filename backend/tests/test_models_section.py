@@ -276,6 +276,69 @@ def test_inserts_below_models_line_and_above_templates():
     assert len(out_lines) > len(in_lines)
 
 
+# The regression this pins: a config whose `models:` section holds *real*
+# entries and no markers. The insertion path used to splice the managed region
+# in below `models:` without removing what was already there, producing two
+# sequences under one key — invalid YAML, so every save through the Web UI
+# failed with "candidate config is not valid YAML" until the operator
+# hand-added the markers.
+UNMARKED_WITH_ENTRIES = """\
+config_version: 26
+log_level: info
+models:
+- name: existing
+  use: langchain_anthropic:ChatAnthropic
+  model: glm-5.1
+  api_key: sk-existing
+default_model: existing
+search:
+  enabled: true
+"""
+
+
+def test_insertion_replaces_real_entries_in_an_unmarked_section():
+    out = replace_managed_section(UNMARKED_WITH_ENTRIES, SAMPLE_MODELS)
+
+    # The whole point: the result must be parseable.
+    parsed = yaml.safe_load(out)
+    assert [entry["name"] for entry in parsed["models"]] == [
+        "doubao-seed-1.8",
+        "gpt-4",
+    ]
+    # The old entry is gone, not merely shadowed.
+    assert "sk-existing" not in out
+    # Everything outside the section is untouched.
+    assert parsed["default_model"] == "existing"
+    assert parsed["search"] == {"enabled": True}
+    assert parsed["config_version"] == 26
+
+
+def test_insertion_keeps_real_entries_of_neighbouring_sections():
+    """Only the ``models:`` section is taken over — a sibling list survives."""
+    text = """\
+models:
+- name: existing
+  use: x:Y
+  model: m
+other:
+- keep-me
+"""
+    parsed = yaml.safe_load(replace_managed_section(text, SAMPLE_MODELS))
+
+    assert parsed["other"] == ["keep-me"]
+    assert [entry["name"] for entry in parsed["models"]] == [
+        "doubao-seed-1.8",
+        "gpt-4",
+    ]
+
+
+def test_insertion_then_replace_is_stable_for_unmarked_entries():
+    once = replace_managed_section(UNMARKED_WITH_ENTRIES, SAMPLE_MODELS)
+    twice = replace_managed_section(once, SAMPLE_MODELS)
+
+    assert twice == once
+
+
 def test_insertion_preserves_comments_outside_region():
     _assert_outside_region_identical(SAMPLE_TEXT, SAMPLE_MODELS)
 
