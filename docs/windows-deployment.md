@@ -1275,7 +1275,7 @@ D:\deer-flow\
 ├── tools\uv\uv.exe                            uv 0.12.13
 ├── src\                                       代码仓库
 │   ├── config.yaml                            业务配置（models 段需手工填）
-│   ├── .env                                   密钥与路径（DEER_FLOW_HOME 权威来源）
+│   ├── .env                                   密钥与路径（DEER_FLOW_HOME 也在此，但权威在 start.ps1）
 │   ├── backend\.venv\                         后端虚拟环境
 │   ├── frontend\.next\                        前端构建产物（BUILD_ID）
 │   └── scripts\windows\                       全部部署脚本

@@ -341,15 +341,24 @@ PyPI 与国内镜像（清华/阿里/腾讯/中科大）直连均可达，npm �
 | npm / pnpm | 用户级 `NPM_CONFIG_REGISTRY` | `https://registry.npmmirror.com` |
 | PyPI | `backend/pyproject.toml:51-52`（**仓库内置**） | `https://pypi.tuna.tsinghua.edu.cn/simple` |
 
-### 环境变量（用户级，由 `install-toolchain.ps1` 设置）
+### 环境变量（用户级）
 
 ```
-DEER_FLOW_HOME          = D:\deer-flow
+DEER_FLOW_HOME          = D:\deer-flow\data
 NPM_CONFIG_REGISTRY     = https://registry.npmmirror.com
 NPM_CONFIG_CACHE        = D:\deer-flow\cache\npm
 UV_CACHE_DIR            = D:\deer-flow\cache\uv
 UV_PYTHON_INSTALL_DIR   = D:\deer-flow\cache\uv-python
 ```
+
+> ⚠️ 这些变量**不是** `install-toolchain.ps1` 设的（该脚本刻意不碰 `DEER_FLOW_HOME`）。
+> `DEER_FLOW_HOME` 由 `init-config.ps1` 写入 `.env` 决定取值，并由 `start.ps1`
+> 在 Gateway 启动命令行显式钉死。
+>
+> **不要删除用户级的 `DEER_FLOW_HOME`**：它是让 `base_dir` 与 cwd 无关的锚点，
+> 删掉会让从部署根启动的进程把状态写到 `.deer-flow\` 而非 `data\`。
+> 早期文档曾建议删除，那是个错误，已更正。详见 `windows-deployment.md`
+> 「路径与配置」一节。
 
 ### 其他工具（目标机已有）
 
