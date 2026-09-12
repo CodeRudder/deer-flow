@@ -90,6 +90,10 @@ export interface Translations {
     videoRegenerationLabel: string;
     videoDurationRange: string;
     videoDurationSeconds: string;
+    // Label of the mobile `＋` panel's model row. The row opens the same
+    // chat/vision picker as the desktop, so the two labels below are the
+    // category toggle *inside* it, not this one.
+    model: string;
     chatModel: string;
     visionModel: string;
     defaultVisionModel: string;
@@ -126,6 +130,19 @@ export interface Translations {
           type: "separator";
         }
     )[];
+    // Mobile composer (prototype ②③): the main row keeps only ＋ / input /
+    // send, so this is where the labels for the controls that moved into the
+    // ＋ panel, plus the two submit-button states, live.
+    composerOptions: string;
+    photoLibrary: string;
+    takePhoto: string;
+    file: string;
+    sendMessage: string;
+    stopGenerating: string;
+    planMode: string;
+    planModeOn: string;
+    planModeOff: string;
+    skillCommands: string;
   };
 
   // Sidebar
@@ -251,6 +268,11 @@ export interface Translations {
     actions: string;
     deleteConfirmTitle: string;
     deleteConfirm: string;
+    // Mobile chat screen (prototype ②): the header's ⋯ menu and the floating
+    // "back to bottom" affordance. The desktop header hardcodes the session
+    // status title, so it is spelled out here for both trees.
+    sessionStatus: string;
+    scrollToBottom: string;
   };
 
   // Channels

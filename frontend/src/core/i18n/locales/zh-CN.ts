@@ -107,6 +107,7 @@ export const zhCN: Translations = {
     videoRegenerationLabel: "768p->2k",
     videoDurationRange: "时长 ",
     videoDurationSeconds: " 秒",
+    model: "模型",
     chatModel: "对话模型",
     visionModel: "视觉理解模型",
     defaultVisionModel: "默认",
@@ -176,6 +177,17 @@ export const zhCN: Translations = {
         icon: SparklesIcon,
       },
     ],
+    // 移动端输入区（原型 ②③）：主行只留「＋ / 输入 / 发送」，其余控件的标签。
+    composerOptions: "更多选项",
+    photoLibrary: "相册",
+    takePhoto: "拍照",
+    file: "文件",
+    sendMessage: "发送",
+    stopGenerating: "停止生成",
+    planMode: "计划模式",
+    planModeOn: "开",
+    planModeOff: "关",
+    skillCommands: "技能命令",
   },
 
   // Sidebar
@@ -312,6 +324,9 @@ export const zhCN: Translations = {
     actions: "对话操作",
     deleteConfirmTitle: "删除对话",
     deleteConfirm: "该对话将被删除，且无法恢复。",
+    // 移动端对话页（原型 ②）：头部「⋯」菜单与「回到底部」按钮。
+    sessionStatus: "会话状态",
+    scrollToBottom: "回到底部",
   },
 
   // Channels

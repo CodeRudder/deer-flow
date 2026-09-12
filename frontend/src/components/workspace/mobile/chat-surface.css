@@ -1,0 +1,86 @@
+/*
+ * Touch has no hover.
+ *
+ * The transcript reveals two action bars on `group-hover` only:
+ *   - the per-message copy/feedback toolbar — `message-list-item.tsx:173`
+ *   - the per-turn copy/regenerate toolbar — `message-list.tsx:466`
+ *
+ * Neither component exposes a prop for that, and both are shared with the
+ * desktop page, which must keep its hover behaviour. Wrapping them is also not
+ * possible: `MessageList` arranges its own children. So the mobile chat surface
+ * opts them into permanent visibility from the outside, scoped to its own root
+ * class, which leaves the desktop rules untouched.
+ *
+ * These are Tailwind utility class names, so the selectors have to escape the
+ * `/` and `:` the same way Tailwind does; both rules are pinned to the two
+ * class names above and must be updated if those change.
+ */
+.mobile-chat-surface .group-hover\/conversation-message\:opacity-100,
+.mobile-chat-surface .group-hover\/assistant-turn\:opacity-100 {
+  opacity: 1;
+}
+
+/*
+ * Those two bars hold 32px icon buttons (`size="icon-sm"` / `size-8`), which is
+ * below the 44px touch floor the plan sets for phones. They are icon-only, so
+ * growing the button costs nothing visually and the icons stay their size.
+ */
+.mobile-chat-surface .group-hover\/conversation-message\:opacity-100 button,
+.mobile-chat-surface .group-hover\/assistant-turn\:opacity-100 button {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+/*
+ * The bottom sheets (`chat-header.tsx`, `composer-sheet.tsx`) inherit their
+ * close button from the shared `SheetContent`, which sizes it to its 16px icon
+ * and pins it at `top-4 right-4`. Both the size and the offset are restated
+ * here for the mobile sheets so the tap target clears 44px without pulling the
+ * button over the sheet title.
+ */
+.mobile-chat-sheet > button {
+  top: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+/*
+ * The `＋` panel's 模型 row opens the desktop model dialog, which the
+ * `ModelSelector` portals to `document.body` — so it is not covered by the
+ * sheet rule above. Its close button gets the same treatment, plus a width
+ * cap so the dialog keeps a 16px gutter at 390px instead of running edge to
+ * edge.
+ */
+.mobile-model-dialog {
+  max-width: calc(100vw - 2rem);
+}
+
+.mobile-model-dialog > button {
+  top: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+/*
+ * Two desktop sizes inside that dialog are below the phone floors. The rows
+ * are `modelOptionRowClassName`'s `h-9` (36px) — a `min-height` wins over the
+ * fixed `height`, so the row grows without the shared helper changing. The
+ * search box is `text-sm` (14px), which iOS zooms into on focus.
+ */
+.mobile-model-dialog [role="option"] {
+  min-height: 2.75rem;
+}
+
+.mobile-model-dialog input {
+  font-size: 1rem;
+}

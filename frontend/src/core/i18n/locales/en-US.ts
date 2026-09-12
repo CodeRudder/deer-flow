@@ -109,6 +109,7 @@ export const enUS: Translations = {
     videoRegenerationLabel: "768p->2k",
     videoDurationRange: "Duration ",
     videoDurationSeconds: "s",
+    model: "Model",
     chatModel: "Chat model",
     visionModel: "Vision model",
     defaultVisionModel: "Default",
@@ -183,6 +184,18 @@ export const enUS: Translations = {
         icon: SparklesIcon,
       },
     ],
+    // Mobile composer (prototype ②③): the main row keeps only ＋ / input /
+    // send, so the controls that moved into the ＋ panel are labelled here.
+    composerOptions: "More options",
+    photoLibrary: "Photo library",
+    takePhoto: "Take photo",
+    file: "File",
+    sendMessage: "Send",
+    stopGenerating: "Stop generating",
+    planMode: "Plan mode",
+    planModeOn: "On",
+    planModeOff: "Off",
+    skillCommands: "Skill commands",
   },
 
   // Sidebar
@@ -328,6 +341,10 @@ export const enUS: Translations = {
     actions: "Conversation actions",
     deleteConfirmTitle: "Delete conversation",
     deleteConfirm: "This conversation will be deleted. This cannot be undone.",
+    // Mobile chat screen (prototype ②): the header's ⋯ menu and the floating
+    // "back to bottom" affordance.
+    sessionStatus: "Session status",
+    scrollToBottom: "Back to bottom",
   },
 
   // Channels
