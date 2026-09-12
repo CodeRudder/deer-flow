@@ -125,7 +125,7 @@ useModels / useI18n / useRouter ...
 **这是唯一触碰桌面端的任务，且必须是纯搬移**：不改行为、不改 JSX 结构。
 
 **验收**：
-- 现有 17 个桌面 E2E **全部通过**（硬门槛）
+- 桌面 E2E 失败集合不扩大（基线见 §3.1）——硬门槛
 - `pnpm typecheck` / `pnpm lint` 干净
 - diff 中不出现 JSX 结构变化
 
@@ -202,7 +202,7 @@ useModels / useI18n / useRouter ...
 |---|---|
 | 新增 | `tests/e2e/mobile-*.spec.ts` — 用 `devices['iPhone 13']` 预设 |
 | 新增 | `tests/unit/lib/device.test.ts` 等纯函数单测 |
-| 回归 | 17 个桌面 E2E 全部通过 |
+| 回归 | 桌面 E2E 失败集合不扩大（基线 58 passed / 9 failed，见 §3.1） |
 
 移动端 E2E 沿用现有做法（`page.route()` 拦截后端），**不依赖真实服务**：
 
@@ -215,11 +215,26 @@ useModels / useI18n / useRouter ...
 
 ## 3. 风险
 
+### 3.1 E2E 基线（2026-09-12 实测，开工前）
+
+当前分支 `feat/mobile-web` 起点的 E2E 实测为 **58 passed / 9 failed**。
+**这 9 个是既有失败，不是移动端改动造成的**，已用「收起全部改动再跑」独立验证。
+
+| 类别 | 数量 | 说明 |
+|---|---|---|
+| 真实回归 | **3** | `artifact-stream-state:57`、`chat.spec.ts:182`、`subtask-card:43` —— 需要有人修，但与本计划无关 |
+| 陈旧测试 | **6** | `landing.spec.ts` ×2 期待的营销落地页已不存在（`app/page.tsx` 现在是重定向门）；`model-settings.spec.ts` ×4 需要真实部署，本地没有 |
+
+**因此验收标准修正为**：不得引入**新的**失败，即保持 `≥58 passed` 且失败集合不扩大。
+「17 个 spec 全过」这一说法不成立（实际 17 个 spec 文件、共 67 个用例）。
+
+## 3.2 风险
+
 | 风险 | 影响 | 应对 |
 |---|---|---|
 | **middleware 误伤桌面端** | 高 | T1 验收含「桌面 UA 字节级无变化」；排除清单逐项测 |
 | **i18n 与 middleware matcher 冲突** | 中 | T1 实测；必要时在 matcher 中显式放行语言前缀 |
-| **`useChatPage()` 抽取引入回归** | 高 | T2 后立即跑 17 个桌面 E2E，不过不进入后续任务 |
+| **`useChatPage()` 抽取引入回归** | 高 | T2 后立即跑桌面 E2E，失败集合不得超出 §3.1 基线 |
 | 移动端复制行为逻辑 | 中 | 硬约束：移动端 page 不得直接调 `core/threads` 的流式 hook，只走 `useChatPage()` |
 | 改动侵入 `core/**` | 中 | code review 检查 diff 只落 `app/m/**`、`components/workspace/mobile/**`、`lib/` |
 | iOS 键盘遮挡输入区 | 中 | 真机验收；必要时监听 `visualViewport` |
