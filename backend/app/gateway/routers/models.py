@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import os
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -6,8 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.gateway.admin.quota_service import QuotaService
 from app.gateway.deps import get_config, require_admin_user
-from deerflow.config.app_config import AppConfig
+from deerflow.config.app_config import AppConfig, get_app_config
+from deerflow.config.model_config import ModelConfig
 from deerflow.config.models_section import build_model_entry, commit_config_update, load_managed_models, replace_managed_section, to_public, upsert_env_var, validate_candidate_text
+from deerflow.models import factory as model_factory
 from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
 from deerflow.models.video_generation import VideoGenerationModel, VideoGenerationProvider, VideoGenerationProvidersResponse, get_video_generation_providers
 from deerflow.persistence.engine import get_session_factory
@@ -269,6 +274,34 @@ class ModelConfigReplaceRequest(BaseModel):
     models: list[ManagedModelEntry]
 
 
+class ModelTestResponse(BaseModel):
+    """Result of ``POST /api/models/test``.
+
+    A probe is a *business* result, not an HTTP error: a refused connection or a
+    rejected key is reported as ``ok: false`` with HTTP 200, so the UI renders a
+    plain message instead of treating a normal "your key is wrong" as a server
+    fault.
+    """
+
+    ok: bool = Field(..., description="True when the provider answered the probe request")
+    latency_ms: int = Field(..., description="Wall-clock duration of the probe attempt in milliseconds")
+    error: str | None = Field(None, description="Readable failure reason when ok is false; null on success")
+
+
+#: Probe prompt — the cheapest possible round trip that still proves the base
+#: URL, credential, and model name all work. Plain string, no tools, no system
+#: prompt: the point is provider validation, not an answer.
+_PROBE_PROMPT = "ping"
+
+#: Bounded probe budget. A live provider answers a one-token prompt in well
+#: under 3s, TLS handshake included, and the failures this endpoint exists to
+#: surface (DNS, connection refused, 401/404) come back faster still. 15s leaves
+#: headroom for a cold connection queued behind other traffic on a loaded
+#: gateway while keeping an admin request from hanging on a black-holed
+#: endpoint. Tests override this constant to exercise the timeout path quickly.
+_PROBE_TIMEOUT_SECONDS = 15.0
+
+
 def _resolve_config_path() -> Path:
     """Resolve the live ``config.yaml`` or fail with an actionable 500."""
     try:
@@ -361,6 +394,93 @@ def _write_managed_models(config_path: Path, models: list[dict]) -> Path:
 
 def _reject(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=400, detail=f"Invalid model configuration: {exc}")
+
+
+def _probe_candidate_config(payload: dict) -> tuple[AppConfig, str]:
+    """Build an ``AppConfig`` carrying *payload* as an extra, unsaved model.
+
+    The probe must see the candidate exactly as the user typed it — including a
+    cleartext ``api_key_value`` behind a ``$VAR`` that is not in ``.env`` yet —
+    without a single byte touching disk. Two transformations do that in memory:
+
+    1. ``$VAR`` references are resolved from the payload and ``os.environ``
+       first, so ``api_key_value`` can stand in for a variable that does not
+       exist yet. ``os.environ`` is read, never written — the endpoint is a
+       probe, and persisting the secret is the write endpoints' job.
+    2. The resolved entry is appended to the running config's own dump and
+       re-validated. The dump/validate round trip — rather than
+       ``model_copy(update=...)`` — is load-bearing: ``model_copy`` skips
+       validators, so the ``_build_name_indexes`` hook would never run and
+       ``create_chat_model``'s ``get_model_config(name)`` lookup would miss the
+       candidate. Re-validating the whole config costs ~1ms, which is noise
+       beside the network probe it guards.
+
+    Returns the config and the candidate's name. Raises ``ValueError`` when the
+    payload is not a valid entry — the caller reports that as ``ok: false``
+    rather than a 500.
+    """
+    entry = build_model_entry(payload)
+    entry.pop(_API_KEY_VALUE_FIELD, None)
+    for meta_key in _ENTRY_META_KEYS:
+        entry.pop(meta_key, None)
+
+    api_key = entry.get("api_key")
+    if isinstance(api_key, str) and api_key.startswith("$"):
+        secret = payload.get(_API_KEY_VALUE_FIELD)
+        entry["api_key"] = secret if isinstance(secret, str) and secret else os.getenv(api_key[1:])
+
+    name = entry["name"]
+    base = get_app_config()
+    dumped = base.model_dump()
+    return AppConfig.model_validate({**dumped, "models": [*dumped["models"], ModelConfig.model_validate(entry).model_dump()]}), name
+
+
+async def _run_probe(payload: dict) -> ModelTestResponse:
+    """Make one real, minimal request against *payload* and report the outcome.
+
+    Every failure mode — an unresolvable ``use``, a provider exception, the
+    timeout — collapses to ``ok: false`` with a readable message. ``CancelledError``
+    still propagates, so a client disconnect aborts the request as usual.
+    """
+    started = time.perf_counter()
+    try:
+        app_config, name = _probe_candidate_config(payload)
+        # Tracing is attached at the graph root for real runs; a standalone probe
+        # would otherwise emit a second, orphaned trace per click.
+        model = model_factory.create_chat_model(name, app_config=app_config, attach_tracing=False)
+        await asyncio.wait_for(model.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        # `wait_for`'s own budget expiry and a `TimeoutError` raised inside the
+        # provider both land here, so the message reports the measured elapsed
+        # time rather than the budget — it is accurate in both cases.
+        return ModelTestResponse(ok=False, latency_ms=_elapsed_ms(started), error=f"Timed out after {_elapsed_ms(started) / 1000:.1f}s waiting for the provider to answer.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any provider/reflection failure is a business result here
+        return ModelTestResponse(ok=False, latency_ms=_elapsed_ms(started), error=_readable_error(exc))
+    return ModelTestResponse(ok=True, latency_ms=_elapsed_ms(started), error=None)
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _readable_error(exc: Exception) -> str:
+    """Flatten an exception into one message an admin can act on.
+
+    Provider SDKs wrap the useful part (``401 Incorrect API key provided``) in a
+    chain of generic outer messages, so the chain is joined rather than showing
+    only the outermost ``str(exc)``. Empty messages are skipped so a class with
+    a blank ``__str__`` still yields something readable.
+    """
+    messages: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        text = str(current).strip()
+        if text and text not in messages:
+            messages.append(text)
+        current = current.__cause__ if isinstance(current.__cause__, Exception) else current.__context__ if isinstance(current.__context__, Exception) else None
+    return " | ".join(messages) or exc.__class__.__name__
 
 
 @router.get(
@@ -464,6 +584,28 @@ async def delete_managed_model(request: Request, model_name: str) -> ModelConfig
         raise _reject(exc) from exc
     logger.info("Deleted managed model %s from %s", model_name, config_path)
     return ModelConfigListResponse(models=_list_managed(config_path))
+
+
+@router.post(
+    "/models/test",
+    response_model=ModelTestResponse,
+    summary="Test Model Connectivity",
+    description=(
+        "Make one real, minimal chat request against a candidate model entry and report whether it worked (admin only). "
+        "The candidate is built in memory and never written to config.yaml or .env, so a model can be tested before it is saved; "
+        "`api_key_value` supplies the cleartext behind a `$VAR` that does not exist yet. "
+        "A failed connection, a rejected key, a bad model name, or an unresolvable `use` are all reported as `ok: false` with HTTP 200 — "
+        "the probe answers 'does this work?', and 'no' is a normal answer. The attempt is bounded by a server-side timeout."
+    ),
+)
+async def test_managed_model(request: Request, entry: ManagedModelEntry) -> ModelTestResponse:
+    """Probe one candidate model entry without persisting anything."""
+    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
+    # Deliberately no `_resolve_config_path()` call: that helper's 500 is right
+    # for the write endpoints, but this endpoint's contract is that a well-formed
+    # admin request never returns 500. A missing config.yaml surfaces from
+    # `get_app_config()` inside the probe as `ok: false` with the same message.
+    return await _run_probe(entry.model_dump(exclude_none=True))
 
 
 # Declared after `/models/config` on purpose: FastAPI matches routes in

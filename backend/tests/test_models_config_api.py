@@ -8,6 +8,7 @@ Task 4 of the model-config UI plan. Every test here runs against a temp copy of
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -514,3 +515,163 @@ def test_unresolvable_use_is_rejected_by_validate_candidate_text(config_path: Pa
 
     with pytest.raises(ValueError, match="nonexistent.module:Nope"):
         validate_candidate_text(candidate, dir_path=config_path.parent)
+
+
+# --------------------------------------------------------------------------- #
+# 12-18. Connectivity probe (`POST /api/models/test`)
+#
+# A probe is a business result, not an HTTP error: the only non-200 outcomes are
+# a malformed body (422) and a non-admin caller (403). No test here reaches the
+# network — the provider seam (`deerflow.models.factory.create_chat_model`) is
+# monkeypatched, or the candidate's `use` fails to resolve before any client is
+# constructed.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeChatModel:
+    """Stand-in for a LangChain chat model: the only surface the probe uses."""
+
+    def __init__(self, *, delay: float = 0.0, error: Exception | None = None):
+        self._delay = delay
+        self._error = error
+        self.calls: list[object] = []
+
+    async def ainvoke(self, prompt: object, *args, **kwargs) -> str:
+        self.calls.append(prompt)
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._error is not None:
+            raise self._error
+        return "pong"
+
+
+def _patch_factory(monkeypatch: pytest.MonkeyPatch, model: _FakeChatModel) -> dict:
+    """Replace the model factory and capture how the probe called it."""
+    captured: dict = {}
+
+    def fake_create(name=None, thinking_enabled=False, *, app_config=None, attach_tracing=True, **kwargs):
+        captured.update(name=name, app_config=app_config, attach_tracing=attach_tracing)
+        return model
+
+    monkeypatch.setattr(models_router.model_factory, "create_chat_model", fake_create)
+    return captured
+
+
+def test_test_endpoint_reports_success(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    model = _FakeChatModel()
+    captured = _patch_factory(monkeypatch, model)
+
+    response = admin.post("/api/models/test", json=MODEL_ENTRY)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert isinstance(body["latency_ms"], int)
+    assert body["latency_ms"] >= 0
+    assert body["error"] is None
+    # The candidate — not a copy from disk — is what got built and invoked.
+    assert captured["name"] == "tmp-model"
+    assert captured["app_config"].get_model_config("tmp-model").model == "tmp-model-v1"
+    assert captured["attach_tracing"] is False
+    assert len(model.calls) == 1
+
+
+def test_test_endpoint_turns_provider_errors_into_a_business_result(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _patch_factory(monkeypatch, _FakeChatModel(error=RuntimeError("401 Incorrect API key provided")))
+
+    response = admin.post("/api/models/test", json=MODEL_ENTRY)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
+    assert isinstance(body["latency_ms"], int)
+    assert body["latency_ms"] >= 0
+
+
+def test_test_endpoint_bounds_a_hung_provider(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(models_router, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    _patch_factory(monkeypatch, _FakeChatModel(delay=30.0))
+
+    response = admin.post("/api/models/test", json=MODEL_ENTRY)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "Timed out" in body["error"]
+
+
+@pytest.mark.parametrize("use", ["nonexistent.module:Nope", "deerflow.models.patched_deepseek:NotAThing"])
+def test_test_endpoint_reports_an_unresolvable_use(admin: TestClient, config_path: Path, use: str):
+    """No factory patch here: the real `create_chat_model` must fail at resolution."""
+    response = admin.post("/api/models/test", json={**MODEL_ENTRY, "use": use})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]
+
+
+@pytest.mark.parametrize("payload", [{**MODEL_ENTRY, "use": None}, {"api_key_value": "sk-orphan"}])
+def test_test_endpoint_never_500s_on_a_body_it_cannot_build(admin: TestClient, config_path: Path, payload: dict):
+    response = admin.post("/api/models/test", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert response.json()["error"]
+
+
+def test_test_endpoint_requires_admin(user: TestClient, config_path: Path):
+    original = config_path.read_bytes()
+
+    response = user.post("/api/models/test", json=MODEL_ENTRY)
+
+    assert response.status_code == 403
+    assert config_path.read_bytes() == original
+    assert _backups(config_path) == []
+
+
+def test_test_endpoint_writes_nothing(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A probe is read-only: config.yaml, .env, and the directory all stay put."""
+    _patch_factory(monkeypatch, _FakeChatModel())
+    config_before = config_path.read_bytes()
+    env_path = config_path.parent / ".env"
+    env_before = env_path.read_bytes()
+    listing_before = sorted(entry.name for entry in config_path.parent.iterdir())
+
+    response = admin.post("/api/models/test", json=MODEL_ENTRY)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert config_path.read_bytes() == config_before
+    assert env_path.read_bytes() == env_before
+    assert sorted(entry.name for entry in config_path.parent.iterdir()) == listing_before
+    assert _backups(config_path) == []
+
+
+def test_test_endpoint_resolves_a_new_env_reference_without_persisting(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`api_key_value` carries the cleartext for a `$VAR` that is not in .env yet;
+    the probe must use it and must not create the variable on disk."""
+    captured = _patch_factory(monkeypatch, _FakeChatModel())
+    env_path = config_path.parent / ".env"
+
+    response = admin.post("/api/models/test", json={**MODEL_ENTRY, "api_key": "$BRAND_NEW_PROBE_KEY", "api_key_value": "sk-probe-9876"})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured["app_config"].get_model_config("tmp-model").api_key == "sk-probe-9876"
+    assert "BRAND_NEW_PROBE_KEY" not in env_path.read_text(encoding="utf-8")
+    assert "BRAND_NEW_PROBE_KEY" not in os.environ
+
+
+def test_test_endpoint_stays_200_when_the_config_file_is_missing(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The write endpoints answer a missing config.yaml with a 500; the probe must
+    not. Its contract is that a well-formed admin request only ever gets a 200."""
+    _patch_factory(monkeypatch, _FakeChatModel())
+    config_path.unlink()
+
+    response = admin.post("/api/models/test", json=MODEL_ENTRY)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert response.json()["error"]
