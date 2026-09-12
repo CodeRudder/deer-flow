@@ -2,6 +2,7 @@
 
 import {
   BellIcon,
+  BoxesIcon,
   CableIcon,
   InfoIcon,
   BrainIcon,
@@ -24,6 +25,7 @@ import { AccountSettingsPage } from "@/components/workspace/settings/account-set
 import { AppearanceSettingsPage } from "@/components/workspace/settings/appearance-settings-page";
 import { ChannelsSettingsPage } from "@/components/workspace/settings/channels-settings-page";
 import { MemorySettingsPage } from "@/components/workspace/settings/memory-settings-page";
+import { ModelSettingsPage } from "@/components/workspace/settings/model-settings-page";
 import { NotificationSettingsPage } from "@/components/workspace/settings/notification-settings-page";
 import { SkillSettingsPage } from "@/components/workspace/settings/skill-settings-page";
 import { ToolSettingsPage } from "@/components/workspace/settings/tool-settings-page";
@@ -35,6 +37,7 @@ type SettingsSection =
   | "appearance"
   | "channels"
   | "memory"
+  | "models"
   | "tools"
   | "skills"
   | "notification"
@@ -85,6 +88,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         label: t.settings.sections.memory,
         icon: BrainIcon,
       },
+      { id: "models", label: t.settings.sections.models, icon: BoxesIcon },
       { id: "tools", label: t.settings.sections.tools, icon: WrenchIcon },
       { id: "skills", label: t.settings.sections.skills, icon: SparklesIcon },
       { id: "about", label: t.settings.sections.about, icon: InfoIcon },
@@ -94,6 +98,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
       t.settings.sections.appearance,
       t.settings.sections.channels,
       t.settings.sections.memory,
+      t.settings.sections.models,
       t.settings.sections.tools,
       t.settings.sections.skills,
       t.settings.sections.notification,
@@ -145,6 +150,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               {activeSection === "account" && <AccountSettingsPage />}
               {activeSection === "appearance" && <AppearanceSettingsPage />}
               {activeSection === "memory" && <MemorySettingsPage />}
+              {activeSection === "models" && <ModelSettingsPage />}
               {activeSection === "tools" && <ToolSettingsPage />}
               {activeSection === "skills" && (
                 <SkillSettingsPage
