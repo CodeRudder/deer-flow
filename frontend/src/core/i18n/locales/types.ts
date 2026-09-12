@@ -239,6 +239,18 @@ export interface Translations {
     loadMoreToSearch: string;
     loadingMore: string;
     loadOlderChats: string;
+    // Mobile thread list (prototype ①): time-group headers and row actions.
+    pinned: string;
+    today: string;
+    yesterday: string;
+    earlier: string;
+    empty: string;
+    noSearchResults: string;
+    pin: string;
+    unpin: string;
+    actions: string;
+    deleteConfirmTitle: string;
+    deleteConfirm: string;
   };
 
   // Channels

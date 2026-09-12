@@ -317,6 +317,17 @@ export const enUS: Translations = {
     loadMoreToSearch: "Load more to search older conversations",
     loadingMore: "Loading more...",
     loadOlderChats: "Load older chats",
+    pinned: "Pinned",
+    today: "Today",
+    yesterday: "Yesterday",
+    earlier: "Earlier",
+    empty: "No conversations yet.",
+    noSearchResults: "No conversations match your search.",
+    pin: "Pin",
+    unpin: "Unpin",
+    actions: "Conversation actions",
+    deleteConfirmTitle: "Delete conversation",
+    deleteConfirm: "This conversation will be deleted. This cannot be undone.",
   },
 
   // Channels

@@ -301,6 +301,17 @@ export const zhCN: Translations = {
     loadMoreToSearch: "加载更多以搜索更早的对话",
     loadingMore: "正在加载...",
     loadOlderChats: "加载更早的对话",
+    pinned: "置顶",
+    today: "今天",
+    yesterday: "昨天",
+    earlier: "更早",
+    empty: "还没有对话。",
+    noSearchResults: "没有匹配的对话。",
+    pin: "置顶",
+    unpin: "取消置顶",
+    actions: "对话操作",
+    deleteConfirmTitle: "删除对话",
+    deleteConfirm: "该对话将被删除，且无法恢复。",
   },
 
   // Channels
