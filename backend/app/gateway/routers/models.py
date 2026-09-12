@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +17,7 @@ from deerflow.models import factory as model_factory
 from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
 from deerflow.models.video_generation import VideoGenerationModel, VideoGenerationProvider, VideoGenerationProvidersResponse, get_video_generation_providers
 from deerflow.persistence.engine import get_session_factory
+from deerflow.reflection import resolve_class
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +227,91 @@ async def list_image_generation_providers() -> ImageGenerationProvidersResponse:
 _MASK = "****"
 #: Response-only metadata for an entry, never written back to ``config.yaml``.
 _ENTRY_META_KEYS = ("index", "api_key_masked")
+
+
+class _ProviderPreset(NamedTuple):
+    """One selectable provider in the model form.
+
+    ``use`` is the class path the entry will carry; ``default_api_base`` is the
+    endpoint to prefill when the provider has one (``None`` means "the SDK's own
+    default" — the form leaves the field empty). Values come from the commented
+    examples in ``config.example.yaml``; none are invented here.
+    """
+
+    key: str
+    label: str
+    use: str
+    default_api_base: str | None = None
+
+
+#: The provider dropdown, in display order. Extending the form means adding one
+#: row here — the availability probe and the endpoint are generic over the table.
+#: `openai-compatible` is the deliberate fallback for a hand-crafted entry whose
+#: `use` matches no row: the UI shows that label but keeps the stored class path
+#: verbatim, so an advanced configuration survives an edit untouched.
+_PROVIDER_PRESETS: tuple[_ProviderPreset, ...] = (
+    _ProviderPreset("openai", "OpenAI", "langchain_openai:ChatOpenAI"),
+    _ProviderPreset("openai-compatible", "其他 OpenAI 兼容 (OpenAI-compatible)", "langchain_openai:ChatOpenAI"),
+    _ProviderPreset("doubao", "豆包 (火山方舟)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://ark.cn-beijing.volces.com/api/v3"),
+    _ProviderPreset("deepseek", "DeepSeek", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.deepseek.com/v1"),
+    _ProviderPreset("kimi", "Kimi (Moonshot)", "deerflow.models.patched_deepseek:PatchedChatDeepSeek", "https://api.moonshot.cn/v1"),
+    _ProviderPreset("minimax", "MiniMax", "deerflow.models.patched_minimax:PatchedChatMiniMax"),
+    _ProviderPreset("anthropic", "Anthropic Claude", "langchain_anthropic:ChatAnthropic"),
+    _ProviderPreset("google", "Google Gemini", "langchain_google_genai:ChatGoogleGenerativeAI"),
+    _ProviderPreset("ollama", "Ollama (本地)", "langchain_ollama:ChatOllama"),
+)
+
+
+class ModelProviderPreset(BaseModel):
+    """A provider row plus the result of probing its class path."""
+
+    key: str = Field(..., description="Stable identifier the form stores in its provider field")
+    label: str = Field(..., description="Human-readable provider name")
+    use: str = Field(..., description="Class path an entry using this provider carries")
+    default_api_base: str | None = Field(None, description="Endpoint to prefill; null means the SDK default")
+    available: bool = Field(..., description="True when the class path resolves in this process")
+    reason: str | None = Field(None, description="Why the class path did not resolve; null when it did")
+
+
+class ModelProvidersResponse(BaseModel):
+    """The provider dropdown."""
+
+    providers: list[ModelProviderPreset]
+
+
+def _probe_preset(preset: _ProviderPreset) -> ModelProviderPreset:
+    """Resolve one preset's class path with the resolver the save path uses.
+
+    A provider whose package is not installed (``langchain_ollama`` is an
+    optional extra) would otherwise be selectable in the dropdown and then
+    rejected by ``validate_candidate_text`` at save time with no explanation.
+    Reporting ``available: false`` + the resolver's install hint turns that dead
+    end into guidance.
+    """
+    try:
+        resolve_class(preset.use)
+    except Exception as exc:  # noqa: BLE001 — any import/attribute failure is the availability answer
+        return ModelProviderPreset(**preset._asdict(), available=False, reason=str(exc) or exc.__class__.__name__)
+    return ModelProviderPreset(**preset._asdict(), available=True, reason=None)
+
+
+@router.get(
+    "/models/providers",
+    response_model=ModelProvidersResponse,
+    summary="List Model Provider Presets",
+    description=(
+        "List the providers the model form offers by label (admin only), so an operator never types a class path. "
+        "Each preset's `use` is resolved through `deerflow.reflection.resolve_class` — the same resolver the save path validates with: "
+        "when the package is not installed the entry is returned with `available: false` and the resolver's install hint in `reason`, "
+        "so the dropdown can disable it and explain itself instead of letting the operator pick something the save will reject."
+    ),
+)
+async def list_model_providers(request: Request) -> ModelProvidersResponse:
+    """Return the preset table with each class path probed for availability."""
+    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
+    return ModelProvidersResponse(providers=[_probe_preset(preset) for preset in _PROVIDER_PRESETS])
+
+
 #: Payload-only field: the cleartext to store under a ``$VAR`` api_key reference.
 _API_KEY_VALUE_FIELD = "api_key_value"
 

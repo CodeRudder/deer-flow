@@ -675,3 +675,93 @@ def test_test_endpoint_stays_200_when_the_config_file_is_missing(admin: TestClie
     assert response.status_code == 200
     assert response.json()["ok"] is False
     assert response.json()["error"]
+
+
+# --------------------------------------------------------------------------- #
+# 19. Provider presets (`GET /api/models/providers`)
+#
+# The form asks an operator to pick a provider by label, never to type a class
+# path. The preset table is static, but its *availability* is not: each `use` is
+# resolved through the same `deerflow.reflection.resolve_class` the save path
+# validates with, so a provider whose package is not installed is offered as
+# `available: false` + an install hint instead of being silently selectable and
+# then rejected at save time.
+# --------------------------------------------------------------------------- #
+
+#: The full key set every entry must carry.
+_PROVIDER_KEYS = {"key", "label", "use", "default_api_base", "available", "reason"}
+
+
+def _providers_by_key(client: TestClient) -> dict[str, dict]:
+    response = client.get("/api/models/providers")
+    assert response.status_code == 200
+    return {entry["key"]: entry for entry in response.json()["providers"]}
+
+
+def test_providers_requires_admin(user: TestClient, config_path: Path):
+    response = user.get("/api/models/providers")
+
+    assert response.status_code == 403
+
+
+def test_providers_lists_the_preset_table(admin: TestClient, config_path: Path):
+    response = admin.get("/api/models/providers")
+
+    assert response.status_code == 200
+    providers = response.json()["providers"]
+    assert providers, "the preset table must not be empty"
+    keys = [entry["key"] for entry in providers]
+    assert len(keys) == len(set(keys)), "provider keys must be unique"
+    for entry in providers:
+        assert set(entry) == _PROVIDER_KEYS, f"incomplete entry for {entry.get('key')}"
+        assert entry["use"], f"{entry['key']} must carry a class path"
+        assert entry["label"], f"{entry['key']} must carry a label"
+
+    by_key = _providers_by_key(admin)
+    assert {"openai", "openai-compatible", "doubao", "deepseek", "kimi", "minimax", "anthropic", "google", "ollama"} <= set(by_key)
+    # Doubao's endpoint is a real, non-invented value from config.example.yaml.
+    assert by_key["doubao"]["use"] == "deerflow.models.patched_deepseek:PatchedChatDeepSeek"
+    assert by_key["doubao"]["default_api_base"] == "https://ark.cn-beijing.volces.com/api/v3"
+
+
+def test_providers_marks_a_resolvable_use_available(admin: TestClient, config_path: Path):
+    entry = _providers_by_key(admin)["openai"]
+
+    assert entry["use"] == "langchain_openai:ChatOpenAI"
+    assert entry["available"] is True
+    assert entry["reason"] is None
+
+
+def test_providers_marks_an_uninstalled_provider_unavailable(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The probe is a real `resolve_class` attempt, not a hardcoded flag.
+
+    A preset whose module cannot be imported comes back `available: false` with
+    the resolver's install hint, so the dropdown can explain itself instead of
+    letting the operator pick something the save path will reject.
+    """
+    monkeypatch.setattr(
+        models_router,
+        "_PROVIDER_PRESETS",
+        (*models_router._PROVIDER_PRESETS, models_router._ProviderPreset(key="nope", label="Nope", use="deerflow.no_such_module:NoSuchModel")),
+    )
+
+    entry = _providers_by_key(admin)["nope"]
+
+    assert entry["available"] is False
+    assert entry["reason"] and "deerflow.no_such_module" in entry["reason"]
+
+
+def test_ollama_is_listed_with_its_install_hint(admin: TestClient, config_path: Path):
+    """`langchain_ollama` is an optional extra (see the harness `[ollama]` group).
+
+    When it is not installed `ChatOllama` cannot be resolved, so the preset must
+    say so — this is the empirical case the availability probe exists for. On a
+    machine that does have the package the positive assertion holds instead.
+    """
+    entry = _providers_by_key(admin)["ollama"]
+
+    assert entry["use"] == "langchain_ollama:ChatOllama"
+    if entry["available"]:
+        assert entry["reason"] is None
+    else:
+        assert entry["reason"] and "langchain_ollama" in entry["reason"]
