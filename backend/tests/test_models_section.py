@@ -747,6 +747,39 @@ def test_load_managed_models_round_trips_replace(tmp_path: Path):
     assert load_managed_models(config) == SAMPLE_MODELS
 
 
+def test_empty_when_thinking_disabled_survives_the_round_trip(tmp_path: Path):
+    """`when_thinking_disabled: {}` must persist as `{}`, never as `None` or absent.
+
+    The empty block is how the UI says "this endpoint rejects a disable signal,
+    so send nothing when thinking is off" without adding a config field. It is
+    load-bearing that the writer keeps it (``yaml.safe_dump`` renders `{}`) and
+    that the reader hands it back as `{}` rather than dropping the key — a
+    `None` would be indistinguishable from "no disable block stored", and
+    ``create_chat_model`` would then re-synthesise the disable payload the
+    endpoint just refused.
+    """
+    entry = {
+        "name": "claude-proxy",
+        "use": "langchain_anthropic:ChatAnthropic",
+        "model": "claude-sonnet-4-5",
+        "supports_thinking": True,
+        "when_thinking_enabled": {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+        "when_thinking_disabled": {},
+    }
+    config = tmp_path / "config.yaml"
+    config.write_text(replace_managed_section(SAMPLE_TEXT, [entry]), encoding="utf-8")
+
+    # Rendered as an explicit `{}` — not omitted, not `null`.
+    assert "when_thinking_disabled: {}" in config.read_text(encoding="utf-8")
+
+    loaded = load_managed_models(config)[0]
+    assert "when_thinking_disabled" in loaded
+    assert loaded["when_thinking_disabled"] == {}
+    assert loaded["when_thinking_disabled"] is not None
+    # And `to_public`, the read path an edit form goes through.
+    assert to_public(loaded)["when_thinking_disabled"] == {}
+
+
 def test_load_managed_models_ignores_commented_templates_without_markers(tmp_path: Path):
     """SAMPLE_TEXT's ``models:`` body is all comments — an empty value, not entries."""
     config = tmp_path / "config.yaml"

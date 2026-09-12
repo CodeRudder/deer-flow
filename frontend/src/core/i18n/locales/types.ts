@@ -631,6 +631,10 @@ export interface Translations {
       thinkingUnavailable: string;
       budgetTokens: string;
       budgetHint: string;
+      thinkingDisabledTitle: string;
+      thinkingDisabledHint: string;
+      thinkingDisabledPreset: string;
+      thinkingDisabledOmit: string;
       maxTokens: string;
       maxTokensHint: string;
       thinkNotProbed: string;

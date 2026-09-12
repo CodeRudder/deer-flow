@@ -662,6 +662,11 @@ export const zhCN: Translations = {
       thinkingUnavailable: "该服务商不支持思考参数，无法开启。",
       budgetTokens: "思考预算 budget_tokens",
       budgetHint: "思考内容的上限，默认 4096。",
+      thinkingDisabledTitle: "关闭思考时发送",
+      thinkingDisabledHint:
+        "关闭思考时带上该服务商自己的禁用参数（如 thinking.type = disabled）。多数端点要靠它才会停止思考。",
+      thinkingDisabledPreset: "发送服务商的禁用参数",
+      thinkingDisabledOmit: "不发送任何禁用参数 —— 该端点不接受禁用信号",
       maxTokens: "最大输出 max_tokens",
       maxTokensHint: "须大于思考预算，默认 8192。",
       thinkNotProbed:

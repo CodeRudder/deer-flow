@@ -64,6 +64,19 @@ import { SettingsSection } from "./settings-section";
  */
 export const PROVIDER_FALLBACK_KEY = "openai-compatible";
 
+/**
+ * What a model sends when thinking is turned OFF.
+ *
+ * Two modes, not a boolean, because "the endpoint rejects the disable signal"
+ * is a real deployment shape rather than a corner case: a proxied
+ * `langchain_anthropic:ChatAnthropic` entry answered
+ * ``400 … thinking.type `disabled` is not supported by this model``. Deleting
+ * the stored `when_thinking_disabled` does not escape it — the factory's
+ * fallback chain then synthesises the very same `thinking: {type: disabled}`
+ * payload from the entry's own `when_thinking_enabled` block.
+ */
+export type ThinkingDisabledMode = "preset" | "omit";
+
 /** Form state for the add/edit panel. Every field is a string; blanks are unset. */
 export interface ManagedModelDraft {
   name: string;
@@ -88,6 +101,12 @@ export interface ManagedModelDraft {
   /** Whether the operator ticked "this model supports thinking". */
   supports_thinking: boolean;
   /**
+   * What to send when thinking is off. Only meaningful while
+   * `supports_thinking` is ticked — unticking it deletes every thinking key
+   * instead (the pre-existing "this model has no thinking at all" behaviour).
+   */
+  thinking_disabled: ThinkingDisabledMode;
+  /**
    * Thinking budget, as text. Only meaningful when the provider's API requires
    * one (Anthropic, Google) — other providers reject it and it is not written.
    */
@@ -105,11 +124,40 @@ export const EMPTY_MODEL_DRAFT: ManagedModelDraft = {
   display_name: "",
   api_key: "",
   supports_thinking: false,
+  // Existing entries keep sending the provider's own disable block: this is the
+  // default so nothing an operator already saved changes meaning.
+  thinking_disabled: "preset",
   // Prefilled from the provider preset on selection; Anthropic requires an
   // explicit budget and pairs it with a larger max_tokens (budget must be less).
   budget_tokens: "",
   max_tokens: "",
 };
+
+/** True for a plain `{}` — not `null`, not an array, not a populated object. */
+function isEmptyObject(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  );
+}
+
+/**
+ * Which disable mode a stored entry encodes.
+ *
+ * The mode is read back out of `when_thinking_disabled` itself rather than a
+ * dedicated config field, so the operator's choice costs no schema change:
+ * an EMPTY `{}` means "send nothing", anything else (a provider-shaped block,
+ * a hand-written one, or no key at all) means "send the preset". The reverse
+ * mapping is what keeps a saved `{}` from being silently rewritten back to the
+ * preset block on the next edit.
+ */
+export function readThinkingDisabledMode(
+  stored: ManagedModel,
+): ThinkingDisabledMode {
+  return isEmptyObject(stored.when_thinking_disabled) ? "omit" : "preset";
+}
 
 /**
  * The provider preset matching a stored class path, or `null`.
@@ -364,7 +412,9 @@ export function buildManagedModelWrite(
   //
   // - checked → write the trio from the preset. The block shapes are never
   //   synthesised here — they differ per provider (`thinking` /
-  //   `extra_body.thinking` / `thinking_budget` / `chat_template_kwargs`).
+  //   `extra_body.thinking` / `thinking_budget` / `chat_template_kwargs`) — and
+  //   the disable half follows `thinking_disabled`: the preset's block, or `{}`
+  //   for an endpoint that refuses the signal.
   // - unchecked after having been on (`supports_thinking: true` stored) → drop
   //   every thinking key. This is the only route the operator has to turn
   //   thinking off, and `supports_thinking` is the flag DeerFlow actually
@@ -384,7 +434,20 @@ export function buildManagedModelWrite(
       );
       // `thinking` is the legacy top-level alias; the preset supersedes it.
       delete write.thinking;
-      if (provider.thinking_disabled) {
+      // "This endpoint rejects a disable signal" is expressed as an EMPTY
+      // `when_thinking_disabled` — deliberately kept, never deleted.
+      //
+      // Deleting it does not mean "send nothing": `create_chat_model`'s
+      // `if not thinking_enabled:` chain falls through to its last branch and
+      // synthesises `thinking: {type: disabled}` from the `when_thinking_enabled`
+      // block written just above, so the request carries the exact payload the
+      // endpoint just refused. `{}` stops the chain instead — the `is not None`
+      // guard matches, `update({})` adds nothing, and no later branch is
+      // reached — which leaves the request with no thinking parameters at all
+      // and lets the endpoint apply its own default.
+      if (draft.thinking_disabled === "omit") {
+        write.when_thinking_disabled = {};
+      } else if (provider.thinking_disabled) {
         write.when_thinking_disabled = provider.thinking_disabled;
       } else {
         delete write.when_thinking_disabled;
@@ -587,6 +650,7 @@ function ManagedModelList({
       display_name: model.display_name ?? "",
       api_base: apiBase,
       supports_thinking: model.supports_thinking === true,
+      thinking_disabled: readThinkingDisabledMode(model),
       budget_tokens: readBudget(storedThinking),
       max_tokens:
         typeof model.max_tokens === "number" ? String(model.max_tokens) : "",
@@ -1118,6 +1182,42 @@ function ThinkingFields({
               placeholder="8192"
               value={draft.max_tokens}
             />
+          </Field>
+          {/* Offered as two named behaviours rather than a JSON editor: the
+              disable payload's shape is the provider's business
+              (`thinking` / `extra_body.thinking` / `thinking_budget` /
+              `chat_template_kwargs`), so hand-writing it would be asking the
+              operator to know something the form already knows. */}
+          <Field
+            className="sm:col-span-2"
+            hint={
+              draft.thinking_disabled === "omit"
+                ? t.settings.models.thinkAlwaysOn
+                : t.settings.models.thinkingDisabledHint
+            }
+            label={t.settings.models.thinkingDisabledTitle}
+          >
+            <Select
+              value={draft.thinking_disabled}
+              onValueChange={(value) =>
+                onChange({
+                  ...draft,
+                  thinking_disabled: value as ThinkingDisabledMode,
+                })
+              }
+            >
+              <SelectTrigger className="w-full" id="model-thinking-disabled">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="preset">
+                  {t.settings.models.thinkingDisabledPreset}
+                </SelectItem>
+                <SelectItem value="omit">
+                  {t.settings.models.thinkingDisabledOmit}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
         </div>
       )}

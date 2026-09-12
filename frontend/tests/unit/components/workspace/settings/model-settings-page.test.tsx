@@ -11,7 +11,13 @@
  * cleartexts out of config.yaml) and row listing.
  */
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+
+// jsdom does not implement scrollIntoView, which Radix Select calls when it
+// opens. Same shim as the other Radix-Select unit tests.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => undefined;
+}
 
 import {
   buildManagedModelProbe,
@@ -23,6 +29,7 @@ import {
   type ManagedModelDraft,
   maskedKeyLabel,
   ModelSettingsPage,
+  readThinkingDisabledMode,
 } from "@/components/workspace/settings/model-settings-page";
 import { ModelConfigRequestError } from "@/core/models/api";
 import type {
@@ -99,8 +106,22 @@ rs.mock("@/core/i18n/hooks", () => ({
           deleteSuccess: "模型已删除。",
           loadError: "加载失败：{detail}",
           supportsThinking: "该模型支持思考",
+          supportsThinkingHint:
+            "勾选后会写入该服务商的思考参数。不勾选时，对话界面的思考开关对本模型无效。",
+          thinkingUnavailable: "该服务商不支持思考参数，无法开启。",
+          budgetTokens: "思考预算 budget_tokens",
+          budgetHint: "思考内容的上限，默认 4096。",
+          thinkingDisabledTitle: "关闭思考时发送",
+          thinkingDisabledHint:
+            "关闭思考时带上该服务商自己的禁用参数（如 thinking.type = disabled）。",
+          thinkingDisabledPreset: "发送服务商的禁用参数",
+          thinkingDisabledOmit: "不发送任何禁用参数 —— 该端点不接受禁用信号",
+          maxTokens: "最大输出 max_tokens",
+          maxTokensHint: "须大于思考预算，默认 8192。",
+          probeThinking: "检测",
           thinkNotProbed: "未检测 — 建议先点「检测」。",
           thinkProbing: "检测中… 正在发送 3 到 5 次真实请求。",
+          thinkAlwaysOn: "该端点不传思考参数也会思考，思考始终开启。",
         },
       },
     },
@@ -590,6 +611,174 @@ describe("buildManagedModelWrite (thinking)", () => {
     expect(write.when_thinking_enabled).toEqual({
       extra_body: { thinking: { type: "enabled" } },
     });
+  });
+
+  it("defaults to the provider's disable block, so stored entries keep working", () => {
+    // The pre-existing behaviour: the mode must not change unless asked.
+    expect(EMPTY_MODEL_DRAFT.thinking_disabled).toBe("preset");
+    const write = buildWrite({ ...anthropic, supports_thinking: true });
+    expect(write.when_thinking_disabled).toEqual({
+      thinking: { type: "disabled" },
+    });
+  });
+
+  it("writes an EMPTY block — not a deletion — when the endpoint rejects the disable signal", () => {
+    const write = buildWrite({
+      ...anthropic,
+      supports_thinking: true,
+      thinking_disabled: "omit",
+    });
+    // Deleting the key would let the factory re-synthesise the same
+    // `thinking: {type: disabled}` payload from `when_thinking_enabled`; `{}`
+    // is what stops that chain. Asserting on the key's presence, not just on
+    // `toEqual({})`, is the point.
+    expect(write).toHaveProperty("when_thinking_disabled");
+    expect(write.when_thinking_disabled).toEqual({});
+    expect(Object.keys(write.when_thinking_disabled as object)).toHaveLength(0);
+    // The enabled block is untouched — the choice only governs the off path.
+    expect(write.when_thinking_enabled).toEqual({
+      thinking: { type: "enabled", budget_tokens: 4096 },
+    });
+  });
+
+  it("still clears every thinking key when the box is unticked, even in omit mode", () => {
+    const write = buildWrite(
+      { ...openai, supports_thinking: false, thinking_disabled: "omit" },
+      storedEntry({
+        supports_thinking: true,
+        when_thinking_enabled: { extra_body: { thinking: { type: "enabled" } } },
+        when_thinking_disabled: { extra_body: { thinking: { type: "disabled" } } },
+        max_tokens: 8192,
+      }),
+    );
+    // "This model has no thinking at all" outranks the off-path choice.
+    expect(write).not.toHaveProperty("supports_thinking");
+    expect(write).not.toHaveProperty("when_thinking_enabled");
+    expect(write).not.toHaveProperty("when_thinking_disabled");
+    expect(write).not.toHaveProperty("max_tokens");
+  });
+
+  it("survives an edit round trip: a stored `{}` stays `{}`", () => {
+    const stored = storedEntry({
+      use: "langchain_anthropic:ChatAnthropic",
+      supports_thinking: true,
+      when_thinking_enabled: { thinking: { type: "enabled", budget_tokens: 4096 } },
+      when_thinking_disabled: {},
+    });
+    // What the edit form reads back...
+    expect(readThinkingDisabledMode(stored)).toBe("omit");
+    // ...and what it writes on save, unchanged.
+    const write = buildWrite(
+      {
+        ...anthropic,
+        supports_thinking: true,
+        thinking_disabled: readThinkingDisabledMode(stored),
+      },
+      stored,
+    );
+    expect(write.when_thinking_disabled).toEqual({});
+  });
+});
+
+describe("the 'what is sent when thinking is off' control", () => {
+  /**
+   * Open the edit form on a thinking-enabled Anthropic entry, which is where
+   * the control lives — it is only meaningful while the checkbox is ticked.
+   */
+  async function openThinkingForm(stored: Partial<ManagedModel> = {}) {
+    modelsState.current = {
+      models: [
+        managedModel({
+          name: "claude-sonnet",
+          use: "langchain_anthropic:ChatAnthropic",
+          supports_thinking: true,
+          when_thinking_enabled: {
+            thinking: { type: "enabled", budget_tokens: 4096 },
+          },
+          ...stored,
+        }),
+      ],
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ModelSettingsPage />);
+    (await screen.findByRole("button", { name: "编辑" })).click();
+    await screen.findByRole("checkbox");
+    return document.getElementById("model-thinking-disabled")!;
+  }
+
+  it("offers both options and defaults to the provider's disable block", async () => {
+    const trigger = await openThinkingForm();
+
+    expect(trigger).toBeTruthy();
+    // The default is "send the preset" — an existing entry must not change
+    // meaning just because a new control appeared.
+    expect(screen.getByText("发送服务商的禁用参数")).toBeTruthy();
+    expect(screen.queryByText(/不传思考参数也会思考/)).toBeNull();
+  });
+
+  it("explains the consequence by reusing the 'always on' wording", async () => {
+    const trigger = await openThinkingForm();
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    fireEvent.click(
+      screen.getByRole("option", {
+        name: "不发送任何禁用参数 —— 该端点不接受禁用信号",
+      }),
+    );
+
+    // Selecting "send nothing" means the endpoint falls back to its own
+    // default — the same thing `thinkAlwaysOn` already says after a probe, so
+    // the two never disagree about the same endpoint.
+    expect(screen.getByText("该端点不传思考参数也会思考，思考始终开启。")).toBeTruthy();
+    expect(screen.queryByText(/多数端点需要它/)).toBeNull();
+  });
+
+  it("reads a stored empty block back as 'send nothing'", async () => {
+    const trigger = await openThinkingForm({ when_thinking_disabled: {} });
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(
+      screen.getByRole("option", {
+        name: "不发送任何禁用参数 —— 该端点不接受禁用信号",
+        selected: true,
+      }),
+    ).toBeTruthy();
+  });
+});
+
+describe("readThinkingDisabledMode", () => {
+  const stored = (value: unknown): ManagedModel => ({
+    index: 0,
+    name: "claude-sonnet",
+    model: "claude-sonnet-5",
+    use: "langchain_anthropic:ChatAnthropic",
+    when_thinking_disabled: value,
+  });
+
+  it("reads an empty block as 'send nothing'", () => {
+    expect(readThinkingDisabledMode(stored({}))).toBe("omit");
+  });
+
+  it("reads any populated block as 'send the preset'", () => {
+    expect(
+      readThinkingDisabledMode(stored({ thinking: { type: "disabled" } })),
+    ).toBe("preset");
+    expect(
+      readThinkingDisabledMode(stored({ extra_body: { thinking: {} } })),
+    ).toBe("preset");
+  });
+
+  it("falls back to 'preset' when nothing is stored", () => {
+    // `undefined` and `null` are both "the entry never chose" — never "omit",
+    // which would otherwise silently drop a disable signal on the next save.
+    expect(readThinkingDisabledMode(stored(undefined))).toBe("preset");
+    expect(readThinkingDisabledMode(stored(null))).toBe("preset");
+  });
+
+  it("does not mistake an array or a string for the empty block", () => {
+    expect(readThinkingDisabledMode(stored([]))).toBe("preset");
+    expect(readThinkingDisabledMode(stored(""))).toBe("preset");
   });
 });
 

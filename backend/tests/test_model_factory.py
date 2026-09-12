@@ -376,6 +376,96 @@ def test_when_thinking_disabled_excluded_from_model_dump(monkeypatch):
     assert "when_thinking_disabled" not in captured
 
 
+def test_empty_when_thinking_disabled_sends_no_thinking_parameters(monkeypatch):
+    """`when_thinking_disabled: {}` must stop the fallback chain, not fall through it.
+
+    This is the escape hatch for endpoints that REJECT the disable signal —
+    measured on a proxied `langchain_anthropic:ChatAnthropic`: ``400 Upstream
+    bad request: thinking.type `disabled` is not supported by this model``. It
+    only works because `{}` is not `None`:
+
+    * the `when_thinking_disabled is not None` branch matches, so
+      `model_settings_from_config.update({})` adds nothing;
+    * every `elif` below — including the native-Anthropic one that synthesises
+      `thinking: {"type": "disabled"}` — is therefore skipped.
+
+    Deleting the key instead of emptying it does NOT work: control reaches that
+    last branch and the request carries the exact payload the endpoint refused.
+    Both halves are pinned here, because the pair is the whole mechanism and a
+    future refactor of the chain would otherwise break the UI silently.
+    """
+    wte = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+
+    def captured_kwargs(wtd: dict | None) -> dict:
+        cfg = _make_app_config(
+            [
+                _make_model(
+                    "escape-hatch",
+                    use="langchain_anthropic:ChatAnthropic",
+                    supports_thinking=True,
+                    when_thinking_enabled=wte,
+                    when_thinking_disabled=wtd,
+                )
+            ]
+        )
+        _patch_factory(monkeypatch, cfg)
+
+        captured: dict = {}
+
+        class CapturingModel(FakeChatModel):
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                BaseChatModel.__init__(self, **kwargs)
+
+        monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+        factory_module.create_chat_model(name="escape-hatch", thinking_enabled=False)
+        return captured
+
+    # Empty dict: no thinking parameter of any shape reaches the constructor.
+    empty = captured_kwargs({})
+    assert "thinking" not in empty
+    assert "extra_body" not in empty
+    assert empty.get("reasoning_effort") is None
+
+    # Absent key: the chain's last branch re-synthesises the disabled payload —
+    # the exact shape the incident's 400 names.
+    absent = captured_kwargs(None)
+    assert absent.get("thinking") == {"type": "disabled"}
+
+
+def test_empty_when_thinking_disabled_leaves_when_thinking_enabled_alone(monkeypatch):
+    """The escape hatch only governs the disabled path.
+
+    `create_chat_model(thinking_enabled=True)` must still send the enabled block
+    verbatim — otherwise choosing "send nothing when off" would also break
+    thinking-on.
+    """
+    cfg = _make_app_config(
+        [
+            _make_model(
+                "escape-hatch-enabled",
+                use="langchain_anthropic:ChatAnthropic",
+                supports_thinking=True,
+                when_thinking_enabled={"thinking": {"type": "enabled", "budget_tokens": 4096}},
+                when_thinking_disabled={},
+            )
+        ]
+    )
+    _patch_factory(monkeypatch, cfg)
+
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+    factory_module.create_chat_model(name="escape-hatch-enabled", thinking_enabled=True)
+
+    assert captured.get("thinking") == {"type": "enabled", "budget_tokens": 4096}
+
+
 # ---------------------------------------------------------------------------
 # reasoning_effort stripping
 # ---------------------------------------------------------------------------

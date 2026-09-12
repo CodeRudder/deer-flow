@@ -693,6 +693,11 @@ export const enUS: Translations = {
         "This provider has no thinking parameters, so it cannot be enabled.",
       budgetTokens: "Thinking budget (budget_tokens)",
       budgetHint: "Upper bound on thinking output. Defaults to 4096.",
+      thinkingDisabledTitle: "What is sent when thinking is off",
+      thinkingDisabledHint:
+        "Turning thinking off adds this provider's own disable parameters (e.g. thinking.type = disabled). Most endpoints need them to stop reasoning.",
+      thinkingDisabledPreset: "This provider's disable parameters",
+      thinkingDisabledOmit: "Nothing — the endpoint rejects a disable signal",
       maxTokens: "Max output (max_tokens)",
       maxTokensHint: "Must exceed the thinking budget. Defaults to 8192.",
       thinkNotProbed:
