@@ -747,11 +747,74 @@ def test_load_managed_models_round_trips_replace(tmp_path: Path):
     assert load_managed_models(config) == SAMPLE_MODELS
 
 
-def test_load_managed_models_returns_empty_without_markers(tmp_path: Path):
+def test_load_managed_models_ignores_commented_templates_without_markers(tmp_path: Path):
+    """SAMPLE_TEXT's ``models:`` body is all comments — an empty value, not entries."""
     config = tmp_path / "config.yaml"
     config.write_text(SAMPLE_TEXT, encoding="utf-8")
 
     assert load_managed_models(config) == []
+
+
+def test_load_managed_models_reads_real_entries_without_markers(tmp_path: Path):
+    """A hand-written config has no markers; its entries must still be visible.
+
+    Returning nothing here is what emptied the admin model list on a deployment
+    whose ``config.yaml`` was written by hand: the list showed zero models while
+    the models themselves were live.
+    """
+    config = tmp_path / "config.yaml"
+    config.write_text(UNMARKED_WITH_ENTRIES, encoding="utf-8")
+
+    assert [entry["name"] for entry in load_managed_models(config)] == ["existing"]
+    assert load_managed_models(config)[0]["api_key"] == "sk-existing"
+
+
+def test_load_reports_exactly_what_replace_takes_over(tmp_path: Path):
+    """The read/write symmetry that keeps a save from dropping live entries.
+
+    A save writes only what the UI submitted, so every entry ``load_managed_models``
+    withholds is an entry the next save deletes. Feeding a load straight back into
+    a replace — the shape of "open settings, save nothing, close" — must therefore
+    be a no-op; before this test existed it silently emptied the section.
+    """
+    config = tmp_path / "config.yaml"
+    config.write_text(UNMARKED_WITH_ENTRIES, encoding="utf-8")
+    reported = load_managed_models(config)
+
+    config.write_text(replace_managed_section(UNMARKED_WITH_ENTRIES, reported), encoding="utf-8")
+
+    assert [entry["name"] for entry in reported] == ["existing"]
+    assert load_managed_models(config) == reported
+
+
+def test_load_managed_models_reads_an_inline_flow_sequence(tmp_path: Path):
+    """``models: [...]`` on the key line is a value; replace drops it, so load reads it."""
+    config = tmp_path / "config.yaml"
+    config.write_text("models: [{name: a, use: x:Y, model: m}]\n", encoding="utf-8")
+
+    assert load_managed_models(config) == [{"name": "a", "use": "x:Y", "model": "m"}]
+
+
+def test_load_managed_models_treats_an_empty_inline_value_as_no_entries(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("models: []\n", encoding="utf-8")
+
+    assert load_managed_models(config) == []
+
+
+def test_load_managed_models_returns_empty_without_a_models_section(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("log_level: info\n", encoding="utf-8")
+
+    assert load_managed_models(config) == []
+
+
+def test_load_managed_models_rejects_a_non_list_unmarked_section(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("models:\n  name: not-a-list\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_managed_models(config)
 
 
 def test_load_managed_models_returns_empty_for_empty_region(tmp_path: Path):

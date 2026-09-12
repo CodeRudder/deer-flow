@@ -71,6 +71,38 @@ def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reset_app_config()
 
 
+#: The entry a deployment has before the Web UI ever wrote to it. Real models
+#: written by hand directly under ``models:``, with no managed-region markers —
+#: the shape that made the admin list read empty while the models ran fine.
+HAND_WRITTEN_ENTRY_LINES = [
+    "- name: glm-5.1\n",
+    "  display_name: GLM-5.1\n",
+    "  use: deerflow.models.patched_deepseek:PatchedChatDeepSeek\n",
+    "  model: glm-5.1\n",
+    f"  api_key: {_LITERAL_SECRET}\n",
+]
+
+
+def _hand_written(examples: str = "") -> str:
+    """``config.example.yaml`` with real entries under ``models:`` and no markers."""
+    text = examples or CONFIG_EXAMPLE.read_text(encoding="utf-8")
+    return text.replace("models:\n", "models:\n" + "".join(HAND_WRITTEN_ENTRY_LINES), 1)
+
+
+@pytest.fixture
+def hand_written_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    text = _hand_written()
+    path = tmp_path / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    for key in set(_ENV_REF_RE.findall(text)):
+        monkeypatch.setenv(key, "dummy-from-test")
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(path))
+    reset_app_config()
+    yield path
+    reset_app_config()
+
+
 def _client(system_role: str) -> TestClient:
     def factory() -> User:
         return User(email="model-config@example.com", password_hash="x", system_role=system_role, id=uuid4())
@@ -262,6 +294,111 @@ def test_managed_region_anchor_does_not_disturb_the_commented_examples(admin: Te
     assert "#   api_key: $VOLCENGINE_API_KEY" in text
     # ...and they stay *below* the region, still commented.
     assert text.index(MANAGED_END) < text.index("# - name: doubao-seed-1.8")
+
+
+# --------------------------------------------------------------------------- #
+# 7b. A config the Web UI has never written to (hand-written, no markers yet)
+# --------------------------------------------------------------------------- #
+
+
+def test_get_config_reports_a_hand_written_configs_entries(admin: TestClient, hand_written_path: Path):
+    """No markers must not read as "no models" — that is what the admin list showed.
+
+    Not a cosmetic bug: a save writes back only the entries the UI submitted, so
+    a model missing from this list is a model the next save deletes.
+    """
+    response = admin.get("/api/models/config")
+
+    assert response.status_code == 200
+    assert [model["name"] for model in response.json()["models"]] == ["glm-5.1"]
+
+
+def test_first_write_migrates_a_hand_written_config_without_losing_the_entry(admin: TestClient, hand_written_path: Path):
+    original = hand_written_path.read_text(encoding="utf-8")
+    # The entry lines ARE the section's value, so the migration may take them
+    # over. Every other line — the ~1471 comments, every other section — may not
+    # move by a byte, and that is what "outside the region" compares.
+    outside_before = [line for line in original.splitlines(keepends=True) if line not in HAND_WRITTEN_ENTRY_LINES]
+
+    added = admin.post("/api/models", json={**MODEL_ENTRY, "name": "second", "model": "second-v1"})
+
+    assert added.status_code == 200
+    assert [model["name"] for model in added.json()["models"]] == ["glm-5.1", "second"]
+
+    updated = hand_written_path.read_text(encoding="utf-8")
+    assert _outside_managed_region(updated) == outside_before
+
+    # Both entries sit between the markers: the hand-written one was migrated
+    # into the region rather than left behind below it.
+    begin, end = updated.index(MANAGED_BEGIN), updated.index(MANAGED_END)
+    assert begin < updated.index("- name: glm-5.1") < end
+    assert begin < updated.index("- name: second") < end
+    # The two markers are the only new comment lines.
+    assert _comment_line_count(updated) == _comment_line_count(original) + 2
+
+
+def test_every_write_after_the_migration_is_confined_to_the_region(admin: TestClient, hand_written_path: Path):
+    """Repeated add / update / delete rounds may not drift anything outside."""
+    assert admin.post("/api/models", json=MODEL_ENTRY).status_code == 200  # the migration
+    after_migration = _outside_managed_region(hand_written_path.read_text(encoding="utf-8"))
+
+    edited = {**MODEL_ENTRY, "name": "glm-5.1", "model": "glm-5.1", "display_name": "GLM-5.1"}
+    for round_index in range(3):
+        tagged = {**MODEL_ENTRY, "name": f"extra-{round_index}", "model": f"extra-{round_index}-v1"}
+        assert admin.post("/api/models", json=tagged).status_code == 200
+        assert admin.put("/api/models/glm-5.1", json={**edited, "display_name": f"GLM-5.1 r{round_index}"}).status_code == 200
+        assert admin.delete(f"/api/models/extra-{round_index}").status_code == 200
+
+    updated = hand_written_path.read_text(encoding="utf-8")
+
+    assert _outside_managed_region(updated) == after_migration
+    # The hand-written entry survived the churn, still edit-able and still holding
+    # its literal credential.
+    stored = load_managed_models(hand_written_path)
+    assert [model["name"] for model in stored] == ["glm-5.1", "tmp-model"]
+    assert stored[0]["display_name"] == "GLM-5.1 r2"
+    assert stored[0]["api_key"] == _LITERAL_SECRET
+
+
+def test_saving_the_list_back_unchanged_keeps_every_entry(admin: TestClient, hand_written_path: Path):
+    """The shape of "open settings, save nothing, close" must not lose a model.
+
+    Getting this wrong is how a hand-written entry disappears: the list reads
+    empty, so the round-tripped save writes an empty region over it.
+    """
+    assert admin.post("/api/models", json=MODEL_ENTRY).status_code == 200  # migrate first
+    before_entries = load_managed_models(hand_written_path)
+    outside_before = _outside_managed_region(hand_written_path.read_text(encoding="utf-8"))
+
+    listed = admin.get("/api/models/config").json()["models"]
+    submitted = [{key: value for key, value in entry.items() if key not in ("index", "api_key_masked")} for entry in listed]
+    assert admin.put("/api/models/config", json={"models": submitted}).status_code == 200
+
+    assert load_managed_models(hand_written_path) == before_entries
+    assert _outside_managed_region(hand_written_path.read_text(encoding="utf-8")) == outside_before
+
+
+def test_the_region_is_byte_stable_once_it_has_been_written(admin: TestClient, hand_written_path: Path):
+    """Writes converge; they do not drift a little on every save.
+
+    Bytes are only comparable from the second save onwards: the first one
+    normalises key order inside the region, because ``ManagedModelEntry`` dumps
+    its declared fields before the provider-specific extras. That is a rewrite
+    confined to the region the operator is told the UI owns — outside it, nothing
+    moves at all, which is the guarantee the byte-identity tests above pin.
+    """
+    assert admin.post("/api/models", json=MODEL_ENTRY).status_code == 200
+    listed = admin.get("/api/models/config").json()["models"]
+    submitted = [{key: value for key, value in entry.items() if key not in ("index", "api_key_masked")} for entry in listed]
+
+    assert admin.put("/api/models/config", json={"models": submitted}).status_code == 200
+    settled = hand_written_path.read_bytes()
+
+    assert admin.put("/api/models/config", json={"models": submitted}).status_code == 200
+
+    assert hand_written_path.read_bytes() == settled
+    # The mask the UI was shown round-tripped back to the stored credential.
+    assert load_managed_models(hand_written_path)[0]["api_key"] == _LITERAL_SECRET
 
 
 # --------------------------------------------------------------------------- #
@@ -550,7 +687,7 @@ def _patch_factory(monkeypatch: pytest.MonkeyPatch, model: _FakeChatModel) -> di
     captured: dict = {}
 
     def fake_create(name=None, thinking_enabled=False, *, app_config=None, attach_tracing=True, **kwargs):
-        captured.update(name=name, app_config=app_config, attach_tracing=attach_tracing)
+        captured.update(name=name, thinking_enabled=thinking_enabled, app_config=app_config, attach_tracing=attach_tracing)
         return model
 
     monkeypatch.setattr(models_router.model_factory, "create_chat_model", fake_create)
@@ -574,6 +711,103 @@ def test_test_endpoint_reports_success(admin: TestClient, config_path: Path, mon
     assert captured["app_config"].get_model_config("tmp-model").model == "tmp-model-v1"
     assert captured["attach_tracing"] is False
     assert len(model.calls) == 1
+
+
+# The probe must send the thinking mode the entry configures, because
+# `create_chat_model` turns `thinking_enabled=False` into the model's
+# `when_thinking_disabled` block (factory.py: `if not thinking_enabled: ...
+# update(when_thinking_disabled)`). Omitting the argument defaults it to False,
+# so a model whose endpoint rejects `thinking.type: disabled` failed the probe
+# even though every real chat turn would work — measured against a live
+# Anthropic-compatible endpoint: "400 Upstream bad request: thinking.type
+# `disabled` is not supported by this model".
+
+
+def test_test_probe_builds_a_thinking_model_with_thinking_on(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    captured = _patch_factory(monkeypatch, _FakeChatModel())
+    entry = {**MODEL_ENTRY, "supports_thinking": True, "when_thinking_enabled": {"thinking": {"type": "enabled"}}, "when_thinking_disabled": {"thinking": {"type": "disabled"}}}
+
+    assert admin.post("/api/models/test", json=entry).status_code == 200
+
+    assert captured["thinking_enabled"] is True
+
+
+def test_test_probe_builds_a_plain_model_with_thinking_off(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    captured = _patch_factory(monkeypatch, _FakeChatModel())
+
+    assert admin.post("/api/models/test", json=MODEL_ENTRY).status_code == 200
+
+    assert captured["thinking_enabled"] is False
+
+
+def _built_by_the_real_factory(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Keep the real factory; hand back the model the probe actually built.
+
+    ``thinking_enabled`` is only interesting because of what the factory does
+    with it, so these assertions are made against the constructed model rather
+    than against the argument.
+    """
+    from deerflow.models import factory as model_factory_module
+
+    captured: dict = {}
+    real_create = model_factory_module.create_chat_model
+
+    def recording_create(name=None, thinking_enabled=False, **kwargs):
+        model = real_create(name, thinking_enabled=thinking_enabled, **kwargs)
+        captured["model"] = model
+        return model
+
+    monkeypatch.setattr(models_router.model_factory, "create_chat_model", recording_create)
+    return captured
+
+
+def _thinking_payload(model) -> object:
+    """Wherever the provider keeps it: a declared field, or ``model_kwargs``.
+
+    ``ChatAnthropic`` declares ``thinking``, so the block lands on the attribute;
+    ``langchain_openai:ChatOpenAI`` does not, so LangChain parks it in
+    ``model_kwargs``. Both are the same value on the wire, and a test that only
+    looked at one would pass on the provider that hides the bug.
+    """
+    return getattr(model, "thinking", None) or getattr(model, "model_kwargs", {}).get("thinking")
+
+
+_DISABLED_ENTRY = {
+    "name": "tmp-model",
+    "model": "tmp-model-v1",
+    "use": "langchain_anthropic:ChatAnthropic",
+    "api_key": "sk-live-abcdefgh1234",
+    "when_thinking_enabled": {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+    "when_thinking_disabled": {"thinking": {"type": "disabled"}},
+}
+
+
+def test_test_probe_probes_a_thinking_model_in_its_enabled_mode(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The regression: a thinking entry must not be probed in a mode it rejects.
+
+    Before the fix this asserted the opposite outcome — the probe always reached
+    for `when_thinking_disabled`, and endpoints that refuse
+    `thinking.type: disabled` answered 400 for an entry that works.
+    """
+    captured = _built_by_the_real_factory(monkeypatch)
+
+    assert admin.post("/api/models/test", json={**_DISABLED_ENTRY, "supports_thinking": True}).status_code == 200
+
+    assert _thinking_payload(captured["model"]) == {"type": "enabled", "budget_tokens": 4096}
+
+
+def test_test_probe_still_sends_the_disabled_block_when_nothing_declares_thinking(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The fix must not become a blanket suppression of the entry's own settings.
+
+    An entry that configures a disable block without declaring thinking support
+    is self-contradictory, but the app will send that block the moment the chat
+    toggle goes off — so the probe has to send it too and report what happens.
+    """
+    captured = _built_by_the_real_factory(monkeypatch)
+
+    assert admin.post("/api/models/test", json=_DISABLED_ENTRY).status_code == 200
+
+    assert _thinking_payload(captured["model"]) == {"type": "disabled"}
 
 
 def test_test_endpoint_turns_provider_errors_into_a_business_result(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -969,10 +1203,7 @@ def test_thinking_probe_builds_the_disabled_call_with_thinking_off(admin: TestCl
     assert body["ok"] is True
     # 前三次依次是：默认、开启、关闭。第三次报「仍在思考」时会追加两次确认
     # （见下），所以断言前缀而不是整体长度。
-    assert seen[:3] == [False, True, False], (
-        "三次调用依次应为：不带思考参数、开启思考、关闭思考；"
-        f"实际 thinking_enabled 序列 {seen}"
-    )
+    assert seen[:3] == [False, True, False], f"三次调用依次应为：不带思考参数、开启思考、关闭思考；实际 thinking_enabled 序列 {seen}"
     assert all(flag is False for flag in seen[3:]), "确认调用同样必须是「关闭」"
 
 
@@ -1081,10 +1312,7 @@ def test_thinking_probe_budget_fits_a_real_reasoning_endpoint():
     the budget has to be sized for reasoning, not for `/models/test`'s one-token
     `ping`.
     """
-    assert (
-        models_router._THINKING_PROBE_TIMEOUT_SECONDS
-        > models_router._PROBE_TIMEOUT_SECONDS
-    )
+    assert models_router._THINKING_PROBE_TIMEOUT_SECONDS > models_router._PROBE_TIMEOUT_SECONDS
     # 19s measured end to end on glm-5.3-flash; the budget needs real headroom.
     assert models_router._THINKING_PROBE_TIMEOUT_SECONDS >= 45.0
 
@@ -1190,9 +1418,7 @@ def test_probe_and_save_agree_about_a_mismatched_endpoint_key(admin: TestClient,
     assert probed.status_code == 200
     body = probed.json()
     assert body["ok"] is False
-    assert "anthropic_api_url" in (body["error"] or ""), (
-        f"探测应当给出与保存同一条可读原因，实际：{body['error']!r}"
-    )
+    assert "anthropic_api_url" in (body["error"] or ""), f"探测应当给出与保存同一条可读原因，实际：{body['error']!r}"
 
 
 def test_probe_carries_a_credential_for_an_edit(admin: TestClient, config_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1218,10 +1444,7 @@ def test_probe_carries_a_credential_for_an_edit(admin: TestClient, config_path: 
             "api_key_value": "sk-stored-secret",
         },
     )
-    stored_ref = next(
-        m["api_key"] for m in admin.get("/api/models/config").json()["models"]
-        if m["name"] == "edit-me"
-    )
+    stored_ref = next(m["api_key"] for m in admin.get("/api/models/config").json()["models"] if m["name"] == "edit-me")
     assert stored_ref == "$EDIT_ME_KEY"
 
     # Capture the credential the provider would truly receive.
@@ -1257,9 +1480,7 @@ def test_probe_carries_a_credential_for_an_edit(admin: TestClient, config_path: 
     ).json()
     assert body["ok"] is True
     assert built, "探测应当真的构建出模型"
-    assert sent_key(built[0]) == os.environ.get("EDIT_ME_KEY"), (
-        f"provider 拿到的应是已存密钥，实际 {sent_key(built[0])!r}"
-    )
+    assert sent_key(built[0]) == os.environ.get("EDIT_ME_KEY"), f"provider 拿到的应是已存密钥，实际 {sent_key(built[0])!r}"
     assert "****" not in sent_key(built[0]), "掩码不是凭据，绝不能被当作密钥使用"
 
     # 2. No reference sent, but the entry exists on disk → fall back to it.
@@ -1343,8 +1564,6 @@ def test_probe_candidate_config_replaces_an_entry_of_the_same_name(config_path: 
     assert len(matched) == 1, f"同名条目应只剩一条，实际 {len(matched)} 条"
 
     # 解析出来的必须是候选，而不是磁盘上那条 —— 这正是本函数存在的意义。
-    model = create_chat_model(
-        name, thinking_enabled=False, app_config=cfg, attach_tracing=False
-    )
+    model = create_chat_model(name, thinking_enabled=False, app_config=cfg, attach_tracing=False)
     assert model.model == "claude-sonnet-5"
     assert getattr(model, "thinking", None) == {"type": "disabled"}

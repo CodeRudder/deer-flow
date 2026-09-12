@@ -210,6 +210,11 @@ def replace_managed_section(text: str, models: list[dict]) -> str:
     where they are, since a comment contributes no value and dropping them would
     throw away the operator's own notes.
 
+    What this discards is exactly what ``load_managed_models`` reports — see
+    :func:`_models_section_value_lines`. The two must stay complementary: a save
+    writes only the entries the caller submitted, so any entry a load withholds
+    is an entry the next save deletes.
+
     Everything else is preserved verbatim, including line endings. Raises
     ``ValueError`` when the file has no ``models:`` section or carries only one
     of the two markers.
@@ -250,6 +255,35 @@ def _is_comment_or_blank(line: str) -> bool:
     """
     stripped = line.strip()
     return not stripped or stripped.startswith("#")
+
+
+def _models_section_value_lines(lines: list[str], block: tuple[int, int]) -> list[str]:
+    """The lines of a *marker-less* ``models:`` section that hold its value.
+
+    Deliberately the exact complement of what :func:`replace_managed_section`
+    keeps when it takes that section over, so reading and writing agree on what
+    the section is worth. The agreement is load-bearing, not stylistic: the save
+    endpoints write back only the entries the UI submitted, so an entry the read
+    path withholds is an entry the next save silently deletes. Both sides test
+    the same predicate, which is what makes them complementary rather than two
+    rules that happen to match today.
+    """
+    return [line for line in lines[block[0] + 1 : block[1]] if not _is_comment_or_blank(line)]
+
+
+def _models_key_inline_value(line: str) -> str | None:
+    """The inline value on a ``models:`` key line, or ``None`` when it is bare.
+
+    ``models: []`` and ``models: [{name: a, ...}]`` are values a hand-written
+    config may legitimately carry, and the insertion path collapses both to a
+    bare key. Dropping them on the way *in* as well is what keeps a load from
+    reporting nothing while a save deletes them. A trailing comment is not part
+    of the value — ``_split_inline_comment`` enforces the YAML rule that ``#``
+    only opens a comment outside quotes and after whitespace.
+    """
+    body = line.rstrip("\r\n")
+    value, _comment = _split_inline_comment(body[len("models:") :])
+    return value.strip() or None
 
 
 def _bare_models_key_line(line: str, newline: str) -> str:
@@ -354,27 +388,55 @@ def _apply_newline(rendered: list[str], newline: str) -> list[str]:
 
 
 def load_managed_models(config_path: Path) -> list[dict]:
-    """Return the model dicts inside the managed region of *config_path*.
+    """Return the model dicts that make up the ``models:`` section of *config_path*.
 
-    Only the lines between the two markers are parsed. The rest of the file —
-    the ~1471 comment lines documenting operator intent — is never handed to the
-    YAML parser, which is what makes a comment-heavy config cheap and safe to
-    read. ``$VAR`` references are returned verbatim; resolving them is the
-    caller's business (see ``to_public`` for the masking rules).
+    With the managed-region markers present, only the lines between them are
+    parsed. The rest of the file — the ~1471 comment lines documenting operator
+    intent — is never handed to the YAML parser, which is what makes a
+    comment-heavy config cheap and safe to read. ``$VAR`` references are returned
+    verbatim; resolving them is the caller's business (see ``to_public`` for the
+    masking rules).
 
-    Returns an empty list when the region is absent, empty, or half-marked.
-    Raises ``ValueError`` when the region exists but is not a YAML list of
-    mappings.
+    Without the markers the top-level ``models:`` section is read directly, so a
+    config written by hand still reports its models and the admin list is not
+    empty. That is not a convenience: the save endpoints write back only the
+    entries they were handed, so any entry this function withholds is one the
+    next save deletes. Reading a marker-less section is therefore part of the
+    same guarantee ``replace_managed_section`` makes — the two are complements
+    (see :func:`_models_section_value_lines`).
+
+    Returns an empty list when there is no ``models:`` section, when the value is
+    empty or comment-only, or when the markers are half-present (a malformed file
+    that ``replace_managed_section`` refuses to edit). Raises ``ValueError`` when
+    the section exists but is not a YAML list of mappings.
     """
-    text = read_config_text(Path(config_path))
-    lines = text.splitlines(keepends=True)
+    lines = read_config_text(Path(config_path)).splitlines(keepends=True)
 
     begin = _find_marker(lines, MANAGED_BEGIN)
     end = _find_marker(lines, MANAGED_END)
-    if begin is None or end is None or end < begin:
+
+    if begin is not None or end is not None:
+        if begin is None or end is None or end < begin:
+            return []
+        return _parse_models_region("".join(lines[begin + 1 : end]), config_path)
+
+    block = find_models_block(lines)
+    if block is None:
         return []
 
-    region = "".join(lines[begin + 1 : end])
+    inline = _models_key_inline_value(lines[block[0]])
+    if inline is not None:
+        return _parse_models_region(inline, config_path)
+    return _parse_models_region("".join(_models_section_value_lines(lines, block)), config_path)
+
+
+def _parse_models_region(region: str, config_path: Path) -> list[dict]:
+    """Parse *region* as the ``models:`` sequence, rejecting anything else.
+
+    ``region`` holds only the section's value — markers and comment-only lines
+    are stripped by the caller — so the common case for a template-shaped config
+    is an empty string, which parses to nothing rather than to a confusing error.
+    """
     if not region.strip():
         return []
 

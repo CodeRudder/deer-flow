@@ -775,7 +775,23 @@ async def _run_probe(payload: dict) -> ModelTestResponse:
         app_config, name = _probe_candidate_config(payload)
         # Tracing is attached at the graph root for real runs; a standalone probe
         # would otherwise emit a second, orphaned trace per click.
-        model = model_factory.create_chat_model(name, app_config=app_config, attach_tracing=False)
+        #
+        # `thinking_enabled` mirrors the entry's own setting, exactly as the
+        # thinking probe builds its calls. It is not a detail: `create_chat_model`
+        # turns `thinking_enabled=False` into the entry's `when_thinking_disabled`
+        # block, so leaving the argument to its default asked "does this work?"
+        # with a payload the operator never chose. Measured against a live
+        # Anthropic-compatible endpoint: a model configured with thinking could
+        # not be probed at all — "400 Upstream bad request: thinking.type
+        # `disabled` is not supported by this model" — while every real chat turn
+        # with that same entry worked.
+        #
+        # The mode is taken from `supports_thinking`, which is the flag DeerFlow
+        # actually consults for the chat toggle. An entry that configures
+        # `when_thinking_disabled` without declaring thinking support still gets
+        # that block sent, and that is the truthful answer: the app would send it
+        # too, the moment the user turns thinking off.
+        model = model_factory.create_chat_model(name, thinking_enabled=bool(payload.get("supports_thinking")), app_config=app_config, attach_tracing=False)
         await asyncio.wait_for(model.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT_SECONDS)
     except TimeoutError:
         # `wait_for`'s own budget expiry and a `TimeoutError` raised inside the
