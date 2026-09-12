@@ -119,5 +119,12 @@ These apply repo-wide; module guides own the module-specific detail.
 - **Test-driven development** — features and bug fixes ship with tests. Backend tests live
   in `backend/tests/` (TDD is mandatory there; see [backend/AGENTS.md](backend/AGENTS.md));
   frontend tests live in `frontend/tests/`.
+- **Run only the affected tests first** — when verifying a change, run the unit tests for
+  the components/modules you touched, not the full suite (full runs are slow; reserve them
+  for pre-push / CI). Filter by path:
+  - Frontend: `cd frontend && pnpm test tests/unit/components/workspace/...` (Rstest
+    accepts a path filter; full suite is `pnpm test`).
+  - Backend: `cd backend && uv run pytest tests/<subdir> -v` (full suite is `make test`).
+  Run the full suite only before a push or when the change crosses module boundaries.
 - **Format before pushing** — run `make format` (backend) / `pnpm check` (frontend). Backend
   CI enforces `ruff format --check`, so formatting must be clean before a push.
