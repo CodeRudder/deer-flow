@@ -3,6 +3,7 @@ import {
   expect,
   request,
   test,
+  type Browser,
   type BrowserContext,
   type Page,
 } from "@playwright/test";
@@ -114,7 +115,7 @@ test.describe("Live mobile smoke", () => {
     const api = await request.newContext({ baseURL: BASE_URL });
 
     const login = await api.post("/api/v1/auth/login/local", {
-      form: { username: EMAIL!, password: PASSWORD! },
+      form: { username: EMAIL, password: PASSWORD },
       headers: { Origin: BASE_URL },
     });
     expect(
@@ -153,7 +154,7 @@ test.describe("Live mobile smoke", () => {
 
   /** A phone context carrying the real session cookie. */
   async function openPhone(
-    browser: import("@playwright/test").Browser,
+    browser: Browser,
   ): Promise<{ context: BrowserContext; page: Page; signals: PageSignals }> {
     const context = await browser.newContext({
       ...devices["iPhone 13"],
@@ -205,7 +206,7 @@ test.describe("Live mobile smoke", () => {
     const { context, page, signals } = await openPhone(browser);
 
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
-    await expect(page.getByText(EMAIL!, { exact: false })).toBeVisible({
+    await expect(page.getByText(EMAIL, { exact: false })).toBeVisible({
       timeout: 20_000,
     });
     await expect(page.getByRole("button", { name: /sign out|退出登录/i })).toBeVisible();

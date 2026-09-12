@@ -270,3 +270,59 @@ test.describe("Mobile thread list", () => {
     );
   });
 });
+
+/**
+ * A failed fetch is not an empty inbox.
+ *
+ * Reported from a real run: with the gateway down, `/workspace` rendered
+ * "No conversations yet." — the list's empty state — so an outage read as
+ * "my data is gone". The empty state was keyed on `length === 0` alone, which
+ * is equally true before the first page arrives and after a request fails.
+ *
+ * Both branches are now distinct and this pins them. The failure is injected
+ * *after* `mockLangGraphAPI` because Playwright resolves routes most-recently
+ * registered first, so this handler wins for the one endpoint under test.
+ */
+test.describe("Mobile thread list failure", () => {
+  test("a failed load reports failure instead of claiming there is no data", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, { threads: THREADS });
+    await page.route("**/api/langgraph/threads/search", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "gateway is down" }),
+      }),
+    );
+
+    await page.goto("/workspace");
+
+    // Not immediate: the SDK retries a failed search for ~22s before rejecting,
+    // and the list asks React Query for no retries of its own so that ~22s is
+    // the whole cost. With the default policy this took 106s (measured), which
+    // is long enough that the spinner reads as "no data" rather than "failed".
+    await expect(page.getByTestId("mobile-thread-load-error")).toBeVisible({
+      timeout: 45_000,
+    });
+
+    // The whole point: the empty state must never be what the user sees here.
+    await expect(page.getByTestId("mobile-thread-empty")).toHaveCount(0);
+    await expect(page.getByText("No conversations yet.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
+  test("a genuinely empty account still shows the empty state", async ({
+    page,
+  }) => {
+    // Guards the opposite mistake: the new error branch must not swallow the
+    // real empty state.
+    mockLangGraphAPI(page, { threads: [] });
+    await page.goto("/workspace");
+
+    await expect(page.getByTestId("mobile-thread-empty")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByTestId("mobile-thread-load-error")).toHaveCount(0);
+  });
+});

@@ -19,6 +19,7 @@ export interface Translations {
     more: string;
     search: string;
     loadMore: string;
+    retry: string;
     download: string;
     thinking: string;
     artifacts: string;
@@ -279,6 +280,12 @@ export interface Translations {
     earlier: string;
     empty: string;
     noSearchResults: string;
+    /**
+     * Deliberately distinct from `empty`: the list must not tell the user they
+     * have no conversations when the request that fetches them failed. The
+     * mobile thread list renders this — with a retry — once the query errors.
+     */
+    loadFailed: string;
     pin: string;
     unpin: string;
     actions: string;

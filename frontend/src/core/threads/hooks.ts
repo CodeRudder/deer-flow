@@ -2304,6 +2304,23 @@ export function useInfiniteThreads(
     sortOrder: "desc",
     select: ["thread_id", "updated_at", "values", "metadata"],
   },
+  {
+    /**
+     * React Query's retry count. Omit it (the default) for the standard policy.
+     *
+     * It matters more than usual here because a failure is expensive to reach:
+     * the LangGraph SDK retries a failed `threads.search` for roughly 22s
+     * before rejecting, so every React Query retry costs another ~22s. The
+     * default of 3 therefore leaves a caller that renders a *failure* state
+     * showing its loading state for ~106s (measured) before it can report
+     * anything — long enough that a gateway outage reads as "no data".
+     *
+     * Callers that render an explicit error + retry affordance pass `0`: the
+     * user gets the truth in ~22s and can retry deliberately, which is a better
+     * trade than a spinner that lies for two minutes.
+     */
+    retry,
+  }: { retry?: number | boolean } = {},
 ) {
   const apiClient = getAPIClient();
   return useInfiniteQuery<
@@ -2323,6 +2340,9 @@ export function useInfiniteThreads(
       })) as AgentThread[];
       return response;
     },
+    // `undefined` keeps React Query's own default, so every existing caller is
+    // unaffected.
+    ...(retry === undefined ? {} : { retry }),
     getNextPageParam: (lastPage, allPages) =>
       getInfiniteThreadsNextPageParam(lastPage, allPages),
     refetchOnWindowFocus: false,

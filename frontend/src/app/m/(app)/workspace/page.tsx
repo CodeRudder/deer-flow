@@ -42,7 +42,13 @@ export default function MobileThreadListPage() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteThreads();
+    isPending,
+    isError,
+    refetch,
+    // No React Query retries: this screen renders an explicit failure state
+    // with a retry button, and the SDK already spends ~22s per attempt — the
+    // default policy would keep the list on "Loading..." for ~106s.
+  } = useInfiniteThreads(undefined, { retry: 0 });
   const threads = useMemo(
     () => infiniteThreads?.pages.flat() ?? [],
     [infiniteThreads],
@@ -167,8 +173,42 @@ export default function MobileThreadListPage() {
         data-testid="mobile-thread-list"
         className="flex min-h-0 flex-1 flex-col pb-[calc(env(safe-area-inset-bottom)+1rem)]"
       >
-        {filteredThreads.length === 0 ? (
-          <p className="text-muted-foreground px-4 py-10 text-center text-sm">
+        {isPending ? (
+          // Before the first page lands, `filteredThreads` is empty for the same
+          // reason it is empty when the user genuinely has no threads. Saying
+          // "No conversations yet" here flashes a claim that is not yet known
+          // to be true — and stays up for the whole retry budget when the
+          // gateway is down.
+          <p
+            data-testid="mobile-thread-loading"
+            className="text-muted-foreground px-4 py-10 text-center text-sm"
+          >
+            {t.common.loading}
+          </p>
+        ) : isError ? (
+          // A failed fetch is not an empty inbox. Reporting "no conversations"
+          // here is what made a gateway outage look like lost data.
+          <div
+            data-testid="mobile-thread-load-error"
+            role="alert"
+            className="flex flex-col items-center gap-3 px-4 py-10 text-center"
+          >
+            <p className="text-muted-foreground text-sm">
+              {t.chats.loadFailed}
+            </p>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="border-input active:bg-accent min-h-11 rounded-xl border px-4 text-base"
+            >
+              {t.common.retry}
+            </button>
+          </div>
+        ) : filteredThreads.length === 0 ? (
+          <p
+            data-testid="mobile-thread-empty"
+            className="text-muted-foreground px-4 py-10 text-center text-sm"
+          >
             {isSearching ? t.chats.noSearchResults : t.chats.empty}
           </p>
         ) : (
