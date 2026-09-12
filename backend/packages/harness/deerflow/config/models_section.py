@@ -290,14 +290,38 @@ def _find_marker(lines: list[str], marker: str) -> int | None:
     return None
 
 
+def read_config_text(config_path: Path) -> str:
+    """Read *config_path* WITHOUT newline translation.
+
+    ``Path.read_text()`` / ``open(..., "r")`` default to universal-newlines
+    mode, which silently rewrites every ``\\r\\n`` to ``\\n`` on the way in.
+    That is fatal for this module's purpose: the surgical editor never touches
+    lines outside the managed region, but if the *read* already normalised the
+    line endings then writing the result changes every single line of the file.
+    The byte-range guarantee would hold in the text domain while the file on
+    disk changed wholesale — an unusable ``diff`` and an un-reviewable commit.
+
+    Deployment configs are frequently CRLF (the target machine's is 100% CRLF),
+    so this is the common case, not a corner case. ``newline=""`` disables the
+    translation so the exact bytes round-trip.
+    """
+    with open(config_path, encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 def _detect_newline(lines: list[str]) -> str:
-    """Return the line ending used by the first terminated line (default ``"\\n"``)."""
-    for line in lines:
-        if line.endswith("\r\n"):
-            return "\r\n"
-        if line.endswith("\n"):
-            return "\n"
-    return "\n"
+    """Return the dominant line ending in *lines* (default ``"\\n"``).
+
+    Majority vote rather than "first terminated line": a file with one stray
+    LF near the top but CRLF everywhere else should keep CRLF. Ties go to CRLF
+    because Windows-targeted configs are the deployment reality, and a mixed
+    file has no single right answer anyway.
+    """
+    crlf = sum(1 for line in lines if line.endswith("\r\n"))
+    lf = sum(1 for line in lines if line.endswith("\n") and not line.endswith("\r\n"))
+    if crlf == 0 and lf == 0:
+        return "\n"
+    return "\r\n" if crlf >= lf else "\n"
 
 
 def _apply_newline(rendered: list[str], newline: str) -> list[str]:
@@ -324,7 +348,7 @@ def load_managed_models(config_path: Path) -> list[dict]:
     Raises ``ValueError`` when the region exists but is not a YAML list of
     mappings.
     """
-    text = Path(config_path).read_text(encoding="utf-8")
+    text = read_config_text(Path(config_path))
     lines = text.splitlines(keepends=True)
 
     begin = _find_marker(lines, MANAGED_BEGIN)

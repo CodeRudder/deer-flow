@@ -38,11 +38,13 @@ from deerflow.config.models_section import (
     DEFAULT_BACKUP_KEEP,
     MANAGED_BEGIN,
     MANAGED_END,
+    _detect_newline,
     build_model_entry,
     commit_config_update,
     find_models_block,
     load_managed_models,
     prune_backups,
+    read_config_text,
     render_managed_section,
     replace_managed_section,
     to_public,
@@ -1635,3 +1637,59 @@ def test_failed_validation_leaves_the_env_key_in_place(config_dir: Path):
 
     assert dotenv_values(env_path)["NEW_MODEL_KEY"] == "sk-test-123"
     assert os.environ["NEW_MODEL_KEY"] == "sk-test-123"
+
+
+# --------------------------------------------------------------------------- #
+# Line-ending preservation (regression: read_text() universal-newline translation)
+# --------------------------------------------------------------------------- #
+
+
+def test_read_config_text_preserves_crlf(tmp_path: Path):
+    """`Path.read_text()` would normalise CRLF -> LF; `read_config_text` must not.
+
+    This is the read-side half of the line-ending guarantee. The deployment
+    config is 100% CRLF, so a lossy read makes every line of the committed file
+    differ even though the edit itself is region-scoped.
+    """
+    path = tmp_path / "crlf.yaml"
+    path.write_bytes(b"a: 1\r\nmodels:\r\n  - name: x\r\nb: 2\r\n")
+
+    assert read_config_text(path) == "a: 1\r\nmodels:\r\n  - name: x\r\nb: 2\r\n"
+
+
+def test_replace_managed_section_round_trips_a_crlf_file(tmp_path: Path):
+    """A CRLF file stays CRLF end to end, and only the region changes."""
+    original = "a: 1\r\nmodels:\r\n  - name: old\r\n    use: p:Q\r\n    model: m\r\nb: 2\r\n"
+    out = replace_managed_section(original, [{"name": "new", "use": "p:Q", "model": "m"}])
+
+    assert "\n" in out
+    assert out.count("\r\n") == out.count("\n"), "every newline must be part of a CRLF pair"
+    assert "\r\nmodels:\r\n" in out
+    # Outside the region is byte-identical, CRLF included.
+    assert out.startswith("a: 1\r\nmodels:\r\n")
+    assert out.endswith("b: 2\r\n")
+
+
+def test_detect_newline_majority_beats_first_line():
+    """One stray LF must not flip a CRLF file to LF."""
+    lines = ["head\n"] + [f"x{i}\r\n" for i in range(9)]
+    assert _detect_newline(lines) == "\r\n"
+
+
+def test_detect_newline_all_lf():
+    assert _detect_newline(["a\n", "b\n"]) == "\n"
+
+
+def test_detect_newline_empty():
+    assert _detect_newline([]) == "\n"
+
+
+def test_load_managed_models_preserves_crlf(tmp_path: Path):
+    """The read helper is used for loading too, so load must not mangle endings."""
+    path = tmp_path / "config.yaml"
+    body = f"models:\r\n  {MANAGED_BEGIN}\r\n  - name: x\r\n    use: p:Q\r\n    model: m\r\n  {MANAGED_END}\r\n"
+    path.write_bytes(body.encode("utf-8"))
+
+    assert [m["name"] for m in load_managed_models(path)] == ["x"]
+    # Untouched on disk.
+    assert path.read_bytes() == body.encode("utf-8")

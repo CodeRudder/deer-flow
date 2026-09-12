@@ -11,7 +11,7 @@ from app.gateway.admin.quota_service import QuotaService
 from app.gateway.deps import get_config, require_admin_user
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.model_config import ModelConfig
-from deerflow.config.models_section import build_model_entry, commit_config_update, load_managed_models, replace_managed_section, to_public, upsert_env_var, validate_candidate_text
+from deerflow.config.models_section import build_model_entry, commit_config_update, load_managed_models, read_config_text, replace_managed_section, to_public, upsert_env_var, validate_candidate_text
 from deerflow.models import factory as model_factory
 from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
 from deerflow.models.video_generation import VideoGenerationModel, VideoGenerationProvider, VideoGenerationProvidersResponse, get_video_generation_providers
@@ -386,7 +386,11 @@ def _write_managed_models(config_path: Path, models: list[dict]) -> Path:
        no backup litter.
     4+5. ``commit_config_update`` — timestamped backup, then one atomic replace.
     """
-    text = config_path.read_text(encoding="utf-8")
+    # `read_config_text`, NOT `.read_text()`: the latter applies universal-newline
+    # translation, so a CRLF config is read as LF and the committed file ends up with
+    # every line changed despite the edit being confined to the managed region. The
+    # target machine's config.yaml is 100% CRLF, so this is the common path.
+    text = read_config_text(config_path)
     candidate = replace_managed_section(text, models)
     validate_candidate_text(candidate, dir_path=config_path.parent)
     return commit_config_update(config_path, candidate)
