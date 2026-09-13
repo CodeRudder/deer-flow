@@ -284,7 +284,7 @@ useModels / useI18n / useRouter ...
 | 项 | 内容 |
 |---|---|
 | 新增 | `src/app/m/workspace/chats/[thread_id]/artifacts/[path]/page.tsx` |
-| 新增 | `src/components/workspace/mobile/artifact-actions.tsx` — 底部操作条 |
+| 新增 | `src/components/workspace/mobile/artifact-actions.tsx` — 底部操作条（T36 后改名 `artifact-actions-menu.tsx`，形态从底部条改为标题栏「⋯」菜单，见原型 ⑤/⑤a/⑤b） |
 | 复用 | `artifact-file-detail.tsx` 的沙箱 iframe / 图片 / 代码渲染 |
 
 **按类型分形态**（原型的 ⑤）：HTML → 全屏 iframe；图片 → 灯箱 + 双指缩放；
@@ -613,7 +613,7 @@ prop / children 口子，那就**停下来报告**，用「改注册表文件」
 
 | 项 | 内容 |
 |---|---|
-| 修改 | `components/workspace/mobile/artifact-actions.tsx` — 首键「分享」 |
+| 修改 | `components/workspace/mobile/artifact-actions.tsx` — 首键「分享」（T36 后为 `artifact-actions-menu.tsx`，分享仍是首项） |
 | 实现 | `navigator.share` 优先（`canShare({files})` 判定）；不支持则**兜底为下载**，不允许出现点了没反应的按钮 |
 | 修改 | 产物页 — 补「刷新」 |
 | i18n | `share` 文案（`common.share` 已有，先复用）；刷新文案三处同步 |

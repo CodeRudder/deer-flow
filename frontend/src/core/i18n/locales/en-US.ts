@@ -91,6 +91,9 @@ export const enUS: Translations = {
     back: "Back to chat",
     switchFile: (current: string) => `Switch file (currently ${current})`,
     searchFiles: "Filter files by name",
+    tools: "Tools",
+    toolsNote:
+      "Shown per file type: images and HTML have no wrap toggle, and only source code can be copied.",
     refresh: "Refresh",
   },
 
@@ -680,9 +683,11 @@ export const enUS: Translations = {
         "This provider's package is not installed; install it to select it.",
       apiBase: "Base URL",
       apiBasePlaceholder: "https://api.example.com/v1",
-      apiBaseOptionalHint: "Leave blank to use the provider's default endpoint.",
+      apiBaseOptionalHint:
+        "Leave blank to use the provider's default endpoint.",
       apiBaseRequiredHint: "An OpenAI-compatible provider requires a base URL.",
-      apiBaseRequired: "A base URL is required for an OpenAI-compatible provider.",
+      apiBaseRequired:
+        "A base URL is required for an OpenAI-compatible provider.",
       editTitleProviderFallback:
         "This model uses a custom provider class path; it is preserved as-is on save.",
       supportsThinking: "This model supports thinking",
@@ -705,10 +710,12 @@ export const enUS: Translations = {
       thinkProbing:
         "Detecting… — sending 2–3 real requests; this usually takes 10–30 seconds. Please keep this window open.",
       thinkProbeFailed: "Detection failed.",
-      thinkEnabled: "The response with thinking enabled contains thinking blocks.",
+      thinkEnabled:
+        "The response with thinking enabled contains thinking blocks.",
       thinkNotEnabled:
         "No thinking blocks came back with thinking enabled — this endpoint may not support it.",
-      thinkDisables: "Thinking blocks stop when thinking is disabled, so the toggle works.",
+      thinkDisables:
+        "Thinking blocks stop when thinking is disabled, so the toggle works.",
       thinkIgnoresDisable:
         "This run still returned thinking blocks with thinking disabled — the toggle may have no effect. Some endpoints do this intermittently; run Detect again to confirm.",
       thinkAlwaysOn:

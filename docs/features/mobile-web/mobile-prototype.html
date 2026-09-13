@@ -374,17 +374,7 @@ body{
 }
 .answered .ck{color:var(--success);font-weight:700}
 
-/* 产物全屏页 */
-.artbar{
-  flex:0 0 auto;border-top:1px solid var(--border);background:var(--card);
-  display:flex;padding:6px 0 calc(6px + var(--safe-b));
-}
-.artbar button{
-  flex:1;border:0;background:none;font:inherit;font-size:11.5px;color:var(--foreground);cursor:pointer;
-  display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 2px;min-height:56px;
-}
-.artbar button:active{background:var(--accent)}
-.artbar .gl{font-size:19px}
+/* 产物全屏页：工具收进标题栏的「⋯」（见原型 ⑤b），不再有底部操作条 */
 .tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 12px;border-bottom:1px solid var(--border);flex:0 0 auto;scrollbar-width:none}
 .tabs::-webkit-scrollbar{display:none}
 .tabs .tb{
@@ -424,6 +414,13 @@ body{
 .switcher .ditem:active{background:var(--accent)}
 .switcher .ditem .dn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .switcher .ditem.on{color:var(--foreground);font-weight:600}
+/* 工具菜单（原型 ⑤b）复用 .ditem，但行首是图标而不是文件名，字体也不是等宽 */
+.switcher .ditem .gl{flex:0 0 auto;width:18px;text-align:center;font-size:16px}
+.switcher .panel.tools .ditem{font-family:inherit;font-size:14px}
+.switcher .dnote{
+  flex:0 0 auto;margin-top:7px;padding:7px 10px 0;border-top:1px solid var(--border);
+  font-size:11.5px;line-height:1.5;color:var(--muted-foreground);
+}
 
 /* 卡片网格（智能体） */
 .card{
@@ -737,11 +734,11 @@ body{
   </div></div>
 </figure>
 
-<!-- ══════════════════ 5. 产物预览 ══════════════════ -->
+<!-- ══════════════════ 5. 产物预览（常态） ══════════════════ -->
 <figure class="frame" style="margin:0">
   <figcaption>
-    <h2>⑤ 产物预览（全屏）</h2>
-    <p class="why"><span class="tag fix">改形态</span>桌面的可拖拽 60/40 分栏在手机上不可用；改为全屏页 + 底部操作条。文件切换＝<b>点标题栏的文件名</b>（桌面用的是面板头部的文件 <code>Select</code>，这里是它的移动端形态），弹出<b>垂直居中、占满屏宽的对话框</b>，带关键字筛选 —— 一个会话写出十几个文件是常事，纯菜单没法找。</p>
+    <h2>⑤ 产物预览（全屏 · 常态）</h2>
+    <p class="why"><span class="tag fix">改形态</span>桌面的可拖拽 60/40 分栏在手机上不可用，改为全屏页。标题栏只留三样：<b>返回</b>、<b>文件名（点它切换文件）</b>、<b>「⋯」工具</b>；底部操作条已整条取消（见 <b>⑤b</b>），内容区最大化留给文档本身。下面两帧是这一页各自的弹框态。</p>
   </figcaption>
   <div class="phone"><div class="screen">
     <div class="island"></div>
@@ -750,6 +747,37 @@ body{
       <button class="iconbtn">‹</button>
       <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
       <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
+        <div style="font-size:40px;margin-bottom:10px">🖼</div>
+        沙箱 iframe 渲染预览<br>
+        <span style="font-size:12px">真实实现：注入 base-href + 滚动位置回传</span>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 5a. 产物页的文件切换 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑤a 产物页 · 文件切换</h2>
+    <p class="why">文件切换＝<b>点标题栏的文件名</b>（桌面用的是面板头部的文件 <code>Select</code>，这里是它的移动端形态），弹出<b>垂直居中、占满屏宽的对话框</b>，带关键字筛选 —— 一个会话写出十几个文件是常事，纯菜单没法找。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
+        <div style="font-size:40px;margin-bottom:10px">🖼</div>
+        沙箱 iframe 渲染预览
+      </div>
     </div>
     <div class="switcher">
       <div class="panel">
@@ -762,18 +790,43 @@ body{
         </div>
       </div>
     </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 5b. 产物页的「⋯」工具菜单 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑤b 产物页「⋯」工具菜单</h2>
+    <p class="why"><span class="tag fix">改形态</span>底部操作条整条移除，工具收进标题栏右侧的<b>「⋯」</b>。底部条占掉的是阅读区高度，而它列的工具都不是高频动作 —— 手机上为文档预览让出这 56px 更值。菜单沿用<b>垂直居中、占满屏宽</b>的对话框，与文件切换同一套形态，不再多一种弹层语言。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
+      <button class="iconbtn" style="background:var(--accent)">⋯</button>
+    </div>
     <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
       <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
         <div style="font-size:40px;margin-bottom:10px">🖼</div>
-        沙箱 iframe 渲染预览<br>
-        <span style="font-size:12px">真实实现：注入 base-href + 滚动位置回传</span>
+        沙箱 iframe 渲染预览
       </div>
     </div>
-    <div class="artbar">
-      <button><span class="gl">↗</span>分享</button>
-      <button><span class="gl">⤓</span>下载</button>
-      <button><span class="gl">↺</span>刷新</button>
-      <button><span class="gl">⤢</span>全屏</button>
+    <div class="switcher">
+      <div class="panel tools">
+        <div class="dlabel">工具</div>
+        <div class="dlist">
+          <button class="ditem"><span class="gl">↗</span><span class="dn">分享</span></button>
+          <button class="ditem"><span class="gl">⤓</span><span class="dn">下载</span></button>
+          <button class="ditem"><span class="gl">⧉</span><span class="dn">复制到剪贴板</span></button>
+          <button class="ditem"><span class="gl">⤢</span><span class="dn">在新窗口打开</span></button>
+          <button class="ditem"><span class="gl">⤶</span><span class="dn">自动换行</span></button>
+          <button class="ditem"><span class="gl">↺</span><span class="dn">刷新</span></button>
+        </div>
+        <div class="dnote">按文件类型出现：图片 / HTML 没有「自动换行」，纯代码才有「复制」。</div>
+      </div>
     </div>
     <div class="homebar"><i></i></div>
   </div></div>
@@ -1040,7 +1093,7 @@ body{
   <h3>原型里体现的结构性改动（对应功能清单 §2）</h3>
   <table>
     <tr><th>#</th><th>桌面现状</th><th>移动端形态</th><th>出现于</th></tr>
-    <tr><td>M1</td><td>产物是可拖拽的 60/40 分栏（<code>ResizablePanelGroup</code>）</td><td>全屏页 + 底部操作条</td><td>⑤</td></tr>
+    <tr><td>M1</td><td>产物是可拖拽的 60/40 分栏（<code>ResizablePanelGroup</code>）</td><td>全屏页；文件切换与工具各自是一个弹框，无底部操作条</td><td>⑤ ⑤a ⑤b</td></tr>
     <tr><td>M2</td><td>顶部 6 个图标按钮（状态/Token/额度/导出/产物…）</td><td>只留标题，「⋯」溢出菜单</td><td>②</td></tr>
     <tr><td>M3</td><td>底部一行塞 5 个控件（模式/图片/视频/推理强度/模型）</td><td>输入区底部常驻「模式 / 模型」pill，点击直接切换；其余进「＋」面板</td><td>② ③</td></tr>
     <tr><td>M4</td><td>消息操作 <code>opacity-0 group-hover:</code>，触屏没有 hover</td><td>操作条常驻；列表行改长按菜单</td><td>② ①</td></tr>

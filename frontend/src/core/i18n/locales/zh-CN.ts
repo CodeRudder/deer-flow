@@ -89,6 +89,9 @@ export const zhCN: Translations = {
     back: "返回对话",
     switchFile: (current: string) => `切换文件（当前：${current}）`,
     searchFiles: "输入关键字筛选文件",
+    tools: "工具",
+    toolsNote:
+      "按文件类型出现：图片 / HTML 没有「自动换行」，纯代码才有「复制」。",
     refresh: "刷新",
   },
 
@@ -669,8 +672,7 @@ export const zhCN: Translations = {
       thinkingDisabledOmit: "不发送任何禁用参数 —— 该端点不接受禁用信号",
       maxTokens: "最大输出 max_tokens",
       maxTokensHint: "须大于思考预算，默认 8192。",
-      thinkNotProbed:
-        "未检测 — 建议先点「检测」，确认该端点是否真的支持思考。",
+      thinkNotProbed: "未检测 — 建议先点「检测」，确认该端点是否真的支持思考。",
       thinkProbing:
         "检测中… —— 正在发送 2 到 3 次真实请求，通常需要 10 到 30 秒，请不要关闭窗口。",
       thinkProbeFailed: "检测失败。",

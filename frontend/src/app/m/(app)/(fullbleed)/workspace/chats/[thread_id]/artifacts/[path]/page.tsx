@@ -25,7 +25,7 @@ import {
 import { ArtifactFilePreview } from "@/components/workspace/artifacts";
 import { ImageLightbox } from "@/components/workspace/artifacts/image-lightbox";
 import { ThreadContext } from "@/components/workspace/messages/context";
-import { MobileArtifactActions } from "@/components/workspace/mobile/artifact-actions";
+import { MobileArtifactActionsMenu } from "@/components/workspace/mobile/artifact-actions-menu";
 import {
   artifactDisplayName,
   artifactHref,
@@ -43,11 +43,12 @@ import { useI18n } from "@/core/i18n/hooks";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
-// Both stylesheets, not just the surface: the file switcher is the model
-// dialog, whose touch rules live in their own file because the chat route has a
-// different set of them (see `mobile-dialog.css`). Without this import a cold
-// load of this URL — no chunk from the chat route in memory — renders 36px rows
-// and a 14px search box.
+// Both stylesheets, not just the surface: both dialogs on this screen — the
+// file switcher and the ⋯ tools menu — are the model dialog, whose touch rules
+// live in their own file because the chat route has a different set of them
+// (see `mobile-dialog.css`). Without this import a cold load of this URL — no
+// chunk from the chat route in memory — renders 36px rows and a 14px search
+// box.
 import "@/components/workspace/mobile/artifact-surface.css";
 import "@/components/workspace/mobile/mobile-dialog.css";
 
@@ -358,6 +359,23 @@ function ArtifactScreen({
             </p>
           )}
         </div>
+        {/* ⑤: the title bar's third item. There is no bottom bar under the
+            document any more — these tools live in this button's menu (⑤b),
+            which frees the 56px the bar held for the document itself. */}
+        <MobileArtifactActionsMenu
+          downloadUrl={downloadable ? downloadUrl : undefined}
+          openUrl={downloadable ? artifactUrl : undefined}
+          // 分享 needs both: the bytes to fetch, and the name the share sheet
+          // shows. A `write-file:` draft has neither — it is not a file yet.
+          fileName={downloadable ? displayName : undefined}
+          wrap={mode === "code" ? wrap : undefined}
+          onWrapChange={mode === "code" ? setWrap : undefined}
+          onCopy={handleCopy}
+          copyDisabled={!content}
+          // Only the views whose bytes this screen fetches: refreshing an image
+          // or an iframe would mean re-mounting it, not re-fetching content.
+          onRefresh={NEEDS_CONTENT.has(mode) ? handleRefresh : undefined}
+        />
       </header>
 
       <div className="relative min-h-0 flex-1">
@@ -435,21 +453,6 @@ function ArtifactScreen({
           </div>
         )}
       </div>
-
-      <MobileArtifactActions
-        downloadUrl={downloadable ? downloadUrl : undefined}
-        openUrl={downloadable ? artifactUrl : undefined}
-        // 分享 needs both: the bytes to fetch, and the name the share sheet
-        // shows. A `write-file:` draft has neither — it is not a file yet.
-        fileName={downloadable ? displayName : undefined}
-        wrap={mode === "code" ? wrap : undefined}
-        onWrapChange={mode === "code" ? setWrap : undefined}
-        onCopy={handleCopy}
-        copyDisabled={!content}
-        // Only the views whose bytes this screen fetches: refreshing an image
-        // or an iframe would mean re-mounting it, not re-fetching content.
-        onRefresh={NEEDS_CONTENT.has(mode) ? handleRefresh : undefined}
-      />
     </div>
   );
 }

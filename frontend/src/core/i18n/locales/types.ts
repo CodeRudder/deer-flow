@@ -85,7 +85,14 @@ export interface Translations {
     switchFile: (current: string) => string;
     /** Placeholder of the file picker's search box. */
     searchFiles: string;
-    /** Re-fetches the artifact's bytes (prototype ⑤'s action bar). */
+    /**
+     * Prototype ⑤b's tools menu: the label of its header, and the accessible
+     * name of both the header's ⋯ button and the menu list.
+     */
+    tools: string;
+    /** ⑤b's footnote: which tools are there depends on the file type. */
+    toolsNote: string;
+    /** Re-fetches the artifact's bytes (prototype ⑤b's tools menu). */
     refresh: string;
   };
 

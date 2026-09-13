@@ -1,26 +1,56 @@
 import { afterEach, describe, expect, it } from "@rstest/core";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 
 import {
   canShareFiles,
-  MobileArtifactActions,
-} from "@/components/workspace/mobile/artifact-actions";
+  MobileArtifactActionsMenu,
+} from "@/components/workspace/mobile/artifact-actions-menu";
 import { I18nProvider } from "@/core/i18n/context";
 
 /**
- * A5: 分享 prefers the OS share sheet and falls back to the download the bar
- * already offers (T21/T26).
+ * The artifact screen's tools, from the ⋯ to the action (prototype ⑤b).
  *
- * Two layers are pinned here. `canShareFiles` is the decision itself — the
- * environment it reads is a parameter, so both answers are checked without a
- * browser. The component tests then prove the wiring end to end: an accepted
- * file reaches `navigator.share`, and every refusal — no share API, a refused
- * payload, a failed fetch — ends at the download, so the tap is never a no-op.
+ * Two layers are pinned here. `canShareFiles` is the share decision itself —
+ * the environment it reads is a parameter, so both answers are checked without
+ * a browser. The component tests then prove the wiring end to end: the ⋯ opens
+ * the menu, each tool is listed only when it applies, picking one runs it and
+ * closes the menu, and every 分享 refusal — no share API, a refused payload, a
+ * failed fetch — ends at the download, so the tap is never a no-op.
  */
+
+/**
+ * cmdk, which backs the dialog's list, uses two DOM APIs jsdom does not
+ * implement: a `ResizeObserver` to measure the list, and `scrollIntoView` to
+ * bring the selected row into view. Neither is what this file asserts — the
+ * 44px row floor is measured in a real browser, in `mobile-artifacts.spec.ts`
+ * — so no-op stand-ins are all the dialog needs to render.
+ */
+if (typeof globalThis.ResizeObserver === "undefined") {
+  const noop = () => undefined;
+  globalThis.ResizeObserver = class {
+    observe = noop;
+    unobserve = noop;
+    disconnect = noop;
+  } as unknown as typeof ResizeObserver;
+}
+
+if (typeof Element.prototype.scrollIntoView !== "function") {
+  Element.prototype.scrollIntoView = () => undefined;
+}
+
+/**
+ * `useI18n` re-reads the locale from the cookie on mount — it overrides the
+ * `I18nProvider`'s initial value — and jsdom has no stored preference, so the
+ * two tests that read a label ("自动换行" / "不换行") pin the locale here rather
+ * than depend on whatever `navigator.language` the runner reports.
+ */
+document.cookie = "locale=zh-CN; path=/";
 
 const DOWNLOAD_URL =
   "/api/threads/thread-1/artifacts/artifact-fixtures/data.json?download=true";
+const OPEN_URL = "/api/threads/thread-1/artifacts/artifact-fixtures/data.json";
 const FILE_NAME = "data.json";
 const ARTIFACT_BODY = '{"status":"draft"}';
 
@@ -193,28 +223,165 @@ afterEach(() => {
   restoreFetch = undefined;
 });
 
-function renderBar(
-  props: { downloadUrl?: string; onRefresh?: () => void } = {},
-) {
+type MenuProps = ComponentProps<typeof MobileArtifactActionsMenu>;
+
+/** Every tool the screen can offer: the shape of a code file with a URL. */
+const ALL_TOOLS: MenuProps = {
+  downloadUrl: DOWNLOAD_URL,
+  openUrl: OPEN_URL,
+  fileName: FILE_NAME,
+  wrap: false,
+  onWrapChange: () => undefined,
+  onCopy: () => undefined,
+  onRefresh: () => undefined,
+};
+
+function renderMenu(props: MenuProps = {}) {
   return render(
     <I18nProvider initialLocale="zh-CN">
-      <MobileArtifactActions
-        downloadUrl={props.downloadUrl}
-        fileName={props.downloadUrl ? FILE_NAME : undefined}
-        onRefresh={props.onRefresh}
-      />
+      <MobileArtifactActionsMenu {...props} />
     </I18nProvider>,
   );
 }
 
-describe("MobileArtifactActions 分享", () => {
+/** Opens the menu the way the operator does: the title bar's ⋯. */
+async function openMenu() {
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("mobile-artifact-tools"));
+  return user;
+}
+
+/**
+ * The rows' testids, in the order they render. A link row carries its testid
+ * on the `<a>` (so the href is assertable), a callback row on the row itself.
+ */
+function rowTestids(): (string | undefined)[] {
+  return screen
+    .getAllByRole("option")
+    .map(
+      (row) =>
+        row.getAttribute("data-testid") ??
+        row.querySelector("[data-testid]")?.getAttribute("data-testid") ??
+        undefined,
+    );
+}
+
+describe("MobileArtifactActionsMenu", () => {
+  it("opens the tools from the ⋯, in ⑤b's order", async () => {
+    renderMenu(ALL_TOOLS);
+
+    // Nothing is painted until the ⋯ is tapped — the tools live in a dialog.
+    expect(screen.queryByTestId("mobile-artifact-share")).toBeNull();
+
+    await openMenu();
+
+    expect(rowTestids()).toEqual([
+      "mobile-artifact-share",
+      "mobile-artifact-download",
+      "mobile-artifact-copy",
+      "mobile-artifact-open",
+      "mobile-artifact-wrap",
+      "mobile-artifact-refresh",
+    ]);
+  });
+
+  it("renders no ⋯ at all when no tool applies", () => {
+    // A `write-file:` draft with no content to fetch: no share, no download,
+    // no open, no copy, nothing to wrap and nothing to re-fetch. An empty menu
+    // is not an option, so the entry point is not there either.
+    renderMenu();
+
+    expect(screen.queryByTestId("mobile-artifact-tools")).toBeNull();
+    expect(screen.queryByRole("option")).toBeNull();
+  });
+
+  it("keeps a tool off the menu when it does not apply", async () => {
+    // A URL but no wrapped/marked-up view: share and download only.
+    renderMenu({ downloadUrl: DOWNLOAD_URL, fileName: FILE_NAME });
+
+    await openMenu();
+
+    expect(rowTestids()).toEqual([
+      "mobile-artifact-share",
+      "mobile-artifact-download",
+    ]);
+  });
+
+  it("closes the menu once a tool is picked", async () => {
+    let refreshed = 0;
+    renderMenu({
+      ...ALL_TOOLS,
+      onRefresh: () => {
+        refreshed += 1;
+      },
+    });
+
+    const user = await openMenu();
+    await user.click(screen.getByTestId("mobile-artifact-refresh"));
+
+    expect(refreshed).toBe(1);
+    // The result shows behind the menu, so the menu gets out of the way.
+    expect(screen.queryByTestId("mobile-artifact-refresh")).toBeNull();
+  });
+
+  it("offers the wrap toggle as the opposite of the current state", async () => {
+    const toggles: boolean[] = [];
+    renderMenu({
+      ...ALL_TOOLS,
+      wrap: false,
+      onWrapChange: (wrap) => toggles.push(wrap),
+    });
+
+    const user = await openMenu();
+    await user.click(screen.getByText("自动换行"));
+
+    expect(toggles).toEqual([true]);
+
+    // Re-opened on a wrapped file, the row is the way back.
+    cleanup();
+    renderMenu({ ...ALL_TOOLS, wrap: true });
+    await openMenu();
+    expect(screen.getByText("不换行")).toBeTruthy();
+  });
+
+  it("copies only when there is content, and lists it as unavailable until then", async () => {
+    let copies = 0;
+    renderMenu({
+      ...ALL_TOOLS,
+      copyDisabled: true,
+      onCopy: () => {
+        copies += 1;
+      },
+    });
+
+    const user = await openMenu();
+    const copy = screen.getByTestId("mobile-artifact-copy");
+    // cmdk marks a disabled row `aria-disabled` and drops its click handler.
+    expect(copy.getAttribute("aria-disabled")).toBe("true");
+
+    await user.click(copy);
+    expect(copies).toBe(0);
+  });
+
+  it("offers no share for an artifact with no URL to fetch", async () => {
+    // A `write-file:` draft exists only in the transcript: there are no bytes
+    // to hand to a share sheet, and nothing to download either.
+    renderMenu({ onRefresh: () => undefined });
+
+    await openMenu();
+
+    expect(rowTestids()).toEqual(["mobile-artifact-refresh"]);
+  });
+});
+
+describe("MobileArtifactActionsMenu 分享", () => {
   it("hands the file to the share sheet when the platform takes files", async () => {
-    const user = userEvent.setup();
     const clicked = captureProgrammaticClicks();
     const shareCalls = installShareApi(true);
     stubArtifactFetch();
-    renderBar({ downloadUrl: DOWNLOAD_URL });
+    renderMenu({ downloadUrl: DOWNLOAD_URL, fileName: FILE_NAME });
 
+    const user = await openMenu();
     await user.click(screen.getByTestId("mobile-artifact-share"));
 
     expect(shareCalls).toHaveLength(1);
@@ -225,12 +392,12 @@ describe("MobileArtifactActions 分享", () => {
   });
 
   it("falls back to the download when the platform refuses files", async () => {
-    const user = userEvent.setup();
     const clicked = captureProgrammaticClicks();
     const shareCalls = installShareApi(false);
     stubArtifactFetch();
-    renderBar({ downloadUrl: DOWNLOAD_URL });
+    renderMenu({ downloadUrl: DOWNLOAD_URL, fileName: FILE_NAME });
 
+    const user = await openMenu();
     await user.click(screen.getByTestId("mobile-artifact-share"));
 
     expect(shareCalls).toEqual([]);
@@ -238,47 +405,41 @@ describe("MobileArtifactActions 分享", () => {
   });
 
   it("falls back to the download when the bytes cannot be fetched", async () => {
-    const user = userEvent.setup();
     const clicked = captureProgrammaticClicks();
     const shareCalls = installShareApi(true);
     stubArtifactFetch(false);
-    renderBar({ downloadUrl: DOWNLOAD_URL });
+    renderMenu({ downloadUrl: DOWNLOAD_URL, fileName: FILE_NAME });
 
+    const user = await openMenu();
     await user.click(screen.getByTestId("mobile-artifact-share"));
 
     expect(shareCalls).toEqual([]);
     expect(clicked).toEqual([DOWNLOAD_URL]);
   });
-
-  it("offers no share for an artifact with no URL to fetch", () => {
-    // A `write-file:` draft exists only in the transcript: there are no bytes
-    // to hand to a share sheet, and nothing to download either.
-    renderBar();
-
-    expect(screen.queryByTestId("mobile-artifact-share")).toBeNull();
-    expect(screen.queryByTestId("mobile-artifact-download")).toBeNull();
-  });
 });
 
-describe("MobileArtifactActions 刷新", () => {
+describe("MobileArtifactActionsMenu 刷新", () => {
   it("re-fetches through the callback the screen owns", async () => {
-    const user = userEvent.setup();
     let refreshed = 0;
-    renderBar({
+    renderMenu({
       downloadUrl: DOWNLOAD_URL,
       onRefresh: () => {
         refreshed += 1;
       },
     });
 
+    const user = await openMenu();
     await user.click(screen.getByTestId("mobile-artifact-refresh"));
 
     expect(refreshed).toBe(1);
   });
 
-  it("stays away when there is nothing to re-fetch", () => {
-    renderBar({ downloadUrl: DOWNLOAD_URL });
+  it("stays away when there is nothing to re-fetch", async () => {
+    renderMenu({ downloadUrl: DOWNLOAD_URL });
 
+    await openMenu();
+
+    expect(rowTestids()).toEqual(["mobile-artifact-download"]);
     expect(screen.queryByTestId("mobile-artifact-refresh")).toBeNull();
   });
 });

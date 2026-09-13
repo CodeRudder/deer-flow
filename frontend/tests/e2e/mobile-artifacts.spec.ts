@@ -96,6 +96,20 @@ const ARTIFACT_THREAD = {
 };
 
 /**
+ * The title bar's ⋯, and the tools it opens (prototype ⑤b).
+ *
+ * The tools used to be a bottom action bar; they are rows in a dialog now, so
+ * every action test starts here. Returns the dialog so a test can look inside
+ * it without restating the selector.
+ */
+async function openTools(page: Page) {
+  await page.getByTestId("mobile-artifact-tools").click({ timeout: 15_000 });
+  const menu = page.getByTestId("mobile-artifact-tools-menu");
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+/**
  * Serves the artifact bytes for every path the screen may fetch.
  *
  * Matched with a regex rather than a glob: the download link carries
@@ -256,9 +270,15 @@ test.describe("Mobile transcript entry point", () => {
     await expect(page.getByText("Draft title")).toBeVisible({
       timeout: 15_000,
     });
-    // A draft has no URL to fetch, so the bar offers only the renderer's own
-    // controls, never a download.
-    await expect(page.getByTestId("mobile-artifact-download")).toHaveCount(0);
+    // A draft has no URL to fetch, so the menu offers only the renderer's own
+    // controls, never a share, a download or a new window.
+    const menu = await openTools(page);
+    await expect(page.getByTestId("mobile-artifact-refresh")).toBeVisible();
+    await expect(menu.getByTestId("mobile-artifact-download")).toHaveCount(0);
+    await expect(menu.getByTestId("mobile-artifact-share")).toHaveCount(0);
+    await expect(menu.getByTestId("mobile-artifact-open")).toHaveCount(0);
+    // And nothing is left at the bottom of the screen (⑤b).
+    await expect(page.getByTestId("mobile-artifact-actions")).toHaveCount(0);
   });
 });
 
@@ -335,13 +355,29 @@ test.describe("Mobile artifact render modes", () => {
       await expect(code).toHaveAttribute("data-wrap", "false");
       await expect(code).toHaveCSS("white-space", "pre");
 
+      await openTools(page);
       await page.getByTestId("mobile-artifact-wrap").click();
+
+      // The menu gets out of the way so the re-flowed source is what is left
+      // on screen (⑤b: the tools are not the frequent actions).
+      await expect(page.getByTestId("mobile-artifact-tools-menu")).toHaveCount(
+        0,
+      );
       await expect(code).toHaveAttribute("data-wrap", "true");
       await expect(code).toHaveCSS("white-space", "pre-wrap");
+
+      // Re-opened on a wrapped file, the row is the way back: the label is the
+      // action, so it now offers the opposite one. The suite runs in the
+      // English locale, as the switcher's `Filter files by name` placeholder
+      // also assumes.
+      await openTools(page);
+      await expect(page.getByTestId("mobile-artifact-wrap")).toContainText(
+        "No wrap",
+      );
     });
   });
 
-  test("an unpreviewable file offers download only", async ({ page }) => {
+  test("an unpreviewable file still offers its download", async ({ page }) => {
     mockLangGraphAPI(page, {
       threads: [
         {
@@ -357,9 +393,27 @@ test.describe("Mobile artifact render modes", () => {
     await expect(page.getByTestId("mobile-artifact-download-only")).toBeVisible(
       { timeout: 15_000 },
     );
-    // No renderer at all, but the download action is still there.
+    // No renderer at all, but the download is still there — in the menu, not
+    // in a bar under the fallback sentence.
     await expect(page.getByTestId("mobile-artifact-code")).toHaveCount(0);
+    await openTools(page);
     await expect(page.getByTestId("mobile-artifact-download")).toBeVisible();
+  });
+
+  test("a file with no applicable tool shows no ⋯ at all", async ({ page }) => {
+    // A `write-file:` draft is not a file on the backend, and a `.zip` has no
+    // view whose bytes this screen fetches: no share, no download, no open, no
+    // copy, no wrap, nothing to refresh. An empty menu is not an option, so
+    // the entry point is not rendered either.
+    const draft = "write-file:/artifact-fixtures/bundle.zip?message_id=m1";
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await page.goto(artifactPath(draft));
+
+    await expect(page.getByTestId("mobile-artifact-download-only")).toBeVisible(
+      { timeout: 15_000 },
+    );
+    await expect(page.getByTestId("mobile-artifact-tools")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-artifact-tools-menu")).toHaveCount(0);
   });
 });
 
@@ -367,7 +421,7 @@ test.describe("Mobile artifact render modes", () => {
 // Actions and navigation
 // ---------------------------------------------------------------------------
 
-test.describe("Mobile artifact actions", () => {
+test.describe("Mobile artifact tools", () => {
   test("the download action fires at the artifact with ?download=true", async ({
     page,
   }) => {
@@ -375,8 +429,9 @@ test.describe("Mobile artifact actions", () => {
     await mockArtifactBytes(page);
     await page.goto(artifactPath(HTML_PATH));
 
+    await openTools(page);
     const download = page.getByTestId("mobile-artifact-download");
-    await expect(download).toBeVisible({ timeout: 15_000 });
+    await expect(download).toBeVisible();
     await expect(download).toHaveAttribute(
       "href",
       /\/api\/threads\/[^/]+\/artifacts\/artifact-fixtures\/report\.html\?download=true$/,
@@ -403,25 +458,77 @@ test.describe("Mobile artifact actions", () => {
     await popup.close();
   });
 
-  test("every action-bar control clears the touch floor", async ({ page }) => {
+  /**
+   * The geometry is measured on a *cold start* of this route, exactly as the
+   * switcher's own geometry test is: the rows are React-rendered inside the
+   * dialog, and `mobile-dialog.css` — the rule that grows them to the touch
+   * floor — is only guaranteed to be loaded if this URL is entered directly.
+   */
+  test("every tool in the menu clears the touch floor", async ({ page }) => {
     mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
     await mockArtifactBytes(page);
     await page.goto(artifactPath(JSON_PATH));
 
-    const bar = page.getByTestId("mobile-artifact-actions");
-    await expect(bar).toBeVisible({ timeout: 15_000 });
+    const trigger = page.getByTestId("mobile-artifact-tools");
+    await expect(trigger).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => (await trigger.boundingBox())?.height ?? 0)
+      .toBeGreaterThanOrEqual(44);
 
-    const boxes = await bar.locator("a, button").evaluateAll((elements) =>
-      elements.map((element) => {
-        const rect = element.getBoundingClientRect();
-        return { height: rect.height, width: rect.width };
-      }),
-    );
-    expect(boxes.length).toBeGreaterThan(0);
-    for (const box of boxes) {
-      expect(box.width).toBeGreaterThanOrEqual(44);
-      expect(box.height).toBeGreaterThanOrEqual(44);
+    const menu = await openTools(page);
+    // Rows are the shared 36px (`h-9`) the switcher's file rows use, grown by
+    // `.mobile-model-dialog [role="option"]`'s min-height; a link row's anchor
+    // fills its row, so it is measured too. Polled, not measured once: the
+    // dialog animates in (`zoom-in-95`, 200ms) and a box read mid-flight is
+    // the row scaled by ~0.96, i.e. 42.5px.
+    const floors = async (selector: string) =>
+      menu.locator(selector).evaluateAll((elements) =>
+        elements.map((element) => {
+          const rect = element.getBoundingClientRect();
+          return Math.min(rect.width, rect.height);
+        }),
+      );
+
+    for (const selector of ['[role="option"]', "a", "button"]) {
+      // Counted first: an empty match would make the floor vacuous.
+      expect(await menu.locator(selector).count()).toBeGreaterThan(0);
+      await expect
+        .poll(async () => Math.min(...(await floors(selector))))
+        .toBeGreaterThanOrEqual(44);
     }
+  });
+
+  /**
+   * ⑤b: the tools reuse the *file switcher's* dialog, not a second overlay
+   * shape. Both halves of that sentence are geometry, so both are measured:
+   * the switcher's own class, full width inside its 16px gutters, centred on
+   * the viewport.
+   */
+  test("the ⋯ opens the switcher's dialog shape", async ({ page }) => {
+    mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
+    await mockArtifactBytes(page);
+    await page.goto(artifactPath(HTML_PATH));
+
+    const menu = await openTools(page);
+    await expect(menu).toHaveClass(/mobile-model-dialog/);
+
+    const viewport = page.viewportSize();
+    expect(viewport).not.toBeNull();
+    const width = () => menu.boundingBox().then((box) => box?.width ?? 0);
+    const offCentre = () =>
+      menu
+        .boundingBox()
+        .then((box) =>
+          box
+            ? Math.abs(box.y + box.height / 2 - (viewport?.height ?? 0) / 2)
+            : Number.POSITIVE_INFINITY,
+        );
+
+    // Polled: `zoom-in-95` scales the panel for the first 200ms.
+    await expect
+      .poll(width)
+      .toBeGreaterThanOrEqual((viewport?.width ?? 0) - 32 - 1);
+    await expect.poll(offCentre).toBeLessThanOrEqual(2);
   });
 
   test("分享 hands the artifact's file to the platform's share sheet", async ({
@@ -432,8 +539,9 @@ test.describe("Mobile artifact actions", () => {
     await installShareApi(page, true);
     await page.goto(artifactPath(HTML_PATH));
 
+    await openTools(page);
     const share = page.getByTestId("mobile-artifact-share");
-    await expect(share).toBeVisible({ timeout: 15_000 });
+    await expect(share).toBeVisible();
     await share.click();
 
     // The bytes are fetched first — a share sheet takes files, not URLs — so
@@ -464,9 +572,10 @@ test.describe("Mobile artifact actions", () => {
     await page.goto(artifactPath(HTML_PATH));
 
     // A tap must never do nothing: with no share API the same button downloads.
+    await openTools(page);
     const [popup] = await Promise.all([
       page.waitForEvent("popup"),
-      page.getByTestId("mobile-artifact-share").click({ timeout: 15_000 }),
+      page.getByTestId("mobile-artifact-share").click(),
     ]);
     await expect.poll(() => requested).toBe(true);
     expect(popup.url()).toContain("download=true");
@@ -487,11 +596,12 @@ test.describe("Mobile artifact actions", () => {
 
     await page.goto(artifactPath(HTML_PATH));
 
-    const refresh = page.getByTestId("mobile-artifact-refresh");
-    await expect(refresh).toBeVisible({ timeout: 15_000 });
     await expect.poll(() => fetches).toBeGreaterThan(0);
     const before = fetches;
 
+    await openTools(page);
+    const refresh = page.getByTestId("mobile-artifact-refresh");
+    await expect(refresh).toBeVisible();
     await refresh.click();
 
     await expect.poll(() => fetches).toBeGreaterThan(before);
@@ -514,20 +624,25 @@ test.describe("Mobile artifact actions", () => {
     expect(new URL(page.url()).pathname).toBe(CHAT_PATH);
   });
 
-  test("the tab bar gives way to the action bar", async ({ page }) => {
+  test("the tab bar gives way to the document, with no bottom bar either", async ({
+    page,
+  }) => {
     mockLangGraphAPI(page, { threads: [ARTIFACT_THREAD] });
     await mockArtifactBytes(page);
     await page.goto(artifactPath(HTML_PATH));
 
-    await expect(page.getByTestId("mobile-artifact-actions")).toBeVisible({
+    // The screen is full-bleed: no tab bar, and — since ⑤b — no action bar at
+    // the bottom either. The tab bar would be the only `navigation` landmark
+    // this screen could have, and T17 makes its absence structure (the route
+    // sits in `(fullbleed)`, which does not render the bar) rather than a
+    // pathname test.
+    await expect(page.getByTestId("mobile-artifact-title")).toBeVisible({
       timeout: 15_000,
     });
-    // The screen is full-bleed: one bottom bar, not two (prototype ⑤). The
-    // action bar is a plain `div`, so the tab bar is the only `navigation`
-    // landmark this screen could have — and T17 makes its absence structure
-    // (the route sits in `(fullbleed)`, which does not render the bar) rather
-    // than a pathname test.
     await expect(page.getByRole("navigation")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-artifact-actions")).toHaveCount(0);
+    // The tools are the title bar's third item now (⑤): back, file name, ⋯.
+    await expect(page.getByTestId("mobile-artifact-tools")).toBeVisible();
   });
 });
 
