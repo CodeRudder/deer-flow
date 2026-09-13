@@ -150,7 +150,7 @@ load_dotenv()
 | `frontend/src/components/workspace/settings/settings-dialog.tsx` | **修改**。注册新分区 |
 | `frontend/src/core/i18n/locales/{zh-CN,en-US,types}.ts` | **修改**。三处同步加文案 |
 | `.gitignore` | **修改**。已有 `config.yaml.bak`；需补 `config.yaml.bak.*`（时间戳备份）与 `config.yaml.work` |
-| `docs/windows-deployment.md` | **修改**。补充界面配置模型的说明与备份/回滚操作 |
+| `docs/windows-deployment/operations.md` | **修改**。补充界面配置模型的说明与备份/回滚操作 |
 
 ---
 
@@ -380,7 +380,7 @@ commit_config_update(cfg, candidate)                       # 4+5. 备份 → 原
 
 ### Task 8：端到端验证与文档
 
-**Files:** Modify `docs/windows-deployment.md`、`docs/windows-deployment-handover.md`
+**Files:** Modify `docs/windows-deployment/operations.md`、`docs/windows-deployment/handover.md`
 
 - [ ] **Step 1：同步到目标机**——`./scripts/windows-remote/sync-to-windows.sh`
 - [ ] **Step 2：目标机实测**（在 `192.168.2.10` 上，用真实配置）：
@@ -390,7 +390,7 @@ commit_config_update(cfg, candidate)                       # 4+5. 备份 → 原
   - 不重启服务，在对话中选用该模型 → 生效
   - 故意填错 API Key → 保存被拒**或**测试连接报错，且**服务仍正常**（`/health` 200）
   - **回滚演练**：用备份文件覆盖回 `config.yaml` → 确认配置回到修改前状态且服务正常
-- [ ] **Step 3：更新文档**——`windows-deployment.md` 增补两节：
+- [ ] **Step 3：更新文档**——`windows-deployment/operations.md` 增补两节：
   1. "通过界面配置大模型"
   2. "配置备份与回滚"——说明备份文件命名、保留策略、回滚命令：
      ```powershell

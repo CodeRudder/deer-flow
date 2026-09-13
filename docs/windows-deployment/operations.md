@@ -2,7 +2,7 @@
 
 > 面向**运维人员**。目标：在一台内网 Windows 机器上完成 DeerFlow 部署、日常启停、升级与备份。
 >
-> 另有一份 `docs/windows-deployment-handover.md` 是给**接手开发者**的（讲脚本内部实现、踩过的坑），
+> 另有一份 `docs/windows-deployment/handover.md` 是给**接手开发者**的（讲脚本内部实现、踩过的坑），
 > 两者定位不同，不要混用。
 
 ---

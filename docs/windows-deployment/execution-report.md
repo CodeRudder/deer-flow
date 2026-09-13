@@ -55,9 +55,9 @@
 
 | 文档 | 定位 | 规模 |
 |---|---|---|
-| `docs/windows-deployment.md` | **面向运维**的部署手册 | 1264 行 |
-| `docs/windows-deployment-handover.md` | **面向接手开发者**的交接文档 | 478 行 |
-| `docs/superpowers/plans/2026-09-12-windows-deployment-execution.md` | 实施计划 | — |
+| `docs/windows-deployment/operations.md` | **面向运维**的部署手册 | 1264 行 |
+| `docs/windows-deployment/handover.md` | **面向接手开发者**的交接文档 | 478 行 |
+| `docs/windows-deployment/script-plan.md` | 实施计划 | — |
 | 本文档 | 执行报告 | — |
 
 ---
@@ -380,7 +380,7 @@ D:\deer-flow\src\scripts\windows\start.ps1
 D:\deer-flow\src\scripts\windows\stop.ps1
 ```
 
-详细运维说明见 `docs/windows-deployment.md`。
+详细运维说明见 `docs/windows-deployment/operations.md`。
 
 ---
 

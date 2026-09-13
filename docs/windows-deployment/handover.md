@@ -38,7 +38,7 @@
 | **`admin-init.ps1` 验证与提交** | 脚本已存在（47KB）且语法通过，但**未实测、未提交** | P0 |
 | **`register-autostart.ps1`** | 开机自启尚未注册（防火墙规则已由 `start.ps1` 配好） | P1 |
 | **`deploy.ps1` 一键编排** | 目前需手动依次跑三个脚本 | P2 |
-| **`docs/windows-deployment.md`** | 面向运维的部署手册（本文档是交接文档，定位不同） | P1 |
+| **`docs/windows-deployment/operations.md`** | 面向运维的部署手册（本文档是交接文档，定位不同） | P1 |
 | **端到端全量验证** | 管理员登录链路、SQLite 持久化、重启后自启 | P0 |
 
 ---
@@ -348,10 +348,10 @@ PyPI 与国内镜像（清华/阿里/腾讯/中科大）直连均可达，npm �
 - **区域外**：**完全不受影响**。这正是该功能的设计目标 —— `config.yaml` 有 1400+ 行
   注释，写入时必须逐字保留。写入走的是「外科手术式」文本替换，不是 YAML 反序列化后重
   序列化（后者会把全部注释吃掉）。
-- 新增模型时，密钥写进 `.env`，`config.yaml` 里只留 `$变量名` 引用（见 `docs/windows-deployment.md` §4.6）。
+- 新增模型时，密钥写进 `.env`，`config.yaml` 里只留 `$变量名` 引用（见 `docs/windows-deployment/operations.md` §4.6）。
 
 **每次成功保存都会先备份**成 `config.yaml.bak.<YYYYMMDD-HHMMSS>`（同目录，保留最近 10 份），
-回滚命令见 `docs/windows-deployment.md` §4.7。校验失败的写入**不会**产生备份，也不会
+回滚命令见 `docs/windows-deployment/operations.md` §4.7。校验失败的写入**不会**产生备份，也不会
 碰原始文件。相关实现：`backend/packages/harness/deerflow/config/models_section.py`、
 `backend/app/gateway/routers/models.py`。
 
@@ -382,7 +382,7 @@ UV_PYTHON_INSTALL_DIR   = D:\deer-flow\cache\uv-python
 >
 > **不要删除用户级的 `DEER_FLOW_HOME`**：它是让 `base_dir` 与 cwd 无关的锚点，
 > 删掉会让从部署根启动的进程把状态写到 `.deer-flow\` 而非 `data\`。
-> 早期文档曾建议删除，那是个错误，已更正。详见 `windows-deployment.md`
+> 早期文档曾建议删除，那是个错误，已更正。详见 `windows-deployment/operations.md`
 > 「路径与配置」一节。
 
 ### 其他工具（目标机已有）
@@ -438,7 +438,7 @@ UV_PYTHON_INSTALL_DIR   = D:\deer-flow\cache\uv-python
 **为什么网络类别很重要**：目标机网卡类别是 **Public**，Windows 对 Public 网络的入站默认全阻断。
 这就是为什么防火墙规则是**必需**的，不是可选项。
 
-### P1：编写 `docs/windows-deployment.md`
+### P1：编写 `docs/windows-deployment/operations.md`
 
 面向运维的部署手册（本文档是交接文档，定位不同）。需包含：
 - 前置要求与依赖安装命令
@@ -462,7 +462,7 @@ UV_PYTHON_INSTALL_DIR   = D:\deer-flow\cache\uv-python
 4. **从另一台内网机器**（不只是开发机）浏览器访问 `http://192.168.2.10:3000`
 5. 注册 → 审批 → 登录 完整流程
 6. 重启服务器后服务自动拉起（依赖 P1 的自启）
-7. 产出 `docs/windows-deployment-execution-report.md`
+7. 产出 `docs/windows-deployment/execution-report.md`
 
 ---
 
@@ -492,7 +492,7 @@ curl -s http://192.168.2.10:8001/health
 
 ## 十、参考
 
-- **完整实施计划**：`docs/superpowers/plans/2026-09-12-windows-deployment-execution.md`
+- **完整实施计划**：`docs/windows-deployment/script-plan.md`
 - **开发期工具说明**：`scripts/windows-remote/README.md`
 - **上游编排参考**：`scripts/serve.sh`（POSIX 版，Electron 桌面端曾参考它）
 - **配置模板**：`config.example.yaml`（关键段落：database 约 1425-1480 行、auth 约 1745-1800 行）
