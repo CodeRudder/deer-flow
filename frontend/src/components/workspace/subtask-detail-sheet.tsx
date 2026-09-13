@@ -360,7 +360,14 @@ export function SubtaskDetailSheet({ threadId }: { threadId: string }) {
       <SheetContent
         side="right"
         className="flex flex-col p-0"
-        style={{ width: `${sheetWidth}px`, maxWidth: `${MAX_SHEET_WIDTH}px` }}
+        // The viewport cap is load-bearing: the inline width overrides the
+        // primitive's own mobile-safe `w-3/4 sm:max-w-sm`, so without it the
+        // 540px default on a ~390px phone pushes 150px of the panel off the
+        // left edge (it is right-anchored), hiding the start of every line.
+        style={{
+          width: `${sheetWidth}px`,
+          maxWidth: `min(${MAX_SHEET_WIDTH}px, 100vw)`,
+        }}
       >
         {/* Drag handle */}
         <div
