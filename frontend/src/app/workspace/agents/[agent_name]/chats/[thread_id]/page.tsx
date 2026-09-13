@@ -317,6 +317,7 @@ export default function AgentChatPage() {
                         className="bg-background/5"
                         todos={thread.values.todos ?? []}
                         hidden={false}
+                        showProgress
                       />
                     </div>
                   </div>

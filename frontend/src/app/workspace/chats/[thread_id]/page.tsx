@@ -146,6 +146,7 @@ export default function ChatPage() {
                         className="bg-background/5"
                         todos={thread.values.todos ?? []}
                         hidden={false}
+                        showProgress
                       />
                     </div>
                   </div>

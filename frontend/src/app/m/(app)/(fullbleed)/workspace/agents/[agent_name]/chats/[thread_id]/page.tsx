@@ -252,6 +252,8 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
               className="mobile-todo-panel bg-background/5"
               todos={thread.values.todos ?? []}
               hidden={false}
+              showProgress
+              showDurations
             />
           </div>
         )}
