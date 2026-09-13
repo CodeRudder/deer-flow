@@ -132,6 +132,8 @@ NEXT_PUBLIC_LANGGRAPH_BASE_URL=http://localhost:8001/api
 
 Leave these unset for the standard `make dev` / Docker flow, where nginx serves the public `/api/langgraph/*` prefix and rewrites it to Gateway's native `/api/*` routes.
 
+Response compression must stay off (`compress: false` in `next.config.js`) while that rewrite carries the chat stream: compressed `text/event-stream` responses are buffered inside the gzip stream instead of being flushed per event, so a browser talking to the Next server directly (dev on `:3000`, `next start`, LAN/phone testing) receives nothing until the buffer fills or the run ends — a page reloaded mid-run then sits on the thinking placeholder with no reasoning or step rows, and a live transcript updates in bursts. nginx (`:2026`) does not compress the stream, so the two entry points differ. `tests/unit/next-config.test.ts` pins the flag.
+
 ## Resources
 
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
