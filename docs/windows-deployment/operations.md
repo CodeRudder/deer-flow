@@ -4,6 +4,9 @@
 >
 > 另有一份 `docs/windows-deployment/handover.md` 是给**接手开发者**的（讲脚本内部实现、踩过的坑），
 > 两者定位不同，不要混用。
+>
+> **前置步骤：** 若目标机尚未配好 SSH 远程登录，先读 `docs/windows-deployment/ssh-setup.md`——
+> Windows 管理员账号的免密登录与 Linux 行为不同（公钥文件位置不同），坑集中在那份文档。
 
 ---
 
