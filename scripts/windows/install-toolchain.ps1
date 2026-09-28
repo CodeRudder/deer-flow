@@ -453,9 +453,25 @@ if ($installedPnpmVersion -eq $PnpmVersion -and -not $Force) {
     $npmArgs = @('install', '-g', "pnpm@$PnpmVersion", '--no-fund', '--no-audit',
                  "--registry=$NpmRegistry")
 
-    $npmOutput = & $npmCmd @npmArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "pnpm 安装失败 (npm 返回码 $LASTEXITCODE)"
+    # ⚠ 必须临时把 $ErrorActionPreference 放回 Continue：npm 会把 "npm notice"
+    # 之类的提示写到 **stderr**，在 Stop 下经 `2>&1` 读取会抛 NativeCommandError。
+    # 那是**终止性**错误，于是在 npm 明明安装成功之后中断整个脚本——实测于
+    # Windows 11 + npm 11：pnpm 已装好，但后面的环境变量配置与最终校验全没执行。
+    #
+    # 另注：脚本顶部设的 $PSNativeCommandUseErrorActionPreference 只对 PS 7.3+
+    # 生效，Windows PowerShell 5.1 上不存在的变量，设了等于没设。
+    # deploy.ps1 的 Invoke-VersionProbe 是同一套处理，此处对齐。
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $npmOutput = & $npmCmd @npmArgs 2>&1
+        $npmExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    if ($npmExit -ne 0) {
+        Write-Fail "pnpm 安装失败 (npm 返回码 $npmExit)"
         Write-Info ($npmOutput | Select-Object -Last 8)
         Write-Host ""
         Write-Host "  可尝试：" -ForegroundColor Yellow

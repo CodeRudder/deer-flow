@@ -960,6 +960,54 @@ function Get-DeerFlowRootAncestorPid {
     return $top
 }
 
+function Invoke-TaskkillTree {
+    <#
+    .SYNOPSIS
+        强制结束一棵进程树（taskkill /F /T），返回 taskkill 的输出文本。
+
+    .DESCRIPTION
+        ⚠ 必须临时把 $ErrorActionPreference 放回 Continue。
+
+        taskkill 对「已经退出的 PID」会往 stderr 写：
+            ERROR: The process "N" not found.
+        而在 $ErrorActionPreference='Stop' 下，原生命令的 stderr 经 `2>&1` 会
+        变成**终止性**的 NativeCommandError。调用方（start.ps1 / stop.ps1）都设了
+        Stop，于是脚本会在清理进程树的中途异常终止。
+
+        实测后果（2026-09-26，Windows 11）：stop.ps1 杀 Gateway 进程树时，快照里
+        某个 PID 恰好已自行退出 → NativeCommandError → stop.ps1 中断，Frontend
+        没被杀掉、端口 3000 仍被占 → 随后 start.ps1 判定「端口被占用」并以退出码 1
+        中止。表现为「服务已在运行时重跑 start.ps1 必失败」，而开机冷启动正常。
+
+        快照与 taskkill 之间必然存在竞态（进程可能在这几毫秒里自己退出），
+        而这个检查-执行的间隙不可能靠先查一次 Get-Process 消除。好在「进程已经
+        不存在」本来就是要的结果，不该被当成致命错误——所以这里用 Continue，
+        并把 taskkill 的返回码一并收敛掉。
+
+        另注：脚本顶部设的 $PSNativeCommandUseErrorActionPreference 只对
+        PowerShell 7.3+ 生效，Windows PowerShell 5.1 上没有这个变量，设了等于没设。
+
+    .OUTPUTS
+        taskkill 的合并输出（已 Trim）。进程已不存在时返回其 stderr 文本。
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = & $taskkill /F /T /PID $ProcessId 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+
+    return ([string]$raw).Trim()
+}
+
 function Stop-DeerFlowProcessTree {
     <#
     .SYNOPSIS
@@ -1054,7 +1102,6 @@ function Stop-DeerFlowProcessTree {
     }
 
     # ── 3) 强制清掉快照里仍存活的所有进程 ─────────────────────────────────
-    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
     $killed = 0
 
     # ⚠ 循环变量不能叫 $pid：那是有特殊含义的自动变量（当前进程 PID），
@@ -1062,8 +1109,7 @@ function Stop-DeerFlowProcessTree {
     foreach ($treePid in $tree) {
         if (-not (Get-Process -Id $treePid -ErrorAction SilentlyContinue)) { continue }
 
-        $output = & $taskkill /F /T /PID $treePid 2>&1 | Out-String
-        $output = $output.Trim()
+        $output = Invoke-TaskkillTree -ProcessId $treePid
         if ($output) { Write-Info $output }
         $killed++
     }
@@ -1156,9 +1202,7 @@ function Stop-DeerFlowPortOwner {
 
     foreach ($topPid in $targets) {
         Write-Info "端口 $Port 仍有本项目进程（占用者 PID $($ours -join ', ')），从顶层 PID $topPid 收尾整棵进程树"
-        $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-        $output = & $taskkill /F /T /PID $topPid 2>&1 | Out-String
-        $output = $output.Trim()
+        $output = Invoke-TaskkillTree -ProcessId $topPid
         if ($output) { Write-Info $output }
     }
 
