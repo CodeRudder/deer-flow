@@ -27,6 +27,12 @@ from deerflow.runtime.run_outcome import RUN_OUTCOME_CONTEXT_KEY, RunOutcomeTrac
 logger = logging.getLogger(__name__)
 
 _EMPTY_RESPONSE_FALLBACK = "LLM returned an empty response after multiple retries. Please try again later or check the model service status."
+_MAX_TOKENS_FALLBACK = (
+    "The model's thinking ran past the output token limit (thinking and answer share one max_tokens budget), "
+    "so the response was cut off before any answer was produced. Retry with the task split into more, smaller "
+    "steps so each turn needs less single-shot reasoning; if it persists, raise max_tokens or lower the "
+    "thinking budget in Settings -> Models."
+)
 _RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _BUSY_PATTERNS = (
     "server busy",
@@ -336,6 +342,32 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             logger.debug("Failed to emit llm_retry event", exc_info=True)
 
     @staticmethod
+    def _stopped_at_max_tokens(result: ModelCallResult) -> bool:
+        """True when the empty response was caused by hitting the output cap.
+
+        Thinking tokens count toward max_tokens on Anthropic-style APIs, so a
+        model whose thinking budget is >= max_tokens deterministically burns the
+        whole budget on thinking and returns an empty message with
+        ``stop_reason=max_tokens`` (OpenAI-style providers report
+        ``finish_reason=length``). Retrying cannot change that outcome — the
+        same prompt truncates again — so callers short-circuit instead.
+        """
+        msg: AIMessage | None = None
+        if isinstance(result, AIMessage):
+            msg = result
+        elif isinstance(result, ModelResponse) and result.result:
+            first = result.result[0]
+            if isinstance(first, AIMessage):
+                msg = first
+        if msg is None:
+            return False
+
+        metadata = msg.response_metadata
+        if not isinstance(metadata, dict):
+            return False
+        return metadata.get("stop_reason") == "max_tokens" or metadata.get("finish_reason") == "length"
+
+    @staticmethod
     def _is_empty_ai_response(result: ModelCallResult) -> bool:
         msg: AIMessage | None = None
         if isinstance(result, AIMessage):
@@ -397,6 +429,22 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             try:
                 response = handler(request)
                 if self._is_empty_ai_response(response):
+                    if self._stopped_at_max_tokens(response):
+                        # Deterministic config limit: thinking (counted toward
+                        # max_tokens) consumed the entire budget, leaving no
+                        # answer. Retrying reproduces the same truncation, so
+                        # short-circuit with an actionable message and do not
+                        # push the circuit breaker (provider is healthy).
+                        logger.warning("Empty AI response caused by max_tokens truncation; not retrying (the same prompt will truncate again). Raise max_tokens or lower the thinking budget.")
+                        return self._finalize_error_fallback_message(
+                            self._build_error_fallback_message(
+                                _MAX_TOKENS_FALLBACK,
+                                error_type="MaxTokensTruncation",
+                                reason="max_tokens",
+                                detail="stop_reason indicates the output cap was hit",
+                            ),
+                            request,
+                        )
                     if attempt < self.retry_max_attempts:
                         wait_ms = self._empty_retry_delay_ms(attempt)
                         logger.warning(
@@ -468,6 +516,22 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             try:
                 response = await handler(request)
                 if self._is_empty_ai_response(response):
+                    if self._stopped_at_max_tokens(response):
+                        # Deterministic config limit: thinking (counted toward
+                        # max_tokens) consumed the entire budget, leaving no
+                        # answer. Retrying reproduces the same truncation, so
+                        # short-circuit with an actionable message and do not
+                        # push the circuit breaker (provider is healthy).
+                        logger.warning("Empty AI response caused by max_tokens truncation; not retrying (the same prompt will truncate again). Raise max_tokens or lower the thinking budget.")
+                        return self._finalize_error_fallback_message(
+                            self._build_error_fallback_message(
+                                _MAX_TOKENS_FALLBACK,
+                                error_type="MaxTokensTruncation",
+                                reason="max_tokens",
+                                detail="stop_reason indicates the output cap was hit",
+                            ),
+                            request,
+                        )
                     if attempt < self.retry_max_attempts:
                         wait_ms = self._empty_retry_delay_ms(attempt)
                         logger.warning(

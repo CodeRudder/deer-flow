@@ -809,3 +809,100 @@ def test_user_message_for_quota_unchanged() -> None:
 
     assert "out of quota" in message
     assert "streaming response was interrupted" not in message
+
+
+# ── max_tokens truncation: empty responses must NOT retry ───────────────────
+
+
+def test_sync_empty_response_with_max_tokens_stop_returns_immediately() -> None:
+    """Anthropic-style stop_reason=max_tokens: deterministic failure, no retry."""
+    from deerflow.agents.middlewares.llm_error_handling_middleware import _MAX_TOKENS_FALLBACK
+
+    middleware = _build_middleware(retry_max_attempts=3)
+    calls = 0
+
+    def handler(_request) -> AIMessage:
+        nonlocal calls
+        calls += 1
+        return AIMessage(content="", response_metadata={"stop_reason": "max_tokens"})
+
+    result = middleware.wrap_model_call(_request_with_context(), handler)
+
+    assert calls == 1, "max_tokens truncation must not be retried"
+    assert isinstance(result, AIMessage)
+    assert result.content == _MAX_TOKENS_FALLBACK
+    assert middleware._circuit_failure_count == 0, "config limits must not trip the circuit breaker"
+
+
+def test_sync_empty_response_with_length_finish_returns_immediately() -> None:
+    """OpenAI-style finish_reason=length: same deterministic short-circuit."""
+    from deerflow.agents.middlewares.llm_error_handling_middleware import _MAX_TOKENS_FALLBACK
+
+    middleware = _build_middleware(retry_max_attempts=3)
+    calls = 0
+
+    def handler(_request) -> AIMessage:
+        nonlocal calls
+        calls += 1
+        return AIMessage(content="", response_metadata={"finish_reason": "length"})
+
+    result = middleware.wrap_model_call(_request_with_context(), handler)
+
+    assert calls == 1
+    assert isinstance(result, AIMessage)
+    assert result.content == _MAX_TOKENS_FALLBACK
+    assert middleware._circuit_failure_count == 0
+
+
+@pytest.mark.anyio
+async def test_async_empty_response_with_max_tokens_stop_returns_immediately() -> None:
+    from deerflow.agents.middlewares.llm_error_handling_middleware import _MAX_TOKENS_FALLBACK
+
+    middleware = _build_middleware(retry_max_attempts=3)
+    calls = 0
+
+    async def handler(_request) -> AIMessage:
+        nonlocal calls
+        calls += 1
+        return AIMessage(content="", response_metadata={"stop_reason": "max_tokens"})
+
+    result = await middleware.awrap_model_call(_request_with_context(), handler)
+
+    assert calls == 1
+    assert isinstance(result, AIMessage)
+    assert result.content == _MAX_TOKENS_FALLBACK
+    assert middleware._circuit_failure_count == 0
+
+
+def test_sync_empty_response_without_stop_reason_still_retries() -> None:
+    """Regression: plain empty responses keep the existing retry-then-fallback path."""
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=1, retry_cap_delay_ms=1)
+    calls = 0
+
+    def handler(_request) -> AIMessage:
+        nonlocal calls
+        calls += 1
+        return AIMessage(content="")
+
+    result = middleware.wrap_model_call(_request_with_context(), handler)
+
+    assert calls == 3
+    assert isinstance(result, AIMessage)
+    assert result.content == _EMPTY_RESPONSE_FALLBACK
+
+
+def test_sync_empty_response_with_end_turn_stop_still_retries() -> None:
+    """Regression: an end_turn empty response is not a truncation and still retries."""
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=1, retry_cap_delay_ms=1)
+    calls = 0
+
+    def handler(_request) -> AIMessage:
+        nonlocal calls
+        calls += 1
+        return AIMessage(content="", response_metadata={"stop_reason": "end_turn"})
+
+    result = middleware.wrap_model_call(_request_with_context(), handler)
+
+    assert calls == 3
+    assert isinstance(result, AIMessage)
+    assert result.content == _EMPTY_RESPONSE_FALLBACK
