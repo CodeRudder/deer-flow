@@ -24,7 +24,6 @@ from psycopg.rows import dict_row
 
 from deerflow.config.app_config import AppConfig
 
-
 DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
 DEFAULT_GRAPH_ID = "lead_agent"
 
@@ -333,12 +332,7 @@ async def async_main() -> int:
         timeout=args.timeout,
         batch_size=args.batch_size,
     )
-    print(
-        "LangGraph catalog sync complete: "
-        f"discovered={stats.discovered} checked={stats.checked} "
-        f"repaired={stats.repaired} patched={stats.patched} "
-        f"skipped_existing={stats.skipped_existing} failed={stats.failed}"
-    )
+    print(f"LangGraph catalog sync complete: discovered={stats.discovered} checked={stats.checked} repaired={stats.repaired} patched={stats.patched} skipped_existing={stats.skipped_existing} failed={stats.failed}")
     return 1 if stats.failed else 0
 
 

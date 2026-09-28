@@ -114,8 +114,10 @@ class CommandItem(BaseModel):
     started_at: str
     return_code: int | None
 
+
 class CommandListResponse(BaseModel):
     commands: list[CommandItem]
+
 
 class PaginationInfo(BaseModel):
     total_lines: int
@@ -123,12 +125,14 @@ class PaginationInfo(BaseModel):
     line_count: int
     has_more: bool
 
+
 class CommandOutputResponse(BaseModel):
     command_id: str
     status: str
     output: str
     log_file: str | None
     pagination: PaginationInfo
+
 
 class CommandKillResponse(BaseModel):
     killed: bool
@@ -142,13 +146,14 @@ class CommandKillResponse(BaseModel):
 
 ```python
 from app.gateway.routers import commands
+
 app.include_router(commands.router)
 ```
 
 在 `app.py` 的 `openapi_tags` 中添加:
 
 ```python
-{"name": "commands", "description": "Manage background commands for threads"},
+({"name": "commands", "description": "Manage background commands for threads"},)
 ```
 
 ---

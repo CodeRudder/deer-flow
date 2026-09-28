@@ -44,6 +44,7 @@ class CommandStatus(str, Enum):
     KILLED = "killed"
     TIMED_OUT = "timed_out"
 
+
 @dataclass
 class CommandInfo:
     command_id: str
@@ -54,9 +55,9 @@ class CommandInfo:
     started_at: datetime
     completed_at: datetime | None
     return_code: int | None
-    pid: int | None               # 系统进程 ID，用于持久化和孤儿检测
-    _process: subprocess.Popen    # 运行时引用（不持久化）
-    _output: str                  # 累积输出
+    pid: int | None  # 系统进程 ID，用于持久化和孤儿检测
+    _process: subprocess.Popen  # 运行时引用（不持久化）
+    _output: str  # 累积输出
     _reader_thread: threading.Thread
     _lock: threading.Lock
 ```

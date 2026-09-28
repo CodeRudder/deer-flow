@@ -22,12 +22,14 @@ class SessionStatus(BaseModel):
     active_subtasks: list[SubtaskStatus]
     recent_subtasks: list[SubtaskStatus]  # 最近10个
 
+
 class MainSessionStatus(BaseModel):
     status: str  # "running" | "idle" | "interrupted" | "error"
     run_id: str | None
     started_at: str | None
     last_updated: str | None
     last_message: str | None
+
 
 class SubtaskStatus(BaseModel):
     task_id: str

@@ -37,18 +37,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sqlite",
         default="checkpoints.db",
-        help=(
-            "Source SQLite DB path. Relative paths are resolved like DeerFlow "
-            "config paths. Default: checkpoints.db"
-        ),
+        help=("Source SQLite DB path. Relative paths are resolved like DeerFlow config paths. Default: checkpoints.db"),
     )
     parser.add_argument(
         "--postgres-dsn",
         default=None,
-        help=(
-            "Destination PostgreSQL DSN. Defaults to config.yaml "
-            "checkpointer.connection_string after env var resolution."
-        ),
+        help=("Destination PostgreSQL DSN. Defaults to config.yaml checkpointer.connection_string after env var resolution."),
     )
     parser.add_argument(
         "--config",
@@ -96,8 +90,7 @@ def _load_postgres_dsn(config_path: str | None) -> str:
         raise SystemExit("config.yaml does not define a checkpointer section.")
     if config.checkpointer.type != "postgres":
         raise SystemExit(
-            "config.yaml checkpointer.type is not 'postgres'. "
-            "Pass --postgres-dsn explicitly if you still want to migrate.",
+            "config.yaml checkpointer.type is not 'postgres'. Pass --postgres-dsn explicitly if you still want to migrate.",
         )
     if not config.checkpointer.connection_string:
         raise SystemExit("config.yaml checkpointer.connection_string is empty.")
@@ -213,10 +206,7 @@ async def _migrate_checkpoints(
 
             written += 1
 
-        print(
-            f"checkpoints: thread={thread_id} total={len(checkpoints)} "
-            f"written_so_far={written} skipped_so_far={skipped}"
-        )
+        print(f"checkpoints: thread={thread_id} total={len(checkpoints)} written_so_far={written} skipped_so_far={skipped}")
 
     return written, skipped, len(by_thread)
 

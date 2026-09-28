@@ -23,9 +23,7 @@
 command_timeout: int = Field(
     default=120,
     ge=10,
-    description="Timeout in seconds for bash command execution (default: 120). "
-                "On timeout the process tree is killed and partial output is returned. "
-                "Minimum: 10s.",
+    description="Timeout in seconds for bash command execution (default: 120). On timeout the process tree is killed and partial output is returned. Minimum: 10s.",
 )
 ```
 
@@ -72,7 +70,7 @@ sandbox:
 ```python
 # LocalSandbox 新增
 _running_processes: dict[str, subprocess.Popen]  # cmd_id -> Popen
-_output_buffers: dict[str, str]                   # cmd_id -> 已收集输出
+_output_buffers: dict[str, str]  # cmd_id -> 已收集输出
 ```
 
 ### 新增工具（未来）

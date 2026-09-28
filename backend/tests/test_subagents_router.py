@@ -6,7 +6,6 @@ Covers:
 - POST /api/threads/{thread_id}/subagents/{task_id}/resume — resume subtask
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
