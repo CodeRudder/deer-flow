@@ -83,3 +83,8 @@ config.yaml.bak.*
 
 # 编辑器本地历史
 .history/
+
+# Windows 远程主机注册表：记录各人内网机器地址，不入库。
+# 模板见 scripts/windows-remote/hosts.conf.example，复制为 hosts.conf 后登记。
+scripts/windows-remote/hosts.conf
+

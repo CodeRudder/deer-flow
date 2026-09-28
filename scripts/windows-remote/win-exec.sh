@@ -3,64 +3,90 @@
 # win-exec.sh - 在 Windows 测试机上远程执行命令
 #
 # 用法:
-#   ./scripts/windows-remote/win-exec.sh <命令>
-#   ./scripts/windows-remote/win-exec.sh --ps <PowerShell 片段>
-#   ./scripts/windows-remote/win-exec.sh --file <本地脚本.ps1> [-- arg...]
-#   ./scripts/windows-remote/win-exec.sh --dir <远端目录> <命令>
+#   ./scripts/windows-remote/win-exec.sh --host <别名|user@host> [选项] <命令>
+#   ./scripts/windows-remote/win-exec.sh --host <主机> --ps <PowerShell 片段>
+#   ./scripts/windows-remote/win-exec.sh --host <主机> --file <本地脚本.ps1> [-- arg...]
+#
+# 目标主机（必需，二者选一）:
+#   --host win2                 hosts.conf 里登记的别名
+#   --host gdw@192.168.31.129   直接写 user@host
 #
 # 选项:
+#   --root PATH    远端部署根。默认：注册表 > WIN_ROOT > D:/deer-flow
 #   --dir PATH     先切换到远端目录再执行
-#   --timeout SECS SSH 超时，默认 300
+#   --timeout SECS SSH 超时，默认 300；长任务（装依赖、构建前端）务必调大
 #   --quiet        仅输出命令的 stdout
 #   --env K=V      设置远端环境变量，可重复
 #
-# 环境变量:
-#   WIN_HOST   目标主机，默认 gongdewei@192.168.2.10
+# 主机登记: 见同目录 hosts.conf.example —— 复制为 hosts.conf 后登记别名，
+#           登记一次，本目录下所有脚本共用。
+#
+# 环境变量（都可被命令行参数覆盖）:
+#   WIN_HOST   目标主机；命令行 --host 优先
 #   WIN_ROOT   远端根目录，默认 D:/deer-flow
 #
 # 示例:
 #   # 用单引号包裹裸命令；PATH 已自动前置工具链（见下方说明）
-#   ./win-exec.sh 'node --version; pnpm --version; uv --version'
+#   ./win-exec.sh --host win2 'node --version; pnpm --version; uv --version'
 #
 #   # 直接写 PowerShell 片段
-#   ./win-exec.sh 'Get-ChildItem D:\deer-flow | Select-Object Name'
+#   ./win-exec.sh --host win2 'Get-ChildItem D:\deer-flow | Select-Object Name'
 #
 #   # 切换目录后执行
-#   ./win-exec.sh --dir 'D:/deer-flow/src' 'git status --short'
+#   ./win-exec.sh --host win2 --dir 'D:/deer-flow/src' 'git status --short'
 #
 #   # 执行本地 .ps1 脚本（自动上传）
-#   ./win-exec.sh --file scripts/windows/check-env.ps1
+#   ./win-exec.sh --host win2 --file scripts/windows/check-env.ps1
 #
 # ⚠ 传入的命令不要再套一层引号。命令经 base64 传输，按原样交给 PowerShell：
-#     正确: win-exec.sh 'node --version'
-#     错误: win-exec.sh '"node --version"'   # 会被当成字符串字面量打印
+#     正确: win-exec.sh --host win2 'node --version'
+#     错误: win-exec.sh --host win2 '"node --version"'   # 被当成字符串字面量打印
 #
 # 重要说明 — 关于 PATH:
-#   该机系统 PATH 含 C:\Program Files\nodejs（Node 16），Windows 解析顺序是
-#   「系统 PATH + 用户 PATH」，因此系统级 Node 会遮蔽 D:\deer-flow\tools\node。
+#   目标机系统 PATH 里通常已有一个 `C:\Program Files\nodejs`（旧测试机是
+#   Node 16，新机是 Node 25），而 Windows 的解析顺序是「系统 PATH + 用户 PATH」，
+#   系统级 Node 会遮蔽部署根下 tools\node 里的 Node 22。
 #   本脚本默认把工具链目录前置到进程 PATH，保证 node/pnpm/uv 用对版本。
+#   该目录随 --root 走，因此换部署根时无需改脚本。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
-WIN_HOST="${WIN_HOST:-gongdewei@192.168.2.10}"
-WIN_ROOT="${WIN_ROOT:-D:/deer-flow}"
+# 主机与远端路径由 host-lib.sh 统一解析（--host / WIN_HOST，别名查 hosts.conf）。
+# 解析必须等参数解析完（--host 是个参数），所以这些值在下面才填。
+source "$SCRIPT_DIR/host-lib.sh"
 
-# 工具链目录（前置到 PATH，规避系统 Node 16 的遮蔽）
-TOOLS_PATH="$WIN_ROOT/tools/node;$WIN_ROOT/tools/uv"
+HOST_TARGET=""
+HOST_ROOT=""
+
+# 工具链目录（前置到 PATH，规避系统 Node 的遮蔽）。随 --root 走，见下方解析处。
+TOOLS_PATH=""
 
 WORK_DIR=""
 TIMEOUT=300
 QUIET=false
 MODE="command"   # command | ps | file
 PAYLOAD=""
+HOST_ARG=""
+ROOT_ARG=""
 declare -a FILE_ARGS=()
 declare -a ENV_VARS=()
 
+# 取一个带值的选项：$1 是选项名（仅用于报错），$2 是值。
+# 直接写 "$2" 在 set -u 下、选项位于末尾时会报 unbound variable。
+need_value() {
+    [ $# -ge 2 ] && [ -n "${2:-}" ] || {
+        echo "$1 后面缺少值（用 --help 查看用法）" >&2
+        exit 1
+    }
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
+        --host)    need_value "$1" "${2:-}"; HOST_ARG="$2"; shift 2 ;;
+        --root)    need_value "$1" "${2:-}"; ROOT_ARG="$2"; shift 2 ;;
         --dir)     WORK_DIR="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --quiet)   QUIET=true; shift ;;
@@ -68,7 +94,12 @@ while [ $# -gt 0 ]; do
         --file)    MODE="file"; PAYLOAD="$2"; shift 2 ;;
         --env)     ENV_VARS+=("$2"); shift 2 ;;
         --)        shift; FILE_ARGS=("$@"); break ;;
-        -h|--help) sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)
+            # 打印文件头注释块：从第 2 行到 `set -euo pipefail` 之前。
+            # 用 awk 而不是写死行号——头注释长度会变，写死会截断。
+            awk 'NR>1 && /^set -euo pipefail/ { exit } NR>1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+            exit 0
+            ;;
         *)         PAYLOAD="$1"; shift ;;
     esac
 done
@@ -79,6 +110,11 @@ if [ -z "$PAYLOAD" ]; then
 fi
 
 SSH_OPTS=(-o BatchMode=yes -o "ConnectTimeout=20" -o StrictHostKeyChecking=accept-new)
+
+# ── 解析目标主机 ────────────────────────────────────────────────────────────
+
+host_resolve "$HOST_ARG" "$ROOT_ARG" ""
+TOOLS_PATH="$HOST_ROOT/tools/node;$HOST_ROOT/tools/uv"
 
 # ── 构造环境变量前置语句 ────────────────────────────────────────────────────
 #
@@ -127,7 +163,7 @@ $1"
 
     # -OutputFormat Text 抑制 CLIXML：远端 PowerShell 在输出被重定向时会改用
     # CLIXML 序列化，导致 stdout 里混入 XML 噪声。
-    local ssh_cmd=("ssh" "${SSH_OPTS[@]}" "$WIN_HOST"
+    local ssh_cmd=("ssh" "${SSH_OPTS[@]}" "$HOST_TARGET"
         "powershell -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand $encoded")
 
     if [ -n "$TIMEOUT_CMD" ]; then
@@ -146,12 +182,12 @@ case "$MODE" in
         # 无 BOM 的脚本按 GBK 解析），因此走文件传输更可靠。
         [ -f "$PAYLOAD" ] || { echo "脚本不存在: $PAYLOAD" >&2; exit 1; }
 
-        remote_script="$WIN_ROOT/cache/temp/$(basename "$PAYLOAD")"
+        remote_script="$HOST_ROOT/cache/temp/$(basename "$PAYLOAD")"
         remote_dir=$(dirname "$remote_script")
 
         run_remote_ps "New-Item -ItemType Directory -Force -Path '$remote_dir' | Out-Null" >/dev/null
 
-        scp "${SSH_OPTS[@]}" "$PAYLOAD" "$WIN_HOST:$remote_script" >/dev/null
+        scp "${SSH_OPTS[@]}" "$PAYLOAD" "$HOST_TARGET:$remote_script" >/dev/null
 
         arg_str=""
         for a in "${FILE_ARGS[@]:-}"; do

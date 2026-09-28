@@ -1,0 +1,33 @@
+# Windows 远程主机注册表（模板）
+#
+# 用法：复制本文件为同目录下的 hosts.conf，再按下面的格式登记主机。
+#
+#     cp scripts/windows-remote/hosts.conf.example scripts/windows-remote/hosts.conf
+#
+# hosts.conf 是本地文件、不进版本库（已加入 .gitignore）——它记录的是
+# 每台机器的内网地址，不该跟着代码走，各人各自登记。
+#
+# ── 格式 ────────────────────────────────────────────────────────────────────
+#
+#     别名      目标              部署根            代码子目录
+#     <name>    <user@host>       [root]            [subdir]
+#
+#   · 三列之间用空格或 Tab 分隔，均为空白分隔，多敲几个空格不影响
+#   · 第 3、4 列可省略，省略时用默认值 D:/deer-flow 与 src
+#   · 以 # 开头的行是注释；空行忽略
+#   · 别名不要含空格，也不用写 @（含 @ 的值会被当成直写的 user@host）
+#
+# 登记后即可在任意脚本里用别名：
+#
+#     ./scripts/windows-remote/sync-to-windows.sh --host win2
+#     ./scripts/windows-remote/win-exec.sh --host win2 'node --version'
+#
+# 不想登记也可以直接写完整目标（跳过注册表）：
+#
+#     ./scripts/windows-remote/win-exec.sh --host gdw@192.168.31.129 'node --version'
+#
+# ── 示例 ────────────────────────────────────────────────────────────────────
+#
+# 别名        目标                        部署根            代码子目录（可省）
+# win2        gdw@192.168.31.129          D:/deer-flow
+# win-old     gongdewei@192.168.2.10      D:/deer-flow

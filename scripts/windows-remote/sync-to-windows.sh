@@ -3,14 +3,25 @@
 # sync-to-windows.sh - 把本地仓库同步到 Windows 测试机
 #
 # 用法:
-#   ./scripts/windows-remote/sync-to-windows.sh              # 增量同步
-#   ./scripts/windows-remote/sync-to-windows.sh --dry-run    # 只列出将同步的文件
-#   ./scripts/windows-remote/sync-to-windows.sh --full       # 全量同步（忽略增量判断）
-#   ./scripts/windows-remote/sync-to-windows.sh --delete     # 同步前清空远端目录
-#   ./scripts/windows-remote/sync-to-windows.sh --list       # 显示上次同步状态
+#   ./scripts/windows-remote/sync-to-windows.sh --host <别名|user@host> [选项]
 #
-# 环境变量:
-#   WIN_HOST   目标主机，默认 gongdewei@192.168.2.10
+# 目标主机（必需，二者选一）:
+#   --host win2                 hosts.conf 里登记的别名
+#   --host gdw@192.168.31.129   直接写 user@host
+#
+# 选项:
+#   --root PATH    远端部署根。默认：注册表 > WIN_ROOT > D:/deer-flow
+#   --subdir PATH  远端代码子目录。默认：注册表 > WIN_SUBDIR > src
+#   --dry-run      只统计将同步的文件数与体积，不实际传输
+#   --full         忽略增量判断，强制全量同步
+#   --delete       同步前清空远端代码目录（该目录内一切内容都会没，谨慎）
+#   --list         只显示同步状态（时间戳、远端文件数）
+#
+# 主机登记: 见同目录 hosts.conf.example —— 复制为 hosts.conf 后登记别名，
+#           登记一次，本目录下所有脚本共用。
+#
+# 环境变量（都可被上面的命令行参数覆盖）:
+#   WIN_HOST   目标主机；命令行 --host 优先
 #   WIN_ROOT   远端根目录，默认 D:/deer-flow
 #   WIN_SUBDIR 远端代码子目录，默认 src
 #
@@ -22,8 +33,9 @@
 #     等参数行为与 GNU 版有差异，不可靠。
 #   - Windows 10 1803+ 自带 bsdtar（C:\WINDOWS\system32\tar.exe），
 #     与 macOS 的 bsdtar 同源，兼容性最好。
-#   - git 虽然两端都有，但仓库里有未提交的改动（scripts/windows/ 就是
-#     未跟踪文件），git 路线会漏掉它们。
+#   - git 路线传的是某个提交，而这里要的是「工作区当前状态」：仓库里常有
+#     未提交的改动与本地文件（本目录的 hosts.conf 就是本地文件、不进版本库），
+#     git 会漏掉它们。
 #
 #   传输内容为纯源码：node_modules / .next / .venv 等平台相关的构建产物
 #   必须排除——它们在 Windows 上无法使用，且体积巨大（本仓库 4.4G 中
@@ -39,18 +51,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
-WIN_HOST="${WIN_HOST:-gongdewei@192.168.2.10}"
-WIN_ROOT="${WIN_ROOT:-D:/deer-flow}"
-WIN_SUBDIR="${WIN_SUBDIR:-src}"
+# 主机与远端路径由 host-lib.sh 统一解析（--host / WIN_HOST，别名查 hosts.conf）。
+# 解析必须等参数解析完（--host 是个参数），所以这些值在下面才填。
+source "$SCRIPT_DIR/host-lib.sh"
 
+HOST_TARGET=""
+HOST_ROOT=""
+HOST_SUBDIR=""
 # 远端代码目录（POSIX 风格路径，供 ssh 命令内拼接）
-REMOTE_DIR="$WIN_ROOT/$WIN_SUBDIR"
+REMOTE_DIR=""
 # 远端标记文件：记录最后一次同步的时间戳
-REMOTE_STAMP="$REMOTE_DIR/.last-sync"
+REMOTE_STAMP=""
 
-# 本地端的同步快照，与远端标记文件比对
+# 本地端的同步快照。**按主机分开存** —— 原先固定一个 .sync-state/last-sync，
+# 换机器后 `--list` 显示的是上一台机器的时间戳，看上去像「已同步」。
 LOCAL_STAMP_DIR="$REPO_ROOT/.sync-state"
-LOCAL_STAMP="$LOCAL_STAMP_DIR/last-sync"
+LOCAL_STAMP=""
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
@@ -78,20 +94,45 @@ FULL=false
 DELETE=false
 LIST_ONLY=false
 
+HOST_ARG=""
+ROOT_ARG=""
+SUBDIR_ARG=""
+
+# 取一个带值的选项：$1 是选项名（仅用于报错），$2 是值
+require_value() {
+    [ $# -ge 2 ] || die "$1 后面缺少值（用 --help 查看用法）"
+    case "$2" in
+        --*) die "$1 后面缺少值，却遇到了另一个选项: $2" ;;
+    esac
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
+        # 带值的选项用 shift 2 + continue，跳过循环末尾那次 shift
+        --host)   require_value "$1" "${2:-}"; HOST_ARG="$2";   shift 2; continue ;;
+        --root)   require_value "$1" "${2:-}"; ROOT_ARG="$2";   shift 2; continue ;;
+        --subdir) require_value "$1" "${2:-}"; SUBDIR_ARG="$2"; shift 2; continue ;;
         --dry-run) DRY_RUN=true ;;
         --full)    FULL=true ;;
         --delete)  DELETE=true ;;
         --list)    LIST_ONLY=true ;;
         -h|--help)
-            sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            # 打印文件头注释块：从第 2 行到 `set -euo pipefail` 之前。
+            # 用 awk 而不是写死行号——头注释长度会变，写死会截断。
+            awk 'NR>1 && /^set -euo pipefail/ { exit } NR>1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *) die "未知参数: $1（用 --help 查看用法）" ;;
     esac
     shift
 done
+
+# ── 解析目标主机 ────────────────────────────────────────────────────────────
+
+host_resolve "$HOST_ARG" "$ROOT_ARG" "$SUBDIR_ARG"
+REMOTE_DIR="$(host_remote_dir)"
+REMOTE_STAMP="$REMOTE_DIR/.last-sync"
+LOCAL_STAMP="$LOCAL_STAMP_DIR/last-sync-$(host_state_name "$HOST_TARGET")"
 
 # ── 排除规则 ────────────────────────────────────────────────────────────────
 #
@@ -213,7 +254,7 @@ $1"
 
     # -OutputFormat Text 是抑制 CLIXML 的关键：默认情况下远端 PowerShell 检测到
     # 输出未重定向到控制台时，会用 CLIXML 序列化，导致输出里夹带 XML 噪声。
-    ssh "${SSH_OPTS[@]}" "$WIN_HOST" \
+    ssh "${SSH_OPTS[@]}" "$HOST_TARGET" \
         "powershell -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand $encoded"
 }
 
@@ -221,12 +262,12 @@ $1"
 
 step "检查连通性"
 
-[ -n "$WIN_HOST" ] || die "WIN_HOST 为空"
+[ -n "$HOST_TARGET" ] || die "WIN_HOST 为空"
 
-if ! ssh "${SSH_OPTS[@]}" "$WIN_HOST" 'exit 0' 2>/dev/null; then
-    die "无法连接 $WIN_HOST —— 检查网络、SSH 服务与密钥"
+if ! ssh "${SSH_OPTS[@]}" "$HOST_TARGET" 'exit 0' 2>/dev/null; then
+    die "无法连接 $HOST_TARGET —— 检查网络、SSH 服务与密钥"
 fi
-ok "SSH 连接正常: $WIN_HOST"
+ok "SSH 连接正常: $HOST_TARGET"
 
 # 确认远端 tar 可用（Windows 10 1803+ 自带 bsdtar）
 if ! remote_ps "if (Test-Path 'C:\WINDOWS\system32\tar.exe') { exit 0 } else { exit 1 }" >/dev/null 2>&1; then
@@ -297,7 +338,7 @@ if $DRY_RUN; then
 
     ok "文件数: $count"
     ok "压缩后约: $(( total / 1024 )) KB"
-    info "目标: $WIN_HOST:$REMOTE_DIR"
+    info "目标: $HOST_TARGET:$REMOTE_DIR"
     info "实际同步请去掉 --dry-run"
     exit 0
 fi
@@ -329,7 +370,7 @@ sync_start=$(date +%s)
 # --no-same-owner / --no-same-permissions：macOS 的 uid/gid 在 Windows 上无意义，
 # 且 Windows 的权限模型与 POSIX 不同，保留会报错。
 if ! ( cd "$REPO_ROOT" && tar "${TAR_CREATE_NO_MAC_METADATA[@]}" "${TAR_EXCLUDES[@]}" -czf - . ) 2>/dev/null \
-    | ssh "${SSH_OPTS[@]}" "$WIN_HOST" \
+    | ssh "${SSH_OPTS[@]}" "$HOST_TARGET" \
         "powershell -NoProfile -ExecutionPolicy Bypass -Command \"cd '$REMOTE_DIR'; & C:\WINDOWS\system32\tar.exe -xzf - --no-same-owner --no-same-permissions; exit \$LASTEXITCODE\""
 then
     die "同步失败 —— 检查上方错误输出，以及远端磁盘空间"
@@ -378,7 +419,7 @@ printf '\n%s========================================%s\n' "$C_GREEN" "$C_OFF"
 printf '%s  同步完成%s\n' "$C_GREEN" "$C_OFF"
 printf '%s========================================%s\n' "$C_GREEN" "$C_OFF"
 printf '\n  源目录: %s\n' "$REPO_ROOT"
-printf '  目标  : %s:%s\n' "$WIN_HOST" "$REMOTE_DIR"
+printf '  目标  : %s:%s\n' "$HOST_TARGET" "$REMOTE_DIR"
 printf '\n  下一步（在 Windows 上安装依赖）:\n'
 printf '    ./scripts/windows-remote/win-exec.sh --dir %s "uv sync --all-packages"\n' "$REMOTE_DIR"
 printf '\n'
