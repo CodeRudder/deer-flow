@@ -31,12 +31,18 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
     monkeypatch.setenv("QWEN_IMAGE_API_KEY", "test-key")
     monkeypatch.delenv("OPENAI_IMAGE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("H3_IMAGE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("H3IMG_AUTH_TOKEN", raising=False)
 
     response = registry.get_image_generation_providers()
     providers = {provider.name: provider for provider in response.providers}
 
     assert response.skill_enabled is True
-    assert [provider.name for provider in response.providers] == ["qwen_image", "openai_image"]
+    assert [provider.name for provider in response.providers] == [
+        "qwen_image",
+        "openai_image",
+        "h3_image",
+    ]
     assert providers["qwen_image"].configured is True
     assert providers["openai_image"].configured is False
     assert providers["qwen_image"].models[0].name == "qwen-image-2.0-pro"

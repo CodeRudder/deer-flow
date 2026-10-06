@@ -91,7 +91,7 @@ Parameters:
 - `--output-file`: Absolute path to output image file (required)
 - `--aspect-ratio`: Aspect ratio of the generated image (optional, default: 16:9)
 - `--model`: Model name, e.g. `qwen-image-2.0-pro` (optional). This is the routing key — the provider that owns the model is looked up from `config.yaml`, so normally this is the only one you pass.
-- `--provider`: Escape hatch (`qwen_image` or `openai_image`) for debugging or for a model not declared in `config.yaml`; skips the model lookup (optional)
+- `--provider`: Escape hatch (`qwen_image`, `openai_image`, or `h3_image`) for debugging or for a model not declared in `config.yaml`; skips the model lookup (optional)
 - `--negative-prompt`: Negative prompt for providers that support it (optional)
 - `--prompt-extend`: Whether the provider should extend the prompt, `true` or `false` (optional)
 - `--watermark`: Whether the provider should add a watermark, `true` or `false` (optional)
@@ -102,6 +102,31 @@ Provider can also be configured with environment variables:
 - `IMAGE_GENERATION_MODEL`: override provider model
 - `QWEN_IMAGE_API_KEY`: Bearer token for Qwen-Image
 - `QWEN_IMAGE_BASE_URL`: Qwen API base URL (optional, default: `https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1`)
+- `H3_IMAGE_AUTH_TOKEN`: Bearer token for the self-hosted H3 image gateway (falls back to `H3IMG_AUTH_TOKEN`, the gateway's own variable name)
+- `H3_IMAGE_BASE_URL`: H3 image gateway base URL (optional, default: `http://100.108.144.120:8000`)
+- `H3_IMAGE_MODEL`: default gateway mode when `--model` is omitted (optional, default: `h3-frame-std`)
+- `H3_IMAGE_SEED`: fix the sampling seed for a reproducible image (optional; the actual seed is echoed back in the result, so a good take can be re-derived)
+- `H3_IMAGE_FRAME_POLICY`: which frame of the 4-second clip to grab — `first`, `last`, `middle`, or `at:<0..1>` (optional, default `first`)
+- `H3_IMAGE_SHORT_EDGE`: override the tier's short edge, 128–2048 (optional; e.g. `512` on the `std` tier ≈ 50 s)
+- `H3_IMAGE_NO_IDEMPOTENCY`: set to `1` to force a brand-new job — needed only for a deliberate re-roll (see below)
+
+`h3_image` wraps a self-hosted H3 gateway that generates a 4-second clip and returns a
+grabbed frame as PNG. Its model names ARE the gateway's quality tiers, ordered by
+ascending quality — `h3-frame-draft` (4 steps / 256p, ~9 s), `h3-frame-fast` (8 steps /
+256p, ~16 s), `h3-frame-std` (4 steps / 768p, ~115 s, the default), `h3-frame-hq`
+(8 steps / 768p, ~225 s). Use `draft` to iterate on a prompt and `hq` for the final
+image. It shares one GPU and one serial queue with the video API and is **video-first**:
+while the engine runs a video job an image request yields instead of competing for the
+slot, so a call can take far longer than its tier suggests. It does not support reference
+images (i2i is not implemented yet) and ignores `--negative-prompt` / `--prompt-extend` /
+`--watermark`.
+
+If an `h3_image` call times out, or fails with `engine busy with video jobs`, that is the
+yield and not a broken request: **re-run the exact same command.** The provider derives an
+`Idempotency-Key` from the request, so the retry re-attaches to the job already queued
+instead of burning a second run on the shared GPU. Set `H3_IMAGE_NO_IDEMPOTENCY=1` only
+when you deliberately want a *different* image from the same prompt — otherwise the
+gateway's 24-hour same-key window would hand back the same one.
 
 Non-secret defaults can be configured in `config.yaml`:
 

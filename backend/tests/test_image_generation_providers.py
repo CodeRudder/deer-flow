@@ -29,6 +29,10 @@ openai_image_module = _load_module(
     "image_generation_openai_image",
     SCRIPT_DIR / "providers" / "openai_image.py",
 )
+h3_image_module = _load_module(
+    "image_generation_h3_image",
+    SCRIPT_DIR / "providers" / "h3_image.py",
+)
 
 
 def test_qwen_aspect_ratio_to_size():
@@ -718,3 +722,458 @@ image_generation:
         "qwen_image",
         "qwen-image-2.0-pro",
     )
+
+
+# --- h3_image: self-hosted H3 image gateway (frame-extraction modes) ----------
+
+
+@pytest.fixture(autouse=True)
+def _clean_h3_env(monkeypatch):
+    for k in (
+        "H3_IMAGE_AUTH_TOKEN",
+        "H3IMG_AUTH_TOKEN",
+        "H3_IMAGE_BASE_URL",
+        "H3_IMAGE_MODEL",
+        "H3_IMAGE_POLL_INTERVAL_SECONDS",
+        "H3_IMAGE_POLL_TIMEOUT_SECONDS",
+        "H3_IMAGE_SEED",
+        "H3_IMAGE_FRAME_POLICY",
+        "H3_IMAGE_SHORT_EDGE",
+        "H3_IMAGE_NO_IDEMPOTENCY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    # Keep the poll loop instant in tests.
+    monkeypatch.setenv("H3_IMAGE_POLL_INTERVAL_SECONDS", "0")
+
+
+def _h3_resp(payload, status_code=200, headers=None):
+    r = Mock()
+    r.status_code = status_code
+    r.ok = status_code < 400
+    r.json.return_value = payload
+    r.text = json.dumps(payload)
+    r.headers = headers or {}
+    return r
+
+
+def _h3_png_b64(data=b"PNGDATA"):
+    return base64.b64encode(data).decode()
+
+
+def test_h3_image_submits_polls_and_writes_png(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "tok")
+    posts, gets = [], []
+
+    def fake_post(url, headers=None, json=None, **kw):
+        posts.append({"url": url, "headers": headers, "json": json})
+        return _h3_resp({"id": "img_abc", "status": "queued"}, 202)
+
+    def fake_get(url, headers=None, **kw):
+        gets.append(url)
+        return _h3_resp(
+            {
+                "id": "img_abc",
+                "status": "completed",
+                "progress": 100,
+                "data": [{"b64_json": _h3_png_b64(), "meta": {"mode": "h3-frame-fast"}}],
+            }
+        )
+
+    monkeypatch.setattr(h3_image_module.requests, "post", fake_post)
+    monkeypatch.setattr(h3_image_module.requests, "get", fake_get)
+
+    out = tmp_path / "out.png"
+    msg = h3_image_module.generate(
+        prompt_text="a red fox",
+        reference_images=[],
+        output_file=str(out),
+        aspect_ratio="16:9",
+        model="h3-frame-fast",
+    )
+
+    assert out.read_bytes() == b"PNGDATA"
+    assert "provider=h3_image" in msg and "h3-frame-fast" in msg
+    assert posts[0]["url"].endswith("/v1/images/generations")
+    assert posts[0]["json"]["mode"] == "h3-frame-fast"
+    assert posts[0]["json"]["aspect_ratio"] == "16:9"
+    assert posts[0]["json"]["wait"] is False  # submit-only; the provider polls
+    assert gets[0].endswith("/v1/images/jobs/img_abc")
+
+
+def test_h3_image_sends_bearer_auth(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "secret-tok")
+    seen = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        seen["headers"] = headers
+        return _h3_resp({"id": "img_1"}, 202)
+
+    monkeypatch.setattr(h3_image_module.requests, "post", fake_post)
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda url, headers=None, **kw: _h3_resp({"status": "completed", "data": [{"b64_json": _h3_png_b64()}]}),
+    )
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert seen["headers"]["Authorization"] == "Bearer secret-tok"
+
+
+def test_h3_image_accepts_gateway_native_token_env_name(monkeypatch, tmp_path):
+    # The gateway's own env name works as a fallback so operators can copy it verbatim.
+    monkeypatch.setenv("H3IMG_AUTH_TOKEN", "native-tok")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "i"}, 202))
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp({"status": "completed", "data": [{"b64_json": _h3_png_b64()}]}),
+    )
+    msg = h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert "provider=h3_image" in msg
+
+
+def test_h3_image_defaults_to_std_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    seen = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        seen["json"] = json
+        return _h3_resp({"id": "i"}, 202)
+
+    monkeypatch.setattr(h3_image_module.requests, "post", fake_post)
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp({"status": "completed", "data": [{"b64_json": _h3_png_b64()}]}),
+    )
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert seen["json"]["mode"] == "h3-frame-std"
+
+
+def test_h3_image_unknown_mode_rejected_locally(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    with pytest.raises(ValueError, match="unknown h3_image mode"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-frame-nope",
+        )
+
+
+def test_h3_image_missing_token_soft_fails(monkeypatch, tmp_path):
+    msg = h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert "is not set" in msg and "H3_IMAGE_AUTH_TOKEN" in msg
+
+
+def test_h3_image_rejects_reference_images(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    with pytest.raises(ValueError, match="reference images are not supported"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=["/tmp/a.png"],
+            output_file=str(tmp_path / "o.png"),
+        )
+
+
+def test_h3_image_surfaces_structured_job_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "i"}, 202))
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp(
+            {
+                "status": "failed",
+                "error": {"code": "engine_error", "message": "boom", "retryable": False},
+            }
+        ),
+    )
+    with pytest.raises(RuntimeError, match="engine_error.*boom"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+def test_h3_image_surfaces_http_error_envelope(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "post",
+        lambda *a, **k: _h3_resp({"error": {"code": "invalid_request", "message": "unknown mode"}}, 400),
+    )
+    with pytest.raises(RuntimeError, match="invalid_request.*unknown mode"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+def test_h3_image_timeout_points_at_reattach_and_job_retrieval(monkeypatch, tmp_path):
+    # The sandbox kills a bash command at 600s; the provider must fail first and
+    # hand the caller a way back in: re-running the same command re-attaches via
+    # Idempotency-Key, and artifacts persist gateway-side for direct retrieval.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_POLL_TIMEOUT_SECONDS", "0")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "img_slow"}, 202))
+    monkeypatch.setattr(h3_image_module.requests, "get", lambda *a, **k: _h3_resp({"status": "running"}))
+    with pytest.raises(RuntimeError, match="img_slow"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    with pytest.raises(RuntimeError, match="content\\?variant="):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    with pytest.raises(RuntimeError, match="re-attach"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+def test_h3_image_warns_on_unsupported_params(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "i"}, 202))
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp({"status": "completed", "data": [{"b64_json": _h3_png_b64()}]}),
+    )
+    h3_image_module.generate(
+        prompt_text="x",
+        reference_images=[],
+        output_file=str(tmp_path / "o.png"),
+        negative_prompt="blurry",
+        watermark=True,
+    )
+    out = capsys.readouterr().out
+    assert "negative_prompt" in out and "watermark" in out
+
+
+def test_h3_image_falls_back_to_url_when_b64_absent(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "i"}, 202))
+
+    def fake_get(url, headers=None, **kw):
+        # NOTE: the download URL also contains "/jobs/", so discriminate on
+        # "/content" — the poll URL is the one without it.
+        if "/content" in url:
+            r = Mock()
+            r.status_code = 200
+            r.ok = True
+            r.content = b"URLPNG"
+            return r
+        return _h3_resp({"status": "completed", "data": [{"url": "/v1/images/jobs/i/content?variant=0"}]})
+
+    monkeypatch.setattr(h3_image_module.requests, "get", fake_get)
+    out = tmp_path / "o.png"
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(out))
+    assert out.read_bytes() == b"URLPNG"
+
+
+def test_h3_image_honors_base_url_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_BASE_URL", "http://gw.local:9999")
+    seen = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        seen["url"] = url
+        return _h3_resp({"id": "i"}, 202)
+
+    monkeypatch.setattr(h3_image_module.requests, "post", fake_post)
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp({"status": "completed", "data": [{"b64_json": _h3_png_b64()}]}),
+    )
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert seen["url"] == "http://gw.local:9999/v1/images/generations"
+
+
+def _h3_completes(monkeypatch, posts=None):
+    """Wire the two HTTP calls the provider makes: submit then poll-to-completed."""
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "post",
+        lambda url, headers=None, json=None, **kw: (posts.append({"headers": headers, "json": json}) if posts is not None else None) or _h3_resp({"id": "i"}, 202),
+    )
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp(
+            {
+                "status": "completed",
+                "data": [{"b64_json": _h3_png_b64(), "meta": {"engine": {"seed": 1234}}}],
+            }
+        ),
+    )
+
+
+def test_h3_image_quality_tiers_match_the_gateway_mode_list():
+    # Mirrors GET /v1/images/modes after the 2026-10-07 update: four tiers,
+    # ordered low→high quality, and the default stays the balanced tier.
+    assert h3_image_module.KNOWN_MODES == (
+        "h3-frame-draft",
+        "h3-frame-fast",
+        "h3-frame-std",
+        "h3-frame-hq",
+    )
+    assert h3_image_module.DEFAULT_MODE == "h3-frame-std"
+
+
+def test_h3_image_submits_draft_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    msg = h3_image_module.generate(
+        prompt_text="x",
+        reference_images=[],
+        output_file=str(tmp_path / "o.png"),
+        model="h3-frame-draft",
+    )
+    assert posts[0]["json"]["mode"] == "h3-frame-draft"
+    assert "h3-frame-draft" in msg
+
+
+def test_h3_image_sends_content_derived_idempotency_key(monkeypatch, tmp_path):
+    # The key is what turns a timeout retry into a re-attach instead of a fresh
+    # GPU run on a single-card queue: identical requests must yield one key.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+
+    def run(prompt, **kw):
+        h3_image_module.generate(prompt_text=prompt, reference_images=[], output_file=str(tmp_path / "o.png"), **kw)
+
+    run("a red fox")
+    run("a red fox")
+    run("a blue fox")
+    run("a red fox", model="h3-frame-hq")
+
+    keys = [p["headers"].get("Idempotency-Key") for p in posts]
+    assert all(keys), "every submit must carry an Idempotency-Key"
+    assert keys[0] == keys[1], "same request must re-attach to the same job"
+    assert keys[0] != keys[2], "different prompt must be a different job"
+    assert keys[0] != keys[3], "different mode must be a different job"
+
+
+def test_h3_image_idempotency_can_be_disabled(monkeypatch, tmp_path):
+    # Deliberate re-rolls (same prompt, want a second variant) must escape the
+    # 24h same-key window, otherwise a caller can never get a fresh image.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_NO_IDEMPOTENCY", "1")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert "Idempotency-Key" not in posts[0]["headers"]
+
+
+def test_h3_image_passes_sampling_params_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_SEED", "42")
+    monkeypatch.setenv("H3_IMAGE_FRAME_POLICY", "at:0.25")
+    monkeypatch.setenv("H3_IMAGE_SHORT_EDGE", "512")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert posts[0]["json"]["seed"] == 42
+    assert posts[0]["json"]["frame_policy"] == "at:0.25"
+    assert posts[0]["json"]["short_edge"] == 512
+
+
+def test_h3_image_omits_unset_sampling_params(monkeypatch, tmp_path):
+    # Unset means "let the gateway apply its tier defaults" — do not send nulls.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    for key in ("seed", "frame_policy", "short_edge"):
+        assert key not in posts[0]["json"]
+
+
+@pytest.mark.parametrize("value", ["first", "last", "middle", "at:0", "at:1", "at:0.25"])
+def test_h3_image_accepts_valid_frame_policy(monkeypatch, tmp_path, value):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_FRAME_POLICY", value)
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert posts[0]["json"]["frame_policy"] == value
+
+
+@pytest.mark.parametrize("value", ["centre", "at:1.5", "at:-0.1", "at:", "AT:0.5"])
+def test_h3_image_rejects_invalid_frame_policy(monkeypatch, tmp_path, value):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_FRAME_POLICY", value)
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="H3_IMAGE_FRAME_POLICY"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+@pytest.mark.parametrize("value", ["127", "2049", "0", "-8", "abc"])
+def test_h3_image_rejects_out_of_range_short_edge(monkeypatch, tmp_path, value):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_SHORT_EDGE", value)
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="H3_IMAGE_SHORT_EDGE"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+def test_h3_image_rejects_malformed_seed(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_SEED", "not-a-number")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="H3_IMAGE_SEED"):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+def test_h3_image_yield_failure_tells_caller_to_retry(monkeypatch, tmp_path):
+    # Video-first yielding: the gateway gives up after H3IMG_YIELD_MAX_S with
+    # retryable=true. That is "try again shortly", not a hard failure.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "i"}, 202))
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp(
+            {
+                "status": "failed",
+                "error": {
+                    "code": "engine_error",
+                    "message": "engine busy with video jobs for 1800s",
+                    "retryable": True,
+                },
+            }
+        ),
+    )
+    with pytest.raises(RuntimeError, match="video jobs") as exc:
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert "retry" in str(exc.value).lower()
+
+
+def test_h3_image_reports_503_engine_unavailable_with_retry_after(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "post",
+        lambda *a, **k: _h3_resp(
+            {"error": {"code": "engine_unavailable", "message": "engine down", "retryable": True}},
+            503,
+            headers={"Retry-After": "30"},
+        ),
+    )
+    with pytest.raises(RuntimeError, match="engine_unavailable") as exc:
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    msg = str(exc.value)
+    assert "Retry-After: 30" in msg
+    assert "retryable=True" in msg
+
+
+def test_h3_image_surfaces_gateway_note_while_waiting(monkeypatch, tmp_path, capsys):
+    # The gateway reports yielding via `note`; long waits must not look like a hang.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_POLL_TIMEOUT_SECONDS", "0")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: _h3_resp({"id": "i"}, 202))
+    monkeypatch.setattr(
+        h3_image_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp({"status": "running", "note": "yielding: 1 video job(s) on engine"}),
+    )
+    with pytest.raises(RuntimeError):
+        h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert "yielding" in capsys.readouterr().out
+
+
+def test_h3_image_prints_actual_seed_for_reproducibility(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    _h3_completes(monkeypatch)
+    h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+    assert "1234" in capsys.readouterr().out

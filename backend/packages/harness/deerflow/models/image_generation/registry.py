@@ -67,6 +67,35 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
             ),
         ),
     ),
+    _ProviderDefinition(
+        name="h3_image",
+        display_name="H3 生图（自建网关）",
+        api_key_env="H3_IMAGE_AUTH_TOKEN",
+        # The gateway's own env name, so an operator can copy it verbatim.
+        fallback_api_key_envs=("H3IMG_AUTH_TOKEN",),
+        models=(
+            ImageGenerationModel(
+                name="h3-frame-draft",
+                display_name="H3 Frame Draft（预览）",
+                description="4 步 / 256p（448×256），约 9 秒。提示词试错与批量预览首选",
+            ),
+            ImageGenerationModel(
+                name="h3-frame-fast",
+                display_name="H3 Frame Fast（草稿）",
+                description="8 步 / 256p（448×256），约 16 秒。快速可用小图",
+            ),
+            ImageGenerationModel(
+                name="h3-frame-std",
+                display_name="H3 Frame Std（均衡，默认）",
+                description="4 步 / 768p（1344×768），约 115 秒。常规出图",
+            ),
+            ImageGenerationModel(
+                name="h3-frame-hq",
+                display_name="H3 Frame HQ（成品）",
+                description="8 步 / 768p（1344×768），约 225 秒。实测接近摄影级观感，成品出图选它",
+            ),
+        ),
+    ),
 )
 
 

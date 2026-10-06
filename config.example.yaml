@@ -1197,6 +1197,29 @@ image_generation:
           display_name: gpt-image-2
           description: 具备行业顶尖的密集长文本指令对齐与多复杂主体构图能力，擅长深度挖掘提示词中的隐式物理常识与逻辑关联，实现精准且高创意的意图还原
 
+    # 自建 H3 生图网关（抽帧路线）：对 H3 音视频服务零侵入包装——生成 4 秒视频后自动抽帧返回 PNG。
+    # 与视频侧 minimax_h3_sglang 是【两个独立服务】：不同端口、不同 token，不要共用配置。
+    # token 经 H3_IMAGE_AUTH_TOKEN 提供（回退网关自身的 H3IMG_AUTH_TOKEN），端点经
+    # H3_IMAGE_BASE_URL 覆盖。网关与视频 API 共享同一张卡的串行队列且**视频优先**（引擎有视频作业时生图让行，
+    # 耗时可能显著变长），四档按质量升序排列，最慢的成品档约 225 秒。
+    # 不支持参考图（i2i 在其 M3 路线图）、不支持 negative_prompt/prompt_extend/watermark。地址站点专属，故默认注释。
+    # - name: h3_image
+    #   display_name: H3 生图（自建网关）
+    #   api_key: $H3_IMAGE_AUTH_TOKEN
+    #   models:
+    #     - name: h3-frame-draft
+    #       display_name: H3 Frame Draft（预览）
+    #       description: 4 步 / 256p（448×256），约 9 秒。提示词试错与批量预览首选
+    #     - name: h3-frame-fast
+    #       display_name: H3 Frame Fast（草稿）
+    #       description: 8 步 / 256p（448×256），约 16 秒。快速可用小图
+    #     - name: h3-frame-std
+    #       display_name: H3 Frame Std（均衡，默认）
+    #       description: 4 步 / 768p（1344×768），约 115 秒。常规出图
+    #     - name: h3-frame-hq
+    #       display_name: H3 Frame HQ（成品）
+    #       description: 8 步 / 768p（1344×768），约 225 秒。实测接近摄影级观感，成品出图选它
+
 # ============================================================================
 # Image Editing Configuration
 # ============================================================================
