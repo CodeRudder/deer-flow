@@ -62,6 +62,20 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
         ),
     ),
     _ProviderDefinition(
+        name="minimax_h3_sglang",
+        display_name="MiniMax H3（自建 sglang）",
+        # Not a credential: the self-hosted endpoint has no auth, so the base-URL
+        # override doubles as the operator's explicit opt-in signal.
+        api_key_env="SGLANG_H3_API_BASE_URL",
+        models=(
+            VideoGenerationModel(
+                name="MiniMax-H3-SGLang",
+                display_name="MiniMax H3 SGLang",
+                description="自建 sglang 单卡部署的 MiniMax H3 音视频模型：768P/384P、画面+立体声一次生成（4~15 秒），支持文生视频与首帧/尾帧/首尾帧图生视频；不支持参考图/参考音视频，不支持 2K 升格",
+            ),
+        ),
+    ),
+    _ProviderDefinition(
         name="seedance",
         display_name="Seedance（火山方舟）",
         api_key_env="SEEDANCE_VIDEO_API_KEY",

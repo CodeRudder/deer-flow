@@ -81,7 +81,7 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
     providers = {provider.name: provider for provider in response.providers}
 
     assert response.skill_enabled is True
-    assert [provider.name for provider in response.providers] == ["minimax_h3", "seedance"]
+    assert [provider.name for provider in response.providers] == ["minimax_h3", "minimax_h3_sglang", "seedance"]
     assert providers["minimax_h3"].configured is True
     assert providers["minimax_h3"].models[0].name == "MiniMax-H3"
 
@@ -270,7 +270,7 @@ def _enabled(monkeypatch, model_extra=None):
             "get_app_config",
             lambda: SimpleNamespace(model_extra=model_extra),
         )
-    for env in ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY"):
+    for env in ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY", "SGLANG_H3_API_BASE_URL"):
         monkeypatch.delenv(env, raising=False)
 
 
@@ -285,7 +285,7 @@ def test_registry_falls_back_to_builtin_when_config_load_fails(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.skill_enabled is True
-    assert [p.name for p in response.providers] == ["minimax_h3", "seedance"]
+    assert [p.name for p in response.providers] == ["minimax_h3", "minimax_h3_sglang", "seedance"]
 
 
 def test_registry_drops_provider_with_no_models_and_no_builtin_match(monkeypatch):
@@ -329,7 +329,7 @@ def test_registry_ignores_non_list_providers(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.skill_enabled is True
-    assert [p.name for p in response.providers] == ["minimax_h3", "seedance"]
+    assert [p.name for p in response.providers] == ["minimax_h3", "minimax_h3_sglang", "seedance"]
 
 
 def test_registry_ignores_non_list_models(monkeypatch):
@@ -350,7 +350,7 @@ def test_registry_ignores_non_dict_video_generation_section(monkeypatch):
     response = registry.get_video_generation_providers()
 
     assert response.skill_enabled is True
-    assert [p.name for p in response.providers] == ["minimax_h3", "seedance"]
+    assert [p.name for p in response.providers] == ["minimax_h3", "minimax_h3_sglang", "seedance"]
 
 
 def test_registry_supports_model_key_alias(monkeypatch):

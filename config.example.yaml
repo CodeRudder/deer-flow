@@ -1269,6 +1269,18 @@ video_generation:
     #       display_name: Seedance 2.0 Mini
     #       description: 最低成本(约为标准版一半)，输出480p/720p，批量出片首选
 
+  # 自建（sglang）MiniMax H3：与云端 minimax_h3 是【两个独立 provider】——协议、鉴权、
+    # 产物获取方式都不同，不要照搬云端配置。端点经 SGLANG_H3_API_BASE_URL 环境变量指定
+    # （该变量不是密钥，而是地址开关，同时也是前端的"已配置"信号）；服务无鉴权、单卡串行，
+    # 且不支持参考生成（ref2va 未加载）与 2K 升格。地址是站点专属，故此处默认注释。
+    # - name: minimax_h3_sglang
+    #   display_name: MiniMax H3（自建 sglang）
+    #   api_key: $SGLANG_H3_API_BASE_URL
+    #   models:
+    #     - name: MiniMax-H3-SGLang
+    #       display_name: MiniMax H3 SGLang
+    #       description: 自建 sglang 单卡部署的 MiniMax H3 音视频模型：768P/384P、画面+立体声一次生成（4~15 秒），支持文生视频与首帧/尾帧/首尾帧图生视频；不支持参考图/参考音视频，不支持 2K 升格
+
   # 旧 minimax_v1（Hailuo V1 三步流）仅作兼容保留，不推荐；经 VIDEO_GENERATION_PROVIDER 环境变量回退可达
 
 # ============================================================================

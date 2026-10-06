@@ -264,6 +264,7 @@ owns the grammar. Routing table (provider → mode → format file):
 |---|---|---|
 | `minimax_h3` | T2V / first frame / last frame / first+last | `references/providers/minimax/prompt-format-base.md` — structured fields/sections, `[Shot N]` timeline, camera motion, speakers and `<d>` dialogue, language exceptions, keyframe soft-anchoring |
 | `minimax_h3` | reference (Ref2VA) | `references/providers/minimax/prompt-format-ref.md` — six-section format, `<Picture N>` labels |
+| `minimax_h3_sglang` | T2V / first frame / last frame / first+last | `references/providers/minimax_h3_sglang/prompt-format.md` — `[Shot N]` storyboard plus `overall_soundscape:` / `non_diegetic_music:` sound lines (audio+video is generated together); NO reference mode, NO negative prompt |
 | `seedance` | any mode | `references/providers/seedance/prompt-format.md` — `@image1`/`@video1`/`@audio1` material tags in CLI-pass order, time-axis segments, dialogue in quotes; reference mode may mix images + reference videos + reference audios as public URLs |
 | `minimax_v1` | any mode | prose (no structured format file — subject + main action first, ONE main camera move, lighting, atmosphere) |
 
@@ -477,9 +478,14 @@ Per-provider capability numbers (value domains, draft-tier defaults, reference
 caps, image roles, parameter support): run `--describe-provider` — see
 Choosing the mode. Credentials and behavior notes per provider:
 `references/providers/minimax/spec.md` /
+`references/providers/minimax_h3_sglang/spec.md` /
 `references/providers/seedance/spec.md`.
 
-`--query` works on every provider; `--cancel` is `minimax_h3`/`seedance` only
+`minimax_h3_sglang` is a **self-hosted** H3 (independent from the cloud
+`minimax_h3`): no auth, single-GPU serial queue, and a 600 s sandbox ceiling that
+queued jobs can exceed — on timeout recover with `--query`, never resubmit.
+
+`--query` works on every provider; `--cancel` is `minimax_h3`/`minimax_h3_sglang`/`seedance` only
 (errors on legacy `minimax_v1`); avoid named real people or trademarked
 characters.
 Routing/credentials/compatibility: `references/runtime.md`.

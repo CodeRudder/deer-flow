@@ -75,6 +75,7 @@ def test_provider_reference_folders_are_complete():
     expected = {
         "minimax": ("spec.md", "prompt-format-base.md", "prompt-format-ref.md", "examples.md"),
         "seedance": ("spec.md", "prompt-format.md", "examples.md"),
+        "minimax_h3_sglang": ("spec.md", "prompt-format.md", "examples.md"),
     }
     for provider, files in expected.items():
         for name in files:

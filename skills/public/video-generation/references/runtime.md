@@ -17,10 +17,17 @@ fallback (`MINIMAX_VIDEO_API_KEY` → `minimax_h3`, else
 `SEEDANCE_VIDEO_API_KEY`/`ARK_API_KEY` → `seedance`, else shared
 `MINIMAX_API_KEY` → `minimax_v1`).
 
+`minimax_h3_sglang` (self-hosted sglang) is deliberately **absent from the
+credential fallback**: it has no credential to probe, and it is a single-GPU
+serial endpoint that must never be picked up implicitly. Reach it by declaring
+it in `video_generation.providers` and selecting its model, or via the
+`--provider` escape hatch.
+
 ## Providers
 
 Per-provider credentials, endpoints, and capability notes live in the
-provider folders: `references/providers/minimax/spec.md` and
+provider folders: `references/providers/minimax/spec.md`,
+`references/providers/minimax_h3_sglang/spec.md`, and
 `references/providers/seedance/spec.md`.
 
 ## Parameter compatibility

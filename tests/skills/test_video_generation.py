@@ -56,6 +56,10 @@ def clean_env(monkeypatch):
         "SEEDANCE_VIDEO_MODEL",
         "SEEDANCE_API_BASE_URL",
         "ARK_API_KEY",
+        "SGLANG_H3_API_BASE_URL",
+        "SGLANG_H3_MODEL",
+        "SGLANG_H3_STEPS",
+        "SGLANG_H3_SEED",
         "DEER_FLOW_CONFIG_PATH",
         "DEERFLOW_VIDEO_QUOTA_RESERVATION_ID",
         "DEERFLOW_VIDEO_QUOTA_USAGE_PERIOD_ID",
@@ -82,7 +86,7 @@ def clean_env(monkeypatch):
 
 
 def test_registry_has_expected_providers():
-    assert set(PROVIDERS) == {"minimax_h3", "minimax_v1", "seedance"}
+    assert set(PROVIDERS) == {"minimax_h3", "minimax_v1", "seedance", "minimax_h3_sglang"}
 
 
 _H3_CONFIG = {
@@ -1961,3 +1965,310 @@ def test_storyboard_reference_cap_still_enforced_on_adapter(monkeypatch, tmp_pat
             model="MiniMax-H3",
             image_role="reference",
         )
+
+
+# --- minimax_h3_sglang: self-hosted sglang MiniMax H3 -------------------------
+# Independent provider from the cloud `minimax_h3`: sglang's /v1/videos API
+# (JSON body + `task`, no auth, binary content endpoint) instead of MiniMax's
+# private V2 protocol. Contract per the deployment integration guide.
+
+SGL_MODEL = "MiniMax-H3-SGLang"
+
+
+def _sgl():
+    import providers.minimax_h3_sglang as sgl
+
+    return sgl
+
+
+def _capture_sgl_post(monkeypatch, response=None):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, **kw):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return FakeResp(response if response is not None else {"id": "J1"})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    return captured
+
+
+def test_sglang_t2va_payload_defaults(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("a cat", [], {})
+    assert captured["url"].endswith("/v1/videos")
+    body = captured["json"]
+    assert body["model"] == SGL_MODEL
+    assert body["prompt"] == "a cat"
+    assert body["task"] == "t2va"
+    assert body["conditions"] == []
+    assert body["target"] == {"short_edge": 768, "aspect_ratio": "16:9", "duration_seconds": 5}
+    assert body["num_inference_steps"] >= 2
+    assert "seed" not in body  # non-deterministic unless the operator opts in
+    assert "negative_prompt" not in body  # CFG-distilled checkpoint
+
+
+def test_sglang_resolution_maps_to_short_edge(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", [], {"resolution": "384P"})
+    assert captured["json"]["target"]["short_edge"] == 384
+    with pytest.raises(ValueError, match="unsupported resolution"):
+        _sgl().PROVIDER(model=None).create_task("x", [], {"resolution": "2K"})
+
+
+def test_sglang_duration_validated(monkeypatch):
+    _capture_sgl_post(monkeypatch)
+    p = _sgl().PROVIDER(model=None)
+    for bad in (3, 16):
+        with pytest.raises(ValueError, match=r"\[4, 15\]"):
+            p.create_task("x", [], {"duration": bad})
+
+
+def test_sglang_ratio_validated_and_defaulted(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    p = _sgl().PROVIDER(model=None)
+    with pytest.raises(ValueError, match="unsupported aspect ratio"):
+        p.create_task("x", [], {"ratio": "3:2"})
+    captured = _capture_sgl_post(monkeypatch)
+    p.create_task("x", [], {"ratio": "9:16"})
+    assert captured["json"]["target"]["aspect_ratio"] == "9:16"
+
+
+def test_sglang_first_frame_uses_frame_index_zero(monkeypatch, tmp_path):
+    captured = _capture_sgl_post(monkeypatch)
+    img = tmp_path / "a.jpg"
+    img.write_bytes(b"img")
+    _sgl().PROVIDER(model=None).create_task("x", [str(img)], {})
+    body = captured["json"]
+    assert body["task"] == "fl2va"
+    cond = body["conditions"][0]
+    # Key-exact: the service rejects any extra condition field with a 400.
+    assert set(cond) == {"type", "role", "uri", "frame_index"}
+    assert cond["type"] == "image" and cond["role"] == "keyframe"
+    assert cond["frame_index"] == 0
+    assert cond["uri"].startswith("data:image/jpeg;base64,")
+
+
+def test_sglang_public_url_passthrough(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {})
+    assert captured["json"]["conditions"][0]["uri"] == "https://cdn/a.png"
+
+
+def test_sglang_last_frame_uses_frame_index_minus_one(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {"image_role": "last_frame"})
+    conds = captured["json"]["conditions"]
+    assert len(conds) == 1 and conds[0]["frame_index"] == -1
+
+
+def test_sglang_first_last_two_conditions(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task(
+        "x", ["https://cdn/a.png", "https://cdn/b.png"], {"image_role": "first_last"}
+    )
+    conds = captured["json"]["conditions"]
+    assert [c["frame_index"] for c in conds] == [0, -1]
+    assert captured["json"]["task"] == "fl2va"
+
+
+def test_sglang_first_last_single_image_warns_and_uses_first(monkeypatch, capsys):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {"image_role": "first_last"})
+    assert [c["frame_index"] for c in captured["json"]["conditions"]] == [0]
+
+
+def test_sglang_extra_images_warned_and_dropped(monkeypatch, capsys):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task(
+        "x", ["https://e/a.png", "https://e/b.png", "https://e/c.png"], {}
+    )
+    assert len(captured["json"]["conditions"]) == 1
+    assert "ignoring 2 extra" in capsys.readouterr().out
+
+
+def test_sglang_frame_mode_defaults_aspect_auto(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {})
+    assert captured["json"]["target"]["aspect_ratio"] == "auto"
+
+
+def test_sglang_reference_role_rejected(monkeypatch):
+    _capture_sgl_post(monkeypatch)
+    with pytest.raises(ValueError, match="Ref2VA"):
+        _sgl().PROVIDER(model=None).create_task("x", ["https://cdn/a.png"], {"image_role": "reference"})
+
+
+def test_sglang_unknown_model_rejected():
+    with pytest.raises(ValueError, match="unknown MiniMax H3 sglang model"):
+        _sgl().PROVIDER(model="MiniMax-H3-Nope").create_task("x", [], {})
+
+
+def test_sglang_unsupported_params_rejected_at_dispatch(monkeypatch, tmp_path):
+    _capture_sgl_post(monkeypatch)
+    pf = tmp_path / "p.txt"
+    pf.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not support"):
+        vid.generate_video(
+            str(pf), [], str(tmp_path / "v.mp4"), provider="minimax_h3_sglang", upscale_video="https://dl/v.mp4"
+        )
+    with pytest.raises(ValueError, match="does not support"):
+        vid.generate_video(
+            str(pf), [], str(tmp_path / "v2.mp4"), provider="minimax_h3_sglang",
+            reference_videos=["https://dl/r.mp4"],
+        )
+
+
+def test_sglang_status_normalization(monkeypatch):
+    import providers.base as base
+
+    state = {"raw": None, "code": 200}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": state["raw"]}, status_code=state["code"])
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    p = _sgl().PROVIDER(model=None)
+    for raw, want in [
+        ("queued", base.STATUS_PENDING),
+        ("completed", base.STATUS_SUCCEEDED),
+        ("failed", base.STATUS_FAILED),
+        ("deleted", base.STATUS_FAILED),
+    ]:
+        state["raw"], state["code"] = raw, 200
+        status, _ = p.poll_once("J1")
+        assert status == want, f"{raw} -> {status}, expected {want}"
+    # 404 (record deleted upstream) is terminal, not a transient blip.
+    state["code"] = 404
+    status, result = p.poll_once("J1")
+    assert status == base.STATUS_FAILED
+    assert "no longer exists" in result["error"]["message"]
+
+
+def test_sglang_failed_carries_upstream_message(monkeypatch, tmp_path):
+    _capture_sgl_post(monkeypatch)
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": "failed", "error": {"message": "num_inference_steps >= 2 required"}})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    with pytest.raises(Exception, match="num_inference_steps >= 2 required"):
+        _sgl().PROVIDER(model=None).generate("x", [], str(tmp_path / "v.mp4"), {})
+
+
+def test_sglang_extract_video_url_is_content_endpoint(monkeypatch):
+    monkeypatch.setenv("SGLANG_H3_API_BASE_URL", "http://h3.local:30010")
+    url = _sgl().PROVIDER(model=None).extract_video_url("J1", {"status": "completed"})
+    assert url == "http://h3.local:30010/v1/videos/J1/content"
+
+
+def test_sglang_create_sends_no_auth_header(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    monkeypatch.setenv("SGLANG_H3_API_BASE_URL", "http://h3.local:30010")
+    _sgl().PROVIDER(model=None).create_task("x", [], {})
+    assert "Authorization" not in (captured["headers"] or {})
+
+
+def test_sglang_api_key_sentinel_is_truthy():
+    # The service is unauthenticated, but base.generate() gates on api_key().
+    p = _sgl().PROVIDER(model=None)
+    assert p.api_key()
+
+
+def test_sglang_default_base_url_used_without_env(monkeypatch):
+    monkeypatch.delenv("SGLANG_H3_API_BASE_URL", raising=False)
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", [], {})
+    assert captured["url"].startswith(_sgl().DEFAULT_BASE_URL)
+
+
+def test_sglang_seed_and_steps_env_overrides(monkeypatch):
+    captured = _capture_sgl_post(monkeypatch)
+    monkeypatch.setenv("SGLANG_H3_SEED", "42")
+    monkeypatch.setenv("SGLANG_H3_STEPS", "2")
+    _sgl().PROVIDER(model=None).create_task("x", [], {})
+    assert captured["json"]["seed"] == 42
+    assert captured["json"]["num_inference_steps"] == 2
+    # Steps below the service minimum are clamped up, never sent as-is.
+    monkeypatch.setenv("SGLANG_H3_STEPS", "1")
+    captured = _capture_sgl_post(monkeypatch)
+    _sgl().PROVIDER(model=None).create_task("x", [], {})
+    assert captured["json"]["num_inference_steps"] >= 2
+
+
+def test_sglang_create_4xx_carries_detail(monkeypatch, tmp_path):
+    _capture_sgl_post(monkeypatch, response={"detail": "task is required for MiniMax H3"})
+    monkeypatch.setattr(requests, "post", lambda url, **kw: FakeResp(
+        {"detail": "task is required for MiniMax H3"}, status_code=400
+    ))
+    with pytest.raises(requests.HTTPError, match="task is required for MiniMax H3"):
+        _sgl().PROVIDER(model=None).create_task("x", [], {})
+
+
+def test_sglang_poll_window_covers_sandbox_kill():
+    # local_sandbox.py runs each bash command with timeout=600; the adapter must
+    # never give up before the sandbox does.
+    assert _sgl().PROVIDER.poll_interval * _sgl().PROVIDER.poll_max_attempts >= 600
+
+
+def test_sglang_full_flow_downloads_video_and_writes_sidecar(monkeypatch, tmp_path):
+    # No credential env is set anywhere: this also proves the no-auth gate passes.
+    def fake_post(url, headers=None, json=None, **kw):
+        return FakeResp({"id": "J1", "status": "queued"})
+
+    def fake_get(url, headers=None, **kw):
+        if url.endswith("/content"):
+            return FakeResp(content=b"SGLVIDEO")
+        return FakeResp({"status": "completed", "progress": 100, "error": None})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", fake_get)
+    out = tmp_path / "v.mp4"
+    pf = tmp_path / "p.txt"
+    pf.write_text("a cat", encoding="utf-8")
+    msg = vid.generate_video(str(pf), [], str(out), provider="minimax_h3_sglang", model=SGL_MODEL)
+    assert out.read_bytes() == b"SGLVIDEO"
+    assert "successfully" in msg.lower()
+    record = json.loads((tmp_path / "v.task.json").read_text(encoding="utf-8"))
+    assert record["provider"] == "minimax_h3_sglang"
+    assert record["task_id"] == "J1"
+    assert record["status"] == "succeeded"
+
+
+def test_sglang_cancel_queued_deletes(monkeypatch, tmp_path):
+    out = tmp_path / "v.mp4"
+    (tmp_path / "v.task.json").write_text(
+        json.dumps({"task_id": "J1", "status": "pending"}), encoding="utf-8"
+    )
+    calls = {"delete": 0}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": "queued"})
+
+    def fake_delete(url, headers=None, **kw):
+        calls["delete"] += 1
+        return FakeResp({"status": "deleted"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    msg = _sgl().PROVIDER(model=None).cancel("J1", str(out))
+    assert calls["delete"] == 1
+    assert "cancelled" in msg
+
+
+def test_sglang_cancel_completed_never_deletes(monkeypatch):
+    calls = {"delete": 0}
+
+    def fake_get(url, headers=None, **kw):
+        return FakeResp({"status": "completed"})
+
+    def fake_delete(url, headers=None, **kw):
+        calls["delete"] += 1
+        return FakeResp({})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "delete", fake_delete)
+    msg = _sgl().PROVIDER(model=None).cancel("J1")
+    assert calls["delete"] == 0  # DELETE would remove a finished artifact
+    assert "nothing cancelled" in msg
