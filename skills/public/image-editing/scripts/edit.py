@@ -195,7 +195,10 @@ def edit_image(
         or os.getenv("IMAGE_EDITING_AUTHORIZATION")
         or os.getenv("OPENAI_IMAGE_AUTHORIZATION")
     )
-    if not authorization:
+    # Only providers that authenticate with an operator-supplied credential need
+    # this; one that derives its own header opts out by setting
+    # REQUIRES_AUTHORIZATION = False on its callable.
+    if not authorization and getattr(PROVIDERS[selected_provider], "REQUIRES_AUTHORIZATION", True):
         raise ValueError(
             f"Image editing provider '{selected_provider}' is missing Authorization in config.yaml"
         )
@@ -218,7 +221,7 @@ def edit_image(
         prompt_text=prompt_text,
         reference_images=valid_image_paths,
         output_file=output_file,
-        authorization=str(authorization),
+        authorization=str(authorization) if authorization else "",
         base_url=str(base_url),
         timeout_seconds=timeout_seconds,
         size=size,

@@ -1201,12 +1201,20 @@ image_generation:
     # 与视频侧 minimax_h3_sglang 是【两个独立服务】：不同端口、不同 token，不要共用配置。
     # token 经 H3_IMAGE_AUTH_TOKEN 提供（回退网关自身的 H3IMG_AUTH_TOKEN），端点经
     # H3_IMAGE_BASE_URL 覆盖。网关与视频 API 共享同一张卡的串行队列且**视频优先**（引擎有视频作业时生图让行，
-    # 耗时可能显著变长），四档按质量升序排列，最慢的成品档约 225 秒。
+    # 耗时可能显著变长）。六档分两族：`h3-clip-*` 只渲染最短可解码片段（22 帧≈0.92 s）再抽帧，
+    # 画质与 `h3-frame-*` 的 std/hq 相同但快 5–9 倍，故默认选 clip-std；frame 的 std/hq 仅在需要
+    # 4 秒片段内更大取帧跨度时才有意义，列在末尾。
     # 不支持参考图（i2i 在其 M3 路线图）、不支持 negative_prompt/prompt_extend/watermark。地址站点专属，故默认注释。
     # - name: h3_image
     #   display_name: H3 生图（自建网关）
     #   api_key: $H3_IMAGE_AUTH_TOKEN
     #   models:
+    #     - name: h3-clip-std
+    #       display_name: H3 Clip Std（均衡，默认）
+    #       description: 4 步 / 768p（1344×768），约 25 秒。常规出图首选——画质与 Frame Std 相同，快约 6 倍
+    #     - name: h3-clip-hq
+    #       display_name: H3 Clip HQ（成品）
+    #       description: 8 步 / 768p（1344×768），约 40 秒。成品首选——实测与 Frame HQ 肉眼同级，快约 5 倍
     #     - name: h3-frame-draft
     #       display_name: H3 Frame Draft（预览）
     #       description: 4 步 / 256p（448×256），约 9 秒。提示词试错与批量预览首选
@@ -1214,11 +1222,17 @@ image_generation:
     #       display_name: H3 Frame Fast（草稿）
     #       description: 8 步 / 256p（448×256），约 16 秒。快速可用小图
     #     - name: h3-frame-std
-    #       display_name: H3 Frame Std（均衡，默认）
-    #       description: 4 步 / 768p（1344×768），约 115 秒。常规出图
+    #       display_name: H3 Frame Std（旧，均衡）
+    #       description: 4 步 / 768p（1344×768），约 115 秒。仅在需要 4 秒片段内更大取帧跨度时选，否则用 Clip Std
     #     - name: h3-frame-hq
-    #       display_name: H3 Frame HQ（成品）
-    #       description: 8 步 / 768p（1344×768），约 225 秒。实测接近摄影级观感，成品出图选它
+    #       display_name: H3 Frame HQ（旧，成品）
+    #       description: 8 步 / 768p（1344×768），约 225 秒。同上，仅需更大取帧跨度时选，否则用 Clip HQ
+    #     - name: h3-i2i-std
+    #       display_name: H3 图生图 Std（均衡）
+    #       description: 图生图：以参考图为起点演化（换风格/换背景/姿态），4 步 / 768p（1344×768），约 31 秒。必须提供参考图
+    #     - name: h3-i2i-hq
+    #       display_name: H3 图生图 HQ（成品）
+    #       description: 图生图成品档，8 步 / 768p（1344×768），约 50 秒。必须提供参考图
 
 # ============================================================================
 # Image Editing Configuration
@@ -1244,6 +1258,27 @@ image_editing:
         - name: gpt-image-2
           display_name: GPT Image 2 Edit
           description: 适合对已有图片做局部替换、风格保持和精细修改
+    # Self-hosted H3 image gateway, image-to-image tiers. Deliberately has no
+    # `Authorization`: the provider builds its own Bearer header from
+    # H3_IMAGE_AUTH_TOKEN (falling back to H3IMG_AUTH_TOKEN, the gateway's own
+    # variable name) and opts out of the credential gate via
+    # edit.REQUIRES_AUTHORIZATION = False.
+    # Boundary: generative evolution / reference-guided redraw. It does NOT
+    # promise that unedited regions stay pixel-identical, and it has no mask
+    # or inpainting support — a request that must preserve structure needs a
+    # provider that honours that contract.
+    - name: h3_i2i
+      display_name: H3 Image-to-Image (self-hosted gateway)
+      base_url: http://100.108.144.120:8000
+      # Poll budget in seconds; the sandbox caps a single command at 600.
+      timeout: 540
+      models:
+        - name: h3-i2i-hq
+          display_name: H3 i2i HQ (final take)
+          description: 8 steps / 768p (1344x768), ~50 s. The reference image seeds the first frame and the last frame is returned
+        - name: h3-i2i-std
+          display_name: H3 i2i Std (balanced)
+          description: 4 steps / 768p (1344x768), ~31 s
 
 # ============================================================================
 # Video Generation Configuration

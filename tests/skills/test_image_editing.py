@@ -1,4 +1,6 @@
+import base64
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -24,6 +26,10 @@ edit_module = _load_module("image_editing_edit", SCRIPT_DIR / "edit.py")
 provider_module = _load_module(
     "image_editing_openai_image_edit",
     SCRIPT_DIR / "providers" / "openai_image_edit.py",
+)
+h3_i2i_module = _load_module(
+    "image_editing_h3_i2i",
+    SCRIPT_DIR / "providers" / "h3_i2i.py",
 )
 
 
@@ -182,3 +188,195 @@ def test_provider_maps_jpg_extension_to_image_jpeg_mime(tmp_path):
     _, (filename, _, mime_type) = session.post.call_args.kwargs["files"][0]
     assert filename == "in.jpg"
     assert mime_type == "image/jpeg"
+
+
+# --- h3_i2i: self-hosted H3 gateway image-to-image ----------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_h3_env(monkeypatch):
+    for key in (
+        "H3_IMAGE_AUTH_TOKEN",
+        "H3IMG_AUTH_TOKEN",
+        "H3_IMAGE_BASE_URL",
+        "H3_IMAGE_MODEL",
+        "H3_IMAGE_POLL_INTERVAL_SECONDS",
+        "H3_IMAGE_POLL_TIMEOUT_SECONDS",
+        "H3_IMAGE_NO_IDEMPOTENCY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("H3_IMAGE_POLL_INTERVAL_SECONDS", "0")
+
+
+def _h3_resp(payload, status_code=200):
+    response = Mock()
+    response.status_code = status_code
+    response.ok = status_code < 400
+    response.json.return_value = payload
+    response.text = json.dumps(payload)
+    response.headers = {}
+    return response
+
+
+def _h3_completes(monkeypatch, posts):
+    monkeypatch.setattr(
+        h3_i2i_module.requests,
+        "post",
+        lambda url, headers=None, json=None, **kw: (
+            posts.append({"headers": headers, "json": json}) or _h3_resp({"id": "img_x"}, 202)
+        ),
+    )
+    monkeypatch.setattr(
+        h3_i2i_module.requests,
+        "get",
+        lambda *a, **k: _h3_resp(
+            {
+                "status": "completed",
+                "data": [{"b64_json": base64.b64encode(b"EDITED").decode(), "meta": {"engine": {"seed": 7}}}],
+            }
+        ),
+    )
+
+
+def _h3_kwargs(image: Path, out: Path, **overrides):
+    kwargs = dict(
+        prompt_text="Switch the scene to summer",
+        reference_images=[str(image)],
+        output_file=str(out),
+        authorization="",
+        base_url="http://gw.local:8000",
+        timeout_seconds=300,
+        size="auto",
+        model="h3-i2i-hq",
+        quality="high",
+        output_format="png",
+        api_version=None,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_h3_i2i_declares_it_does_not_need_config_authorization():
+    # edit.py gates every provider on a non-empty Authorization; this provider
+    # builds its own Bearer header from the shared H3 token env instead.
+    assert h3_i2i_module.edit.REQUIRES_AUTHORIZATION is False
+
+
+def test_h3_i2i_submits_the_reference_image_and_writes_the_result(monkeypatch, tmp_path):
+    image, out = tmp_path / "in.png", tmp_path / "out.png"
+    _make_png(image)
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "tok")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+
+    result = h3_i2i_module.edit(**_h3_kwargs(image, out))
+
+    assert out.read_bytes() == b"EDITED"
+    assert posts[0]["headers"]["Authorization"] == "Bearer tok"
+    body = posts[0]["json"]
+    assert body["mode"] == "h3-i2i-hq"
+    assert body["wait"] is False
+    assert base64.b64decode(body["reference_image"]) == image.read_bytes()
+    assert "h3-i2i-hq" in result
+
+
+def test_h3_i2i_accepts_the_gateway_native_token_env_name(monkeypatch, tmp_path):
+    image, out = tmp_path / "in.png", tmp_path / "out.png"
+    _make_png(image)
+    monkeypatch.setenv("H3IMG_AUTH_TOKEN", "native-tok")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_i2i_module.edit(**_h3_kwargs(image, out))
+    assert posts[0]["headers"]["Authorization"] == "Bearer native-tok"
+
+
+def test_h3_i2i_soft_fails_without_a_token(tmp_path):
+    image, out = tmp_path / "in.png", tmp_path / "out.png"
+    _make_png(image)
+    result = h3_i2i_module.edit(**_h3_kwargs(image, out))
+    assert "is not set" in result and "H3_IMAGE_AUTH_TOKEN" in result
+
+
+def test_h3_i2i_requires_exactly_one_reference_image(monkeypatch, tmp_path):
+    image, out = tmp_path / "in.png", tmp_path / "out.png"
+    _make_png(image)
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "tok")
+    with pytest.raises(ValueError, match="exactly one"):
+        h3_i2i_module.edit(**_h3_kwargs(image, out, reference_images=[]))
+    with pytest.raises(ValueError, match="exactly one"):
+        h3_i2i_module.edit(**_h3_kwargs(image, out, reference_images=[str(image), str(image)]))
+
+
+def test_h3_i2i_rejects_an_unknown_model(monkeypatch, tmp_path):
+    image, out = tmp_path / "in.png", tmp_path / "out.png"
+    _make_png(image)
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "tok")
+    with pytest.raises(ValueError, match="unknown h3_i2i model"):
+        h3_i2i_module.edit(**_h3_kwargs(image, out, model="h3-clip-std"))
+
+
+def test_h3_i2i_defaults_to_the_hq_tier(monkeypatch, tmp_path):
+    image, out = tmp_path / "in.png", tmp_path / "out.png"
+    _make_png(image)
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "tok")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_i2i_module.edit(**_h3_kwargs(image, out, model=None))
+    assert posts[0]["json"]["mode"] == "h3-i2i-hq"
+
+
+def test_edit_runs_h3_i2i_without_authorization_in_config(monkeypatch, tmp_path):
+    # The whole point: this deployment has no OpenAI credential, so the H3 path
+    # must be reachable with no Authorization configured at all.
+    image = tmp_path / "in.png"
+    _make_png(image)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+image_editing:
+  enabled: true
+  default_provider: h3_i2i
+  providers:
+    - name: h3_i2i
+      base_url: http://gw.local:8000
+      models:
+        - name: h3-i2i-hq
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config))
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "tok")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+
+    out = tmp_path / "edited.png"
+    result = edit_module.edit_image([str(image)], "Switch to summer", str(out))
+
+    assert out.read_bytes() == b"EDITED"
+    assert posts[0]["json"]["mode"] == "h3-i2i-hq"
+    assert "h3-i2i-hq" in result
+
+
+def test_edit_still_requires_authorization_for_a_provider_that_needs_one(monkeypatch, tmp_path):
+    # Regression guard for the relaxed gate: providers that do not opt out must
+    # keep failing loudly instead of sending an unauthenticated request.
+    image = tmp_path / "in.png"
+    _make_png(image)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+image_editing:
+  default_provider: openai_image_edit
+  providers:
+    - name: openai_image_edit
+      base_url: https://example.com/deployments/gpt-image-2
+      models:
+        - name: gpt-image-2
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config))
+    monkeypatch.setattr(edit_module, "PROVIDERS", {"openai_image_edit": lambda **kw: "ok"})
+
+    with pytest.raises(ValueError, match="is missing Authorization"):
+        edit_module.edit_image([str(image)], "prompt", str(tmp_path / "out.png"))

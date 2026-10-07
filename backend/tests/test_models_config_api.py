@@ -270,7 +270,7 @@ def test_outside_managed_region_is_byte_identical_after_writes(admin: TestClient
     original = config_path.read_text(encoding="utf-8")
     original_outside = _outside_managed_region(original)
     original_comments = _comment_line_count(original)
-    assert original_comments == 1504, "config.example.yaml is the comment-heavy reference fixture"
+    assert original_comments == 1528, "config.example.yaml is the comment-heavy reference fixture"
 
     assert admin.post("/api/models", json=MODEL_ENTRY).status_code == 200
     assert admin.put("/api/models/tmp-model", json={**MODEL_ENTRY, "model": "tmp-model-v2"}).status_code == 200
@@ -316,7 +316,7 @@ def test_get_config_reports_a_hand_written_configs_entries(admin: TestClient, ha
 def test_first_write_migrates_a_hand_written_config_without_losing_the_entry(admin: TestClient, hand_written_path: Path):
     original = hand_written_path.read_text(encoding="utf-8")
     # The entry lines ARE the section's value, so the migration may take them
-    # over. Every other line — the ~1504 comments, every other section — may not
+    # over. Every other line — the ~1518 comments, every other section — may not
     # move by a byte, and that is what "outside the region" compares.
     outside_before = [line for line in original.splitlines(keepends=True) if line not in HAND_WRITTEN_ENTRY_LINES]
 
