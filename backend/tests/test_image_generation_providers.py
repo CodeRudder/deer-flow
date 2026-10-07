@@ -740,6 +740,7 @@ def _clean_h3_env(monkeypatch):
         "H3_IMAGE_FRAME_POLICY",
         "H3_IMAGE_SHORT_EDGE",
         "H3_IMAGE_NO_IDEMPOTENCY",
+        "H3_IMAGE_REFERENCE_FRAME_INDEX",
     ):
         monkeypatch.delenv(k, raising=False)
     # Keep the poll loop instant in tests.
@@ -754,6 +755,13 @@ def _h3_resp(payload, status_code=200, headers=None):
     r.text = json.dumps(payload)
     r.headers = headers or {}
     return r
+
+
+def _h3_reference(tmp_path, name="ref.png", head=b"\x89PNG\r\n\x1a\n"):
+    """A minimal on-disk reference image; only the magic bytes are inspected."""
+    path = tmp_path / name
+    path.write_bytes(head + b"\x00" * 16)
+    return str(path)
 
 
 def _h3_png_b64(data=b"PNGDATA"):
@@ -831,7 +839,9 @@ def test_h3_image_accepts_gateway_native_token_env_name(monkeypatch, tmp_path):
     assert "provider=h3_image" in msg
 
 
-def test_h3_image_defaults_to_std_mode(monkeypatch, tmp_path):
+def test_h3_image_defaults_to_clip_std_mode(monkeypatch, tmp_path):
+    # The default is the balanced clip tier (768p in ~25s), not the 150s frame
+    # tier it replaced.
     monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
     seen = {}
 
@@ -846,7 +856,7 @@ def test_h3_image_defaults_to_std_mode(monkeypatch, tmp_path):
         lambda *a, **k: _h3_resp({"status": "completed", "data": [{"b64_json": _h3_png_b64()}]}),
     )
     h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
-    assert seen["json"]["mode"] == "h3-frame-std"
+    assert seen["json"]["mode"] == "h3-clip-std"
 
 
 def test_h3_image_unknown_mode_rejected_locally(monkeypatch, tmp_path):
@@ -865,12 +875,15 @@ def test_h3_image_missing_token_soft_fails(monkeypatch, tmp_path):
     assert "is not set" in msg and "H3_IMAGE_AUTH_TOKEN" in msg
 
 
-def test_h3_image_rejects_reference_images(monkeypatch, tmp_path):
+def test_h3_image_text_to_image_tiers_reject_reference_images(monkeypatch, tmp_path):
+    # The gateway 400s when a non-i2i mode carries reference_image; failing
+    # locally saves a round trip on a queue shared with video.
     monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
-    with pytest.raises(ValueError, match="reference images are not supported"):
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="h3-i2i"):
         h3_image_module.generate(
             prompt_text="x",
-            reference_images=["/tmp/a.png"],
+            reference_images=[_h3_reference(tmp_path)],
             output_file=str(tmp_path / "o.png"),
         )
 
@@ -998,29 +1011,52 @@ def _h3_completes(monkeypatch, posts=None):
 
 
 def test_h3_image_quality_tiers_match_the_gateway_mode_list():
-    # Mirrors GET /v1/images/modes after the 2026-10-07 update: four tiers,
-    # ordered low→high quality, and the default stays the balanced tier.
+    # Mirrors GET /v1/images/modes after the 2026-10-07 M3 (i2i) update. This
+    # tuple is MENU ORDER, and the first entry is what the frontend selects when
+    # nothing is pinned — so clip-std must lead. The i2i tiers come last because
+    # they need a reference image and would fail as a text-to-image default.
     assert h3_image_module.KNOWN_MODES == (
+        "h3-clip-std",
+        "h3-clip-hq",
         "h3-frame-draft",
         "h3-frame-fast",
         "h3-frame-std",
         "h3-frame-hq",
+        "h3-i2i-std",
+        "h3-i2i-hq",
     )
-    assert h3_image_module.DEFAULT_MODE == "h3-frame-std"
+    assert h3_image_module.DEFAULT_MODE == h3_image_module.KNOWN_MODES[0] == "h3-clip-std"
+    assert h3_image_module.DEFAULT_MODE not in h3_image_module.I2I_MODES
 
 
-def test_h3_image_submits_draft_mode(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "h3-clip-std",
+        "h3-clip-hq",
+        "h3-frame-draft",
+        "h3-frame-fast",
+        "h3-frame-std",
+        "h3-frame-hq",
+        "h3-i2i-std",
+        "h3-i2i-hq",
+    ],
+)
+def test_h3_image_accepts_every_declared_tier(monkeypatch, tmp_path, mode):
+    # Every tier the gateway advertises must be submittable verbatim: the model
+    # name IS the gateway mode, so a typo here is a silent 400 in production.
     monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
     posts = []
     _h3_completes(monkeypatch, posts)
+    references = [_h3_reference(tmp_path)] if mode in h3_image_module.I2I_MODES else []
     msg = h3_image_module.generate(
         prompt_text="x",
-        reference_images=[],
+        reference_images=references,
         output_file=str(tmp_path / "o.png"),
-        model="h3-frame-draft",
+        model=mode,
     )
-    assert posts[0]["json"]["mode"] == "h3-frame-draft"
-    assert "h3-frame-draft" in msg
+    assert posts[0]["json"]["mode"] == mode
+    assert mode in msg
 
 
 def test_h3_image_sends_content_derived_idempotency_key(monkeypatch, tmp_path):
@@ -1113,6 +1149,146 @@ def test_h3_image_rejects_malformed_seed(monkeypatch, tmp_path):
     monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
     with pytest.raises(ValueError, match="H3_IMAGE_SEED"):
         h3_image_module.generate(prompt_text="x", reference_images=[], output_file=str(tmp_path / "o.png"))
+
+
+# --- h3_image image-to-image (h3-i2i-*) --------------------------------------
+
+
+def test_h3_image_i2i_requires_a_reference_image(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="requires a reference image"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-i2i-std",
+        )
+
+
+def test_h3_image_i2i_sends_the_reference_image_as_base64(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    ref = _h3_reference(tmp_path)
+    raw = (tmp_path / "ref.png").read_bytes()
+
+    h3_image_module.generate(
+        prompt_text="x",
+        reference_images=[ref],
+        output_file=str(tmp_path / "o.png"),
+        model="h3-i2i-hq",
+    )
+
+    body = posts[0]["json"]
+    assert body["mode"] == "h3-i2i-hq"
+    assert base64.b64decode(body["reference_image"]) == raw
+    # The gateway accepts a bare payload or a data: prefix; send it bare.
+    assert not body["reference_image"].startswith("data:")
+    # Unset leaves the gateway's own i2i default (frame_policy=last) in force.
+    assert "reference_frame_index" not in body
+
+
+@pytest.mark.parametrize(
+    ("name", "head"),
+    [
+        ("ref.png", b"\x89PNG\r\n\x1a\n"),
+        ("ref.jpg", b"\xff\xd8\xff"),
+        ("ref.webp", b"RIFF\x00\x00\x00\x00WEBP"),
+    ],
+)
+def test_h3_image_accepts_png_jpeg_webp_references(monkeypatch, tmp_path, name, head):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_image_module.generate(
+        prompt_text="x",
+        reference_images=[_h3_reference(tmp_path, name, head)],
+        output_file=str(tmp_path / "o.png"),
+        model="h3-i2i-std",
+    )
+    assert posts[0]["json"]["reference_image"]
+
+
+def test_h3_image_i2i_passes_reference_frame_index(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_REFERENCE_FRAME_INDEX", "-1")
+    posts = []
+    _h3_completes(monkeypatch, posts)
+    h3_image_module.generate(
+        prompt_text="x",
+        reference_images=[_h3_reference(tmp_path)],
+        output_file=str(tmp_path / "o.png"),
+        model="h3-i2i-std",
+    )
+    assert posts[0]["json"]["reference_frame_index"] == -1
+
+
+@pytest.mark.parametrize("value", ["1", "first", "-2", "0.0"])
+def test_h3_image_rejects_invalid_reference_frame_index(monkeypatch, tmp_path, value):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setenv("H3_IMAGE_REFERENCE_FRAME_INDEX", value)
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="H3_IMAGE_REFERENCE_FRAME_INDEX"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[_h3_reference(tmp_path)],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-i2i-std",
+        )
+
+
+def test_h3_image_i2i_rejects_more_than_one_reference(monkeypatch, tmp_path):
+    # The gateway takes a single reference_image.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="exactly one reference image"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[_h3_reference(tmp_path, "a.png"), _h3_reference(tmp_path, "b.png")],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-i2i-std",
+        )
+
+
+def test_h3_image_rejects_unsupported_reference_format(monkeypatch, tmp_path):
+    # The gateway sniffs the magic number and 400s without occupying the GPU.
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    bad = tmp_path / "note.txt"
+    bad.write_bytes(b"just some text")
+    with pytest.raises(ValueError, match="unsupported reference image format"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[str(bad)],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-i2i-std",
+        )
+
+
+def test_h3_image_rejects_oversized_reference(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module, "REFERENCE_IMAGE_MAX_BYTES", 8)
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="too large"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[_h3_reference(tmp_path)],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-i2i-std",
+        )
+
+
+def test_h3_image_rejects_missing_reference_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("H3_IMAGE_AUTH_TOKEN", "t")
+    monkeypatch.setattr(h3_image_module.requests, "post", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(ValueError, match="cannot read reference image"):
+        h3_image_module.generate(
+            prompt_text="x",
+            reference_images=[str(tmp_path / "nope.png")],
+            output_file=str(tmp_path / "o.png"),
+            model="h3-i2i-std",
+        )
 
 
 def test_h3_image_yield_failure_tells_caller_to_retry(monkeypatch, tmp_path):

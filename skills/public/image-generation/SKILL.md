@@ -34,6 +34,13 @@ Routing rule:
 - Use `image-generation` when creating a new image from text or using references only as loose inspiration.
 - Use `image-editing` when the user uploaded an image and expects the result to preserve or transform that image's structure, geometry, layout, identity, or composition.
 - Requests such as "这是零件设计图，帮我生成实物图" are image-editing tasks because the design drawing is the source of truth, even though the user says "生成".
+- **A reference image alone does not move the task to `image-editing`.** The deciding
+  question is whether the unedited regions must stay intact. "换风格 / 换背景 / 姿态推演" on an
+  uploaded photo, where the user is content to let the model redraw, is generative
+  evolution → stay in this workflow and use an `h3-i2i-*` model (see Image-to-image below).
+- If the request genuinely belongs to `image-editing` but that skill is disabled or its
+  provider is unavailable, do **not** keep retrying it — say so, and offer the closest
+  `image-generation` alternative (an `h3-i2i-*` model) with its limitation spelled out.
 
 ### Step 2: Create Prompt JSON
 
@@ -43,7 +50,12 @@ The `prompt` field is the authoritative image prompt. By default, copy the user'
 
 Do not translate, rewrite, summarize, expand, or infer missing visual details unless the user explicitly asks for prompt optimization, translation, rewriting, or enrichment.
 
-For follow-up image modification requests that clearly refer to an uploaded or previously generated image, such as "make it red", "change the background", "adjust the previous image", or "turn this design into a real product photo", stop this workflow and use the `image-editing` skill instead.
+For follow-up modification requests on an uploaded or previously generated image, decide by
+what must survive. "turn this design into a real product photo" or "recolor this part but
+keep the rest identical" need the source preserved → use the `image-editing` skill instead. But
+"make it red", "change the background", or "adjust the previous image" where the user is
+content to let the model redraw is generative evolution → stay in this workflow, pass the
+image via `--reference-images`, and select an `h3-i2i-*` model (see Image-to-image below).
 
 Use this default shape:
 
@@ -104,22 +116,72 @@ Provider can also be configured with environment variables:
 - `QWEN_IMAGE_BASE_URL`: Qwen API base URL (optional, default: `https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1`)
 - `H3_IMAGE_AUTH_TOKEN`: Bearer token for the self-hosted H3 image gateway (falls back to `H3IMG_AUTH_TOKEN`, the gateway's own variable name)
 - `H3_IMAGE_BASE_URL`: H3 image gateway base URL (optional, default: `http://100.108.144.120:8000`)
-- `H3_IMAGE_MODEL`: default gateway mode when `--model` is omitted (optional, default: `h3-frame-std`)
+- `H3_IMAGE_MODEL`: default gateway mode when `--model` is omitted (optional, default: `h3-clip-std`)
 - `H3_IMAGE_SEED`: fix the sampling seed for a reproducible image (optional; the actual seed is echoed back in the result, so a good take can be re-derived)
-- `H3_IMAGE_FRAME_POLICY`: which frame of the 4-second clip to grab — `first`, `last`, `middle`, or `at:<0..1>` (optional, default `first`)
+- `H3_IMAGE_FRAME_POLICY`: which frame of the clip to grab — `first`, `last`, `middle`, or `at:<0..1>` (optional; unset leaves the tier's own default, which is `first` for text-to-image and `last` for the `h3-i2i-*` tiers)
+- `H3_IMAGE_REFERENCE_FRAME_INDEX`: where the reference image seeds the clip — `0` (first frame, the default) or `-1` (last frame). Only meaningful for the `h3-i2i-*` tiers (optional)
 - `H3_IMAGE_SHORT_EDGE`: override the tier's short edge, 128–2048 (optional; e.g. `512` on the `std` tier ≈ 50 s)
 - `H3_IMAGE_NO_IDEMPOTENCY`: set to `1` to force a brand-new job — needed only for a deliberate re-roll (see below)
 
-`h3_image` wraps a self-hosted H3 gateway that generates a 4-second clip and returns a
-grabbed frame as PNG. Its model names ARE the gateway's quality tiers, ordered by
-ascending quality — `h3-frame-draft` (4 steps / 256p, ~9 s), `h3-frame-fast` (8 steps /
-256p, ~16 s), `h3-frame-std` (4 steps / 768p, ~115 s, the default), `h3-frame-hq`
-(8 steps / 768p, ~225 s). Use `draft` to iterate on a prompt and `hq` for the final
-image. It shares one GPU and one serial queue with the video API and is **video-first**:
-while the engine runs a video job an image request yields instead of competing for the
-slot, so a call can take far longer than its tier suggests. It does not support reference
-images (i2i is not implemented yet) and ignores `--negative-prompt` / `--prompt-extend` /
-`--watermark`.
+`h3_image` wraps a self-hosted H3 gateway that renders a short clip and returns a grabbed
+frame as PNG. Its model names ARE the gateway's quality tiers, in two families — **the
+`h3-clip-*` tiers lead and are the defaults**: they render only the shortest decodable
+fragment (22 frames ≈ 0.92 s) and produce the same 768p frame as the `h3-frame-*` tiers at
+a fraction of the cost. In menu order (the first is what the picker selects by default):
+`h3-clip-std` (768p, ~25 s, the default) for normal work, `h3-clip-hq` (768p, ~40 s) for
+the final image, then `h3-frame-draft` (256p, ~9 s) and `h3-frame-fast` (256p, ~16 s) to
+iterate cheaply on a prompt, and finally the older `h3-frame-std` (~115 s) and
+`h3-frame-hq` (~225 s) — same frames but 5–9× slower, kept only when `frame_policy` must
+range across a wider 4-second span. It shares one GPU and one serial queue with the video
+API and is **video-first**: while the engine runs a video job an image request yields
+instead of competing for the slot, so a call can take far longer than its tier suggests. It
+ignores `--negative-prompt` / `--prompt-extend` / `--watermark`.
+
+#### Which model applies
+
+The model name **is** the gateway mode; pass it as `--model`. There is no capability probe in
+this skill — `--describe-provider` belongs to the **video-generation** skill and does not
+exist here, so the table below is the authoritative list.
+
+| Model | Use it for | Reference image | Output | ≈Time |
+| --- | --- | --- | --- | --- |
+| `h3-clip-std` | text-to-image, everyday (default) | not accepted | 1344×768 | 25 s |
+| `h3-clip-hq` | text-to-image, final take | not accepted | 1344×768 | 40 s |
+| `h3-frame-draft` | text-to-image, prompt iteration | not accepted | 448×256 | 9 s |
+| `h3-frame-fast` | text-to-image, cheap draft | not accepted | 448×256 | 16 s |
+| `h3-frame-std` | text-to-image, legacy | not accepted | 1344×768 | 115 s |
+| `h3-frame-hq` | text-to-image, legacy final | not accepted | 1344×768 | 225 s |
+| **`h3-i2i-std`** | **image-to-image, everyday** | **required, exactly 1** | 1344×768 | 31 s |
+| **`h3-i2i-hq`** | **image-to-image, final take** | **required, exactly 1** | 1344×768 | 50 s |
+
+#### Image-to-image runs
+
+Use these whenever the user supplies a reference image as a **starting point to evolve** —
+changing style, background, or pose while keeping the subject recognisable. Do **not** pair a
+reference image with any `h3-clip-*` / `h3-frame-*` model: those are text-to-image and the
+call fails rather than ignoring the image.
+
+- Exactly **one** reference image, PNG / JPEG / WebP, ≤12 MB. Two images, a non-image file,
+  or a missing path all fail before anything reaches the gateway.
+- The reference seeds the clip as its **first frame** and the tier then grabs the **last**
+  frame — the evolved end state, which is normally what the user wants. Set
+  `H3_IMAGE_FRAME_POLICY=first` to get a near-copy instead.
+- `H3_IMAGE_REFERENCE_FRAME_INDEX=-1` seeds the clip at the **last** frame rather than the
+  first (`0`, the default).
+
+```bash
+python /mnt/skills/public/image-generation/scripts/generate.py \
+  --prompt-file /mnt/user-data/workspace/fox-summer.json \
+  --reference-images /mnt/user-data/uploads/base.png \
+  --output-file /mnt/user-data/outputs/fox-summer-{YYYYMMDD-HHMMSS}.png \
+  --aspect-ratio 16:9 \
+  --model h3-i2i-hq
+```
+
+Boundary: these tiers do **generative evolution / reference-guided redraw**. They do **not**
+promise that unedited regions stay pixel-identical. When the source must be *preserved* — a
+design drawing, sketch, or blueprint turned into a product photo, where structure and identity
+have to survive — that is the `image-editing` skill's contract, not this one.
 
 If an `h3_image` call times out, or fails with `engine busy with video jobs`, that is the
 yield and not a broken request: **re-run the exact same command.** The provider derives an

@@ -75,6 +75,16 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
         fallback_api_key_envs=("H3IMG_AUTH_TOKEN",),
         models=(
             ImageGenerationModel(
+                name="h3-clip-std",
+                display_name="H3 Clip Std（均衡，默认）",
+                description="4 步 / 768p（1344×768），约 25 秒。常规出图首选——画质与 Frame Std 相同，快约 6 倍",
+            ),
+            ImageGenerationModel(
+                name="h3-clip-hq",
+                display_name="H3 Clip HQ（成品）",
+                description="8 步 / 768p（1344×768），约 40 秒。成品首选——实测与 Frame HQ 肉眼同级，快约 5 倍",
+            ),
+            ImageGenerationModel(
                 name="h3-frame-draft",
                 display_name="H3 Frame Draft（预览）",
                 description="4 步 / 256p（448×256），约 9 秒。提示词试错与批量预览首选",
@@ -86,13 +96,23 @@ _PROVIDERS: tuple[_ProviderDefinition, ...] = (
             ),
             ImageGenerationModel(
                 name="h3-frame-std",
-                display_name="H3 Frame Std（均衡，默认）",
-                description="4 步 / 768p（1344×768），约 115 秒。常规出图",
+                display_name="H3 Frame Std（旧，均衡）",
+                description="4 步 / 768p（1344×768），约 115 秒。仅在需要 4 秒片段内更大取帧跨度时选，否则用 Clip Std",
             ),
             ImageGenerationModel(
                 name="h3-frame-hq",
-                display_name="H3 Frame HQ（成品）",
-                description="8 步 / 768p（1344×768），约 225 秒。实测接近摄影级观感，成品出图选它",
+                display_name="H3 Frame HQ（旧，成品）",
+                description="8 步 / 768p（1344×768），约 225 秒。同上，仅需更大取帧跨度时选，否则用 Clip HQ",
+            ),
+            ImageGenerationModel(
+                name="h3-i2i-std",
+                display_name="H3 图生图 Std（均衡）",
+                description="图生图：以参考图为起点演化（换风格/换背景/姿态），4 步 / 768p（1344×768），约 31 秒。必须提供参考图",
+            ),
+            ImageGenerationModel(
+                name="h3-i2i-hq",
+                display_name="H3 图生图 HQ（成品）",
+                description="图生图成品档，8 步 / 768p（1344×768），约 50 秒。必须提供参考图",
             ),
         ),
     ),

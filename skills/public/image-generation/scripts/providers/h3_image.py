@@ -6,13 +6,36 @@ as PNG. The gateway has its own auth token and its own async job API, so this is
 an independent provider from the video-side `minimax_h3_sglang` adapter — do not
 try to share configuration between them.
 
-Four quality tiers as a 2x2 ladder of pixels x steps, exposed as model names
-(the model IS the gateway mode):
+Six tiers across two families, exposed as model names (the model IS the gateway
+mode). Order is the menu order, and the FIRST entry is what the UI selects when
+the user has not pinned a model:
 
-    h3-frame-draft  preview,  4 steps / 256p, ~9 s,   448x256
-    h3-frame-fast   draft,    8 steps / 256p, ~16 s,  448x256
-    h3-frame-std    balanced, 4 steps / 768p, ~115 s, 1344x768  ← default
-    h3-frame-hq     high,     8 steps / 768p, ~225 s, 1344x768
+    h3-clip-std     balanced, 4 steps / 768p / 22 frames, ~25 s, 1344x768  ← default
+    h3-clip-hq      high,     8 steps / 768p / 22 frames, ~40 s, 1344x768
+    h3-frame-draft  preview,  4 steps / 256p / 4 s clip, ~9 s,   448x256
+    h3-frame-fast   draft,    8 steps / 256p / 4 s clip, ~16 s,  448x256
+    h3-frame-std    balanced, 4 steps / 768p / 4 s clip, ~115 s, 1344x768
+    h3-frame-hq     high,     8 steps / 768p / 4 s clip, ~225 s, 1344x768
+
+The `clip` family renders only the shortest decodable fragment (22 frames ≈
+0.92 s) and grabs a frame from it. Compute scales with latent frames, so it
+produces the same 768p frame as the `frame` tiers at a fraction of the cost —
+hence the `clip` family leads. The `frame` std/hq tiers are kept only for the
+rare case where `frame_policy` must range across a wider 4-second span.
+
+Image-to-image (`h3-i2i-*`) is a separate pair of tiers at the end: they REQUIRE
+one reference image, which seeds the clip as its first frame, and default to
+grabbing the LAST frame (`frame_policy=last`) — the evolved result. The gateway
+rejects `reference_image` on every text-to-image tier, so this adapter gates both
+directions locally rather than paying for a 400.
+
+    h3-i2i-std      balanced, 4 steps / 768p / 22 frames + reference, ~31 s
+    h3-i2i-hq       high,     8 steps / 768p / 22 frames + reference, ~50 s
+
+Their semantics are generative evolution / reference-guided redraw (style,
+background, pose) — they do NOT promise that unedited regions stay
+pixel-identical. That is why they belong to this skill (reference as loose
+inspiration) rather than image-editing, whose contract is structure preservation.
 
 The gateway shares one GPU and one serial queue with the video API, and is
 **video-first**: while the engine runs a video job, an image request yields
@@ -31,15 +54,26 @@ from pathlib import Path
 import requests
 
 DEFAULT_BASE_URL = "http://100.108.144.120:8000"
-DEFAULT_MODE = "h3-frame-std"
-# Mirrors GET /v1/images/modes, ordered by ascending quality. The gateway's own
+DEFAULT_MODE = "h3-clip-std"
+# Mirrors GET /v1/images/modes, in menu order: the clip family first (same
+# frames, far cheaper), the slower 4s-video tiers last. The gateway's own
 # validation is the backstop; this list only buys a fast local error.
 KNOWN_MODES = (
+    "h3-clip-std",
+    "h3-clip-hq",
     "h3-frame-draft",
     "h3-frame-fast",
     "h3-frame-std",
     "h3-frame-hq",
+    "h3-i2i-std",
+    "h3-i2i-hq",
 )
+
+# These tiers REQUIRE a reference image; every other tier REJECTS one.
+I2I_MODES = frozenset({"h3-i2i-std", "h3-i2i-hq"})
+
+# The gateway's own cap on the original reference image.
+REFERENCE_IMAGE_MAX_BYTES = 12 * 1024 * 1024
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 # The sandbox runs each bash command with timeout=600 (local_sandbox.py), which
@@ -124,6 +158,52 @@ def _frame_policy_env() -> str | None:
         f"H3_IMAGE_FRAME_POLICY must be one of {', '.join(_FRAME_POLICIES)} "
         f"or 'at:<0..1>', got {raw!r}"
     )
+
+
+def _reference_format(head: bytes) -> str | None:
+    """Sniff the container the gateway accepts, so a bad file fails locally."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "PNG"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "JPEG"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "WebP"
+    return None
+
+
+def _reference_frame_index_env() -> int | None:
+    raw = os.getenv("H3_IMAGE_REFERENCE_FRAME_INDEX")
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    if value not in ("0", "-1"):
+        raise ValueError(
+            f"H3_IMAGE_REFERENCE_FRAME_INDEX must be 0 (reference seeds the first frame) "
+            f"or -1 (it seeds the last frame), got {raw!r}"
+        )
+    return int(value)
+
+
+def _load_reference_image(path: str) -> str:
+    reference = Path(path)
+    try:
+        raw = reference.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            f"provider=h3_image message=cannot read reference image {path!r}: {exc}"
+        ) from exc
+    if len(raw) > REFERENCE_IMAGE_MAX_BYTES:
+        raise ValueError(
+            f"provider=h3_image message=reference image is too large: {len(raw)} bytes "
+            f"(limit {REFERENCE_IMAGE_MAX_BYTES})"
+        )
+    if _reference_format(raw[:16]) is None:
+        raise ValueError(
+            f"provider=h3_image message=unsupported reference image format for {path!r}; "
+            f"the gateway accepts PNG, JPEG, or WebP"
+        )
+    # The gateway accepts a bare payload or a data: prefix — send it bare.
+    return base64.b64encode(raw).decode()
 
 
 def _idempotency_key(base: str, body: dict) -> str | None:
@@ -259,11 +339,14 @@ def _write_image(payload: dict, base: str, headers: dict, output_file: str) -> N
     output_path.write_bytes(image_bytes)
 
 
-def _build_body(prompt_text: str, mode: str, aspect_ratio: str) -> dict:
+def _build_body(
+    prompt_text: str, mode: str, aspect_ratio: str, reference_images: list[str]
+) -> dict:
     """Assemble the request body, validating the optional overrides locally.
 
     Validating before the POST turns a typo into an immediate error instead of a
-    round trip that the gateway would reject (or silently ignore).
+    round trip that the gateway would reject (or silently ignore) — which matters
+    on a queue shared with video.
     """
     body = {
         "prompt": prompt_text,
@@ -282,6 +365,11 @@ def _build_body(prompt_text: str, mode: str, aspect_ratio: str) -> dict:
     frame_policy = _frame_policy_env()
     if frame_policy is not None:
         body["frame_policy"] = frame_policy
+    frame_index = _reference_frame_index_env()
+    if mode in I2I_MODES:
+        body["reference_image"] = _load_reference_image(reference_images[0])
+        if frame_index is not None:
+            body["reference_frame_index"] = frame_index
     return body
 
 
@@ -300,10 +388,30 @@ def generate(
     if not token:
         return "H3_IMAGE_AUTH_TOKEN is not set"
 
-    if reference_images:
+    mode = model or os.getenv("H3_IMAGE_MODEL") or DEFAULT_MODE
+    if mode not in KNOWN_MODES:
         raise ValueError(
-            "provider=h3_image message=reference images are not supported yet "
-            "(the gateway is text-to-image only; i2i lands in its M3 milestone)"
+            f"provider=h3_image message=unknown h3_image mode '{mode}'; "
+            f"known modes: {', '.join(KNOWN_MODES)} (see GET /v1/images/modes)"
+        )
+
+    # The gateway requires a reference on the i2i tiers and rejects one
+    # everywhere else; gate both directions here so neither costs a round trip.
+    if mode in I2I_MODES:
+        if not reference_images:
+            raise ValueError(
+                f"provider=h3_image message=mode '{mode}' requires a reference image "
+                f"(the h3-i2i-* tiers are image-to-image; pass --reference-images)"
+            )
+        if len(reference_images) > 1:
+            raise ValueError(
+                f"provider=h3_image message=h3_image takes exactly one reference image, "
+                f"got {len(reference_images)}"
+            )
+    elif reference_images:
+        raise ValueError(
+            f"provider=h3_image message=mode '{mode}' is text-to-image and does not accept "
+            f"reference images; use an h3-i2i-* mode for image-to-image"
         )
 
     supplied = {
@@ -318,16 +426,9 @@ def generate(
                 f"(the H3 image gateway does not implement it)"
             )
 
-    mode = model or os.getenv("H3_IMAGE_MODEL") or DEFAULT_MODE
-    if mode not in KNOWN_MODES:
-        raise ValueError(
-            f"provider=h3_image message=unknown h3_image mode '{mode}'; "
-            f"known modes: {', '.join(KNOWN_MODES)} (see GET /v1/images/modes)"
-        )
-
     base = _base_url()
     headers = _headers(token)
-    body = _build_body(prompt_text, mode, aspect_ratio)
+    body = _build_body(prompt_text, mode, aspect_ratio, reference_images)
 
     # Submit only, then poll here: each request stays short, and we can print
     # progress and bound the wait ourselves instead of relying on `wait: true`.
