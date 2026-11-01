@@ -113,6 +113,11 @@
 | E2E-9 | 安全巡检 | 抓包+日志+DB 导出，确认无明文令牌、代理不可越权 | A5 |
 | E2E-10 | 回归 | 既有 provider/skills 回归 + 两仓 CI 全绿 | A6 |
 
+**上线节奏（2026-11-01 拍板）**：每个功能开发完成 + E2E-mock 全绿后，立即做该功能的
+**单独真实网关对接验证**（真实 MGW http://127.0.0.1:8000 + 真实引擎），通过即上线该功能，
+不等全部完成。顺序：生图/生视频 provider → console-link → drama-production → video-clips
+→ t2i-series/image-text-post → content-series。
+
 **通过标准**：E2E-1~5d、10 全过；E2E-6~9 按表全过；所有验收条目勾选。
 产出：E2E 报告（含 MGW 版本号、env 指纹、用例截图/日志摘录），落本目录 `e2e-report.md`。
 
