@@ -318,6 +318,11 @@ async def test_runtime_env_not_provisioned_returns_empty_debug(configured_settin
     reset_runtime_mgw_cache()
     monkey = pytest.MonkeyPatch()
     monkey.setattr("deerflow.media_gateway.runtime_env._get_provisioner", lambda: _Unmapped())
+
+    async def _no_jit(provisioner, user_id):  # pragma: no cover - provisioning is covered separately
+        return False
+
+    monkey.setattr("deerflow.media_gateway.runtime_env._jit_provision_user", _no_jit)
     try:
         with caplog.at_level("DEBUG", logger="deerflow.media_gateway.runtime_env"):
             env = await get_runtime_mgw_env("user-404")
@@ -326,6 +331,98 @@ async def test_runtime_env_not_provisioned_returns_empty_debug(configured_settin
         reset_runtime_mgw_cache()
     assert env == {}
     assert any("no MGW mapping" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_runtime_env_not_provisioned_triggers_jit_provisioning(configured_settings, caplog):
+    """Design §5.1: a mapped-in user without an MGW row is provisioned on the fly."""
+    from deerflow.media_gateway.runtime_env import get_runtime_mgw_env, reset_runtime_mgw_cache
+
+    provisioned: list[str] = []
+
+    class _JitProvisioner:
+        async def get_token(self, user_id):
+            if user_id not in provisioned:
+                raise MediaGatewayError(status=404, code="not_provisioned", message=f"no mapping for {user_id}")
+            return f"h3t_{user_id}"
+
+        async def ensure_user(self, user):
+            provisioned.append(str(getattr(user, "id")))
+
+    async def _fake_jit(provisioner, user_id):
+        # Real implementation loads the local user row; fake the success path.
+        provisioned.append(user_id)
+        return True
+
+    reset_runtime_mgw_cache()
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr("deerflow.media_gateway.runtime_env._get_provisioner", lambda: _JitProvisioner())
+    monkey.setattr("deerflow.media_gateway.runtime_env._jit_provision_user", _fake_jit)
+    try:
+        env = await get_runtime_mgw_env("user-new")
+    finally:
+        monkey.undo()
+        reset_runtime_mgw_cache()
+    assert env["MEDIA_GATEWAY_TOKEN"] == "h3t_user-new"
+    assert "user-new" in provisioned
+
+
+@pytest.mark.asyncio
+async def test_runtime_env_jit_disabled_keeps_skipping(configured_settings, monkeypatch):
+    """MEDIA_GATEWAY_JIT_PROVISIONING=false restores the old skip behaviour."""
+    from deerflow.media_gateway.runtime_env import get_runtime_mgw_env, reset_runtime_mgw_cache
+    from deerflow.media_gateway.settings import set_media_gateway_settings
+
+    set_media_gateway_settings(MediaGatewaySettings(base_url="http://mgw.internal", jit_provisioning=False))
+
+    calls: list[str] = []
+
+    class _Unmapped:
+        async def get_token(self, user_id):
+            calls.append(user_id)
+            raise MediaGatewayError(status=404, code="not_provisioned", message=f"no mapping for {user_id}")
+
+    async def _no_jit(provisioner, user_id):  # pragma: no cover - must not run
+        raise AssertionError("JIT provisioning must not run when disabled")
+
+    reset_runtime_mgw_cache()
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr("deerflow.media_gateway.runtime_env._get_provisioner", lambda: _Unmapped())
+    monkey.setattr("deerflow.media_gateway.runtime_env._jit_provision_user", _no_jit)
+    try:
+        env = await get_runtime_mgw_env("user-404")
+    finally:
+        monkey.undo()
+        reset_runtime_mgw_cache()
+        set_media_gateway_settings(None)
+    assert env == {}
+    assert calls == ["user-404"]  # exactly one attempt, no retry loop
+
+
+@pytest.mark.asyncio
+async def test_runtime_env_jit_provision_skips_unknown_local_user(configured_settings, monkeypatch, caplog):
+    """JIT provisioning without a local user row degrades to no injection."""
+    from deerflow.media_gateway.runtime_env import get_runtime_mgw_env, reset_runtime_mgw_cache
+
+    class _Unmapped:
+        async def get_token(self, user_id):
+            raise MediaGatewayError(status=404, code="not_provisioned", message=f"no mapping for {user_id}")
+
+    async def _fake_jit(provisioner, user_id):
+        return False  # no local user row found
+
+    reset_runtime_mgw_cache()
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr("deerflow.media_gateway.runtime_env._get_provisioner", lambda: _Unmapped())
+    monkey.setattr("deerflow.media_gateway.runtime_env._jit_provision_user", _fake_jit)
+    try:
+        with caplog.at_level("INFO", logger="deerflow.media_gateway.runtime_env"):
+            env = await get_runtime_mgw_env("ghost-user")
+    finally:
+        monkey.undo()
+        reset_runtime_mgw_cache()
+    assert env == {}
+    assert any("JIT provisioning unavailable" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +495,7 @@ def test_injection_blanks_inherited_admin_token(configured_settings, fake_env, m
         return "tool-ok"
 
     asyncio.run(middleware.awrap_tool_call(_request(runtime), handler))
-    output = sandbox.execute_command("echo \"[$MEDIA_GATEWAY_ADMIN_TOKEN][$MEDIA_GATEWAY_TOKEN]\"").strip()
+    output = sandbox.execute_command('echo "[$MEDIA_GATEWAY_ADMIN_TOKEN][$MEDIA_GATEWAY_TOKEN]"').strip()
     assert output == "[][h3t_user]"
 
 

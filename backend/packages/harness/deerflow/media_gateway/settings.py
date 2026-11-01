@@ -67,11 +67,19 @@ class MediaGatewaySettings(BaseModel):
     )
     # Reserved: extra env vars appended to the per-user sandbox session env by
     # the credential middleware (JSON object, e.g. MEDIA_GATEWAY_ADDITIONAL_ENV
-    #='{"MEDIA_GATEWAY_TIMEOUT":"30"}'). Values must not be secrets — they are
+    # ='{"MEDIA_GATEWAY_TIMEOUT":"30"}'). Values must not be secrets — they are
     # readable by any command running inside the user's sandbox.
     additional_env: dict[str, str] | None = Field(
         default=None,
         description="Optional extra env vars injected into sandbox sessions alongside MGW credentials",
+    )
+    # JIT per-user provisioning (design §5.1): when a signed-in user has no
+    # media_gateway_users mapping yet, the credential-injection path provisions
+    # an MGW account + token on the fly instead of skipping injection. Disable
+    # with MEDIA_GATEWAY_JIT_PROVISIONING=false.
+    jit_provisioning: bool = Field(
+        default=True,
+        description="Provision an MGW account on first credential resolution for users without a mapping (design §5.1)",
     )
 
 
@@ -93,6 +101,7 @@ def get_media_gateway_settings() -> MediaGatewaySettings:
             video_model=os.getenv("MEDIA_GATEWAY_VIDEO_MODEL") or None,
             encryption_key=os.getenv("MEDIA_GATEWAY_ENCRYPTION_KEY") or None,
             additional_env=_load_additional_env(os.getenv("MEDIA_GATEWAY_ADDITIONAL_ENV")),
+            jit_provisioning=os.getenv("MEDIA_GATEWAY_JIT_PROVISIONING", "true").strip().lower() not in {"0", "false", "no", "off"},
         )
     return _media_gateway_settings
 

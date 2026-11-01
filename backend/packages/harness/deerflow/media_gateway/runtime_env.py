@@ -82,11 +82,55 @@ def reset_runtime_mgw_cache() -> None:
     _provisioner_resolved = False
 
 
+async def _jit_provision_user(provisioner: MediaGatewayProvisioner, user_id: str) -> bool:
+    """JIT-provision an MGW account for ``user_id`` from the local users table.
+
+    Design §5.1: credential resolution is just-in-time — a signed-in user who
+    has never been provisioned (e.g. an existing account created before the MGW
+    integration shipped, or one that bypassed JWT provisioning) gets their MGW
+    account + token created on first credential resolution instead of the
+    injection silently skipping. Returns True when provisioning succeeded.
+    """
+    from sqlalchemy import select
+
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.persistence.user.model import UserRow
+
+    session_factory = get_session_factory()
+    if session_factory is None:
+        logger.warning("media gateway env: JIT provisioning skipped for %s (persistence engine not initialized)", user_id)
+        return False
+    async with session_factory() as session:
+        user = (await session.execute(select(UserRow).where(UserRow.id == user_id))).scalar_one_or_none()
+    if user is None:
+        logger.info("media gateway env: JIT provisioning skipped for %s (no local user row)", user_id)
+        return False
+    await provisioner.ensure_user(user)
+    logger.info("media gateway env: JIT provisioned MGW account for user %s", user_id)
+    return True
+
+
+async def _resolve_user_token(settings, provisioner: MediaGatewayProvisioner, user_id: str) -> str:
+    """Return the user's MGW token, JIT-provisioning on ``not_provisioned``.
+
+    Raises :class:`MediaGatewayError` when the token is still unresolvable.
+    """
+    try:
+        return await provisioner.get_token(user_id)
+    except MediaGatewayError as exc:
+        if not (exc.status == 404 and exc.code == "not_provisioned" and settings.jit_provisioning):
+            raise
+        if not await _jit_provision_user(provisioner, user_id):
+            raise
+        return await provisioner.get_token(user_id)
+
+
 async def get_runtime_mgw_env(user_id: str | None) -> dict[str, str]:
     """Build the per-user Media Gateway env dict for sandbox injection.
 
-    Empty dict when MGW is unconfigured or the user has no provisioned
-    mapping — callers treat that as "do not inject" and continue normally.
+    Empty dict when MGW is unconfigured or the user's token cannot be resolved
+    (including after a JIT provisioning attempt, per design §5.1) — callers
+    treat that as "do not inject" and continue normally.
     """
     settings = get_media_gateway_settings()
     if not settings.base_url:
@@ -100,10 +144,10 @@ async def get_runtime_mgw_env(user_id: str | None) -> dict[str, str]:
     if provisioner is None:
         return {}
     try:
-        token = await provisioner.get_token(user_id)
+        token = await _resolve_user_token(settings, provisioner, user_id)
     except MediaGatewayError as exc:
         if exc.status == 404 and exc.code == "not_provisioned":
-            logger.debug("media gateway env: user %s has no MGW mapping; skipping injection", user_id)
+            logger.info("media gateway env: user %s has no MGW mapping (JIT provisioning unavailable); skipping injection", user_id)
         else:
             logger.warning("media gateway env: token lookup failed for user %s: %s", user_id, exc)
         return {}

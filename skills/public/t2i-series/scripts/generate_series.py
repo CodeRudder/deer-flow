@@ -27,11 +27,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import base64
 import os
 import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -136,15 +138,40 @@ def wait_job(gw: Gateway, job_id: str, *, deadline: float, log) -> dict:
         time.sleep(min(POLL_INTERVAL, max(1.0, remaining)))
 
 
-def fetch_artifact_url(job: dict) -> str:
-    """completed 作业体里的产物地址（``data[].url``，兼容 result.data 嵌套）。"""
+def fetch_artifact_data(job: dict) -> tuple[bytes | None, str]:
+    """取 completed 作业体的全尺寸产物字节。
+
+    优先 ``data[0].b64_json``（作业体自带的母本，无需二次请求）；无 b64 时回退
+    ``data[].url`` 下载，并把查询参数改写为 `kind=image&fmt=png`（images.md §5.1：
+    ``kind=thumb&w=…`` 是 320px 小缩略图，`kind=image` 才是全尺寸产物，`fmt=png`
+    是无损母本——避免默认 jpg 或误带的 thumb 参数拿到缩略图）。
+    """
     data = job.get("data")
     if not isinstance(data, list) and isinstance(job.get("result"), dict):
         data = job["result"].get("data")
     for item in data or []:
-        if isinstance(item, dict) and item.get("url"):
-            return str(item["url"])
-    return ""
+        if not isinstance(item, dict):
+            continue
+        b64 = item.get("b64_json")
+        if b64:
+            try:
+                return base64.b64decode(str(b64)), "b64"
+            except Exception:  # noqa: BLE001 - 落到 url 回退
+                pass
+        url = str(item.get("url") or "")
+        if url:
+            return url, "url"
+    return None, ""
+
+
+def fullsize_file_url(url: str, base_url: str) -> str:
+    """把 data[].url（可能是相对路径）解析为全尺寸 `kind=image&fmt=png` 绝对地址。"""
+    absolute = url if re.match(r"^https?://", url) else f"{base_url}{url}"
+    parsed = urllib.parse.urlsplit(absolute)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True) if k not in {"kind", "w", "fmt"}]
+    query.insert(0, ("kind", "image"))
+    query.append(("fmt", "png"))
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), parsed.fragment))
 
 
 def generate_one(gw: Gateway, *, index: int, prompt: str, mode: str, aspect_ratio: str, short_edge: int | None, theme: str, max_attempts: int, timeout: float, out_dir: Path, dry_run: bool, log) -> dict:
@@ -172,12 +199,16 @@ def generate_one(gw: Gateway, *, index: int, prompt: str, mode: str, aspect_rati
             job = wait_job(gw, job_id, deadline=time.monotonic() + timeout, log=log)
             status = str(job.get("status") or "")
             if status == "completed":
-                url = fetch_artifact_url(job)
-                if not url:
-                    raise RuntimeError("作业 completed 但 data[] 中没有产物 url")
-                # MGW 的 data[].url 可能是相对路径（/v1/images/jobs/{id}/file?…），相对基址解析。
-                absolute_url = url if re.match(r"^https?://", url) else f"{gw.base_url}{url}"
-                data = gw.fetch_bytes(absolute_url)
+                artifact, source = fetch_artifact_data(job)
+                if not artifact:
+                    raise RuntimeError("作业 completed 但 data[] 中没有 b64_json 或 url")
+                if source == "b64":
+                    data = artifact
+                    log(f"  第{index}张 从作业体 b64_json 解码母本（{len(data)} bytes）")
+                else:
+                    # 回退：url 下载，强制全尺寸 kind=image&fmt=png（非 thumb 预览）。
+                    absolute_url = fullsize_file_url(artifact, gw.base_url)
+                    data = gw.fetch_bytes(absolute_url)
                 dest = out_dir / f"{index:02d}.{sniff_ext(data)}"
                 dest.write_bytes(data)
                 size = len(data)
