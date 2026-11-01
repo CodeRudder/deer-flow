@@ -43,9 +43,14 @@ services:
     restart: unless-stopped
 
   # ── Frontend: Next.js Production ───────────────────────────────────────────
+  # Build contexts point at the source repo via DEER_FLOW_PROJECT_ROOT so this
+  # file can also run from a standalone deploy dir (scripts/deploy.sh stages it
+  # there; --project-directory is that dir, so relative paths like the data
+  # mount below resolve inside the deploy dir, keeping the host clean of
+  # repo-internal paths).
   frontend:
     build:
-      context: ../
+      context: ${DEER_FLOW_PROJECT_ROOT:-../}
       dockerfile: frontend/Dockerfile
       target: prod
       args:
@@ -56,7 +61,7 @@ services:
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=http://gateway:8001
     env_file:
-      - ../frontend/.env
+      - ${DEER_FLOW_PROJECT_ROOT:-../}/frontend/.env
     networks:
       - deer-flow
     restart: unless-stopped
@@ -64,7 +69,7 @@ services:
   # ── Gateway API ────────────────────────────────────────────────────────────
   gateway:
     build:
-      context: ../
+      context: ${DEER_FLOW_PROJECT_ROOT:-../}
       dockerfile: backend/Dockerfile
       args:
         APT_MIRROR: ${APT_MIRROR:-}
@@ -82,7 +87,7 @@ services:
     volumes:
       - ${DEER_FLOW_CONFIG_PATH}:/app/backend/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/backend/extensions_config.json:ro
-      - ../skills:/app/skills:ro
+      - ${DEER_FLOW_PROJECT_ROOT:-../}/skills:/app/skills:ro
       - ${DEER_FLOW_HOME}:/app/backend/.deer-flow
       # DooD: the host Docker socket is NOT mounted by default. It is added only
       # for aio (pure-DooD) sandbox mode via the opt-in docker-compose.dood.yaml
@@ -114,7 +119,7 @@ services:
       - NO_PROXY=${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,host.docker.internal
       - no_proxy=${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,host.docker.internal
     env_file:
-      - ../.env
+      - ${DEER_FLOW_PROJECT_ROOT:-../}/.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -124,7 +129,7 @@ services:
   # ── Sandbox Provisioner (optional, Kubernetes mode) ────────────────────────
   provisioner:
     build:
-      context: ./provisioner
+      context: ${DEER_FLOW_PROJECT_ROOT:-../}/docker/provisioner
       dockerfile: Dockerfile
       args:
         APT_MIRROR: ${APT_MIRROR:-}
@@ -141,7 +146,7 @@ services:
       - NODE_HOST=host.docker.internal
       - K8S_API_SERVER=https://host.docker.internal:26443
     env_file:
-      - ../.env
+      - ${DEER_FLOW_PROJECT_ROOT:-../}/.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

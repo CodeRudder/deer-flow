@@ -16,7 +16,18 @@
 #   deploy.sh start              # start pre-built images
 #   deploy.sh down               # stop and remove containers
 #
-# Must be run from the repo root directory.
+# Deployment layout (standalone deploy dir, default ~/deer-flow-deploy):
+#   deer-flow-deploy/
+#   ├── deploy.sh              # this script, staged copy — run start/stop from here
+#   ├── repo.env               # records DEER_FLOW_PROJECT_ROOT (the source repo)
+#   ├── docker-compose.yaml    # staged from the repo, refreshed on each deploy
+#   ├── nginx/  provisioner/   # staged config for compose mounts/builds
+#   ├── config.yaml            # runtime config (seeded from repo on first run)
+#   └── data/deer-flow/        # DEER_FLOW_HOME — all runtime data (bind mount)
+#
+# Repo runs (from a repo checkout) stage all of the above and then operate the
+# deploy dir. The staged copy skips staging, so the deploy dir keeps working
+# even if the repo is moved or deleted.
 
 set -e
 
@@ -40,10 +51,51 @@ case "${1:-}" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+
+# ── 独立部署目录（standalone deploy dir）──────────────────────────────────────
+# 正式环境不依赖仓库工作区存活：compose yml、启停脚本、nginx/provisioner 配置
+# 全部复制到 $DEER_FLOW_DEPLOY_DIR（缺省 ~/deer-flow-deploy），数据在其下的
+# data/deer-flow 相对子目录。仓库只作为镜像构建源——路径记录在部署目录的
+# repo.env（staged deploy.sh 启动时自动 source），仓库移动/更新不影响已部署
+# 环境的启停。从部署目录直接运行 `./deploy.sh start|stop` 即可独立操作。
+if [ -z "$DEER_FLOW_PROJECT_ROOT" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/repo.env" ]; then
+    # staged copy in the deploy dir: recover the repo path recorded at staging time
+    # shellcheck disable=SC1091
+    source "$(dirname "${BASH_SOURCE[0]}")/repo.env"
+    STAGED_DEPLOY=1
+fi
+export DEER_FLOW_PROJECT_ROOT="${DEER_FLOW_PROJECT_ROOT:-$REPO_ROOT}"
+REPO_ROOT="$DEER_FLOW_PROJECT_ROOT"
+
+DEER_FLOW_DEPLOY_DIR="${DEER_FLOW_DEPLOY_DIR:-$HOME/deer-flow-deploy}"
+export DEER_FLOW_DEPLOY_DIR
+
+stage_deploy_dir() {
+    mkdir -p "$DEER_FLOW_DEPLOY_DIR/nginx" "$DEER_FLOW_DEPLOY_DIR/data/deer-flow"
+    # script-managed files: refresh on every deploy; data/ is never touched here
+    cp "$DOCKER_DIR/docker-compose.yaml" "$DEER_FLOW_DEPLOY_DIR/docker-compose.yaml"
+    for _overlay in "$DOCKER_DIR"/docker-compose.*.yaml; do
+        [ -e "$_overlay" ] && cp "$_overlay" "$DEER_FLOW_DEPLOY_DIR/$(basename "$_overlay")"
+    done
+    cp -r "$DOCKER_DIR/nginx/." "$DEER_FLOW_DEPLOY_DIR/nginx/"
+    if [ -d "$DOCKER_DIR/provisioner" ]; then
+        mkdir -p "$DEER_FLOW_DEPLOY_DIR/provisioner"
+        cp -r "$DOCKER_DIR/provisioner/." "$DEER_FLOW_DEPLOY_DIR/provisioner/"
+    fi
+    cp "${BASH_SOURCE[0]}" "$DEER_FLOW_DEPLOY_DIR/deploy.sh"
+    chmod +x "$DEER_FLOW_DEPLOY_DIR/deploy.sh"
+    printf 'export DEER_FLOW_PROJECT_ROOT="%s"\nexport DEER_FLOW_STAGED_DEPLOY=1\n' \
+        "$REPO_ROOT" > "$DEER_FLOW_DEPLOY_DIR/repo.env"
+}
 
 DOCKER_DIR="$REPO_ROOT/docker"
-COMPOSE_CMD=(docker compose -p deer-flow -f "$DOCKER_DIR/docker-compose.yaml")
+# The staged copy in the deploy dir skips re-staging: the deploy dir must keep
+# working standalone even if the repo is moved or deleted.
+if [ "${DEER_FLOW_STAGED_DEPLOY:-0}" != "1" ]; then
+    stage_deploy_dir
+fi
+COMPOSE_CMD=(docker compose -p deer-flow --project-directory "$DEER_FLOW_DEPLOY_DIR"
+             -f "$DEER_FLOW_DEPLOY_DIR/docker-compose.yaml")
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 
@@ -56,7 +108,8 @@ NC='\033[0m'
 # ── DEER_FLOW_HOME ────────────────────────────────────────────────────────────
 
 if [ -z "$DEER_FLOW_HOME" ]; then
-    export DEER_FLOW_HOME="$REPO_ROOT/backend/.deer-flow"
+    # 正式数据目录：部署目录下的相对路径（独立于仓库与家目录全局路径）
+    export DEER_FLOW_HOME="$DEER_FLOW_DEPLOY_DIR/data/deer-flow"
 fi
 echo -e "${BLUE}DEER_FLOW_HOME=$DEER_FLOW_HOME${NC}"
 mkdir -p "$DEER_FLOW_HOME"
@@ -68,7 +121,8 @@ export DEER_FLOW_REPO_ROOT="$REPO_ROOT"
 # ── config.yaml ───────────────────────────────────────────────────────────────
 
 if [ -z "$DEER_FLOW_CONFIG_PATH" ]; then
-    export DEER_FLOW_CONFIG_PATH="$REPO_ROOT/config.yaml"
+    # 配置也放部署目录（独立存活）：首次运行会从仓库 example 播种，之后以这里为准
+    export DEER_FLOW_CONFIG_PATH="$DEER_FLOW_DEPLOY_DIR/config.yaml"
 fi
 
 if  [ "$CMD" != "down" ] && [ ! -f "$DEER_FLOW_CONFIG_PATH" ]; then
@@ -91,7 +145,7 @@ fi
 # ── extensions_config.json ───────────────────────────────────────────────────
 
 if [ -z "$DEER_FLOW_EXTENSIONS_CONFIG_PATH" ]; then
-    export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$REPO_ROOT/extensions_config.json"
+    export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$DEER_FLOW_DEPLOY_DIR/extensions_config.json"
 fi
 
 if [ ! -f "$DEER_FLOW_EXTENSIONS_CONFIG_PATH" ]; then
@@ -212,7 +266,7 @@ detect_sandbox_mode() {
 if [ "$CMD" = "down" ]; then
     # Set minimal env var defaults so docker compose can parse the file without
     # warning about unset variables that appear in volume specs.
-    export DEER_FLOW_HOME="${DEER_FLOW_HOME:-$REPO_ROOT/backend/.deer-flow}"
+    export DEER_FLOW_HOME="${DEER_FLOW_HOME:-$DEER_FLOW_DEPLOY_DIR/data/deer-flow}"
     export DEER_FLOW_CONFIG_PATH="${DEER_FLOW_CONFIG_PATH:-$DEER_FLOW_HOME/config.yaml}"
     export DEER_FLOW_EXTENSIONS_CONFIG_PATH="${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-$DEER_FLOW_HOME/extensions_config.json}"
     export DEER_FLOW_REPO_ROOT="${DEER_FLOW_REPO_ROOT:-$REPO_ROOT}"
