@@ -1229,3 +1229,63 @@ async def media_gateway_mock():
         yield SimpleNamespace(mock=mock, client=client, base_url=mock.base_url, admin_token=mock.admin_token)
     finally:
         await client.aclose()
+
+
+# ═══ INSERT-IMGTEXTPOST ═══════════════════════════════════════════════════
+# 图文帖子（image-text-post）所需端点（M2-10）。素材上传复用既有
+# POST /v1/media（INSERT-GROUPVID 段），这里只补 VLM 看图问答端点——按
+# minimax-h3-gateway/docs/integration/api/vlm.md 建模最小问答：
+#
+# - ``POST /v1/vlm/chat`` → 同步返回 ``{"model", "text", "elapsed_s", "usage"}``；
+#   ``text`` 来自 ``mock.vlm_responses`` 队列（test-facing knob，逐次出队，
+#   队列空时返回相符结论 ``{"match": true, "reason": ""}`` 的 JSON 文本）。
+#   认证与权限口径与其它业务端点一致（所有已认证用户可调）；``prompt`` 为空
+#   或 ``images`` 超过 8 张 → 400 ``invalid_request``（vlm.md 请求体约束）。
+#
+# 通过在类外包装 :meth:`MockMediaGateway.handle` 追加路由，不改既有任何行；
+# 包装器把未命中的请求原样委托给原 handler（与并发追加的其它分区兼容）。
+
+_VLM_DEFAULT_TEXT = '{"match": true, "reason": ""}'
+
+
+def _handle_vlm_chat(mg: MockMediaGateway, request: httpx.Request, user_id: str) -> httpx.Response:
+    body = mg._json(request)
+    prompt = str(body.get("prompt") or "")
+    images = body.get("images")
+    if not prompt.strip() or not isinstance(images, list) or len(images) > 8:
+        return _error(400, "invalid_request", "prompt 必填（1–8000 字符）；images ≤8 张")
+    queue = getattr(mg, "_vlm_responses", None)
+    if queue:
+        text = str(queue.pop(0))
+    else:
+        text = _VLM_DEFAULT_TEXT
+    return httpx.Response(
+        200,
+        json={"model": "mock-vlm", "text": text, "elapsed_s": 0.1, "usage": {"prompt_tokens": 64, "output_tokens": 16}},
+    )
+
+
+_original_imgtextpost_handle = MockMediaGateway.handle
+
+
+def _handle_with_vlm(self: MockMediaGateway, request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/v1/vlm/chat" and request.method == "POST":
+        self.requests.append((request.method, request.url.path))
+        user_id = self._identify(request)
+        if user_id is None:
+            return _error(401, "unauthorized", "missing or invalid bearer token")
+        return _handle_vlm_chat(self, request, user_id)
+    return _original_imgtextpost_handle(self, request)
+
+
+MockMediaGateway.handle = _handle_with_vlm  # type: ignore[method-assign]
+
+
+def script_vlm(self: MockMediaGateway, responses: list[str]) -> None:
+    """Queue ``/v1/vlm/chat`` answer texts: the n-th call returns the n-th entry;
+    when the queue is empty a pass-through ``{"match": true}`` verdict is served."""
+    self._vlm_responses = list(responses)
+
+
+MockMediaGateway.script_vlm = script_vlm  # type: ignore[attr-defined]
+# ═══ END INSERT-IMGTEXTPOST ═══════════════════════════════════════════════
