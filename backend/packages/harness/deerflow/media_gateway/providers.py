@@ -48,6 +48,11 @@ MEDIA_GATEWAY_FILE_PROXY_PREFIX = "/api/media-gateway/file"
 MODES_PATH = "/v1/images/modes"
 SUBMIT_PATH = "/v1/images/generations"
 JOB_PATH_TEMPLATE = "/v1/images/jobs/{job_id}"
+# R2 extras (images.md §6/§8/§9/§7): multi-mode compare, per-job assessment
+# read, cancel/delete, and the gateway-level shape lock.
+COMPARE_PATH = "/v1/images/compare"
+ASSESSMENT_PATH_TEMPLATE = "/v1/images/jobs/{job_id}/assessment"
+SHAPE_LOCK_PATH = "/v1/shape-lock"
 
 # Backwards-compatible aliases (pre-contract-fix names).
 IMAGE_CAPABILITIES_PATH = MODES_PATH
@@ -60,6 +65,10 @@ TASK_PATH_TEMPLATE = JOB_PATH_TEMPLATE
 STATUS_PENDING = "pending"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
+# A job the caller cancelled through the wait loop's cancel_check signal
+# (R2-2): the provider DELETEs the queued job and reports this state instead of
+# raising, so skill orchestration can branch on "user changed their mind".
+STATUS_CANCELLED = "cancelled"
 
 # MGW status strings that map onto the normalised states. Anything unknown is
 # treated as pending so a future MGW status cannot fail a running job.
@@ -68,6 +77,9 @@ _SUCCEEDED_STATUSES = {"succeeded", "success", "completed"}
 _FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 
 TokenProvider = Callable[[], Awaitable[str]]
+# Injected into the wait loop; returning True means "the caller wants out" —
+# the provider then DELETEs the job (images.md §9) and reports cancelled.
+CancelCheck = Callable[[], Awaitable[bool]]
 
 
 def proxy_media_url(url_or_path: str) -> str:
@@ -102,6 +114,13 @@ class ModelCapability:
     resolutions: tuple[str, ...] = ()
     duration_range: tuple[int, int] | None = None
     supported_params: frozenset[str] = frozenset({"prompt"})
+    # images.md §1 mode metadata: an unavailable tier 400s at submit time (the
+    # registry rejects it), and ``needs_reference`` tiers (i2i / ref2va /
+    # wan-i2v ...) must be submitted with a reference image — the local
+    # parameter check enforces both before any HTTP call (R2-4).
+    available: bool = True
+    needs_reference: bool = False
+    engine_task: str | None = None
 
 
 class UnsupportedParameterError(ValueError):
@@ -159,7 +178,14 @@ def map_capabilities(body: dict, *, base_params: frozenset[str] = frozenset({"pr
         # modes[] entries carry default parameters as a dict
         # (``{steps, short_edge, duration_seconds}``, images.md §1).
         mode_params = entry.get("params")
-        if entry.get("supports_reference"):
+        # Reference-capable tiers come in three contract spellings: the legacy
+        # ``supports_reference`` flag, the real ``needs_reference`` flag
+        # (mandatory reference — images.md §1) and the comfy-family
+        # ``accepts_reference_images`` / ``capabilities.reference_images``
+        # (optional reference — wan-i2v / wan-vace / ltx-i2v).
+        needs_reference = bool(entry.get("needs_reference"))
+        accepts_reference = bool(entry.get("supports_reference") or entry.get("accepts_reference_images") or (isinstance(entry.get("capabilities"), dict) and entry["capabilities"].get("reference_images")))
+        if needs_reference or accepts_reference:
             params.update({"image", "reference_images"})
         capabilities[name] = ModelCapability(
             name=name,
@@ -175,12 +201,20 @@ def map_capabilities(body: dict, *, base_params: frozenset[str] = frozenset({"pr
                 )
             ),
             supported_params=frozenset(params),
+            available=bool(entry.get("available", True)),
+            needs_reference=needs_reference,
+            engine_task=str(entry["engine_task"]) if isinstance(entry.get("engine_task"), str) else None,
         )
     return capabilities
 
 
 def check_params_supported(capability: ModelCapability, params: dict[str, Any]) -> None:
     """Reject parameters outside the model's capability before any HTTP call."""
+    # R2-4: needs_reference tiers (i2i / ref2va, images.md §1) hard-require a
+    # reference image; reject locally so the skill layer refuses a
+    # no-reference submission instead of round-tripping a 400.
+    if capability.needs_reference and not any(params.get(key) for key in ("reference_images", "reference_image", "image")):
+        raise UnsupportedParameterError(f"model={capability.name} on media_gateway requires a reference image (parameter domain reference_images is mandatory for needs_reference tiers)")
     unsupported = sorted(k for k, v in params.items() if v is not None and k not in capability.supported_params)
     if unsupported:
         raise UnsupportedParameterError(f"model={capability.name} on media_gateway does not support parameter(s): {', '.join(unsupported)}")
@@ -195,6 +229,72 @@ def normalize_status(raw: Any) -> str:
     if status in _FAILED_STATUSES:
         return STATUS_FAILED
     return STATUS_PENDING
+
+
+# Severity labels that mean "S 级 / must fix" in an assessment issue (images.md
+# §8 does not fix a schema for ``issues``, so accept dicts or plain strings and
+# derive must_fix from the usual severity spellings).
+_MUST_FIX_SEVERITIES = {"s", "block", "critical", "must_fix"}
+
+
+def normalize_assessment(body: dict) -> dict:
+    """Normalise ``GET /v1/images/jobs/{id}/assessment`` (images.md §8).
+
+    The assessment report is a grab-bag (``seed`` / ``similarity`` / ``body`` /
+    ``quality`` / optional ``quality_score`` / ``issues``); consumers (qc.py,
+    drama / video-clips loops) want one stable shape:
+
+    ``{ok, seed, score, must_fix_storyboard, issues[], raw}`` where ``score``
+    prefers the assistant-side ``quality_score``, falling back to the measured
+    identity similarity, and ``issues`` accepts both the report's own list and
+    the ffmpeg quality summary's per-frame alert list.
+    """
+    raw_issues: Any = body.get("issues")
+    quality = body.get("quality") if isinstance(body.get("quality"), dict) else {}
+    if not isinstance(raw_issues, list):
+        raw_issues = quality.get("issues")
+    issues: list[dict] = []
+    if isinstance(raw_issues, list):
+        for item in raw_issues:
+            if isinstance(item, dict):
+                issues.append({"desc": str(item.get("desc") or item.get("message") or item.get("detail") or ""), **item})
+            elif item:
+                issues.append({"desc": str(item)})
+
+    similarity = body.get("similarity") if isinstance(body.get("similarity"), dict) else {}
+    score: float | None = None
+    for candidate in (body.get("quality_score"), similarity.get("identity"), similarity.get("score")):
+        if isinstance(candidate, (int, float)):
+            score = float(candidate)
+            break
+
+    must_fix = bool(body.get("must_fix_storyboard")) or any(str(issue.get("severity") or "").lower() in _MUST_FIX_SEVERITIES for issue in issues)
+    return {
+        "ok": bool(body.get("ok", True)),
+        "seed": body.get("seed"),
+        "score": score,
+        "must_fix_storyboard": must_fix,
+        "issues": issues,
+        "raw": body,
+    }
+
+
+def _group_compare_artifacts(result: dict) -> dict[str, list[dict]]:
+    """Group a compare result body's ``data[]`` items by ``meta.mode``.
+
+    Contract (images.md §6): every response item carries its own ``meta.mode``;
+    older bodies may put the mode on the item itself. Items without any mode
+    marker fall into the ``""`` bucket (still returned, never dropped).
+    """
+    groups: dict[str, list[dict]] = {}
+    data = result.get("data") if isinstance(result.get("data"), list) else []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        mode = str(meta.get("mode") or item.get("mode") or "")
+        groups.setdefault(mode, []).append(item)
+    return groups
 
 
 def _extract_artifact_url(result: dict, *, kind: str | None = None) -> str:
@@ -311,10 +411,20 @@ class MediaGatewayGenerationProvider:
         result = body.get("result") if isinstance(body.get("result"), dict) else body
         return status, result
 
-    async def wait_for_result(self, task_id: str, *, max_attempts: int | None = None) -> dict:
-        """Poll until a terminal state; returns the succeeded raw result."""
+    async def wait_for_result(self, task_id: str, *, max_attempts: int | None = None, cancel_check: CancelCheck | None = None) -> dict:
+        """Poll until a terminal state; returns the succeeded raw result.
+
+        ``cancel_check`` (R2-2) is an optional async callback consulted before
+        every poll; when it returns True the provider DELETEs the queued job
+        (images.md §9) and returns ``{"status": "cancelled", "cancelled": True,
+        "job_id": ...}`` instead of a succeeded result — :meth:`generate`
+        turns that marker into a ``MediaGatewayError(code="cancelled")``.
+        """
         attempts = max_attempts if max_attempts is not None else self.poll_max_attempts
         for attempt in range(attempts):
+            if cancel_check is not None and await cancel_check():
+                await self.cancel_or_delete_job(task_id)
+                return {"status": STATUS_CANCELLED, "cancelled": True, "job_id": task_id}
             status, result = await self.poll_once(task_id)
             if status == STATUS_SUCCEEDED:
                 return result
@@ -332,11 +442,138 @@ class MediaGatewayGenerationProvider:
         params: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         max_attempts: int | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> str:
         """Submit + poll; returns the deer-flow proxied artifact URL."""
         task_id = await self.submit(prompt, model=model, params=params, idempotency_key=idempotency_key)
-        result = await self.wait_for_result(task_id, max_attempts=max_attempts)
+        result = await self.wait_for_result(task_id, max_attempts=max_attempts, cancel_check=cancel_check)
+        if result.get("cancelled") and result.get("status") == STATUS_CANCELLED:
+            raise MediaGatewayError(status=0, code="cancelled", message=f"media gateway task {task_id} was cancelled by the caller before completion")
         artifact = _extract_artifact_url(result, kind=self.kind)
         if not artifact:
             raise MediaGatewayError(status=0, code="bad_response", message=f"media gateway task {task_id} succeeded without an artifact URL")
         return proxy_media_url(artifact)
+
+    # ── R2-1: multi-mode compare (images.md §6) ───────────────────────────
+    async def compare_generate(
+        self,
+        prompt: str,
+        modes: list[str],
+        *,
+        params: dict[str, Any] | None = None,
+        include_baseline: bool = False,
+        idempotency_key: str | None = None,
+        max_attempts: int | None = None,
+        cancel_check: CancelCheck | None = None,
+    ) -> dict:
+        """Submit one prompt against several modes in a single job.
+
+        ``POST /v1/images/compare`` (images.md §6): 1–4 modes of the *same*
+        engine task family (the gateway 400s a cross-family mix), optionally
+        appending the four ``h3-frame-*`` baseline tiers via
+        ``include_baseline``. Skill layer entry point: t2i-series / content-
+        series can call this for "same prompt, N tiers side by side" runs.
+
+        Returns ``{"job_id", "modes": {mode: {"status", "artifacts[]",
+        "meta"}}, "raw"}`` — artifacts are deer-flow proxied URLs.
+        """
+        if not modes:
+            raise UnsupportedParameterError("compare_generate requires at least one mode")
+        capabilities = await self.discover_capabilities()
+        for mode in modes:
+            capability = capabilities.get(mode)
+            if capability is None:
+                raise UnsupportedParameterError(f"mode={mode} is not offered by media_gateway ({self.kind})")
+            if not capability.available:
+                raise UnsupportedParameterError(f"mode={mode} is not available on media_gateway (tier disabled)")
+
+        payload: dict[str, Any] = {"prompt": prompt, "modes": list(modes), **{k: v for k, v in (params or {}).items() if v is not None}}
+        if include_baseline:
+            payload["include_baseline"] = True
+        if self.kind == "video":
+            payload.setdefault("output", "video")
+        body = await self._client.post(COMPARE_PATH, json=payload, token=await self._token(), idempotency_key=idempotency_key)
+
+        job_id = body.get("id") or body.get("task_id") or (body.get("task") or {}).get("id")
+        # wait=true submissions answer with the finished job body directly;
+        # wait=false (202) answers with a brief we still have to poll.
+        result = body
+        if job_id and not isinstance(result.get("data"), list):
+            result = await self.wait_for_result(str(job_id), max_attempts=max_attempts, cancel_check=cancel_check)
+            if result.get("cancelled") and result.get("status") == STATUS_CANCELLED:
+                return {"job_id": str(job_id), "modes": {}, "status": STATUS_CANCELLED, "raw": result}
+
+        grouped: dict[str, dict[str, Any]] = {}
+        for mode, items in _group_compare_artifacts(result).items():
+            artifacts = [proxy_media_url(url) for item in items if isinstance((url := _extract_artifact_url(item, kind=self.kind)), str) and url]
+            grouped[mode] = {"status": STATUS_SUCCEEDED, "artifacts": artifacts, "meta": (items[0].get("meta") or {}) if items else {}}
+        return {"job_id": str(job_id) if job_id else None, "modes": grouped, "raw": result}
+
+    # ── R2-2: cancel / delete (images.md §9) ─────────────────────────────
+    async def cancel_or_delete_job(self, job_id: str, *, force: bool = False) -> dict:
+        """``DELETE /v1/images/jobs/{id}``: cancel a queued job, delete a finished one.
+
+        ``force=1`` is the documented escape hatch for jobs stuck in running
+        after a gateway restart — UI cancel buttons must not send it.
+        """
+        params = {"force": "1"} if force else None
+        body = await self._client.delete(JOB_PATH_TEMPLATE.format(job_id=job_id), params=params, token=await self._token())
+        return {"cancelled": bool(body.get("cancelled")), "deleted": bool(body.get("deleted")), "raw": body}
+
+    # ── R2-3: assessment read (images.md §8) ─────────────────────────────
+    async def get_assessment(self, job_id: str, *, variant: int = 0, refresh: bool = False) -> dict:
+        """``GET /v1/images/jobs/{id}/assessment`` → :func:`normalize_assessment` shape.
+
+        ``refresh=true`` bypasses the per-variant ``assessment_v<N>.json``
+        snapshot cache and recomputes.
+        """
+        params: dict[str, str] = {"variant": str(variant)}
+        if refresh:
+            params["refresh"] = "true"
+        body = await self._client.get(ASSESSMENT_PATH_TEMPLATE.format(job_id=job_id), params=params, token=await self._token())
+        return normalize_assessment(body)
+
+    # ── R2-5: shape lock (images.md §7) ──────────────────────────────────
+    async def get_shape_lock(self) -> dict:
+        """``GET /v1/shape-lock``: the gateway-level canvas/duration lock.
+
+        ``{"locked": null}`` when unlocked; otherwise the locked *effective*
+        values (64-aligned short edge / quantised duration).
+        """
+        return await self._client.get(SHAPE_LOCK_PATH, token=await self._token())
+
+    async def check_shape_lock(self) -> dict | None:
+        """The locked shape dict, or ``None`` when the gateway is unlocked."""
+        lock = (await self.get_shape_lock()).get("locked")
+        return lock if isinstance(lock, dict) else None
+
+    async def generate_report(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        params: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        max_attempts: int | None = None,
+        cancel_check: CancelCheck | None = None,
+        validate_shape_lock: bool = False,
+    ) -> dict:
+        """Structured :meth:`generate` for skill layer: ``{"artifact",
+        "shape_lock", "assessment"}``.
+
+        ``validate_shape_lock=True`` (R2-5) reads ``GET /v1/shape-lock`` before
+        submitting and attaches the state to the return — **hint only, never
+        blocking**: the gateway itself enforces the lock at queue time (409
+        ``shape_locked``); the skill uses the attached dict to pre-warn the
+        user that their canvas/duration will be clamped.
+        """
+        shape_lock = await self.check_shape_lock() if validate_shape_lock else None
+        artifact = await self.generate(
+            prompt,
+            model=model,
+            params=params,
+            idempotency_key=idempotency_key,
+            max_attempts=max_attempts,
+            cancel_check=cancel_check,
+        )
+        return {"artifact": artifact, "shape_lock": shape_lock}

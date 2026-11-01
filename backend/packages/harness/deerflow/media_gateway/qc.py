@@ -205,8 +205,36 @@ def design_verdict(
 
 
 # ── 2. generation-layer QC attribution ───────────────────────────────────
-def attribute_qc(qc: Mapping[str, Any]) -> dict[str, Any]:
+def _merge_assessment_into_qc(qc: Mapping[str, Any], assessment: Mapping[str, Any]) -> dict[str, Any]:
+    """Overlay a normalised image assessment (images.md §8) onto a QC body.
+
+    ``assessment`` is the :func:`deerflow.media_gateway.providers.
+    normalize_assessment` shape (``{score, must_fix_storyboard, issues[]}``).
+    Assessment data wins when present — it is the gateway's measured report;
+    missing keys fall back to the drama QC body so the heuristics below see one
+    uniform view.
+    """
+    merged = dict(qc)
+    issues = assessment.get("issues")
+    if issues:
+        merged["issues"] = [{"desc": str(issue.get("desc") or "")} if isinstance(issue, Mapping) else {"desc": str(issue)} for issue in issues]
+    if "must_fix_storyboard" in assessment:
+        merged["must_fix_storyboard"] = bool(assessment.get("must_fix_storyboard"))
+    score = assessment.get("score")
+    if isinstance(score, (int, float)):
+        scores = dict(merged.get("scores") or {})
+        scores.setdefault("identity", score)
+        merged["scores"] = scores
+    return merged
+
+
+def attribute_qc(qc: Mapping[str, Any], *, assessment: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Attribute a QC body (``GET …/qc``) to prompt / citation / seed.
+
+    ``assessment`` (R2-3) optionally overlays the image job's
+    ``GET /v1/images/jobs/{id}/assessment`` report (normalised) — when given
+    its issues / must_fix flag / score replace the drama QC body's; without it
+    the heuristics run on ``qc`` alone.
 
     Deterministic precedence (documented, testable):
 
@@ -217,6 +245,8 @@ def attribute_qc(qc: Mapping[str, Any]) -> dict[str, Any]:
     3. seed/stochastic markers (or M/L-only motion issues) → ``seed``;
     4. otherwise fall back to ``prompt`` (the safest fix loop).
     """
+    if assessment:
+        qc = _merge_assessment_into_qc(qc, assessment)
     issues = [str(issue.get("desc") or "") for issue in qc.get("issues") or []]
     lowered = [text.lower() for text in issues]
     reasons: list[str] = []
