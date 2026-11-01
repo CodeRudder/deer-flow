@@ -258,4 +258,8 @@ interjection:
 
 API：排队消息创建即分配 `interjection_id`（与 run_id 解耦）；
 `DELETE /api/threads/{id}/interjections/{interjection_id}` → 204；已消费 → 409（对齐 run cancel 幂等口径）。
-前端：排队气泡带撤回按钮；↑ 等价于"撤回并回填输入框"。
+前端交互（定稿）：排队气泡**右侧渲染撤销小图标**（⌫/undo 样式，hover 提示"撤回并编辑"）——点击即触发撤销：
+  1. DELETE interjections/{id}（队列移除）
+  2. 气泡从队列区消失，消息文本**回填输入框**（光标定位末尾，可直接编辑重发）
+  3. 回填后输入框若已有内容则追加为新区段（不覆盖用户正在输入的文字）
+  ↑ 键盘等价：焦点在输入框按 ↑ 召回最近一条 pending 消息。
