@@ -272,6 +272,61 @@ def _prepare_values_response(thread_id: str, values: dict[str, Any]) -> dict[str
     return _strip_response_image_payloads(values)
 
 
+def _message_id(message: Any) -> str | None:
+    """Best-effort message id extraction from objects or serialized dicts."""
+    if isinstance(message, dict):
+        mid = message.get("id")
+        return mid if isinstance(mid, str) and mid else None
+    mid = getattr(message, "id", None)
+    return mid if isinstance(mid, str) and mid else None
+
+
+def _merge_pending_messages(checkpoint_tuple: Any, channel_values: dict[str, Any]) -> list[Any] | None:
+    """Merge uncommitted pending ``messages`` writes into the committed list.
+
+    Interrupted runs leave the streamed assistant reply stranded: either as
+    pending writes next to the latest checkpoint (LangGraph ``__interrupt__``
+    path, or the gateway's abort-path ``aput_writes`` in the run worker) or
+    not persisted at all.  Merging pending ``messages`` writes here makes the
+    last reply visible again after a page refresh.  Deduplication is by
+    message id, so once a resumed/regenerated run commits the message (or an
+    identical write was already checkpointed) it is not shown twice.
+
+    Returns the merged list, or ``None`` when there is nothing pending —
+    callers then fall back to the committed ``channel_values["messages"]``.
+    """
+    committed = channel_values.get("messages")
+    if not isinstance(committed, list):
+        committed = []
+
+    existing_ids: set[str] = set()
+    for message in committed:
+        mid = _message_id(message)
+        if mid:
+            existing_ids.add(mid)
+
+    extras: list[Any] = []
+    for item in getattr(checkpoint_tuple, "pending_writes", None) or []:
+        if not isinstance(item, (tuple, list)) or len(item) != 3:
+            continue
+        _task_id, channel, value = item
+        if channel != "messages":
+            continue
+        for message in value if isinstance(value, list) else [value]:
+            if message is None:
+                continue
+            mid = _message_id(message)
+            if mid:
+                if mid in existing_ids:
+                    continue
+                existing_ids.add(mid)
+            extras.append(message)
+
+    if not extras:
+        return None
+    return committed + extras
+
+
 def _delete_thread_data(thread_id: str, paths: Paths | None = None, *, user_id: str | None = None) -> ThreadDeleteResponse:
     """Delete local persisted filesystem data for a thread."""
     path_manager = paths or get_paths()
@@ -822,7 +877,11 @@ async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
     status = _derive_thread_status(checkpoint_tuple) if checkpoint_tuple is not None else record.get("status", "idle")
     checkpoint = getattr(checkpoint_tuple, "checkpoint", {}) or {} if checkpoint_tuple is not None else {}
     channel_values = checkpoint.get("channel_values", {})
-    values = _prepare_values_response(thread_id, serialize_channel_values_for_api(channel_values))
+    merged_channel_values = dict(channel_values)
+    merged_messages = _merge_pending_messages(checkpoint_tuple, channel_values)
+    if merged_messages is not None:
+        merged_channel_values["messages"] = merged_messages
+    values = _prepare_values_response(thread_id, serialize_channel_values_for_api(merged_channel_values))
 
     return ThreadResponse(
         thread_id=thread_id,
@@ -873,7 +932,12 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
     next_tasks = [t.name for t in tasks_raw if hasattr(t, "name")]
     tasks = [{"id": getattr(t, "id", ""), "name": getattr(t, "name", "")} for t in tasks_raw]
 
-    values = _prepare_values_response(thread_id, serialize_channel_values_for_api(channel_values))
+    merged_channel_values = dict(channel_values)
+    merged_messages = _merge_pending_messages(checkpoint_tuple, channel_values)
+    if merged_messages is not None:
+        merged_channel_values["messages"] = merged_messages
+
+    values = _prepare_values_response(thread_id, serialize_channel_values_for_api(merged_channel_values))
 
     return ThreadStateResponse(
         values=values,
@@ -1045,7 +1109,10 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
             if is_latest_checkpoint:
                 if "todos" in channel_values:
                     values["todos"] = _prepare_values_response(thread_id, {"todos": channel_values.get("todos") or []}).get("todos", [])
-                messages = channel_values.get("messages")
+                # Merge pending (uncommitted) messages writes from interrupted
+                # runs so the last streamed assistant reply survives a refresh.
+                merged_messages = _merge_pending_messages(checkpoint_tuple, channel_values)
+                messages = merged_messages if merged_messages is not None else channel_values.get("messages")
                 if messages:
                     serialized_msgs = serialize_channel_values_for_api({"messages": messages}).get("messages", [])
                     try:

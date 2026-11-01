@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal, cast
 
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langgraph.checkpoint.base import empty_checkpoint
 
 from deerflow.config.app_config import AppConfig
@@ -156,6 +157,105 @@ def _agent_factory_supports_app_config(agent_factory: Any) -> bool:
         return _compute_agent_factory_supports_app_config(agent_factory)
 
 
+class _StreamedMessageCollector:
+    """Accumulates streamed ``messages``-mode AIMessageChunks during a run.
+
+    When a run is interrupted (user abort / task cancellation) mid model
+    call, LangGraph discards the partial state: only an ``__error__`` write
+    is recorded and the streamed assistant reply never reaches a committed
+    checkpoint.  Refreshing the thread then loses the reply the user just
+    watched stream in.  This collector merges the streamed chunks per
+    message id so :meth:`persist_interrupted` can commit the partial reply
+    via ``checkpointer.aput_writes`` on abort.
+    """
+
+    def __init__(self) -> None:
+        self._merged: dict[str, AIMessageChunk] = {}
+
+    def observe(self, mode: str, chunk: Any) -> None:
+        """Record a streamed chunk. No-op for non-``messages`` modes."""
+        if mode != "messages":
+            return
+        msg = chunk[0] if isinstance(chunk, tuple) and len(chunk) == 2 else chunk
+        if not isinstance(msg, AIMessageChunk):
+            return
+        msg_id = msg.id
+        if not msg_id:
+            return
+        existing = self._merged.get(msg_id)
+        try:
+            self._merged[msg_id] = msg if existing is None else existing + msg
+        except TypeError:
+            # Non-mergeable chunk payload — keep the first variant rather
+            # than losing the collector's other messages to one bad chunk.
+            logger.debug("Skipping unmergeable message chunk %s", msg_id)
+
+    async def persist_interrupted(self, checkpointer: Any, thread_id: str, run_id: str) -> int:
+        """Commit accumulated (non-empty) messages as pending writes.
+
+        Writes are attached to the *latest committed checkpoint* so the
+        ``/history`` read-side merge can surface them.  Idempotent per
+        run: ``aput_writes`` keys by ``(checkpoint, task_id, idx)`` with a
+        deterministic ``task_id`` derived from *run_id*.  Returns the
+        number of messages persisted; failures are logged, never raised.
+        """
+        if checkpointer is None or not self._merged:
+            return 0
+
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        try:
+            ckpt_tuple = await _call_checkpointer_method(checkpointer, "aget_tuple", "get_tuple", config)
+            if ckpt_tuple is None:
+                return 0
+            tuple_config = getattr(ckpt_tuple, "config", None)
+            if isinstance(tuple_config, dict) and tuple_config.get("configurable", {}).get("checkpoint_id"):
+                config = tuple_config
+
+            # Skip messages that a concurrently committed checkpoint already
+            # carries — prevents duplicates when the abort lands after the
+            # graph committed the full reply.
+            committed_ids: set[str] = set()
+            channel_values = (getattr(ckpt_tuple, "checkpoint", {}) or {}).get("channel_values", {}) or {}
+            for msg in channel_values.get("messages") or []:
+                mid = msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
+                if mid:
+                    committed_ids.add(mid)
+
+            writes: list[tuple[str, AIMessage]] = []
+            for msg_id, merged in self._merged.items():
+                if msg_id in committed_ids:
+                    continue
+                if not (merged.content or merged.tool_calls):
+                    continue
+                writes.append(
+                    (
+                        "messages",
+                        AIMessage(
+                            id=msg_id,
+                            content=merged.content,
+                            additional_kwargs=copy.deepcopy(merged.additional_kwargs),
+                            response_metadata=copy.deepcopy(merged.response_metadata),
+                        ),
+                    )
+                )
+            if not writes:
+                return 0
+
+            await _call_checkpointer_method(
+                checkpointer,
+                "aput_writes",
+                "put_writes",
+                config,
+                writes,
+                task_id=f"aborted-{run_id}",
+            )
+            logger.info("Run %s: persisted %d streamed message(s) after interrupt", run_id, len(writes))
+            return len(writes)
+        except Exception:
+            logger.warning("Run %s: failed to persist streamed messages after interrupt", run_id, exc_info=True)
+            return 0
+
+
 async def run_agent(
     bridge: StreamBridge,
     run_manager: RunManager,
@@ -188,6 +288,7 @@ async def run_agent(
     outcome_tracker = RunOutcomeTracker(run_id=run_id)
 
     journal = None
+    streamed_collector = _StreamedMessageCollector()
 
     # Track whether "events" was requested but skipped
     if "events" in requested_modes:
@@ -352,6 +453,7 @@ async def run_agent(
                 if record.abort_event.is_set():
                     logger.info("Run %s abort requested — stopping", run_id)
                     break
+                streamed_collector.observe(single_mode, chunk)
                 sse_event = _lg_mode_to_sse_event(single_mode)
                 await bridge.publish(run_id, sse_event, serialize(chunk, mode=single_mode, slim=(single_mode == "values")))
         else:
@@ -370,6 +472,7 @@ async def run_agent(
                 if mode is None:
                     continue
 
+                streamed_collector.observe(mode, chunk)
                 sse_event = _lg_mode_to_sse_event(mode)
                 await bridge.publish(run_id, sse_event, serialize(chunk, mode=mode, slim=(mode == "values")))
 
@@ -391,6 +494,10 @@ async def run_agent(
                 except Exception:
                     logger.warning("Failed to rollback checkpoint for run %s", run_id, exc_info=True)
             else:
+                # Keep the partial assistant reply the user already saw
+                # streaming: commit it as pending writes so /history can
+                # surface it after a refresh (interrupt action).
+                await streamed_collector.persist_interrupted(checkpointer, thread_id, run_id)
                 await run_manager.set_status(run_id, RunStatus.interrupted)
         elif outcome_tracker.had_llm_error_fallback:
             await run_manager.set_status(
@@ -418,6 +525,9 @@ async def run_agent(
             except Exception:
                 logger.warning("Run %s cancellation rollback failed", run_id, exc_info=True)
         else:
+            # Same as the abort path above: keep the streamed partial reply
+            # visible across refreshes (interrupt action on cancellation).
+            await streamed_collector.persist_interrupted(checkpointer, thread_id, run_id)
             await run_manager.set_status(run_id, RunStatus.interrupted)
             logger.info("Run %s was cancelled", run_id)
 
