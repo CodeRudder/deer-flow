@@ -152,7 +152,8 @@ stop() { docker exec "$NAME" bash -c 'pkill -f "[u]vicorn app.gateway" || true; 
 
 status() {
   curl -s -o /dev/null -w 'nginx    :2026  → %{http_code}\n' --max-time 3 http://localhost:2026 || echo 'nginx    未响应'
-  docker exec "$NAME" curl -s -o /dev/null -w 'frontend :3000  → %{http_code}（容器内）\n' --max-time 3 http://localhost:3000 2>/dev/null || echo 'frontend 未响应'
+  # 前端 next server 绑定在容器主机名接口（非 localhost），从 nginx 容器经 docker 网络探测
+  docker exec "$NGINX_NAME" curl -s -o /dev/null -w 'frontend :3000  → %{http_code}（经 nginx 容器）\n' --max-time 3 http://"$NAME":3000 2>/dev/null || echo 'frontend 未响应'
   curl -s -o /dev/null -w 'gateway  :18000 → %{http_code}\n' --max-time 3 http://localhost:18000/health || echo 'gateway  未响应'
   echo "logs: docker exec $NAME tail -f /tmp/backend.log /tmp/frontend.log"
 }
