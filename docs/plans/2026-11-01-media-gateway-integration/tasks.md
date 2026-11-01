@@ -143,3 +143,23 @@ M1 ─► M2 ──────────────────┘
   后续批次每批交付即解锁对应 E2E 用例（见 M3 标注）；
 - 分支：deer-flow 用当前 `feat/gateway-media-api`；MGW 侧建议 `feat/auth-ticket`；
 - 每阶段完成即在本文档勾选并附 PR 链接。
+
+## 剩余工作清单（2026-11-01 晚盘点）
+
+| # | 事项 | 状态 | 说明 |
+|---|---|---|---|
+| R1 | provider 真实网关联调（E2E-real 第一关） | 🔄 子代理执行中 | 7 步冒烟：能力发现/JIT 置备/真实生图(moss)/生视频(wan)/幂等/隔离 |
+| R2 | 网关其它生图/视频 API 对接 | ⏳ 本轮派发 | 见下方 R2 明细 |
+| R3 | 生产环境部署 | ⏸️ 用户暂停 | 卡点已知（deploy.sh 变量注入）；恢复=scripts/deploy.sh build+start；frontend/provisioner 镜像已就绪 |
+| R4 | E2E-real 逐功能验收 | ⏳ R1 后按上线节奏逐个 | provider → console-link → drama → video-clips → t2i/image-post → content-series |
+| R5 | E2E 报告 e2e-report.md | ⏳ R4 完成后 | 含 MGW 版本/env 指纹/用例结果 |
+| R6 | deer-flow 人工验收 | 🔄 用户进行中 | http://100.108.144.120:2027（GLM 会话/沙箱/模型下拉） |
+| R7 | MGW 更新部署 | ✅ 已完成 | feat/auth-ticket 已合并回 feat/ref2va-multiref 并按原方案重新部署 |
+
+### R2 明细：网关其它生图/视频 API 对接（images.md 契约）
+
+- R2-1 `POST /v1/images/compare`（多 mode 对比生成）：provider/skill 暴露"对比模式"（一次提交 N 个 mode，响应按 mode 分组产物）
+- R2-2 作业管理：`DELETE /v1/images/jobs/{id}`（取消/删除）接入 provider 与 media-jobs 语义（排队作业可取消）
+- R2-3 评估读取：`GET /v1/images/jobs/{id}/assessment`（QC 评分）接入生成结果（quality 字段），供 drama/video-clips QC 闭环直接消费
+- R2-4 多 mode 选择：确认 /v1/images/modes 全量档位（moss/qwen/wan/ltx/h3-*）经能力发现在模型下拉全部可选（含参考图类 ref2va 的参考图参数域）
+- R2-5 形状锁：`GET/POST /v1/shape-lock` 状态提示接入生成前校验提示（仅提示不阻断）
