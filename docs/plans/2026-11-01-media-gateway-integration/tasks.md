@@ -32,13 +32,15 @@
 | M2-3 | 产物代理路由 `/api/media-gateway/file/...`（当前用户令牌转发） | gateway 路由 + 单测 | A2/A5 |
 | M2-4 | skill `media-console-link`（换装/素材库/种子匹配跳转） | skill + 说明 | A3 |
 | M2-5 | 既有 skills 兼容性验证：`video-generation` / `image-generation` / `image-editing` 对 MGW 模型全流程（审批/轮询/任务查询/sidecar）不改一行跑通 | 集成测试 | A2 |
-| M2-6 | skill `drama-production`（短剧编排：结构→托盘→cite→preview→生成→QC→分集；sidecar 状态） | skill + 单测 | A2b |
-| M2-7 | skill `video-clips`（组图生视频编排：素材→plan/design→分镜板→提交→逐镜产物） | skill + 单测 | A2b |
+| M2-6 | skill `drama-production`（创作智能体：LLM 剧本编写→MGW 落库→五要素分镜设计→t2g 分镜图→设计层校验→生成→QC 迭代闭环→分集；checkpoint/auto 双模式） | skill + prompts + 单测 | A2b |
+| M2-7 | skill `video-clips`（同上，组图生视频路径：素材→plan/design→五要素分镜→分镜板→QC 闭环→逐镜产物） | skill + prompts + 单测 | A2b |
+| M2-8 | 迭代闭环通用件：QC 归因分类器（prompt/引用/种子）、修正策略、版本追加与回滚（全走 MGW 记录） | 模块 + 单测 | A2b |
 
-**原则**：单镜生成不新增 skill（复用既有，见 design §4.1）；短剧与视频片段按
-业务要求为独立编排型 skill（直调 MGW 多步 API，状态存 sidecar，不建 deer-flow 领域表）。
+**原则**：单镜生成不新增 skill（复用既有，见 design §4.1）；短剧与视频片段为
+**创作智能体型** skill——LLM 驱动"编写→精细设计→检验→修正"闭环，
+数据全部经 MGW API 落库（MGW 为真源），deer-flow 仅存断点游标，不建领域表。
 
-工期估计：7–9 人日（M2-6/7 编排 skill 较重）。
+工期估计：10–14 人日（M2-6~8 创作智能体与迭代闭环较重）。
 
 ## 阶段 M3：端到端测试（E2E）
 
@@ -51,8 +53,8 @@ MGW 文档基线：`docs/integration/api/`。
 | E2E-2 | 生图全链路 | 既有 skill + MGW 模型：prompt→审批→提交→轮询→代理 URL 前端渲染；Idempotency 重放 | A2 |
 | E2E-3 | 生视频全链路 | 既有 video-generation 工作流 + MGW 模型（含 sidecar、任务查询） | A2 |
 | E2E-3b | 模型可选中立 | 同一 skill 分别用原生模型与 MGW 模型各跑一次，均成功；MGW 模型不支持的能力本地拒绝 | A2 |
-| E2E-5b | 短剧全流程 | drama-production：小体量剧（1 集 2 镜）建结构→确认→生成→QC→分集；中断恢复（重开会话续跑） | A2b |
-| E2E-5c | 视频片段全流程 | video-clips：素材→plan/design→分镜板→确认→提交→逐镜产物 | A2b |
+| E2E-5b | 短剧全流程 | drama-production auto 模式：从一段创意自动完成 剧本→五要素分镜→t2g 目检→生成→QC 迭代闭环→分集；含至少一次"QC 失败→自动修正→通过"；中断恢复 | A2b |
+| E2E-5c | 视频片段全流程 | video-clips：素材→LLM 五要素分镜设计→分镜板→QC 闭环→逐镜产物 | A2b |
 | E2E-5d | 编排隔离 | 用户 A 建的剧/片段任务对用户 B 不可见（skill 与 API 双查） | A2b |
 | E2E-4 | 多用户隔离 | 双用户各自生成；互查作业/互访产物 URL 均不可见 | A2 |
 | E2E-5 | 控制台免登 | console-link 打开 → 免登 → 控制台内做一个换装 tryon → owner 正确 | A3 |
