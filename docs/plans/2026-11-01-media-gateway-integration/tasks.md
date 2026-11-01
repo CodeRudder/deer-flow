@@ -148,12 +148,12 @@ M1 ─► M2 ──────────────────┘
 
 | # | 事项 | 状态 | 说明 |
 |---|---|---|---|
-| R1 | provider 真实网关联调（E2E-real 第一关） | 🔄 子代理执行中 | 7 步冒烟：能力发现/JIT 置备/真实生图(moss)/生视频(wan)/幂等/隔离 |
-| R2 | 网关其它生图/视频 API 对接 | ⏳ 本轮派发 | 见下方 R2 明细 |
-| R3 | 生产环境部署 | ⏸️ 用户暂停 | 卡点已知（deploy.sh 变量注入）；恢复=scripts/deploy.sh build+start；frontend/provisioner 镜像已就绪 |
+| R1 | provider 真实网关联调（E2E-real 第一关） | ✅ 7 步全过（2026-11-01） | 真实生图 qwen-image-std 40s / 生视频 wan-t2v-std 50s / 幂等 / 隔离 404；发现并修复 provisioner `username→name` 契约 bug（9c7022ff）|
+| R2 | 网关其它生图/视频 API 对接 | ✅ 1dcf8975（35 用例+194 回归绿） | compare/取消/评估→QC/全量档位/形状锁 |
+| R3 | 生产环境部署 | ✅ 改为 prod-vm.sh 零镜像构建方案并已上线（2026 端口三层健康；00f06e9a） | 旧 deploy.sh 镜像方案退役保留 |
 | R4 | E2E-real 逐功能验收 | ⏳ R1 后按上线节奏逐个 | provider → console-link → drama → video-clips → t2i/image-post → content-series |
 | R5 | E2E 报告 e2e-report.md | ⏳ R4 完成后 | 含 MGW 版本/env 指纹/用例结果 |
-| R6 | deer-flow 人工验收 | 🔄 用户进行中 | http://100.108.144.120:2027（GLM 会话/沙箱/模型下拉） |
+| R6 | deer-flow 验收 | 🔄 进行中 | 人工：100.108.144.120:2027（GLM/沙箱）；自动化：无头浏览器移动端 E2E（千问深圳月历 亮/暗）子代理执行中 |
 | R7 | MGW 更新部署 | ✅ 已完成 | feat/auth-ticket 已合并回 feat/ref2va-multiref 并按原方案重新部署 |
 
 ### R2 明细：网关其它生图/视频 API 对接（images.md 契约）
