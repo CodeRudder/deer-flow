@@ -41,9 +41,9 @@ EOF2
 up() {  # 启动 deerflow 进程（env 从 .env 注入进程，不进容器）
   docker exec -d "$NAME" bash -c 'set -a; . /app/.env; set +a
     export PATH=/opt/tools/node/bin:/opt/tools/pnpm/bin:/opt/tools/uv-bin:$PATH
-    cd /app/backend && PYTHONPATH=.:packages/harness nohup uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload > /tmp/backend.log 2>&1 &
-    cd /app/frontend && nohup pnpm dev --port 3000 --hostname 0.0.0.0 > /tmp/frontend.log 2>&1 &'
-  sleep 10
+    setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload > /tmp/backend.log 2>&1"
+    setsid bash -c "cd /app/frontend && pnpm dev --port 3000 --hostname 0.0.0.0 > /tmp/frontend.log 2>&1"'
+  sleep 12
   status
 }
 
