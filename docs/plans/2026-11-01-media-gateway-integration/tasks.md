@@ -58,8 +58,12 @@
 
 ## 阶段 M3：端到端测试（E2E）
 
-**环境**：1 台部署机同时跑 MGW（users 模式）与 deer-flow（docker dev 栈或本地 make dev）；
-MGW 文档基线：`docs/integration/api/`。
+**环境分两档（2026-11-01 拍板：开发测试用 mock，联调用真实网关）**：
+- **E2E-mock**（日常可跑，CI 友好）：pytest 夹具/httpx MockTransport 级 mock gateway，
+  覆盖 auth/users/生成提交/轮询/产物 URL 契约（错误信封、Idempotency、409/429/503 语义
+  按 MGW `docs/integration/api/` 建模）；deer-flow 走 docker dev 栈或本地 make dev。
+- **E2E-real**（联调验收门）：1 台部署机同时跑真实 MGW（users 模式 + 真实生成引擎）
+  与 deer-flow；只在 M2 开发完毕后执行。
 
 | # | 用例 | 步骤概要 | 对应验收 |
 |---|---|---|---|
