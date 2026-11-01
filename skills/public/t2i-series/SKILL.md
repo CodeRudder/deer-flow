@@ -1,6 +1,6 @@
 ---
 name: t2i-series
-description: Use this skill when the user wants 文生组图 / 主题系列配图 / 多张系列图 — e.g. 给主题生成一组风格统一的图（月历、封面、配图组、亮/暗双版本等）。凡提到 千问图片模型 / qwen-image / moss-image / media gateway / 媒体网关 的文生图/组图请求，一律用本 skill（经 media_gateway 网关模型，无需任何图片 API Key，不要用需要 QWEN_IMAGE_API_KEY 的直连 qwen_image provider）。Orchestrates the Media Gateway 文生组图 pipeline — 组图规划（张数/每张画面/风格约束）→ 确认 → 逐张提交生成 → 一致性/QC 闭环 → 组图交付.
+description: Use this skill when the user wants 文生组图 / 主题系列配图 / 多张系列图 — e.g. 给主题生成一组风格统一的图（月历、封面、配图组、亮/暗双版本等）。凡提到 千问图片模型 / qwen-image / moss-image / media gateway / 媒体网关 的文生图/组图请求，一律用本 skill（经 media_gateway 网关模型，无需任何图片 API Key，不要用需要 QWEN_IMAGE_API_KEY 的直连 qwen_image provider）。Orchestrates the Media Gateway 文生组图 pipeline — 组图规划（张数/每张画面/风格约束）→ 默认视为已授权（消息本身即生成指令，不再插入"回复确认"暂停）→ 逐张提交生成 → 一致性/QC 闭环 → 组图交付.
 ---
 
 # 文生组图 / 主题系列配图（t2i-series）
