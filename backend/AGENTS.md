@@ -222,6 +222,7 @@ Lead-agent middlewares are assembled in strict order across three functions: the
 8. **GuardrailMiddleware** - *(optional, if `guardrails.enabled`)* Pre-tool-call authorization via pluggable `GuardrailProvider`; returns an error ToolMessage on deny. Providers: built-in `AllowlistProvider` (zero deps), OAP policy providers (e.g. `aport-agent-guardrails`), or custom. See [docs/GUARDRAILS.md](docs/GUARDRAILS.md)
 9. **SandboxAuditMiddleware** - Audits sandboxed shell/file operations for security logging before tool execution
 10. **ToolErrorHandlingMiddleware** - Converts tool exceptions into error `ToolMessage`s so the run can continue instead of aborting
+10b. **ArtifactAutoPresentMiddleware** - Present_files safety net (`media.auto_present_outputs`, default on). At run end, registers files that are new or rewritten in the thread outputs directory since the run-start snapshot into `state["artifacts"]` (same virtual `/mnt/user-data/outputs/*` paths and `merge_artifacts` shape as `present_files`), so the client renders generated outputs even when the agent finishes without calling `present_files`. Idempotent (files already in artifacts are skipped); best-effort (never raises into the graph); fallback only — `present_files` stays the primary delivery path. Appended at the tail of the shared runtime base, before `ClarificationMiddleware`.
 
 **Lead-only middlewares** (`build_middlewares`, appended after the base):
 

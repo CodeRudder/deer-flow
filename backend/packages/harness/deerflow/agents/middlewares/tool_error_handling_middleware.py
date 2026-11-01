@@ -234,6 +234,14 @@ def _build_runtime_middlewares(
     tail.append(SandboxAuditMiddleware())
     tail.append(ToolErrorHandlingMiddleware())
 
+    # Artifact auto-present safety net: register outputs files the agent wrote
+    # but never presented via present_files. Shared-base tail, before
+    # ClarificationMiddleware (which both composition roots append after this).
+    if app_config.media.auto_present_outputs:
+        from deerflow.agents.middlewares.artifact_auto_present_middleware import ArtifactAutoPresentMiddleware
+
+        tail.append(ArtifactAutoPresentMiddleware(media_config=app_config.media))
+
     return [*outer_wrappers, *thread_hooks, *tail]
 
 

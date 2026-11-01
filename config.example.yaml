@@ -920,6 +920,17 @@ loop_detection:
   #     hard_limit: 300
 
 # ============================================================================
+# Media Delivery Configuration
+# ============================================================================
+# Artifact auto-present safety net: when an agent run writes new files into the
+# thread outputs directory (/mnt/user-data/outputs) but finishes without
+# calling present_files, the platform registers them into thread artifacts at
+# run end so the client can render them. Idempotent — files already presented
+# are never duplicated. present_files itself remains the primary delivery path.
+media:
+  auto_present_outputs: true
+
+# ============================================================================
 # Provider Safety Termination Configuration
 # ============================================================================
 # Intercept AIMessages where the provider stopped generation for safety reasons

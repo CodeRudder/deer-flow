@@ -142,15 +142,17 @@ def test_build_subagent_runtime_middlewares_threads_app_config_to_llm_middleware
     middlewares = build_subagent_runtime_middlewares(app_config=app_config, lazy_init=False)
 
     assert captured["app_config"] is app_config
-    # 9 baseline (InputSanitization, ToolOutputBudget, ThreadData, Sandbox,
+    # 10 baseline (InputSanitization, ToolOutputBudget, ThreadData, Sandbox,
     # MediaGatewayCredential, DanglingToolCall, LLMErrorHandling, SandboxAudit,
-    # ToolErrorHandling)
+    # ToolErrorHandling, ArtifactAutoPresent)
     # + QuotaModelMiddleware + SafetyFinishReasonMiddleware (enabled by default).
+    from deerflow.agents.middlewares.artifact_auto_present_middleware import ArtifactAutoPresentMiddleware
     from deerflow.agents.middlewares.quota_model_middleware import QuotaModelMiddleware
     from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
     from deerflow.agents.middlewares.tool_output_budget_middleware import ToolOutputBudgetMiddleware
 
-    assert len(middlewares) == 11
+    assert len(middlewares) == 12
+    assert any(isinstance(m, ArtifactAutoPresentMiddleware) for m in middlewares)
     assert isinstance(middlewares[0], FakeMiddleware)  # InputSanitizationMiddleware stub
     assert isinstance(middlewares[1], ToolOutputBudgetMiddleware)
     assert any(isinstance(m, QuotaModelMiddleware) for m in middlewares)
