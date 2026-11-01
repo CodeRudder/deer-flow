@@ -153,8 +153,9 @@ M1 ─► M2 ──────────────────┘
 | R3 | 生产环境部署 | ✅ 改为 prod-vm.sh 零镜像构建方案并已上线（2026 端口三层健康；00f06e9a） | 旧 deploy.sh 镜像方案退役保留 |
 | R4 | E2E-real 逐功能验收 | ⏳ R1 后按上线节奏逐个 | provider → console-link → drama → video-clips → t2i/image-post → content-series |
 | R5 | E2E 报告 e2e-report.md | ⏳ R4 完成后 | 含 MGW 版本/env 指纹/用例结果 |
-| R6 | deer-flow 验收 | 🔄 进行中 | 人工：100.108.144.120:2027（GLM/沙箱）；自动化：无头浏览器移动端 E2E（千问深圳月历 亮/暗）子代理执行中 |
+| R6 | deer-flow 验收 | 🔄 大头已完成（2026-11-01 晚） | 自动化：移动端对话生图 E2E-real **闭环通过**（五轮迭代修复后：登录→会话→qwen 真实生成→自动交付渲染全链路，断言 a/b/c 全过；经历 修复：langgraph rewrite、MGW 容器内可达、凭证中间件+JIT、CJK 字体、nginx 超时、自动交付保底）。人工：100.108.144.120:2027 持续 | 人工：100.108.144.120:2027（GLM/沙箱）；自动化：无头浏览器移动端 E2E（千问深圳月历 亮/暗）子代理执行中 |
 | R7 | MGW 更新部署 | ✅ 已完成 | feat/auth-ticket 已合并回 feat/ref2va-multiref 并按原方案重新部署 |
+| R8 | 遗留优化（非阻塞） | ⏳ | ① agent QC 自循环过长（7+ 次生成）——强化单轮约束或脚本侧硬上限 ② 生成中实时预览 ③ 移动端新会话 thread id 同步 ④ prod-vm status 容器内探测修 已完成(e4461906) ⑤ 后端进程意外终止观察（若复现查 OOM） |
 
 ### R2 明细：网关其它生图/视频 API 对接（images.md 契约）
 
