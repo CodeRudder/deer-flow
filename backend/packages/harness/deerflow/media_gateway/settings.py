@@ -7,9 +7,32 @@ Loaded from environment once and cached, mirroring ``app.gateway.config``.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+
+def _load_additional_env(raw: str | None) -> dict[str, str] | None:
+    """Parse the optional ``MEDIA_GATEWAY_ADDITIONAL_ENV`` JSON object.
+
+    Malformed payloads are logged as a warning and dropped (never fatal — this
+    is an operator convenience for extra sandbox env, not required config).
+    """
+    if not raw or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        logger.warning("MEDIA_GATEWAY_ADDITIONAL_ENV is not valid JSON; ignoring")
+        return None
+    if not isinstance(parsed, dict):
+        logger.warning("MEDIA_GATEWAY_ADDITIONAL_ENV must be a JSON object; ignoring")
+        return None
+    return {str(k): str(v) for k, v in parsed.items()}
 
 
 class MediaGatewaySettings(BaseModel):
@@ -42,6 +65,14 @@ class MediaGatewaySettings(BaseModel):
         default=None,
         description="Fernet key material for encrypting MGW tokens at rest",
     )
+    # Reserved: extra env vars appended to the per-user sandbox session env by
+    # the credential middleware (JSON object, e.g. MEDIA_GATEWAY_ADDITIONAL_ENV
+    #='{"MEDIA_GATEWAY_TIMEOUT":"30"}'). Values must not be secrets — they are
+    # readable by any command running inside the user's sandbox.
+    additional_env: dict[str, str] | None = Field(
+        default=None,
+        description="Optional extra env vars injected into sandbox sessions alongside MGW credentials",
+    )
 
 
 _media_gateway_settings: MediaGatewaySettings | None = None
@@ -61,6 +92,7 @@ def get_media_gateway_settings() -> MediaGatewaySettings:
             image_model=os.getenv("MEDIA_GATEWAY_IMAGE_MODEL") or None,
             video_model=os.getenv("MEDIA_GATEWAY_VIDEO_MODEL") or None,
             encryption_key=os.getenv("MEDIA_GATEWAY_ENCRYPTION_KEY") or None,
+            additional_env=_load_additional_env(os.getenv("MEDIA_GATEWAY_ADDITIONAL_ENV")),
         )
     return _media_gateway_settings
 

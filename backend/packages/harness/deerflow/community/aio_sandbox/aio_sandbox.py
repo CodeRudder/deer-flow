@@ -128,6 +128,15 @@ class AioSandbox(Sandbox):
         """
         with self._lock:
             try:
+                # Session-level env (set via Sandbox.set_session_env, e.g. the
+                # Media Gateway credential middleware) is NOT yet honoured on
+                # this remote-shell path: the persistent container shell keeps
+                # its own environment and ``exec_command`` exposes no per-call
+                # env parameter. Follow-up integration point: prepend an
+                # ``export K=V`` prefix built from ``self._session_env`` (or
+                # push the vars into the container at create time) so
+                # skill scripts in docker-sandbox deployments see the same
+                # per-user Media Gateway credentials as local-sandbox runs.
                 result = self._client.shell.exec_command(command=command, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
                 output = result.data.output if result.data else ""
 

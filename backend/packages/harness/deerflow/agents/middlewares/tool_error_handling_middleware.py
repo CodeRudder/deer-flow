@@ -190,6 +190,14 @@ def _build_runtime_middlewares(
         thread_hooks.append(UploadsMiddleware())
     thread_hooks.append(SandboxMiddleware(lazy_init=lazy_init))
 
+    # Per-user Media Gateway credential injection (bash/python/skill scripts
+    # read MEDIA_GATEWAY_* from the sandbox env). Registered right after the
+    # sandbox middleware so the sandbox lifecycle stays outermost; zero-cost
+    # passthrough when MGW is not configured.
+    from deerflow.agents.middlewares.media_gateway_credential_middleware import MediaGatewayCredentialMiddleware
+
+    thread_hooks.append(MediaGatewayCredentialMiddleware())
+
     # Layer 3 — post-processing append-only middlewares.
     tail: list[AgentMiddleware] = []
     if include_dangling_tool_call_patch:

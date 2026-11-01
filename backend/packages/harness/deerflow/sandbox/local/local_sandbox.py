@@ -372,13 +372,31 @@ class LocalSandbox(Sandbox):
         """
         return re.sub(r"\\\r?\n", " ", command)
 
+    def _build_command_env(self, extra: dict[str, str] | None = None) -> dict[str, str] | None:
+        """Merge the session-level env (and optional extras) over the inherited environment.
+
+        Session env values win over inherited ones (defense-in-depth: even if a
+        host-level ``MEDIA_GATEWAY_*`` variable leaks into the process
+        environment, the per-user session value takes precedence). Returns
+        ``None`` when there is nothing to add so ``subprocess.run`` keeps its
+        default inherit-environment behaviour.
+        """
+        merged: dict[str, str] = {}
+        if self._session_env:
+            merged.update(os.environ)
+            merged.update(self._session_env)
+        if extra:
+            merged.update(os.environ)
+            merged.update(extra)
+        return merged or None
+
     def execute_command(self, command: str) -> str:
         # Resolve container paths in command before execution
         resolved_command = self._resolve_paths_in_command(command)
         shell = self._get_shell()
 
         if os.name == "nt":
-            env = None
+            env = self._build_command_env()
             if self._is_powershell(shell):
                 # PowerShell does not understand bash ``\`` line continuations;
                 # join them so multi-line agent commands parse correctly.
@@ -390,11 +408,7 @@ class LocalSandbox(Sandbox):
             else:
                 args = [shell, "-c", resolved_command]
                 if self._is_msys_shell(shell):
-                    env = {
-                        **os.environ,
-                        "MSYS_NO_PATHCONV": "1",
-                        "MSYS2_ARG_CONV_EXCL": "*",
-                    }
+                    env = self._build_command_env({"MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*"})
 
             result = subprocess.run(
                 args,
@@ -412,6 +426,7 @@ class LocalSandbox(Sandbox):
                 capture_output=True,
                 text=True,
                 timeout=600,
+                env=self._build_command_env(),
             )
         output = result.stdout
         if result.stderr:
