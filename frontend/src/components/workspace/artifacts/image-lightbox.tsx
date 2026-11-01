@@ -155,6 +155,7 @@ export function ImageLightbox({
             aria-label="Download"
             className={overlayButtonClass}
             href={current.downloadUrl}
+            download
             target="_blank"
             rel="noopener noreferrer"
           >

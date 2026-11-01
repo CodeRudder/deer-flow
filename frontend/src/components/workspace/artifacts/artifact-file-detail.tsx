@@ -37,7 +37,10 @@ import {
   getArtifactViewState,
   HTML_PREVIEW_SCROLL_MESSAGE_SOURCE,
 } from "@/core/artifacts/preview";
-import { urlOfArtifact } from "@/core/artifacts/utils";
+import {
+  artifactImageSrc,
+  urlOfArtifact,
+} from "@/core/artifacts/utils";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { findToolCallResult } from "@/core/messages/utils";
@@ -372,7 +375,9 @@ export function ArtifactFileDetail({
           <div className="bg-muted/20 flex size-full items-center justify-center overflow-hidden p-4">
             <img
               className="max-h-full max-w-full cursor-zoom-in object-contain"
-              src={artifactUrl}
+              // Inline preview loads the 720p JPEG variant; the lightbox and
+              // the header download action below still serve the original.
+              src={artifactImageSrc(artifactUrl)}
               alt={getFileName(filepath)}
               onClick={() => setLightboxOpen(true)}
             />
