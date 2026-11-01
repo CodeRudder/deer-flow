@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from deerflow.config.app_config import get_app_config
 from deerflow.config.extensions_config import get_extensions_config
+from deerflow.media_gateway.providers import cached_media_gateway_models
 
 logger = logging.getLogger(__name__)
 
@@ -232,17 +233,32 @@ def _media_gateway_provider() -> VideoGenerationProvider | None:
         return None
 
     model_name = os.getenv("MEDIA_GATEWAY_VIDEO_MODEL") or "media-gateway"
+    default_model = VideoGenerationModel(
+        name=model_name,
+        display_name=model_name,
+        description="通过 Media Gateway 生成视频（pay-as-you-go 作业模型）；能力（分辨率/时长/比例）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。",
+    )
+    # Runtime enumeration (see the image registry twin for the rationale): the
+    # env-default tier stays first; enumerated video tiers are appended from
+    # the cached snapshot, deduplicated, network-free.
+    models = [default_model]
+    seen = {model_name}
+    for entry in cached_media_gateway_models("video"):
+        if entry["name"] in seen:
+            continue
+        seen.add(entry["name"])
+        models.append(
+            VideoGenerationModel(
+                name=entry["name"],
+                display_name=entry["display_name"],
+                description=entry["description"],
+            )
+        )
     return VideoGenerationProvider(
         name="media_gateway",
         display_name="Media Gateway 生视频",
         configured=True,
-        models=[
-            VideoGenerationModel(
-                name=model_name,
-                display_name=model_name,
-                description="通过 Media Gateway 生成视频（pay-as-you-go 作业模型）；能力（分辨率/时长/比例）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。",
-            ),
-        ],
+        models=models,
     )
 
 

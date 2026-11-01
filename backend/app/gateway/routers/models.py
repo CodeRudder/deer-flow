@@ -13,6 +13,7 @@ from app.gateway.deps import get_config, require_admin_user
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.models_section import build_model_entry, commit_config_update, load_managed_models, read_config_text, replace_managed_section, to_public, upsert_env_var, validate_candidate_text, validate_model_entry
+from deerflow.media_gateway.providers import refresh_media_gateway_models
 from deerflow.models import factory as model_factory
 from deerflow.models.image_generation import ImageGenerationProvidersResponse, get_image_generation_providers
 from deerflow.models.video_generation import VideoGenerationModel, VideoGenerationProvider, VideoGenerationProvidersResponse, get_video_generation_providers
@@ -200,6 +201,12 @@ def _attach_video_billing(
     description="Retrieve video generation providers exposed by the built-in video-generation skill, enriched with user-facing point rates when a video quota scope is configured.",
 )
 async def list_video_generation_providers() -> VideoGenerationProvidersWithBilling:
+    # Runtime MGW tier enumeration (60s TTL cache; never raises). Unconfigured
+    # MGW → no-op, output unchanged.
+    try:
+        await refresh_media_gateway_models()
+    except Exception:
+        logger.warning("media gateway model refresh failed", exc_info=True)
     base = get_video_generation_providers()
     session_factory = get_session_factory()
     summary = None
@@ -216,6 +223,10 @@ async def list_video_generation_providers() -> VideoGenerationProvidersWithBilli
     description="Retrieve image generation providers exposed by the built-in image-generation skill.",
 )
 async def list_image_generation_providers() -> ImageGenerationProvidersResponse:
+    try:
+        await refresh_media_gateway_models()
+    except Exception:
+        logger.warning("media gateway model refresh failed", exc_info=True)
     return get_image_generation_providers()
 
 

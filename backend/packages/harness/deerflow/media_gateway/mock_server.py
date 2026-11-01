@@ -134,6 +134,7 @@ def _token_numbers(shot: dict[str, Any]) -> list[int]:
     text = f"{shot.get('prompt_en') or ''}{shot.get('prompt_zh') or ''}"
     return sorted({int(n) for n in _PICTURE_TOKEN_RE.findall(text)})
 
+
 # Console ticket semantics (deerflow-integration.md): 32 random bytes, 60 s TTL.
 _TICKET_TTL_S = 60
 _TICKET_TTL_WARNING_MARGIN = 5
@@ -328,7 +329,9 @@ class MockMediaGateway:
             if not self._is_admin(user_id):
                 return _error(404, "not_found", "admin only")
             body = self._json(request)
-            name = str(body.get("username") or "")
+            # auth.md contract: the create field is ``name`` (9c7022ff); accept the
+            # legacy ``username`` spelling so older callers keep working.
+            name = str(body.get("name") or body.get("username") or "")
             for existing in self.users.values():
                 if existing["name"] == name:
                     return _error(409, "username_exists", f"username {name!r} already exists")
@@ -718,20 +721,30 @@ class MockMediaGateway:
         for clip in clips:
             shots = self._clip_shots(drama, clip["id"])
             tray = [dict(t, desc=None) for t in clip["ref_tray"]]
-            items.append({
-                **clip,
-                "ref_tray": tray,
-                "shot_ids": [s["id"] for s in shots],
-                "budget_used_s": self._budget_used(drama, clip["id"]),
-                "shots": {
-                    s["id"]: {
-                        "order": s["order"], "duration_s": s["duration_s"], "camera": s["camera"], "size": s["size"],
-                        "state": clip["state"], "prompt_en": s["prompt_en"], "prompt_zh": s["prompt_zh"],
-                        "dialogue": s["dialogue"], "tray_tokens_used": _token_numbers(s), "scene_id": s["scene_id"], "time": s["time"],
-                    }
-                    for s in shots
-                },
-            })
+            items.append(
+                {
+                    **clip,
+                    "ref_tray": tray,
+                    "shot_ids": [s["id"] for s in shots],
+                    "budget_used_s": self._budget_used(drama, clip["id"]),
+                    "shots": {
+                        s["id"]: {
+                            "order": s["order"],
+                            "duration_s": s["duration_s"],
+                            "camera": s["camera"],
+                            "size": s["size"],
+                            "state": clip["state"],
+                            "prompt_en": s["prompt_en"],
+                            "prompt_zh": s["prompt_zh"],
+                            "dialogue": s["dialogue"],
+                            "tray_tokens_used": _token_numbers(s),
+                            "scene_id": s["scene_id"],
+                            "time": s["time"],
+                        }
+                        for s in shots
+                    },
+                }
+            )
         return httpx.Response(200, json={"items": items, "total": len(items)})
 
     def _clip_patch(self, drama: dict[str, Any], chapter: dict[str, Any], clip: dict[str, Any], body: dict[str, Any]) -> httpx.Response:

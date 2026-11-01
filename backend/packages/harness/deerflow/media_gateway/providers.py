@@ -28,11 +28,16 @@ generation requests.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from deerflow.media_gateway.client import MediaGatewayClient, MediaGatewayError
+
+logger = logging.getLogger(__name__)
 
 # deer-flow proxy prefix for MGW media artifacts. The route
 # ``/api/media-gateway/file/<mgw path>`` is served by the gateway layer (M2
@@ -577,3 +582,143 @@ class MediaGatewayGenerationProvider:
             cancel_check=cancel_check,
         )
         return {"artifact": artifact, "shape_lock": shape_lock}
+
+
+# ── runtime model enumeration (registry feed) ──────────────────────────────
+# The generation registries build their provider/model lists per request
+# (``get_*_generation_providers()``), but the modes discovery is a *remote*
+# HTTP call and the registries are synchronous. The split of responsibilities:
+#
+# - the async Gateway routes call :func:`refresh_media_gateway_models` before
+#   listing providers — one ``GET /v1/images/modes`` per TTL window, cached in
+#   process for both media kinds;
+# - the sync registries read the cached snapshot via
+#   :func:`cached_media_gateway_models` and always keep the env-default tier
+#   first, falling back to the env-default-only list when the gateway is
+#   unreachable or ``MEDIA_GATEWAY_BASE_URL`` is unset (byte-identical legacy
+#   output).
+
+MODES_CACHE_TTL_SECONDS = 60.0
+
+# Engine-task → media-kind classification (images.md §1 real payload):
+# image tiers are the frame-extraction families (``t2va`` / ``fl2va`` /
+# ``ref2va`` — h3-frame/clip/i2i/ref) plus the pure image backends (moss,
+# qwen-image); video tiers are the motion families (``*-t2v`` / ``*-i2v`` /
+# ``*-vace`` — wan-*, ltx-*).
+_IMAGE_ENGINE_TASKS = {"t2va", "fl2va", "ref2va", "moss", "qwen-image"}
+_VIDEO_ENGINE_TASK_SUFFIXES = ("-t2v", "-i2v")
+_VIDEO_ENGINE_TASK_KEYWORDS = ("vace",)
+
+# key: MEDIA_GATEWAY_BASE_URL -> (monotonic timestamp, per-kind model dicts or
+# None while the last fetch failed). The failure marker doubles as a negative
+# cache so an unreachable gateway is retried at most once per TTL window.
+_models_cache: dict[str, tuple[float, dict[str, list[dict]] | None]] = {}
+
+
+def is_video_mode(entry: dict) -> bool:
+    """Classify one raw modes[] entry as a video (True) or image (False) tier."""
+    task = str(entry.get("engine_task") or "")
+    return task.endswith(_VIDEO_ENGINE_TASK_SUFFIXES) or any(keyword in task for keyword in _VIDEO_ENGINE_TASK_KEYWORDS)
+
+
+def _capability_summary(entry: dict) -> str:
+    """Human-readable capability suffix for an enumerated model description."""
+    bits: list[str] = []
+    task = str(entry.get("engine_task") or "")
+    if task:
+        bits.append(f"engine={task}")
+    durations = entry.get("capabilities", {}).get("duration_tiers") if isinstance(entry.get("capabilities"), dict) else None
+    params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    if isinstance(durations, list) and durations:
+        bits.append(f"时长档 {min(durations)}–{max(durations)}s")
+    elif isinstance(params.get("duration_seconds"), (int, float)):
+        bits.append(f"时长≤{params['duration_seconds']:g}s")
+    ratios = entry.get("ratios") or entry.get("aspect_ratios")
+    if isinstance(ratios, list) and ratios:
+        bits.append("比例 " + "/".join(str(r) for r in ratios))
+    resolutions = entry.get("resolutions") or entry.get("sizes")
+    if isinstance(resolutions, list) and resolutions:
+        bits.append("分辨率 " + "/".join(str(r) for r in resolutions))
+    if entry.get("needs_reference"):
+        bits.append("必须提供参考图")
+    elif entry.get("accepts_reference_images") or entry.get("supports_reference"):
+        bits.append("可选参考图")
+    return f"（{'；'.join(bits)}）" if bits else ""
+
+
+def _enumerated_model(entry: dict) -> dict:
+    """One registry-facing model dict from a raw modes[] entry."""
+    base_description = entry.get("description") if isinstance(entry.get("description"), str) else ""
+    name = str(entry.get("name") or entry.get("id") or "")
+    display_name = entry.get("display_name") if isinstance(entry.get("display_name"), str) else name
+    return {
+        "name": name,
+        "display_name": display_name,
+        "description": f"{base_description}{_capability_summary(entry)}".strip() or None,
+    }
+
+
+async def _fetch_modes_body(base_url: str, admin_token: str | None) -> dict:
+    """One ``GET /v1/images/modes`` against the gateway. Test seam."""
+    client = MediaGatewayClient(base_url, admin_token)
+    try:
+        return await client.get(MODES_PATH)
+    finally:
+        await client.aclose()
+
+
+def clear_media_gateway_models_cache() -> None:
+    """Reset the enumeration cache (tests / operator-forced refresh)."""
+    _models_cache.clear()
+
+
+async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, force: bool = False) -> bool:
+    """Refresh the per-kind model snapshot from the gateway's modes API.
+
+    Returns ``True`` when a snapshot (fresh cache or a successful fetch) is
+    available. Never raises: a failed fetch keeps any previous snapshot and
+    leaves a negative-cache marker so the registries fall back to the
+    env-default tier without re-hitting an unreachable gateway every request.
+    """
+    base_url = os.getenv("MEDIA_GATEWAY_BASE_URL")
+    if not base_url:
+        return False
+    base_url = base_url.rstrip("/")
+    now = time.monotonic()
+    cached = _models_cache.get(base_url)
+    if cached is not None and not force and now - cached[0] < ttl:
+        return cached[1] is not None
+
+    try:
+        body = await _fetch_modes_body(base_url, os.getenv("MEDIA_GATEWAY_ADMIN_TOKEN"))
+        raw_entries = body.get("modes") if isinstance(body.get("modes"), list) else body.get("models") if isinstance(body.get("models"), list) else body.get("data") if isinstance(body.get("data"), list) else []
+        by_kind: dict[str, list[dict]] = {"image": [], "video": []}
+        for entry in raw_entries:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                continue
+            if entry.get("available") is False:
+                continue  # unavailable tiers 400 at submit time — never list them
+            by_kind["video" if is_video_mode(entry) else "image"].append(_enumerated_model(entry))
+        _models_cache[base_url] = (now, by_kind)
+        return True
+    except Exception:
+        logger.warning("media gateway model enumeration failed; falling back to env-default tier", exc_info=True)
+        # Negative cache: keep a previous good snapshot's models by refreshing
+        # its timestamp so callers do not retry inside the TTL window, but only
+        # when there actually was one; otherwise remember the failure itself.
+        if cached is not None and cached[1] is not None:
+            _models_cache[base_url] = (now, cached[1])
+        else:
+            _models_cache[base_url] = (now, None)
+        return False
+
+
+def cached_media_gateway_models(kind: str) -> list[dict]:
+    """The last successfully enumerated models for ``kind`` (``[]`` when none)."""
+    base_url = os.getenv("MEDIA_GATEWAY_BASE_URL")
+    if not base_url:
+        return []
+    cached = _models_cache.get(base_url.rstrip("/"))
+    if cached is None or cached[1] is None:
+        return []
+    return list(cached[1].get(kind, []))

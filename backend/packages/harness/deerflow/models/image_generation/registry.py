@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from deerflow.config.app_config import get_app_config
 from deerflow.config.extensions_config import get_extensions_config
+from deerflow.media_gateway.providers import cached_media_gateway_models
 
 logger = logging.getLogger(__name__)
 
@@ -245,17 +246,36 @@ def _media_gateway_provider() -> ImageGenerationProvider | None:
         return None
 
     model_name = os.getenv("MEDIA_GATEWAY_IMAGE_MODEL") or "media-gateway"
+    default_model = ImageGenerationModel(
+        name=model_name,
+        display_name=model_name,
+        description="通过 Media Gateway 生成图片；能力（比例/参数域）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。",
+    )
+    # Runtime enumeration: all available gateway tiers (see
+    # ``deerflow.media_gateway.providers.refresh_media_gateway_models`` — the
+    # async route layer refreshes the snapshot; here we only read the cache so
+    # this function stays synchronous and network-free). The env-default tier
+    # always stays, first; enumerated tiers are appended without duplicating it.
+    # With no snapshot (gateway unreachable / never refreshed) the list is
+    # exactly the single env-default model — the pre-enumeration output.
+    models = [default_model]
+    seen = {model_name}
+    for entry in cached_media_gateway_models("image"):
+        if entry["name"] in seen:
+            continue
+        seen.add(entry["name"])
+        models.append(
+            ImageGenerationModel(
+                name=entry["name"],
+                display_name=entry["display_name"],
+                description=entry["description"],
+            )
+        )
     return ImageGenerationProvider(
         name="media_gateway",
         display_name="Media Gateway 生图",
         configured=True,
-        models=[
-            ImageGenerationModel(
-                name=model_name,
-                display_name=model_name,
-                description="通过 Media Gateway 生成图片；能力（比例/参数域）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。",
-            ),
-        ],
+        models=models,
     )
 
 

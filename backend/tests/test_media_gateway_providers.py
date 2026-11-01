@@ -415,3 +415,142 @@ class TestRegistryWiring:
         providers = image_registry.get_image_generation_providers().providers
 
         assert [p.name for p in providers].count("media_gateway") == 1
+
+
+# --- runtime model enumeration (modes → registry model list) ----------------------
+
+
+from deerflow.media_gateway import providers as mgw_providers  # noqa: E402
+from deerflow.media_gateway.client import MediaGatewayError  # noqa: E402
+
+
+def _fake_modes_body() -> dict:
+    return {
+        "default_mode": "h3-frame-std",
+        "baseline_modes": ["h3-frame-draft"],
+        "modes": [
+            {"name": "qwen-image-std", "available": True, "engine_task": "qwen-image", "params": {"steps": 30, "short_edge": 1024, "duration_seconds": 5}, "description": "Qwen 文生图 / 参考图生图", "accepts_reference_images": True},
+            {"name": "h3-ref-std", "available": True, "engine_task": "ref2va", "needs_reference": True, "params": {"steps": 4, "short_edge": 768, "duration_seconds": 5}, "description": "ref2va 多参考图 → 短片段抽帧"},
+            {"name": "h3-ref-hq", "available": True, "engine_task": "ref2va", "needs_reference": True, "params": {"steps": 8, "short_edge": 768, "duration_seconds": 5}, "description": "ref2va 多参考图 → 短片段抽帧"},
+            {"name": "h3-i2i-std", "available": True, "engine_task": "fl2va", "needs_reference": True, "params": {"steps": 4, "short_edge": 768, "duration_seconds": 5}, "description": "fl2va 参考图 → 短片段抽帧"},
+            {"name": "moss-image-std", "available": True, "engine_task": "moss", "params": {"steps": 50, "short_edge": 1024, "duration_seconds": 5}, "description": "MOSS 文生图"},
+            {"name": "h3-retired-tier", "available": False, "engine_task": "t2va", "params": {"steps": 4, "short_edge": 768, "duration_seconds": 4}, "description": "disabled"},
+            {"name": "wan-t2v-std", "available": True, "engine_task": "wan-t2v", "params": {"steps": 20, "short_edge": 480, "duration_seconds": 5}, "capabilities": {"duration_tiers": [5]}, "description": "Wan t2v"},
+            {"name": "ltx-t2v-std", "available": True, "engine_task": "ltx-t2v", "params": {"steps": 20, "short_edge": 720, "duration_seconds": 8}, "capabilities": {"duration_tiers": [2, 20]}, "description": "LTX t2v"},
+            {"name": "wan-vace-std", "available": True, "engine_task": "wan-vace", "params": {"steps": 20, "short_edge": 480, "duration_seconds": 5}, "capabilities": {"duration_tiers": [5]}, "description": "Wan vace"},
+            {"name": "ltx-offline", "available": False, "engine_task": "ltx-t2v", "params": {"steps": 20, "short_edge": 720, "duration_seconds": 8}, "description": "disabled video"},
+        ],
+    }
+
+
+class _FakeFetch:
+    def __init__(self, body=None, exc=None):
+        self.body = body
+        self.exc = exc
+        self.calls = 0
+
+    async def __call__(self, base_url, admin_token):
+        self.calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return self.body
+
+
+@pytest.fixture()
+def _mgw_enum_env(monkeypatch):
+    monkeypatch.setenv("MEDIA_GATEWAY_BASE_URL", "http://mgw:8000")
+    monkeypatch.setenv("MEDIA_GATEWAY_IMAGE_MODEL", "qwen-image-std")
+    monkeypatch.setenv("MEDIA_GATEWAY_VIDEO_MODEL", "wan-t2v-std")
+    yield
+    mgw_providers.clear_media_gateway_models_cache()
+
+
+@pytest.mark.anyio
+class TestRuntimeModelEnumeration:
+    async def test_full_enumeration_with_unavailable_filtered(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        fake = _FakeFetch(_fake_modes_body())
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", fake)
+
+        assert await mgw_providers.refresh_media_gateway_models(force=True) is True
+
+        image_by_name = {p.name: p for p in image_registry.get_image_generation_providers().providers}
+        video_by_name = {p.name: p for p in video_registry.get_video_generation_providers().providers}
+
+        image_names = [m.name for m in image_by_name["media_gateway"].models]
+        video_names = [m.name for m in video_by_name["media_gateway"].models]
+
+        # Full enumeration of available tiers, kind-split by engine_task.
+        assert image_names == ["qwen-image-std", "h3-ref-std", "h3-ref-hq", "h3-i2i-std", "moss-image-std"]
+        assert video_names == ["wan-t2v-std", "ltx-t2v-std", "wan-vace-std"]
+        # unavailable tiers are dropped in both kinds
+        assert "h3-retired-tier" not in image_names and "ltx-offline" not in video_names
+        # env-default tier stays, first
+        assert image_names[0] == "qwen-image-std" and video_names[0] == "wan-t2v-std"
+
+        # Capability summary in the description: reference requirement + durations.
+        ref_model = next(m for m in image_by_name["media_gateway"].models if m.name == "h3-ref-std")
+        assert ref_model.description and "ref2va" in ref_model.description and "必须提供参考图" in ref_model.description
+        ltx_model = next(m for m in video_by_name["media_gateway"].models if m.name == "ltx-t2v-std")
+        assert ltx_model.description and "2–20s" in ltx_model.description
+
+    async def test_ttl_cache_avoids_refetch(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        fake = _FakeFetch(_fake_modes_body())
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", fake)
+
+        await mgw_providers.refresh_media_gateway_models()
+        await mgw_providers.refresh_media_gateway_models()
+        assert fake.calls == 1
+
+        # force bypasses the TTL
+        await mgw_providers.refresh_media_gateway_models(force=True)
+        assert fake.calls == 2
+
+    async def test_failure_falls_back_to_env_default(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        fake = _FakeFetch(exc=MediaGatewayError(status=0, code="transport_error", message="boom", retryable=True))
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", fake)
+
+        assert await mgw_providers.refresh_media_gateway_models(force=True) is False
+
+        image_by_name = {p.name: p for p in image_registry.get_image_generation_providers().providers}
+        video_by_name = {p.name: p for p in video_registry.get_video_generation_providers().providers}
+        # byte-identical legacy fallback: exactly the env-default model
+        assert [m.name for m in image_by_name["media_gateway"].models] == ["qwen-image-std"]
+        assert [m.name for m in video_by_name["media_gateway"].models] == ["wan-t2v-std"]
+
+        # negative cache: no re-fetch inside the TTL window
+        await mgw_providers.refresh_media_gateway_models()
+        assert fake.calls == 1
+
+    async def test_stale_good_snapshot_survives_refresh_failure(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        good = _FakeFetch(_fake_modes_body())
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", good)
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        bad = _FakeFetch(exc=MediaGatewayError(status=0, code="http_error", message="500"))
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", bad)
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        image_by_name = {p.name: p for p in image_registry.get_image_generation_providers().providers}
+        names = [m.name for m in image_by_name["media_gateway"].models]
+        assert "h3-ref-std" in names  # previous snapshot still served
+
+    async def test_unconfigured_mgw_is_noop(self, monkeypatch):
+        _skills_enabled(monkeypatch)
+        monkeypatch.delenv("MEDIA_GATEWAY_BASE_URL", raising=False)
+        fake = _FakeFetch(_fake_modes_body())
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", fake)
+
+        assert await mgw_providers.refresh_media_gateway_models() is False
+        assert fake.calls == 0
+        assert "media_gateway" not in {p.name for p in image_registry.get_image_generation_providers().providers}
+
+    async def test_env_default_without_enumeration_matches_legacy_output(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        image_by_name = {p.name: p for p in image_registry.get_image_generation_providers().providers}
+        provider = image_by_name["media_gateway"]
+        assert [m.name for m in provider.models] == ["qwen-image-std"]
+        assert provider.models[0].description == "通过 Media Gateway 生成图片；能力（比例/参数域）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。"
