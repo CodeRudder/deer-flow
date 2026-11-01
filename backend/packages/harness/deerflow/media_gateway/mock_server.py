@@ -1289,3 +1289,89 @@ def script_vlm(self: MockMediaGateway, responses: list[str]) -> None:
 
 MockMediaGateway.script_vlm = script_vlm  # type: ignore[attr-defined]
 # ═══ END INSERT-IMGTEXTPOST ═══════════════════════════════════════════════
+
+
+# ═══ INSERT-T2ISERIES ═══════════════════════════════════════════════════
+# 文生组图（t2i-series / M2-9，images.md 语义最小建模）。组图 = 多次单图提交
+# （POST /v1/images/generations，每张独立 Idempotency-Key，复用上面的 jobs
+# 状态机）+ 一本"组图账本"（series registry）让批状态在 MGW 可查：
+#
+# - ``POST /v1/images/series``        → 登记组图（theme/style/items[index,job_id]）
+#   → 201 ``{"id": "ser_…", "count": n}``；items 为空或 job_id 未知 → 400
+# - ``GET  /v1/images/series``        → 本用户组图列表
+# - ``GET  /v1/images/series/{sid}``  → 组图详情（逐张回填作业 status/url）
+#
+# 归属与可见性沿用 jobs 模型：外来用户的组图读作 404。实现以类外包装
+# :meth:`MockMediaGateway._handle_images` 追加路由，不改上方任何已有行；
+# 包装器把未命中的请求原样委托给原处理器（与并发追加的其它分区兼容）。
+
+
+def _t2i_series_routes(mg: MockMediaGateway, request: httpx.Request, user_id: str) -> httpx.Response | None:
+    path = request.url.path
+    method = request.method
+
+    if path != "/v1/images/series" and not path.startswith("/v1/images/series/"):
+        return None
+
+    registry: dict[str, dict[str, Any]] = getattr(mg, "_t2i_series_registry", None) or {}
+    mg._t2i_series_registry = registry  # lazy store（不改 __init__）
+
+    if method == "POST" and path == "/v1/images/series":
+        body = mg._json(request)
+        items = [i for i in body.get("items") or [] if isinstance(i, dict) and i.get("job_id")]
+        if not items:
+            return _error(400, "invalid_request", "items 不能为空（每张图须带 job_id）")
+        unknown = [i["job_id"] for i in items if i["job_id"] not in mg.jobs]
+        if unknown:
+            return _error(400, "invalid_request", f"作业不存在：{unknown}")
+        sid = "ser_" + secrets.token_hex(4)
+        registry[sid] = {
+            "id": sid,
+            "owner": user_id,
+            "created": int(time.time()),
+            "theme": str(body.get("theme") or ""),
+            "style": dict(body.get("style") or {}),
+            "items": [{"index": int(i.get("index") or 0), "job_id": i["job_id"], "idempotency_key": i.get("idempotency_key")} for i in items],
+        }
+        return httpx.Response(201, json={"id": sid, "theme": registry[sid]["theme"], "count": len(items)})
+
+    if method == "GET" and path == "/v1/images/series":
+        items = [s for s in registry.values() if mg._can_access({"owner": s["owner"]}, user_id)]
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+    if method == "GET" and path.startswith("/v1/images/series/"):
+        sid = path.rstrip("/").rsplit("/", 1)[-1]
+        series = registry.get(sid)
+        if series is None or not mg._can_access({"owner": series["owner"]}, user_id):
+            return _error(404, "not_found", "series 不存在")
+        return httpx.Response(200, json=_t2i_series_body(mg, series))
+
+    return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+
+def _t2i_series_body(mg: MockMediaGateway, series: dict[str, Any]) -> dict[str, Any]:
+    """组图详情：逐张回填作业状态与产物 URL（复用 jobs 状态机，不复制状态）。"""
+    items = []
+    for item in series["items"]:
+        job = mg.jobs.get(item["job_id"]) or {}
+        entry: dict[str, Any] = {"index": item["index"], "job_id": item["job_id"], "status": job.get("status")}
+        if job.get("status") == "completed":
+            entry["url"] = f"/v1/images/jobs/{item['job_id']}/file?kind=image"
+        if job.get("error"):
+            entry["error"] = job["error"]
+        items.append(entry)
+    return {"id": series["id"], "theme": series["theme"], "style": series["style"], "created": series["created"], "items": sorted(items, key=lambda i: i["index"])}
+
+
+_handle_images_before_t2i_series = MockMediaGateway._handle_images
+
+
+def _handle_images_with_t2i_series(self: MockMediaGateway, request: httpx.Request, user_id: str) -> httpx.Response:
+    routed = _t2i_series_routes(self, request, user_id)
+    if routed is not None:
+        return routed
+    return _handle_images_before_t2i_series(self, request, user_id)
+
+
+MockMediaGateway._handle_images = _handle_images_with_t2i_series  # type: ignore[method-assign]
+# ═══ END INSERT-T2ISERIES ═══════════════════════════════════════════════
