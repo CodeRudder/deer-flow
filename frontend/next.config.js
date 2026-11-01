@@ -50,7 +50,7 @@ const config = {
   // opened at http://127.0.0.1:3000 fails to hydrate exactly like the LAN case
   // above. Verified: no React fiber on the submit button, so the form falls back
   // to a native GET and login silently does nothing.
-  allowedDevOrigins: ["192.168.2.*", "127.0.0.1"],
+  allowedDevOrigins: ["192.168.2.*", "127.0.0.1", "100.108.144.120", "100.*.*.*"],
   async rewrites() {
     const rewrites = [];
     const gatewayURL = getInternalServiceURL(
