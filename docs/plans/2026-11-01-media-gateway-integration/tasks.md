@@ -23,16 +23,22 @@
 
 工期估计：3–4 人日。
 
-## 阶段 M2：provider + skills
+## 阶段 M2：provider 接入 + 控制台跳转 skill
 
 | # | 任务 | 产出 | 验收 |
 |---|---|---|---|
-| M2-1 | image provider `media_gateway` 注册（能力发现/提交/轮询/产物代理 URL） | registry 改动 + 单测 | A2 |
+| M2-1 | image provider `media_gateway` 注册：能力发现（映射为 `--describe-provider` 格式）/提交/轮询/产物代理 URL | registry + adapter + 单测 | A2 |
 | M2-2 | video provider 同上 | 同上 | A2 |
 | M2-3 | 产物代理路由 `/api/media-gateway/file/...`（当前用户令牌转发） | gateway 路由 + 单测 | A2/A5 |
-| M2-4 | skill `media-generate` / `media-jobs` / `media-console-link` | skills + 说明 | A2/A3 |
+| M2-4 | skill `media-console-link`（换装/素材库/种子匹配跳转） | skill + 说明 | A3 |
+| M2-5 | 既有 skills 兼容性验证：`video-generation` / `image-generation` / `image-editing` 对 MGW 模型全流程（审批/轮询/任务查询/sidecar）不改一行跑通 | 集成测试 | A2 |
+| M2-6 | skill `drama-production`（短剧编排：结构→托盘→cite→preview→生成→QC→分集；sidecar 状态） | skill + 单测 | A2b |
+| M2-7 | skill `video-clips`（组图生视频编排：素材→plan/design→分镜板→提交→逐镜产物） | skill + 单测 | A2b |
 
-工期估计：4–5 人日。
+**原则**：单镜生成不新增 skill（复用既有，见 design §4.1）；短剧与视频片段按
+业务要求为独立编排型 skill（直调 MGW 多步 API，状态存 sidecar，不建 deer-flow 领域表）。
+
+工期估计：7–9 人日（M2-6/7 编排 skill 较重）。
 
 ## 阶段 M3：端到端测试（E2E）
 
@@ -42,8 +48,12 @@ MGW 文档基线：`docs/integration/api/`。
 | # | 用例 | 步骤概要 | 对应验收 |
 |---|---|---|---|
 | E2E-1 | 冷启动置备 | 新用户注册 → 首求生图 → 检查 MGW 用户/令牌/映射表 | A1 |
-| E2E-2 | 生图全链路 | prompt→提交→轮询→代理 URL 前端渲染；Idempotency 重放 | A2 |
-| E2E-3 | 生视频全链路 | 同上（视频） | A2 |
+| E2E-2 | 生图全链路 | 既有 skill + MGW 模型：prompt→审批→提交→轮询→代理 URL 前端渲染；Idempotency 重放 | A2 |
+| E2E-3 | 生视频全链路 | 既有 video-generation 工作流 + MGW 模型（含 sidecar、任务查询） | A2 |
+| E2E-3b | 模型可选中立 | 同一 skill 分别用原生模型与 MGW 模型各跑一次，均成功；MGW 模型不支持的能力本地拒绝 | A2 |
+| E2E-5b | 短剧全流程 | drama-production：小体量剧（1 集 2 镜）建结构→确认→生成→QC→分集；中断恢复（重开会话续跑） | A2b |
+| E2E-5c | 视频片段全流程 | video-clips：素材→plan/design→分镜板→确认→提交→逐镜产物 | A2b |
+| E2E-5d | 编排隔离 | 用户 A 建的剧/片段任务对用户 B 不可见（skill 与 API 双查） | A2b |
 | E2E-4 | 多用户隔离 | 双用户各自生成；互查作业/互访产物 URL 均不可见 | A2 |
 | E2E-5 | 控制台免登 | console-link 打开 → 免登 → 控制台内做一个换装 tryon → owner 正确 | A3 |
 | E2E-6 | ticket 一次性/过期 | 刷新重放、等待过期 | A3/A4 |
@@ -52,7 +62,7 @@ MGW 文档基线：`docs/integration/api/`。
 | E2E-9 | 安全巡检 | 抓包+日志+DB 导出，确认无明文令牌、代理不可越权 | A5 |
 | E2E-10 | 回归 | 既有 provider/skills 回归 + 两仓 CI 全绿 | A6 |
 
-**通过标准**：E2E-1~5、10 全过；E2E-6~9 按表全过；所有验收条目勾选。
+**通过标准**：E2E-1~5d、10 全过；E2E-6~9 按表全过；所有验收条目勾选。
 产出：E2E 报告（含 MGW 版本号、env 指纹、用例截图/日志摘录），落本目录 `e2e-report.md`。
 
 ## 里程碑与顺序

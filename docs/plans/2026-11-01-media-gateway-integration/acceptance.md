@@ -17,16 +17,30 @@
 - [ ] deer-flow admin 用户 → MGW 侧 role=admin；普通用户 → role=user；
 - [ ] deer-flow 停用用户 → MGW 用户被停用：其存量会话与令牌立即失效（调任意业务端点 401）。
 
-## A2 生图 / 生视频（API 通道）
+## A2 生图 / 生视频（API 通道，既有 skills 复用 + 模型可选）
 
-- [ ] skill `media-generate` 文生图：提交 → 轮询 → 返回 deer-flow 代理产物 URL，前端 `<img>` 正常渲染（无 401）；
-- [ ] 图生图（带参考图上传）全链路成功；
-- [ ] 生视频：提交 → 作业创建 → 完成后产物经代理可播放；
+- [ ] provider/模型列表中出现 `media_gateway` 的 MGW 模型，与既有模型平级可选；
+- [ ] 用户指定 MGW 模型 → `video-generation`/`image-generation` 既有 skill 正常路由；未指定时按 `--model` > env 默认 > provider 缺省解析；
+- [ ] `--describe-provider media_gateway`：返回 MGW 模型矩阵/ratio/参数域，既有 skill 据此拟稿审批；
+- [ ] 文生图：审批 → 提交 → 轮询 → deer-flow 代理产物 URL，前端 `<img>` 正常渲染（无 401）；
+- [ ] 图生图（带参考图上传）与既有 image-editing 工作流全链路成功；
+- [ ] 生视频：既有 video-generation 审批流 → 提交 → 作业创建 → 完成后产物经代理可播放；sidecar 照常生成；
+- [ ] 不支持的能力（如 MGW 模型无某分辨率）在既有 skill 内本地拒绝，不发出请求；
 - [ ] 重复提交带同一 `Idempotency-Key` → MGW 返回同一作业（无重复扣算力/作业）；
-- [ ] skill `media-jobs`：按状态/时间过滤查询，字段与 MGW `/v1/jobs` 一致；
-- [ ] **数据隔离**：用户 A 生成 N 个作业后，用户 B 经 `media-jobs` 查询**看不到** A 的任何作业（MGW 语义：404/空）；A 的产物代理 URL 被 B 的会话访问 → 403/404；
+- [ ] **数据隔离**：用户 A 生成 N 个作业后，用户 B 经任务查询**看不到** A 的任何作业（MGW 语义：404/空）；A 的产物代理 URL 被 B 的会话访问 → 403/404；
 - [ ] A 的产物 URL 未登录访问 → 401；
 - [ ] MGW 返回 429 → deer-flow 向前端透传 retryable + Retry-After，且无重试风暴（≤2 次）。
+
+## A2b 编排型 skills（短剧 / 视频片段）
+
+- [ ] `drama-production`：建剧→章→情节→镜头全流程跑通；资产托盘编号与重映射生效；
+- [ ] `prompt_preview` 校验不通过时 skill 停止提交并回显 MGW 校验信息（不浪费 GPU）；
+- [ ] 关键节点（结构、分镜）先经用户确认再提交生成；
+- [ ] 生成→QC：QC 通过自动分集交付；QC 失败自动重试 ≤2 次，仍失败回交用户（不静默丢弃）；
+- [ ] `video-clips`：素材入库→plan/design→分镜板→提交→逐镜产物全流程跑通；
+- [ ] 两 skill 全程带当前用户 `h3t_`：A 用户建的剧/片段任务，B 用户经任何 skill/API 均不可见；
+- [ ] 过程状态写入工作目录 sidecar 文件；中断后重开会话可从 sidecar 恢复继续（不重建 MGW 侧结构）；
+- [ ] deer-flow DB 中**无**短剧/分镜领域表（状态真源在 MGW + sidecar）。
 
 ## A3 控制台跳转（免登）
 

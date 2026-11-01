@@ -72,10 +72,32 @@ MEDIA_GATEWAY_CONSOLE_URL=http://<mgw-host>:8000/ui
 | 映射表 | gateway 侧 DB 迁移：`media_gateway_users(deerflow_user_id PK, mgw_user_id, mgw_username, mgw_token_enc, mgw_password_enc, created_at, updated_at)` | 用户↔网关账号映射；令牌 AES 加密落库 |
 | image provider | 在 `image_generation/registry.py` 注册 `media_gateway` provider | 能力发现/提交/轮询/产物 URL 转换（产物经 deer-flow 服务端代理转发，带用户令牌） |
 | video provider | 在 `video_generation/registry.py` 注册 `media_gateway` provider | 同上；对接 MGW 视频（pay-as-you-go 作业模型） |
-| skill `media-generate` | skills 目录 | 文生图/图生图/生视频；agent 编排入口 |
-| skill `media-jobs` | skills 目录 | 查询作业状态/历史（映射 MGW `/v1/jobs` 查询参数） |
 | skill `media-console-link` | skills 目录 | 返回控制台跳转卡片（含一次性 ticket URL） |
+| skill `drama-production` | skills 目录 | **编排型**：短剧全流程（剧→章→情节→镜头 → 资产托盘 → cite → prompt_preview → 生成 → QC → 分集），直调 MGW 多步 API |
+| skill `video-clips` | skills 目录 | **编排型**：组图生视频/分镜任务（素材 → plan/design → 分镜板 → 提交 → 逐镜产物），直调 MGW 多步 API |
 | 产物代理路由 | gateway 层 `/api/media-gateway/file/...` | 服务端带用户令牌转发 MGW 媒体端点，解决 `<img src>` 无 Authorization 头 401 |
+
+单镜生图/生视频**不新增生成类 skill**（见 §4.1）——复用 deer-flow 既有
+`image-generation` / `video-generation` / `image-editing` skills 与工作流；
+短剧与视频片段是多步编排，既有单镜工作流覆盖不了，故新增上述两个编排型 skill。
+
+## 4.1 与既有模型/工作流的关系（模型可选中立）
+
+MGW 模型作为 registry 中的普通 provider 模型，与 OpenAI/MiniMax 等既有模型**平级**：
+
+- **用户可选模型**：对话中按名称指定（provider 解析路由到 `media_gateway`）、
+  或 env 设默认：`MEDIA_GATEWAY_IMAGE_MODEL` / `MEDIA_GATEWAY_VIDEO_MODEL`；
+  优先级沿用现规则：`--model` > env 默认 > provider 缺省。
+- **既有工作流零改动**：`video-generation` skill 的 provider 先行解析、
+  `--describe-provider` 能力发现、审批流、async create→poll→download、
+  sidecar、2K upgrade 等全部照常——adapter 必须实现 provider 契约的能力发现
+  （把 MGW 能力发现 API 映射为 `--describe-provider` 的 model matrix /
+  ratio enum / 参数域格式），能力缺失的参数在既有 skill 内被本地拒绝，不会误发。
+- **skill 冲突消解**：不创建 `media-generate`（与 image/video-generation 重复）、
+  不创建 `media-jobs`（video-generation 已含 read-only task query）。
+  新增 skill 仅两类：①`media-console-link`（控制台跳转，既有 skills 不覆盖）；
+  ②`drama-production` / `video-clips`（多步编排，既有单镜工作流覆盖不了——
+  业务确认短剧与组图生视频需要独立 skill）。两者与既有生成 skills 无重叠。
 
 ## 5. 账号打通与身份传递
 
@@ -122,10 +144,23 @@ MGW 新增一次性票据端点（设计）：
 
 | MGW 能力 | deer-flow 承载方式 |
 |---|---|
-| 生图 / 生视频 | provider `media_gateway` + skill `media-generate`（API 直连） |
-| 作业查询 / 历史 | skill `media-jobs`（API 直连） |
+| 生图 / 生视频（MGW 模型，单镜） | provider `media_gateway` 注册进既有 registry，复用既有生成 skills/工作流，模型可选中立（§4.1） |
+| **短剧** | skill `drama-production`：编排 MGW 剧→章→情节→镜头→托盘→cite→preview→生成→QC→分集 |
+| **组图生视频 / 分镜片段** | skill `video-clips`：编排 MGW plan/design→分镜板→提交→逐镜产物 |
 | 媒体产物读取 | deer-flow 代理路由（带用户令牌转发） |
-| 素材库 / 组图生视频 / 短剧 / 换装 / 种子匹配 / VLM | 控制台链接跳转（skill `media-console-link`），不在 deer-flow 实现 |
+| 换装 / 素材库管理 / 种子匹配 / VLM | 控制台链接跳转（skill `media-console-link`），不在 deer-flow 实现 |
+
+### 6.1 编排型 skill 设计（drama-production / video-clips）
+
+- **直调 MGW API**（经 `MediaGatewayClient`，当前用户 `h3t_` 令牌），不进
+  image/video generation registry——它们不是单次生成，而是多步状态流程；
+- **状态不落 deer-flow DB**：剧结构、分镜板、QC 结果等以任务工作目录文件保存
+  （沿用 video-generation 的 `outputs/{name}.task.json` sidecar 模式），
+  MGW 侧仍是数据真源（可随时经其 API 重读）；deer-flow 不做领域建模；
+- 每个生成步骤带 `Idempotency-Key`；QC 不通过按 MGW 评估结果决定自动重试
+  （有限次）或回交用户决策；
+- 长流程分段确认：结构/分镜板等关键节点先展示给用户确认再提交生成
+  （与既有 video-generation 的审批风格一致）。
 
 ## 7. 失败与降级
 
