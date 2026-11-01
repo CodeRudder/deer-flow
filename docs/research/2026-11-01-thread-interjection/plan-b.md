@@ -245,3 +245,17 @@ interjection:
 | resume 路径（interrupt 停止态复用） | `backend/packages/harness/deerflow/api/services.py:494-498` |
 | enqueue schema（已声明未实现） | `backend/packages/harness/deerflow/api/routers/thread_runs.py:97` |
 | IM 渠道策略 | `manager.py:1331-1349`，`:64, 176-182` |
+
+## 补充：排队/插话消息的取消与撤回（2026-11-01）
+
+对齐 Claude Code「↑ 撤回排队消息」体验的取消语义：
+
+| 状态 | 可否取消 | 行为 |
+|---|---|---|
+| Pending（排队未注入） | ✅ | 从 per-run 队列移除；前端气泡转"已撤回"或"撤回到输入框"（↑ 语义：文本回填输入框可编辑重发） |
+| 已注入（step 边界已 update_state） | ❌ | 已进 LLM 上下文，不可撤回 |
+| Run 收尾残留（未消费） | ✅ | 丢弃，不转新 run |
+
+API：排队消息创建即分配 `interjection_id`（与 run_id 解耦）；
+`DELETE /api/threads/{id}/interjections/{interjection_id}` → 204；已消费 → 409（对齐 run cancel 幂等口径）。
+前端：排队气泡带撤回按钮；↑ 等价于"撤回并回填输入框"。
