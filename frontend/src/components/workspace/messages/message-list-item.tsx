@@ -32,10 +32,7 @@ import {
   upsertFeedback,
   type FeedbackData,
 } from "@/core/api/feedback";
-import {
-  artifactImageSrc,
-  resolveArtifactURL,
-} from "@/core/artifacts/utils";
+import { artifactImageSrc, resolveArtifactURL } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   extractContentFromMessage,
@@ -369,8 +366,9 @@ function MessageContent_({
       <ImageLightbox
         images={lightboxImages.map((file) => ({
           alt: file.filename,
-          // Lightbox shows the original bytes; the toolbar link downloads them.
-          src: resolveArtifactURL(file.path, threadId),
+          // Preview loads the 720p JPEG variant; the toolbar link still
+          // downloads the original bytes.
+          src: artifactImageSrc(resolveArtifactURL(file.path, threadId)),
           downloadUrl: resolveArtifactURL(file.path, threadId),
         }))}
         initialIndex={lightboxIndex}

@@ -10,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { urlOfArtifact } from "@/core/artifacts/utils";
+import { artifactImageSrc, urlOfArtifact } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import { installSkill } from "@/core/skills/api";
 import {
@@ -155,7 +155,11 @@ export function ArtifactFileList({
                 download: true,
               }),
               openUrl: urlOfArtifact({ filepath: file, threadId }),
-              src: urlOfArtifact({ filepath: file, threadId }),
+              // Preview loads the 720p JPEG variant; "open" and "download"
+              // links keep pointing at the original bytes.
+              src: artifactImageSrc(
+                urlOfArtifact({ filepath: file, threadId }),
+              ),
             }))}
             initialIndex={lightboxIndex}
             onClose={() => setLightboxIndex(null)}
@@ -224,7 +228,8 @@ function ArtifactImagePreview({
       onClick={onClick}
     >
       <img
-        src={artifactUrl}
+        // Preview loads the 720p JPEG variant; downloads keep the original.
+        src={artifactImageSrc(artifactUrl)}
         alt={getFileName(file)}
         className="max-h-[min(70vh,560px)] max-w-full rounded-md object-contain transition-opacity group-hover:opacity-90"
         loading="lazy"
@@ -277,7 +282,9 @@ function ArtifactFileCard({
             </div>
           ) : (
             <img
-              src={artifactUrl}
+              // Thumbnail loads the 720p JPEG variant; the download button
+              // below keeps serving the original bytes.
+              src={artifactImageSrc(artifactUrl ?? "")}
               alt={getFileName(file)}
               className="size-full object-contain"
               loading="lazy"
