@@ -27,8 +27,25 @@ Covered endpoints:
 - ``GET  /v1/images/jobs/{id}/file`` → configurable bytes + Content-Type
 - ``GET  /health``                   → unauthenticated liveness
 
+Drama series (M2 batch 2, contract ``minimax-h3-gateway/docs/integration/api/drama.md``):
+
+- ``POST /v1/drama``                 → create drama (201, owner = caller)
+- ``GET  /v1/drama`` / ``GET /v1/drama/inflight`` / ``GET /v1/drama/{did}``
+- ``POST /v1/drama/{did}/chapters``  → chapter (idx unique per drama)
+- ``POST …/chapters/{ch}/storylines`` / ``…/plots``
+- ``POST …/chapters/{ch}/characters`` (asset registry) + ``GET``
+- ``POST …/chapters/{ch}/clips`` / ``GET`` / ``PATCH`` (ref_tray full-replace)
+- ``POST …/clips/{cl}/budget`` / ``GET …/prompt_preview`` (compose + checks + valid)
+- ``POST/GET …/clips/{cl}/generate`` → single in-flight lease; ``GET …/qc`` reads the
+  scripted QC result (``script_qc``); ``POST …/archive`` appends the archive record
+- ``POST …/chapters/{ch}/shots`` (save-chain checks: negative wording → dialogue
+  speaker → empty English column → clip budget) / ``GET`` / ``PATCH`` / ``DELETE`` (soft)
+- ``GET/POST …/chapters/{ch}/partition/preview|commit`` + ``GET …/episodes``
+
 Error envelope everywhere: ``{"error": {code, message, retryable}}``; 429/503
-carry ``Retry-After``. Non-admin callers of admin endpoints get 404 (the
+carry ``Retry-After``. Drama routes use the drama contract envelope instead:
+``{"detail": {"error": {code, …}}}`` for structured errors (shot save-chain,
+budget, in-flight) and ``{"detail": "…"}`` for plain-string errors. Non-admin callers of admin endpoints get 404 (the
 contract deliberately hides existence), bad/missing tokens get 401.
 
 Usage (pytest)::
@@ -66,6 +83,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import secrets
 import time
 from types import SimpleNamespace
@@ -77,6 +95,44 @@ import pytest
 from deerflow.media_gateway.client import MediaGatewayClient
 
 _DEFAULT_ADMIN_TOKEN = "h3t_mock-admin-token"
+
+# ── drama contract constants (drama.md) ───────────────────────────────
+DRAMA_BUDGET_TIERS = (1, 5, 10, 15)
+DRAMA_NEGATIVE_WORDS = ("不要", "别让")
+_PICTURE_TOKEN_RE = re.compile(r"<(?:picture|图片)\s*(\d+)>", re.IGNORECASE)
+_ID_HEX = "0123456789abcdef"
+
+_QC_PASS_BODY = {
+    "state": "qc_pass",
+    "scores": {"identity": 0.92, "ball": None, "seam": None, "motion": 0.9, "space": 0.9},
+    "issues": [],
+    "must_fix_storyboard": False,
+}
+
+
+def _drama_detail_error(status: int, code: str, message: str, **payload: Any) -> httpx.Response:
+    """Drama structured error: ``{"detail": {"error": {code, …}}}`` (drama.md §1)."""
+    body: dict[str, Any] = {"code": code, "message": message}
+    body.update(payload)
+    return httpx.Response(status, json={"detail": {"error": body}})
+
+
+def _drama_string_error(status: int, message: str) -> httpx.Response:
+    return httpx.Response(status, json={"detail": message})
+
+
+def _drama_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+
+
+def _fmt_s(value: float) -> str:
+    return f"{value:g}"
+
+
+def _token_numbers(shot: dict[str, Any]) -> list[int]:
+    """Derived ``tray_tokens_used``: ``<Picture N>`` numbers across both prompt columns."""
+    text = f"{shot.get('prompt_en') or ''}{shot.get('prompt_zh') or ''}"
+    return sorted({int(n) for n in _PICTURE_TOKEN_RE.findall(text)})
 
 # Console ticket semantics (deerflow-integration.md): 32 random bytes, 60 s TTL.
 _TICKET_TTL_S = 60
@@ -115,6 +171,11 @@ class MockMediaGateway:
         self.media: dict[str, dict[str, Any]] = {}  # INSERT-GROUPVID: 素材库 media（groupvid.md / media.md）
         self.file_bytes = file_bytes
         self.file_content_type = file_content_type
+
+        # Drama domain (contract: drama.md). All state lives in-process; owner
+        # isolation follows the job model (admin sees all, others see their own).
+        self.dramas: dict[str, dict[str, Any]] = {}
+        self.qc_script: dict[str, list[dict[str, Any]]] = {}  # clip_id → queued QC bodies
 
         self._pending_failures: list[dict[str, Any]] = []
         self._pending_timeouts = 0
@@ -170,6 +231,11 @@ class MockMediaGateway:
         self.file_bytes = data
         self.file_content_type = content_type
 
+    def script_qc(self, clip_id: str, results: list[dict[str, Any]]) -> None:
+        """Queue QC bodies for ``clip_id``: the n-th ``GET …/qc`` returns the n-th
+        entry; when the queue is empty a clean ``qc_pass`` body is served."""
+        self.qc_script[clip_id] = list(results)
+
     # ── the handler ───────────────────────────────────────────────────
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -205,6 +271,8 @@ class MockMediaGateway:
             return self._handle_images(request, user_id)
         if path.startswith("/v1/media"):
             return self._handle_media(request, user_id)  # INSERT-GROUPVID routing
+        if path.startswith("/v1/drama"):
+            return self._handle_drama(request, user_id)
 
         return _error(404, "not_found", f"mock has no route for {request.method} {path}")
 
@@ -408,6 +476,476 @@ class MockMediaGateway:
             content=self.file_bytes,
             headers={"Content-Type": self.file_content_type, "Cache-Control": "private, max-age=259200, immutable"},
         )
+
+    # ── drama (contract: minimax-h3-gateway docs/integration/api/drama.md) ──
+    def _new_id(self, prefix: str) -> str:
+        return prefix + secrets.token_hex(4)
+
+    def _drama_owned(self, drama: dict[str, Any] | None, user_id: str) -> dict[str, Any] | None:
+        """Owner isolation: foreign dramas read as 404 (merged, anti-probing)."""
+        if drama is None:
+            return None
+        if self._is_admin(user_id) or drama["owner"] == user_id:
+            return drama
+        return None
+
+    def _find_chapter(self, drama: dict[str, Any], ch_id: str) -> dict[str, Any] | None:
+        return next((c for c in drama["chapters"] if c["id"] == ch_id), None)
+
+    def _clip_shots(self, drama: dict[str, Any], clip_id: str) -> list[dict[str, Any]]:
+        return [s for s in drama["shots"] if s["clip_id"] == clip_id and not s["deleted"]]
+
+    def _budget_used(self, drama: dict[str, Any], clip_id: str) -> float:
+        return round(sum(s["duration_s"] for s in self._clip_shots(drama, clip_id)), 2)
+
+    def _handle_drama(self, request: httpx.Request, user_id: str) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        body = self._json(request)
+        parts = path.strip("/").split("/")  # ["v1","drama", ...]
+
+        if method == "POST" and len(parts) == 2:
+            return self._drama_create(body, user_id)
+        if method == "GET" and len(parts) == 2:
+            return self._drama_list(user_id)
+        if len(parts) == 3 and parts[2] == "inflight":
+            items = []
+            for drama in self.dramas.values():
+                if not self._drama_owned(drama, user_id):
+                    continue
+                for clip in drama["clips"]:
+                    if clip["state"] in ("generating", "qc_pending", "qc_running"):
+                        items.append({"drama_id": drama["id"], "drama_title": drama["title"], "ch_id": clip["chapter_id"], "clip_id": clip["id"], "state": clip["state"], "version": clip["version"]})
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+
+        if len(parts) < 3:
+            return _drama_string_error(404, "drama not found")
+        drama = self._drama_owned(self.dramas.get(parts[2]), user_id)
+        if drama is None:
+            return _drama_string_error(404, "drama not found")
+
+        # ── drama level ───────────────────────────────────────────────
+        if method == "GET" and len(parts) == 3:
+            return httpx.Response(200, json=drama["doc"])
+        if method == "POST" and len(parts) == 4 and parts[3] == "chapters":
+            return self._chapter_create(drama, body)
+        if method == "POST" and len(parts) == 4 and parts[3] == "characters":
+            return self._character_create(drama, body)
+        if method == "GET" and len(parts) == 4 and parts[3] == "characters":
+            items = [c for c in drama["characters"] if not c["deleted"]]
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+
+        if len(parts) < 5 or parts[3] != "chapters":
+            return _drama_string_error(404, "drama not found")
+        chapter = self._find_chapter(drama, parts[4])
+        if chapter is None:
+            return _drama_string_error(404, "drama not found")
+
+        # ── chapter level ─────────────────────────────────────────────
+        if method == "POST" and len(parts) == 6 and parts[5] == "storylines":
+            return self._storyline_create(drama, chapter, body)
+        if method == "GET" and len(parts) == 6 and parts[5] == "storylines":
+            items = sorted([s for s in drama["storylines"] if s["chapter_id"] == chapter["id"]], key=lambda s: s["order"])
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        if method == "POST" and len(parts) == 6 and parts[5] == "plots":
+            return self._plot_create(drama, chapter, body)
+        if method == "GET" and len(parts) == 6 and parts[5] == "plots":
+            items = sorted([p for p in drama["plots"] if p["chapter_id"] == chapter["id"]], key=lambda p: p["order"])
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        if method == "GET" and len(parts) == 6 and parts[5] == "clips":
+            return self._clip_list(drama, chapter, request.url.params.get("plot_id"))
+        if method == "POST" and len(parts) == 6 and parts[5] == "clips":
+            return self._clip_create(drama, chapter, body)
+        if method == "GET" and len(parts) == 6 and parts[5] == "shots":
+            clip_filter = request.url.params.get("clip_id")
+            shots = [s for s in drama["shots"] if not s["deleted"] and (clip_filter is None or s["clip_id"] == clip_filter)]
+            return httpx.Response(200, json={"items": shots, "total": len(shots)})
+        if method == "POST" and len(parts) == 6 and parts[5] == "shots":
+            return self._shot_create(drama, chapter, body)
+        if parts[5] == "partition" and len(parts) == 7:
+            if method == "GET" and parts[6] == "preview":
+                return self._partition_preview(drama, chapter, float(request.url.params.get("target_episode_s") or 0))
+            if method == "POST" and parts[6] == "commit":
+                return self._partition_commit(drama, chapter, body)
+        if method == "GET" and len(parts) == 6 and parts[5] == "episodes":
+            eps = chapter.get("episodes_snapshot") or []
+            items = [{**e, "id": f"ep{e['idx']:02d}"} for e in eps]
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+
+        if len(parts) < 7:
+            return _drama_string_error(404, "drama not found")
+        target = parts[6]
+
+        # ── clip level ────────────────────────────────────────────────
+        if parts[5] == "clips":
+            clip = next((c for c in drama["clips"] if c["id"] == target and c["chapter_id"] == chapter["id"]), None)
+            if clip is None:
+                return _drama_string_error(404, "drama not found")
+            if method == "GET" and len(parts) == 7:
+                return httpx.Response(200, json=clip)
+            if method == "PATCH" and len(parts) == 7:
+                return self._clip_patch(drama, chapter, clip, body)
+            if len(parts) == 8:
+                sub = parts[7]
+                if method == "POST" and sub == "budget":
+                    used = self._budget_used(drama, clip["id"])
+                    nearest = next((t for t in DRAMA_BUDGET_TIERS if used <= t), None)
+                    return httpx.Response(200, json={"tier": clip["budget_tier"], "used_s": used, "ok": nearest is not None and nearest <= clip["budget_tier"], "nearest_tier": nearest})
+                if method == "GET" and sub == "prompt_preview":
+                    return self._prompt_preview(drama, clip)
+                if method == "POST" and sub == "generate":
+                    return self._generate_submit(drama, chapter, clip)
+                if method == "GET" and sub == "generate":
+                    return self._generate_status(drama, clip)
+                if method == "GET" and sub == "qc":
+                    return self._qc_read(drama, clip)
+                if method == "POST" and sub == "archive":
+                    record = {"version": int(body.get("version") or clip["version"]), "reason": str(body.get("reason") or ""), "hash": secrets.token_hex(4), "at": _drama_now(), "by": user_id}
+                    clip["archives"].append(record)
+                    return httpx.Response(200, json=record)
+
+        # ── shot level ────────────────────────────────────────────────
+        if parts[5] == "shots" and len(parts) == 7:
+            shot = next((s for s in drama["shots"] if s["id"] == target), None)
+            if shot is None:
+                return _drama_string_error(404, "drama not found")
+            if method == "GET":
+                return httpx.Response(200, json=shot)
+            if method == "PATCH":
+                target_clip = next((c for c in drama["clips"] if c["id"] == shot["clip_id"]), None)
+                if target_clip is None:
+                    return _drama_string_error(404, "drama not found")
+                return self._shot_patch(drama, target_clip, shot, body)
+            if method == "DELETE":
+                shot["deleted"] = True
+                return httpx.Response(200, json={"deleted": True, "shot_id": shot["id"]})
+
+        return _drama_string_error(404, "drama not found")
+
+    # ── drama/chapter/asset creation ──────────────────────────────────
+    def _drama_create(self, body: dict[str, Any], user_id: str) -> httpx.Response:
+        title = str(body.get("title") or "").strip()
+        if not title:
+            return _drama_string_error(400, "title is required")
+        did = self._new_id("dr_")
+        doc = {"id": did, "title": title, "synopsis": str(body.get("synopsis") or ""), "rules": list(body.get("rules") or []), "owner": user_id, "archived": False, "rule_fingerprint": self._sha8(title), "created_at": _drama_now()}
+        self.dramas[did] = {"id": did, "doc": doc, "owner": user_id, "chapters": [], "characters": [], "plots": [], "storylines": [], "clips": [], "shots": [], "gen_inflight": None}
+        return httpx.Response(201, json=doc)
+
+    def _drama_list(self, user_id: str) -> httpx.Response:
+        items = [d["doc"] for d in self.dramas.values() if self._drama_owned(d, user_id)]
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+    def _chapter_create(self, drama: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        idx = int(body.get("idx") or 0)
+        if any(c["idx"] == idx for c in drama["chapters"]):
+            return _drama_string_error(400, f"章节序号 {idx} 已存在")
+        chapter = {
+            "id": self._new_id("ch_"),
+            "drama_id": drama["id"],
+            "idx": idx,
+            "title": str(body.get("title") or ""),
+            "outline": str(body.get("outline") or ""),
+            "storyline_count": 0,
+            "shot_count": 0,
+            "episode_count": 0,
+            "script_versions": [],
+            "episodes_snapshot": None,
+            "created_at": _drama_now(),
+        }
+        drama["chapters"].append(chapter)
+        return httpx.Response(201, json=chapter)
+
+    def _character_create(self, drama: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        name = str(body.get("name") or "").strip()
+        if any(c["name"] == name and not c["deleted"] for c in drama["characters"]):
+            return _drama_string_error(400, f"characters 重名：{name}")
+        character = {"name": name, "subject_id": int(body.get("subject_id") or 0), "refs": list(body.get("refs") or []), "costume_variant": list(body.get("costume_variant") or []), "deleted": False, "images": [], "created_at": _drama_now()}
+        drama["characters"].append(character)
+        return httpx.Response(201, json=character)
+
+    def _storyline_create(self, drama: dict[str, Any], chapter: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        order = int(body.get("order") or 0)
+        if any(s["order"] == order for s in drama["storylines"] if s["chapter_id"] == chapter["id"]):
+            return _drama_string_error(400, f"故事线序号 {order} 已存在")
+        storyline = {"id": self._new_id("sl_"), "chapter_id": chapter["id"], "name": str(body.get("name") or ""), "order": order}
+        drama["storylines"].append(storyline)
+        return httpx.Response(201, json=storyline)
+
+    def _plot_create(self, drama: dict[str, Any], chapter: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        order = int(body.get("order") or 0)
+        storyline_id = str(body.get("storyline_id") or "")
+        if not any(s["id"] == storyline_id for s in drama["storylines"]):
+            return _drama_string_error(404, "drama not found")
+        if any(p["order"] == order for p in drama["plots"] if p["chapter_id"] == chapter["id"]):
+            return _drama_string_error(400, f"情节序号 {order} 已存在")
+        plot = {"id": self._new_id("pl_"), "chapter_id": chapter["id"], "storyline_id": storyline_id, "name": str(body.get("name") or ""), "order": order}
+        drama["plots"].append(plot)
+        return httpx.Response(201, json=plot)
+
+    # ── clips ─────────────────────────────────────────────────────────
+    def _clip_create(self, drama: dict[str, Any], chapter: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        tier = int(body.get("budget_tier") or 0)
+        if tier not in DRAMA_BUDGET_TIERS:
+            return _drama_string_error(400, f"budget_tier 须为 {DRAMA_BUDGET_TIERS} 之一，收到 {tier}")
+        plot_id = str(body.get("plot_id") or "")
+        if not any(p["id"] == plot_id for p in drama["plots"]):
+            return _drama_string_error(404, "drama not found")
+        clip = {
+            "id": self._new_id("cl_"),
+            "chapter_id": chapter["id"],
+            "plot_id": plot_id,
+            "order": int(body.get("order") or 1),
+            "budget_tier": tier,
+            "version": 1,
+            "state": "pending",
+            "stale": False,
+            "archives": [],
+            "prompt_opening": str(body.get("prompt_opening") or ""),
+            "prompt_ending": str(body.get("prompt_ending") or ""),
+            "ref_tray": [dict(t) for t in body.get("ref_tray") or []],
+            "scene_slot": body.get("scene_slot"),
+            "created_at": _drama_now(),
+        }
+        drama["clips"].append(clip)
+        return httpx.Response(201, json=clip)
+
+    def _clip_list(self, drama: dict[str, Any], chapter: dict[str, Any], plot_id: str | None) -> httpx.Response:
+        plots = {p["id"]: p["order"] for p in drama["plots"] if p["chapter_id"] == chapter["id"]}
+        clips = [c for c in drama["clips"] if c["chapter_id"] == chapter["id"] and (plot_id is None or c["plot_id"] == plot_id)]
+        clips = sorted(clips, key=lambda c: (plots.get(c["plot_id"], 0), c["order"]))
+        items = []
+        for clip in clips:
+            shots = self._clip_shots(drama, clip["id"])
+            tray = [dict(t, desc=None) for t in clip["ref_tray"]]
+            items.append({
+                **clip,
+                "ref_tray": tray,
+                "shot_ids": [s["id"] for s in shots],
+                "budget_used_s": self._budget_used(drama, clip["id"]),
+                "shots": {
+                    s["id"]: {
+                        "order": s["order"], "duration_s": s["duration_s"], "camera": s["camera"], "size": s["size"],
+                        "state": clip["state"], "prompt_en": s["prompt_en"], "prompt_zh": s["prompt_zh"],
+                        "dialogue": s["dialogue"], "tray_tokens_used": _token_numbers(s), "scene_id": s["scene_id"], "time": s["time"],
+                    }
+                    for s in shots
+                },
+            })
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+    def _clip_patch(self, drama: dict[str, Any], chapter: dict[str, Any], clip: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        allowed = ("plot_id", "order", "budget_tier", "prompt_opening", "prompt_ending", "ref_tray", "scene_slot")
+        if not any(k in body for k in allowed):
+            return _drama_string_error(400, "nothing to patch")
+        if "budget_tier" in body:
+            tier = int(body["budget_tier"])
+            if tier not in DRAMA_BUDGET_TIERS:
+                return _drama_string_error(400, f"budget_tier 非法：{tier}")
+            clip["budget_tier"] = tier
+        if "plot_id" in body and not any(p["id"] == body["plot_id"] for p in drama["plots"]):
+            return _drama_string_error(404, "drama not found")
+        for key in ("plot_id", "order", "prompt_opening", "prompt_ending", "scene_slot"):
+            if key in body:
+                clip[key] = body[key]
+        if "ref_tray" in body:
+            old_numbers = {str(t.get("media_id")): i + 1 for i, t in enumerate(clip["ref_tray"]) if t.get("media_id")}
+            new_numbers = {str(t.get("media_id")): i + 1 for i, t in enumerate(body["ref_tray"]) if t.get("media_id")}
+            clip["ref_tray"] = [dict(t) for t in body["ref_tray"]]
+            for shot in self._clip_shots(drama, clip["id"]):
+                for column in ("prompt_en", "prompt_zh"):
+                    text = shot[column]
+                    if text.startswith("IMPORTED (see prompt_zh)"):
+                        continue
+                    for media_id, old_n in old_numbers.items():
+                        token = f"<Picture {old_n}>"
+                        if media_id not in new_numbers:
+                            text = text.replace(token + " ", "").replace(token, "")  # removed → strip token
+                        elif new_numbers[media_id] != old_n:
+                            text = text.replace(token, f"<Picture {new_numbers[media_id]}>")
+                    shot[column] = text
+        # Budget re-check after any change (contract: enforced, not exusable).
+        used = self._budget_used(drama, clip["id"])
+        nearest = next((t for t in DRAMA_BUDGET_TIERS if used <= t), None)
+        if nearest is None or nearest > clip["budget_tier"]:
+            return _drama_detail_error(400, "clip_over_budget", "片段时长超档", used_s=used, budget_tier=clip["budget_tier"], nearest_tier=nearest)
+        return httpx.Response(200, json=clip)
+
+    # ── shots (save-chain checks, drama.md §1/§10) ────────────────────
+    def _shot_check(self, drama: dict[str, Any], clip: dict[str, Any], shot: dict[str, Any]) -> httpx.Response | None:
+        """Return the first save-chain violation, or None when clean."""
+        text = f"{shot['prompt_en']}\n{shot['prompt_zh']}"
+        for word in DRAMA_NEGATIVE_WORDS:
+            if word in text:
+                return _drama_detail_error(400, "negative_wording", "负向措辞", violations=[{"match": word, "rule": word, "suggest": f"写『是什么/在哪』，避免『{word}』"}])
+        for line in shot["dialogue"]:
+            if not str(line.get("speaker") or "").strip():
+                return _drama_detail_error(400, "dialogue_unassigned", "dialogue 条目缺 speaker")
+        if not shot["prompt_en"].strip():
+            return _drama_detail_error(400, "prompt_en_empty", "英文列为空")
+        return None
+
+    def _budget_check(self, drama: dict[str, Any], clip: dict[str, Any]) -> httpx.Response | None:
+        used = self._budget_used(drama, clip["id"])
+        nearest = next((t for t in DRAMA_BUDGET_TIERS if used <= t), None)
+        if nearest is None or nearest > clip["budget_tier"]:
+            return _drama_detail_error(400, "clip_over_budget", "片段时长超档", used_s=used, budget_tier=clip["budget_tier"], nearest_tier=nearest)
+        return None
+
+    def _shot_create(self, drama: dict[str, Any], chapter: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        clip_id = str(body.get("clip_id") or "")
+        clip = next((c for c in drama["clips"] if c["id"] == clip_id), None)
+        if clip is None:
+            return _drama_string_error(404, "drama not found")
+        shot = {
+            "id": self._new_id("sh_"),
+            "chapter_id": chapter["id"],
+            "clip_id": clip_id,
+            "order": int(body.get("order") or 1),
+            "camera": str(body.get("camera") or ""),
+            "size": str(body.get("size") or ""),
+            "duration_s": float(body.get("duration_s") or 0),
+            "prompt_en": str(body.get("prompt_en") or ""),
+            "prompt_zh": str(body.get("prompt_zh") or ""),
+            "dialogue": list(body.get("dialogue") or []),
+            "scene_id": body.get("scene_id"),
+            "time": body.get("time"),
+            "deleted": False,
+            "warnings_confirmed": [],
+            "created_at": _drama_now(),
+        }
+        if not body.get("force"):
+            violation = self._shot_check(drama, clip, shot)
+            if violation is not None:
+                return violation
+        drama["shots"].append(shot)
+        return self._budget_check(drama, clip) or httpx.Response(201, json=shot)
+
+    def _shot_patch(self, drama: dict[str, Any], clip: dict[str, Any], shot: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        allowed = ("clip_id", "order", "camera", "size", "duration_s", "prompt_en", "prompt_zh", "dialogue", "scene_id", "time")
+        if not any(k in body for k in allowed):
+            return _drama_string_error(400, "nothing to patch")
+        for key in allowed:
+            if key in body:
+                shot[key] = body[key]
+        if not body.get("force"):
+            violation = self._shot_check(drama, clip, shot)
+            if violation is not None:
+                return violation
+        return self._budget_check(drama, clip) or httpx.Response(200, json=shot)
+
+    # ── prompt preview (compose, drama.md §9.6) ───────────────────────
+    def _prompt_preview(self, drama: dict[str, Any], clip: dict[str, Any]) -> httpx.Response:
+        segments: list[dict[str, Any]] = []
+        prompt_parts: list[str] = []
+        pictures = []
+        n = 0
+        for entry in clip["ref_tray"]:
+            if str(entry.get("media_id") or "").strip():
+                n += 1
+                pictures.append({"n": n, "media_id": entry["media_id"], "kind": entry.get("kind") or "", "name": entry.get("name") or "", "source": f"tray[{n - 1}]"})
+        slot = clip.get("scene_slot") or {}
+        if slot.get("note"):
+            segments.append({"kind": "scene_note", "ref": "scene_slot", "text": f"（场景说明）{slot['note']}"})
+            prompt_parts.append(segments[-1]["text"])
+        if clip["prompt_opening"]:
+            segments.append({"kind": "opening", "ref": "clip", "text": clip["prompt_opening"]})
+            prompt_parts.append(clip["prompt_opening"])
+        shots = sorted(self._clip_shots(drama, clip["id"]), key=lambda s: s["order"])
+        violations: list[dict[str, str]] = []
+        negative_hits: list[dict[str, str]] = []
+        used_tokens: set[int] = set()
+        for i, shot in enumerate(shots, start=1):
+            text = shot["prompt_zh"].strip() or shot["prompt_en"].strip()
+            full = f"[Shot {i} · {_fmt_s(shot['duration_s'])}] {text}"
+            segments.append({"kind": "shot", "ref": shot["id"], "duration_s": shot["duration_s"], "text": full if text else ""})
+            if text:
+                prompt_parts.append(full)
+            for token in _PICTURE_TOKEN_RE.findall(full):
+                num = int(token)
+                used_tokens.add(num)
+                if num > n:
+                    violations.append({"shot_id": shot["id"], "token": f"<Picture {num}>"})
+            for word in DRAMA_NEGATIVE_WORDS:
+                if word in full:
+                    negative_hits.append({"match": word, "rule": word, "suggest": f"写『是什么/在哪』，避免『{word}』"})
+        if clip["prompt_ending"]:
+            segments.append({"kind": "ending", "ref": "clip", "text": clip["prompt_ending"]})
+            prompt_parts.append(clip["prompt_ending"])
+        prompt = "\n".join(prompt_parts)
+        unused = [p["name"] or p["media_id"] for p in pictures if p["n"] not in used_tokens]
+        token_match = not violations
+        checks = {
+            "negative_wording": "fail" if negative_hits else "pass",
+            "negative_hits": negative_hits,
+            "token_manifest_match": token_match,
+            "violations": violations,
+            "unused_tray_refs": unused,
+            "scene_slot_missing": bool(slot) and not slot.get("note"),
+            "scene_slot_absent": not slot,
+            "scene_link_dangling": bool(slot.get("media_id")) and slot["media_id"] not in {p["media_id"] for p in pictures},
+            "warnings": [],
+        }
+        return httpx.Response(200, json={"prompt": prompt, "segments": segments, "pictures": pictures, "scene_slot": slot or {}, "checks": checks, "valid": token_match and not negative_hits})
+
+    # ── generate / qc ─────────────────────────────────────────────────
+    def _generate_submit(self, drama: dict[str, Any], chapter: dict[str, Any], clip: dict[str, Any]) -> httpx.Response:
+        inflight = drama["gen_inflight"]
+        if inflight is not None and inflight["clip_id"] != clip["id"]:
+            return _drama_detail_error(409, "single_job_in_flight", f"已有在途作业 {inflight['job_id']}（片段 {inflight['clip_id']}）；一次只排一笔", job_id=inflight["job_id"], clip_id=inflight["clip_id"])
+        if clip["stale"]:
+            return _drama_detail_error(409, "stale_partition", "先确认重算（partition/commit）")
+        if clip["state"] != "pending" and all(a["version"] != clip["version"] for a in clip["archives"]):
+            return _drama_detail_error(409, "previous_version_not_archived", f"重出前须先归档 v{clip['version']}")
+        if clip["state"] not in ("pending", "qc_pass", "qc_ml", "qc_sl", "failed"):
+            return _drama_detail_error(400, "clip_state_not_submittable", f"state={clip['state']} 不可提交")
+        job_id = "job_" + secrets.token_hex(4)
+        drama["gen_inflight"] = {"job_id": job_id, "clip_id": clip["id"], "submitted_at": time.time()}
+        clip["state"] = "generating"
+        return httpx.Response(202, json={"job_id": job_id, "clip_id": clip["id"], "state": "generating"})
+
+    def _generate_status(self, drama: dict[str, Any], clip: dict[str, Any]) -> httpx.Response:
+        inflight = drama["gen_inflight"]
+        if inflight is None or inflight["clip_id"] != clip["id"]:
+            return _drama_string_error(404, "no in-flight job")
+        # One poll moves generating → qc_pending (the engine "finished").
+        if clip["state"] == "generating":
+            clip["state"] = "qc_pending"
+        return httpx.Response(200, json={"state": clip["state"], "drama_id": drama["id"], "ch_id": clip["chapter_id"], "clip_id": clip["id"], "job_id": inflight["job_id"], "submitted_at": inflight["submitted_at"]})
+
+    def _qc_read(self, drama: dict[str, Any], clip: dict[str, Any]) -> httpx.Response:
+        scripted = self.qc_script.get(clip["id"])
+        body = scripted.pop(0) if scripted else dict(_QC_PASS_BODY)
+        body = json.loads(json.dumps(body))  # deep copy so scripted dicts stay pristine
+        clip["state"] = body["state"]
+        if body["state"] in ("qc_pass", "qc_ml", "qc_sl"):
+            drama["gen_inflight"] = None  # lease released when QC concludes
+        return httpx.Response(200, json=body)
+
+    # ── partition (drama.md §14) ──────────────────────────────────────
+    def _partition(self, drama: dict[str, Any], chapter: dict[str, Any], target_s: float) -> list[dict[str, Any]]:
+        plots = {p["id"]: p["order"] for p in drama["plots"] if p["chapter_id"] == chapter["id"]}
+        chapter_clips = [c for c in drama["clips"] if c["chapter_id"] == chapter["id"]]
+        clips_by_id = {c["id"]: c for c in chapter_clips}
+        episodes: list[dict[str, Any]] = []
+        for clip in sorted(chapter_clips, key=lambda c: (plots.get(c["plot_id"], 0), c["order"])):
+            used = self._budget_used(drama, clip["id"])
+            prev = clips_by_id.get(episodes[-1]["clip_ids"][-1]) if episodes else None
+            boundary_break = prev is not None and plots.get(prev["plot_id"]) != plots.get(clip["plot_id"])
+            if prev is not None and not boundary_break and episodes[-1]["duration_s"] + used <= target_s:
+                episodes[-1]["duration_s"] = round(episodes[-1]["duration_s"] + used, 2)
+                episodes[-1]["clip_ids"].append(clip["id"])
+            else:
+                episodes.append({"idx": len(episodes) + 1, "duration_s": round(used, 2), "clip_ids": [clip["id"]], "break_reason": "plot_boundary" if prev is not None else "duration"})
+        return episodes
+
+    def _partition_preview(self, drama: dict[str, Any], chapter: dict[str, Any], target: float) -> httpx.Response:
+        return httpx.Response(200, json={"episodes": self._partition(drama, chapter, target), "stale": False, "diff": None})
+
+    def _partition_commit(self, drama: dict[str, Any], chapter: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        episodes = self._partition(drama, chapter, float(body.get("target_episode_s") or 60))
+        chapter["episodes_snapshot"] = episodes
+        return httpx.Response(200, json={"episodes": len(episodes), "unchanged_from": 1})
 
     # ── INSERT-GROUPVID: 组图生视频 media 端点（groupvid.md 流水线 A）──────
     # 建模：POST /v1/media（multipart 上传 kind=images）→ POST/GET …/analyze →
