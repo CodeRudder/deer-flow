@@ -76,6 +76,7 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
     )
     monkeypatch.setenv("MINIMAX_VIDEO_API_KEY", "test-key")
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("MEDIA_GATEWAY_BASE_URL", raising=False)
 
     response = registry.get_video_generation_providers()
     providers = {provider.name: provider for provider in response.providers}
@@ -190,6 +191,7 @@ def test_registry_reads_selectable_models_from_config_in_order(monkeypatch):
     monkeypatch.setenv("CUSTOM_VIDEO_KEY", "test-key")
     monkeypatch.delenv("MINIMAX_VIDEO_API_KEY", raising=False)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("MEDIA_GATEWAY_BASE_URL", raising=False)
 
     response = registry.get_video_generation_providers()
 
@@ -272,6 +274,9 @@ def _enabled(monkeypatch, model_extra=None):
         )
     for env in ("MINIMAX_VIDEO_API_KEY", "MINIMAX_API_KEY", "SGLANG_H3_API_BASE_URL"):
         monkeypatch.delenv(env, raising=False)
+    # media_gateway provider is env-gated; another test's dotenv load may have
+    # injected these into os.environ, so pin them off like the keys above.
+    monkeypatch.delenv("MEDIA_GATEWAY_BASE_URL", raising=False)
 
 
 def test_registry_falls_back_to_builtin_when_config_load_fails(monkeypatch):
