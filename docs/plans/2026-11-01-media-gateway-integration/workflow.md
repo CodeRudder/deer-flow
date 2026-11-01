@@ -114,3 +114,20 @@ checkpoint 模式：2/3/5 的关键节点等用户确认；auto 模式：全程�
 2. deer-flow：配置 §3 env（BASE_URL / ADMIN_TOKEN / CONSOLE_URL），迁移新增映射表；
 3. 冒烟：`W0`（见 acceptance.md A0）连通性检查；
 4. 发布顺序：**MGW ticket 端点 + /ui JS 先上（向后兼容），deer-flow 后上**。
+
+## W6 内容创作矩阵（skill `content-series`）
+
+```
+用户："以这篇游记（或只是一个想法）做一组内容"
+  │ 1. ensure_user() → h3t_
+  │ 2. 输入适配：文章/图片/视频 → MGW 素材库入库；想法 → 直接进规划
+  │ 3. 内容规划器（LLM）：垂类定位 + 风格指南（落 MGW 规则）+ 选题清单
+  │    + 每选题格式组合 → 展示矩阵，用户增删（checkpoint）/直接确认（auto）
+  │ 4. 视觉资产建立：封面模板/角色卡/品牌元素 → MGW 素材库/托盘
+  │ 5. 逐选题生产（受控并发，全部走 §7.3 QC 闭环）：
+  │    文 → LLM 直出｜组图 → t2i-series｜图文帖 → image-text-post
+  │    视频 → video-clips｜短剧 → drama-production
+  │ 6. 完成度追踪（矩阵状态读 MGW）→ 交付 + 按选题续作
+  ▼
+系列一致性由共享风格指南 + 视觉资产保证；中断从 MGW 重读矩阵续跑
+```
