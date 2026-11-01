@@ -1002,7 +1002,14 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
     """
     checkpointer = get_checkpointer(request)
 
-    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+    # checkpoint_ns must be included: without it the sqlite checkpointer's
+    # WHERE clause loses the (thread_id, checkpoint_ns) index prefix pairing and
+    # `ORDER BY checkpoint_id DESC` falls back to a temp B-tree sort that
+    # materializes *every* checkpoint row of the thread (multi-GB on long
+    # threads) — measured ~8.5s for a single 272KB row on a 751-checkpoint
+    # thread vs ~3ms with the namespace pinned. All DeerFlow threads live in
+    # the root namespace, same as the other endpoints in this router.
+    config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
     if body.before:
         config["configurable"]["checkpoint_id"] = body.before
 
