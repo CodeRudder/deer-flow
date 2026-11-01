@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from app.gateway.authz import require_permission
 from app.gateway.deps import get_checkpointer, get_current_user, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
 from app.gateway.pagination import trim_run_message_page
+from app.gateway.response_sanitizer import sanitize_message_list, sanitize_value
 from app.gateway.services import sse_consumer, start_run, wait_for_run_completion
 from deerflow.runtime import RunRecord, RunStatus, serialize_channel_values_for_api
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text, message_to_text
@@ -491,7 +492,7 @@ async def wait_run(thread_id: str, body: RunCreateRequest, request: Request) -> 
             if checkpoint_tuple is not None:
                 checkpoint = getattr(checkpoint_tuple, "checkpoint", {}) or {}
                 channel_values = checkpoint.get("channel_values", {})
-                return serialize_channel_values_for_api(channel_values)
+                return sanitize_value(serialize_channel_values_for_api(channel_values))
         except Exception:
             logger.exception("Failed to fetch final state for run %s", record.run_id)
 
@@ -714,7 +715,7 @@ async def list_thread_messages(
                         content["additional_kwargs"] = {}
                     content["additional_kwargs"]["turn_duration"] = run_durations[rid]
 
-    return messages
+    return sanitize_message_list(messages)
 
 
 @router.get("/{thread_id}/runs/{run_id}/messages")
@@ -757,7 +758,7 @@ async def list_run_messages(
                             content["additional_kwargs"] = {}
                         content["additional_kwargs"]["turn_duration"] = duration
 
-    return {"data": data, "has_more": has_more}
+    return {"data": sanitize_message_list(data), "has_more": has_more}
 
 
 @router.get("/{thread_id}/runs/{run_id}/events")
@@ -772,7 +773,7 @@ async def list_run_events(
     """Return the full event stream for a run (debug/audit)."""
     event_store = get_run_event_store(request)
     types = event_types.split(",") if event_types else None
-    return await event_store.list_events(thread_id, run_id, event_types=types, limit=limit)
+    return sanitize_value(await event_store.list_events(thread_id, run_id, event_types=types, limit=limit))
 
 
 @router.get("/{thread_id}/token-usage", response_model=ThreadTokenUsageResponse)

@@ -100,6 +100,9 @@ const TASK_STATUS_EVENT_TYPES = new Set([
 ]);
 
 const THREAD_MESSAGES_PAGE_SIZE = 50;
+// Messages fetched per history page. Opening a thread only loads the most
+// recent page; older pages stream in through the scroll-triggered loadMore.
+const RUN_MESSAGES_PAGE_SIZE = 30;
 const THREAD_HISTORY_V2_ENABLED =
   env.NEXT_PUBLIC_THREAD_HISTORY_V2_ENABLED === "true";
 
@@ -380,6 +383,7 @@ export function buildRunMessagesUrl(
   threadId: string,
   runId: string,
   beforeSeq?: number,
+  limit?: number,
 ) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
   const path = `/api/threads/${encodeURIComponent(threadId)}/runs/${encodeURIComponent(runId)}/messages`;
@@ -387,6 +391,9 @@ export function buildRunMessagesUrl(
     `${normalizedBaseUrl}${path}`,
     typeof window !== "undefined" ? window.location.origin : "http://localhost",
   );
+  if (limit !== undefined) {
+    url.searchParams.set("limit", String(limit));
+  }
   if (beforeSeq !== undefined) {
     url.searchParams.set("before_seq", String(beforeSeq));
   }
@@ -1956,6 +1963,11 @@ function useThreadHistoryLegacy(
   threadId: string,
   { enabled = true, pendingSupersededRunIds }: ThreadHistoryOptions = {},
 ) {
+  // One `loadMessages` call fetches at most one page (RUN_MESSAGES_PAGE_SIZE
+  // messages) of the most recent unloaded run, skipping over runs with no
+  // visible messages. Older pages are loaded lazily: the message list triggers
+  // `loadMore` when the user scrolls to the top, which resumes from the stored
+  // `before_seq` cursor and walks backward run by run.
   const runs = useThreadRuns(threadId, { enabled });
   const threadIdRef = useRef(threadId);
   const runsRef = useRef(runs.data ?? []);
@@ -2030,6 +2042,7 @@ function useThreadHistoryLegacy(
           requestThreadId,
           run.run_id,
           beforeSeq,
+          RUN_MESSAGES_PAGE_SIZE,
         );
         const result: RunMessagesPageResponse = await fetch(url, {
           method: "GET",
@@ -2055,7 +2068,9 @@ function useThreadHistoryLegacy(
         const nextBeforeSeq = getNextRunMessagesBeforeSeq(result);
         if (typeof nextBeforeSeq === "number") {
           runBeforeSeqRef.current.set(run.run_id, nextBeforeSeq);
-          pendingLoadRef.current = true;
+          // Lazy pagination: stop the eager loop after this page. The cursor
+          // stored above is resumed by the scroll-triggered loadMore, so
+          // opening a thread only fetches the most recent page.
         } else if (nextBeforeSeq === undefined) {
           console.warn(
             `Run ${run.run_id} returned has_more without message seq values; leaving it pending for retry.`,
@@ -2194,7 +2209,7 @@ function useThreadHistoryV2(
         beforeSeq,
         THREAD_MESSAGES_PAGE_SIZE,
       );
-      const result: RunMessage[] = await fetch(url, {
+      const result: RunMessagesPageResponse = await fetch(url, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -2209,19 +2224,20 @@ function useThreadHistoryV2(
       }
 
       initializedRef.current = true;
-      if (result.length === 0) {
+      const fetchedRows = Array.isArray(result) ? result : result.data;
+      if (fetchedRows.length === 0) {
         hasMoreRef.current = false;
         setHasMore(false);
         return;
       }
 
       setRows((prev) => {
-        const merged = mergeRunMessageRows(prev, result);
+        const merged = mergeRunMessageRows(prev, fetchedRows);
         oldestSeqRef.current = getOldestRunMessageSeq(merged);
         return merged;
       });
 
-      const nextHasMore = result.length >= THREAD_MESSAGES_PAGE_SIZE;
+      const nextHasMore = runMessagesPageHasMore(result);
       hasMoreRef.current = nextHasMore;
       setHasMore(nextHasMore);
     } catch (err) {

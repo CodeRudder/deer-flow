@@ -1,7 +1,14 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
 import { ChevronUpIcon, Loader2Icon, RefreshCcwIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 import {
@@ -100,11 +107,46 @@ function LoadMoreHistoryIndicator({
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadRef = useRef(0);
+  // Scroll anchor: captured before a page load starts so the prepended
+  // history does not shift the viewport once the new rows render.
+  const scrollAnchorRef = useRef<{
+    scrollTop: number;
+    scrollHeight: number;
+  } | null>(null);
+  const wasLoadingRef = useRef(false);
+
+  const getScrollElement = useCallback(() => {
+    // `Conversation` (StickToBottom root) carries role="log".
+    return sentinelRef.current?.closest<HTMLElement>('[role="log"]') ?? null;
+  }, []);
+
+  const restoreScrollAnchor = useCallback(() => {
+    const anchor = scrollAnchorRef.current;
+    scrollAnchorRef.current = null;
+    if (!anchor) {
+      return;
+    }
+    const element = getScrollElement();
+    if (!element) {
+      return;
+    }
+    const delta = element.scrollHeight - anchor.scrollHeight;
+    if (delta > 0) {
+      element.scrollTop = anchor.scrollTop + delta;
+    }
+  }, [getScrollElement]);
 
   const throttledLoadMore = useCallback(() => {
     if (!hasMore || isLoading) {
       return;
     }
+
+    const captureAnchor = () => {
+      const element = getScrollElement();
+      scrollAnchorRef.current = element
+        ? { scrollTop: element.scrollTop, scrollHeight: element.scrollHeight }
+        : null;
+    };
 
     const now = Date.now();
     const remaining =
@@ -112,6 +154,7 @@ function LoadMoreHistoryIndicator({
 
     if (remaining <= 0) {
       lastLoadRef.current = now;
+      captureAnchor();
       loadMore?.();
       return;
     }
@@ -126,9 +169,22 @@ function LoadMoreHistoryIndicator({
         return;
       }
       lastLoadRef.current = Date.now();
+      captureAnchor();
       loadMore?.();
     }, remaining);
-  }, [hasMore, isLoading, loadMore]);
+  }, [getScrollElement, hasMore, isLoading, loadMore]);
+
+  useLayoutEffect(() => {
+    const wasLoading = wasLoadingRef.current;
+    wasLoadingRef.current = isLoading ?? false;
+    if (!wasLoading || isLoading) {
+      return;
+    }
+    // The load finished and the page rendered in this commit; compensate for
+    // the height the prepended messages added so the viewport stays anchored
+    // on the messages the user was reading instead of jumping.
+    restoreScrollAnchor();
+  }, [isLoading, restoreScrollAnchor]);
 
   useEffect(() => {
     const element = sentinelRef.current;
