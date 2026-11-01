@@ -56,10 +56,8 @@ class FakeClient:
     async def get(self, path, params=None, **kwargs):
         self.calls.append(("GET", path, params))
         if path == "/v1/users":
-            username = (params or {}).get("username")
-            if getattr(self, "last_user", {}).get("username") == username:
-                return {"items": [self.last_user]}
-            return {"items": []}
+            # Real contract: no filtering, full list, users keyed by "name".
+            return {"users": list(getattr(self, "user_list", []))}
         raise AssertionError(f"unexpected GET {path}")
 
     async def patch(self, path, json=None, **kwargs):
@@ -175,21 +173,31 @@ class TestEnsureUser:
         assert cipher.decrypt_text(row.mgw_password_enc)  # password stored encrypted
 
     @pytest.mark.anyio
-    async def test_409_claims_existing_user_by_username(self, provisioner, client):
+    async def test_409_claims_existing_user_by_name(self, provisioner, client):
         client.responses["create_user_409"] = True
         # Pretend the user already exists on MGW with this username
-        client.last_user = {"id": "mgw-existing", "username": "alice"}
+        client.user_list = [{"id": "mgw-existing", "name": "alice"}]
 
         account = await provisioner.ensure_user(_user())
 
         assert account.mgw_user_id == "mgw-existing"
-        assert client.calls[1] == ("GET", "/v1/users", {"username": "alice"})
+        # Full-list fetch without a (unsupported) username filter
+        assert client.calls[1] == ("GET", "/v1/users", None)
         assert client.calls[2] == ("POST", "/v1/users/mgw-existing/tokens", {"label": "deerflow"})
 
     @pytest.mark.anyio
     async def test_409_unclaimable_raises(self, provisioner, client):
         client.responses["create_user_409"] = True
-        client.last_user = {"id": "mgw-someone-else", "username": "bob"}
+        client.user_list = [{"id": "mgw-someone-else", "name": "bob"}]
+
+        with pytest.raises(MediaGatewayError) as exc_info:
+            await provisioner.ensure_user(_user())
+        assert exc_info.value.code == "username_conflict"
+
+    @pytest.mark.anyio
+    async def test_409_disabled_existing_user_is_not_claimed(self, provisioner, client):
+        client.responses["create_user_409"] = True
+        client.user_list = [{"id": "mgw-disabled", "name": "alice", "disabled": True}]
 
         with pytest.raises(MediaGatewayError) as exc_info:
             await provisioner.ensure_user(_user())
@@ -227,6 +235,26 @@ class TestDisableUser:
     @pytest.mark.anyio
     async def test_disable_unmapped_user_is_noop(self, provisioner, client):
         assert await provisioner.disable_user("no-such-user") is False
+        assert client.calls == []
+
+
+class TestUpdateRole:
+    @pytest.mark.anyio
+    async def test_role_change_patches_mgw(self, provisioner, client, session_factory):
+        account = await provisioner.ensure_user(_user())
+
+        assert await provisioner.update_role(account.deerflow_user_id, "admin") is True
+        assert client.calls[-1] == ("PATCH", "/v1/users/mgw-u1", {"role": "admin"})
+
+    @pytest.mark.anyio
+    async def test_role_change_demote_maps_to_user(self, provisioner, client):
+        account = await provisioner.ensure_user(_user(system_role="admin"))
+        await provisioner.update_role(account.deerflow_user_id, "user")
+        assert client.calls[-1] == ("PATCH", "/v1/users/mgw-u1", {"role": "user"})
+
+    @pytest.mark.anyio
+    async def test_role_change_unmapped_user_is_noop(self, provisioner, client):
+        assert await provisioner.update_role("no-such-user", "admin") is False
         assert client.calls == []
 
 

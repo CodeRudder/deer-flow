@@ -118,6 +118,22 @@ class MediaGatewayProvisioner:
             await session.commit()
         return True
 
+    async def update_role(self, user_id: str, system_role: str) -> bool:
+        """Sync a DeerFlow role change (promote/demote admin) to the mapped MGW account.
+
+        No-op when the user has no MGW mapping yet — a later JIT provisioning
+        picks up the current role anyway.
+        """
+        async with self.session_factory() as session:
+            row = await self._get_row(session, user_id)
+            if row is None:
+                logger.warning("media gateway role sync: no mapping for user %s", user_id)
+                return False
+            await self._client.patch(f"/v1/users/{row.mgw_user_id}", json={"role": resolve_mgw_role(system_role)})
+            row.updated_at = datetime.now(UTC)
+            await session.commit()
+        return True
+
     async def reset_token(self, user_id: str) -> MediaGatewayAccount:
         """Revoke the current MGW token and issue a fresh one (token rotation)."""
         async with self.session_factory() as session:
@@ -211,9 +227,17 @@ class MediaGatewayProvisioner:
         return {"token": token, "sha8": sha8}
 
     async def _claim_existing_user(self, username: str) -> str:
-        listing = await self._client.get("/v1/users", params={"username": username})
-        for item in listing.get("items") or listing.get("users") or []:
-            if str(item.get("username")) == username:
+        # MGW contract (docs/integration/api/auth.md, GET /v1/users): the admin
+        # listing does NOT support a username filter (any params are ignored and
+        # the full list is returned) and user objects are keyed by ``name`` —
+        # there is no ``username`` field. The gateway is internal with a small
+        # user count, so a full fetch plus a client-side match is acceptable.
+        listing = await self._client.get("/v1/users")
+        for item in listing.get("users") or []:
+            if str(item.get("name")) == username:
+                if item.get("disabled"):
+                    logger.warning("media gateway user %r exists but is disabled; refusing to claim", username)
+                    break
                 return str(item["id"])
         raise MediaGatewayError(
             status=409,
