@@ -36,25 +36,55 @@
 
 ## 阶段 M2：provider 接入 + 控制台跳转 skill
 
+> 2026-11-01 调整：任务按**从简单到复杂**重排为 5 个批次，分批交付——
+> 批次 1 完成即可打通端到端基础链路（跑 E2E-mock 基础项），后续批次逐层加码。
+> 任务 ID 与产出/验收列保持不变。
+
+### 批次1（最简，打通端到端）
+
 | # | 任务 | 产出 | 验收 |
 |---|---|---|---|
-| M2-1 | image provider `media_gateway` 注册：能力发现（映射为 `--describe-provider` 格式）/提交/轮询/产物代理 URL | registry + adapter + 单测 | A2 |
-| M2-2 | video provider 同上 | 同上 | A2 |
-| M2-3 | 产物代理路由 `/api/media-gateway/file/...`（当前用户令牌转发） | gateway 路由 + 单测 | A2/A5 |
-| M2-4 | skill `media-console-link`（换装/素材库/种子匹配跳转） | skill + 说明 | A3 |
-| M2-5 | 既有 skills 兼容性验证：`video-generation` / `image-generation` / `image-editing` 对 MGW 模型全流程（审批/轮询/任务查询/sidecar）不改一行跑通 | 集成测试 | A2 |
-| M2-6 | skill `drama-production`（创作智能体：LLM 剧本编写→MGW 落库→五要素分镜设计→t2g 分镜图→设计层校验→生成→QC 迭代闭环→分集；checkpoint/auto 双模式） | skill + prompts + 单测 | A2b |
-| M2-7 | skill `video-clips`（同上，组图生视频路径：素材→plan/design→五要素分镜→分镜板→QC 闭环→逐镜产物） | skill + prompts + 单测 | A2b |
-| M2-9 | skill `t2i-series`（文生组图：LLM 组图设计→MGW 组图生成→QC 闭环） | skill + 单测 | A2c |
-| M2-10 | skill `image-text-post`（图文帖子：组图+文案+版式组装+VLM 抽检） | skill + 单测 | A2c |
-| M2-11 | skill `content-series`（顶层内容矩阵：输入适配→规划→路由复用各 skill→完成度追踪→续作；风格指南/视觉资产落 MGW） | skill + prompts + 单测 | A2c |
-| M2-8 | 迭代闭环通用件：QC 归因分类器（prompt/引用/种子）、修正策略、版本追加与回滚（全走 MGW 记录） | 模块 + 单测 | A2b |
+| 批次1 / M2-1 | image provider `media_gateway` 注册：能力发现（映射为 `--describe-provider` 格式）/提交/轮询/产物代理 URL | registry + adapter + 单测 | A2 |
+| 批次1 / M2-2 | video provider 同上 | 同上 | A2 |
+| 批次1 / M2-3 | 产物代理路由 `/api/media-gateway/file/...`（当前用户令牌转发） | gateway 路由 + 单测 | A2/A5 |
+| 批次1 / M2-4 | skill `media-console-link`（换装/素材库/种子匹配跳转） | skill + 说明 | A3 |
+| 批次1 / M2-5 | 既有 skills 兼容性验证：`video-generation` / `image-generation` / `image-editing` 对 MGW 模型全流程（审批/轮询/任务查询/sidecar）不改一行跑通 | 集成测试 | A2 |
+| 批次1 / （配套） | mock gateway 测试夹具（按 mocks/E2E-mock 约定，覆盖 auth/users/生成/轮询/产物契约） | pytest 夹具 + httpx MockTransport | E2E-mock 基础项 |
+
+→ **批次 1 完成 = 可跑 E2E-mock 基础链路**（E2E-1/2/4/8/9/10 基础项，见 M3 标注）。
+
+### 批次2
+
+| # | 任务 | 产出 | 验收 |
+|---|---|---|---|
+| 批次2 / M2-6 | skill `drama-production`（创作智能体：LLM 剧本编写→MGW 落库→五要素分镜设计→t2g 分镜图→设计层校验→生成→QC 迭代闭环→分集；checkpoint/auto 双模式） | skill + prompts + 单测 | A2b |
+| 批次2 / M2-8 | 迭代闭环通用件：QC 归因分类器（prompt/引用/种子）、修正策略、版本追加与回滚（全走 MGW 记录） | 模块 + 单测 | A2b |
+
+### 批次3
+
+| # | 任务 | 产出 | 验收 |
+|---|---|---|---|
+| 批次3 / M2-7 | skill `video-clips`（同上，组图生视频路径：素材→plan/design→五要素分镜→分镜板→QC 闭环→逐镜产物） | skill + prompts + 单测 | A2b |
+
+### 批次4
+
+| # | 任务 | 产出 | 验收 |
+|---|---|---|---|
+| 批次4 / M2-9 | skill `t2i-series`（文生组图：LLM 组图设计→MGW 组图生成→QC 闭环） | skill + 单测 | A2c |
+| 批次4 / M2-10 | skill `image-text-post`（图文帖子：组图+文案+版式组装+VLM 抽检） | skill + 单测 | A2c |
+
+### 批次5（最复杂）
+
+| # | 任务 | 产出 | 验收 |
+|---|---|---|---|
+| 批次5 / M2-11 | skill `content-series`（顶层内容矩阵：输入适配→规划→路由复用各 skill→完成度追踪→续作；风格指南/视觉资产落 MGW） | skill + prompts + 单测 | A2c |
 
 **原则**：单镜生成不新增 skill（复用既有，见 design §4.1）；短剧与视频片段为
 **创作智能体型** skill——LLM 驱动"编写→精细设计→检验→修正"闭环，
 数据全部经 MGW API 落库（MGW 为真源），deer-flow 仅存断点游标，不建领域表。
 
-工期估计：14–18 人日（M2-6~11 创作智能体与内容矩阵较重）。
+工期估计：14–18 人日（M2-6~11 创作智能体与内容矩阵较重），按批次分批交付；
+批次 1 约 4–5 人日即可端到端跑通 E2E-mock。
 
 ## 阶段 M3：端到端测试（E2E）
 
@@ -71,10 +101,10 @@
 | E2E-2 | 生图全链路 | 既有 skill + MGW 模型：prompt→审批→提交→轮询→代理 URL 前端渲染；Idempotency 重放 | A2 |
 | E2E-3 | 生视频全链路 | 既有 video-generation 工作流 + MGW 模型（含 sidecar、任务查询） | A2 |
 | E2E-3b | 模型可选中立 | 同一 skill 分别用原生模型与 MGW 模型各跑一次，均成功；MGW 模型不支持的能力本地拒绝 | A2 |
-| E2E-5b | 短剧全流程 | drama-production auto 模式：从一段创意自动完成 剧本→五要素分镜→t2g 目检→生成→QC 迭代闭环→分集；含至少一次"QC 失败→自动修正→通过"；中断恢复 | A2b |
-| E2E-5c | 视频片段全流程 | video-clips：素材→LLM 五要素分镜设计→分镜板→QC 闭环→逐镜产物 | A2b |
-| E2E-5e | 内容矩阵 | content-series：一个想法 → ≥3 选题×≥2 格式全自动生产（含 1 次 QC 修正）；系列一致性目检 | A2c |
-| E2E-5d | 编排隔离 | 用户 A 建的剧/片段任务对用户 B 不可见（skill 与 API 双查） | A2b |
+| E2E-5b | 短剧全流程（**随批次2解锁**） | drama-production auto 模式：从一段创意自动完成 剧本→五要素分镜→t2g 目检→生成→QC 迭代闭环→分集；含至少一次"QC 失败→自动修正→通过"；中断恢复 | A2b |
+| E2E-5c | 视频片段全流程（**随批次3解锁**） | video-clips：素材→LLM 五要素分镜设计→分镜板→QC 闭环→逐镜产物 | A2b |
+| E2E-5e | 内容矩阵（**随批次5解锁**） | content-series：一个想法 → ≥3 选题×≥2 格式全自动生产（含 1 次 QC 修正）；系列一致性目检 | A2c |
+| E2E-5d | 编排隔离（**随批次2+解锁**） | 用户 A 建的剧/片段任务对用户 B 不可见（skill 与 API 双查） | A2b |
 | E2E-4 | 多用户隔离 | 双用户各自生成；互查作业/互访产物 URL 均不可见 | A2 |
 | E2E-5 | 控制台免登 | console-link 打开 → 免登 → 控制台内做一个换装 tryon → owner 正确 | A3 |
 | E2E-6 | ticket 一次性/过期 | 刷新重放、等待过期 | A3/A4 |
@@ -86,14 +116,25 @@
 **通过标准**：E2E-1~5d、10 全过；E2E-6~9 按表全过；所有验收条目勾选。
 产出：E2E 报告（含 MGW 版本号、env 指纹、用例截图/日志摘录），落本目录 `e2e-report.md`。
 
+**与 M2 批次的对应（分批交付节奏）**：
+- **批次 1 完成即可跑**：E2E-1/2/4/8/9/10（冷启动置备、生图全链路、多用户隔离、故障注入、安全巡检、回归）——基础链路 + mock 夹具就绪；
+- **随批次解锁**：E2E-5b（批次2，drama-production）、E2E-5d（批次2+）、E2E-5c（批次3，video-clips）、E2E-5e（批次5，content-series）；
+- 其余（E2E-3/3b/5/6/7）属基础链路范畴，批次 1（配合 M0/M1）即可覆盖。
+
 ## 里程碑与顺序
 
 ```
 M0（MGW ticket，独立分支）─┐
                            ├─► M3 E2E ─► 上线（MGW 先发，deer-flow 后发）
 M1 ─► M2 ──────────────────┘
+      └─ 分批：批次1（provider注册+代理+console-link+mock夹具，端到端跑通）
+              → 批次2（drama-production + QC闭环通用件）
+              → 批次3（video-clips）→ 批次4（t2i-series + image-text-post）
+              → 批次5（content-series）
 ```
 
-- 总工期估计：9–13 人日（M0 1–2 人日，可与 M1 并行）；
+- 总工期估计：9–13 人日（M0 1–2 人日，可与 M1 并行）；M2 按批次分批交付，
+  **批次 1（约 4–5 人日）完成即达到 E2E-mock 基础链路可跑状态**（E2E-1/2/4/8/9/10），
+  后续批次每批交付即解锁对应 E2E 用例（见 M3 标注）；
 - 分支：deer-flow 用当前 `feat/gateway-media-api`；MGW 侧建议 `feat/auth-ticket`；
 - 每阶段完成即在本文档勾选并附 PR 链接。
