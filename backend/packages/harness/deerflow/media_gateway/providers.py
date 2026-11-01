@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from deerflow.media_gateway.client import MediaGatewayClient, MediaGatewayError
+from deerflow.media_gateway.settings import get_media_gateway_settings
 
 logger = logging.getLogger(__name__)
 
@@ -385,12 +386,19 @@ class MediaGatewayGenerationProvider:
         """Submit one generation job; returns the MGW task id."""
         params = dict(params or {})
         capabilities = await self.discover_capabilities()
-        capability = capabilities.get(model)
+        # Merged family names (one item per engine family, e.g. ``h3-t2v``) are
+        # not real gateway modes: the ``quality`` parameter selects the rung
+        # (std default / hq / ultra / 2k) and the name resolves to that rung's
+        # real mode. Real mode names stay identity; ``quality`` is a local
+        # selection parameter and never forwarded to the gateway.
+        quality = str(params.pop("quality", None) or "").strip().lower() or None
+        model_name = resolve_merged_model_alias(model, quality, capabilities)
+        capability = capabilities.get(model_name)
         if capability is None:
             raise UnsupportedParameterError(f"model={model} is not offered by media_gateway ({self.kind})")
         check_params_supported(capability, params)
 
-        payload: dict[str, Any] = {"mode": model, "prompt": prompt, **{k: v for k, v in params.items() if v is not None}}
+        payload: dict[str, Any] = {"mode": model_name, "prompt": prompt, **{k: v for k, v in params.items() if v is not None}}
         if self.kind == "video":
             # images.md §2.1: output=video makes the clip mp4 the artifact.
             payload.setdefault("output", "video")
@@ -595,8 +603,7 @@ class MediaGatewayGenerationProvider:
 # - the sync registries read the cached snapshot via
 #   :func:`cached_media_gateway_models` and always keep the env-default tier
 #   first, falling back to the env-default-only list when the gateway is
-#   unreachable or ``MEDIA_GATEWAY_BASE_URL`` is unset (byte-identical legacy
-#   output).
+#   unreachable or unconfigured (byte-identical legacy output).
 
 MODES_CACHE_TTL_SECONDS = 60.0
 
@@ -606,9 +613,9 @@ MODES_CACHE_TTL_SECONDS = 60.0
 # - ``*2va`` (``t2va`` / ``fl2va`` / ``ref2va`` — h3-frame/clip/i2i/ref) are
 #   **video+audio engines**: the gateway generates a short clip and by default
 #   extracts frames from it; with ``output=video`` the mp4 is kept (gateway
-#   contract: `POST /v1/images/generations` ``output`` parameter, exercised by
-#   the gateway's own ``test_api_frames.py``). They are therefore video-capable
-#   AND frame-capable — listed under BOTH media kinds.
+#   contract: ``POST /v1/images/generations`` ``output`` parameter, exercised
+#   by the gateway's own ``test_api_frames.py``). They are therefore
+#   video-capable AND frame-capable — listed under BOTH media kinds.
 # - Pure image backends (``moss``, ``qwen-image``) can never yield a video —
 #   image kind only.
 # - Motion families (``*-t2v`` / ``*-i2v`` / ``*-vace`` — wan-*, ltx-*) are
@@ -618,10 +625,12 @@ _FRAME_ENGINE_TASK_SUFFIX = "2va"
 _VIDEO_ENGINE_TASK_SUFFIXES = ("-t2v", "-i2v")
 _VIDEO_ENGINE_TASK_KEYWORDS = ("vace",)
 
-# key: MEDIA_GATEWAY_BASE_URL -> (monotonic timestamp, per-kind model dicts or
-# None while the last fetch failed). The failure marker doubles as a negative
-# cache so an unreachable gateway is retried at most once per TTL window.
-_models_cache: dict[str, tuple[float, dict[str, list[dict]] | None]] = {}
+# key: MEDIA_GATEWAY_BASE_URL -> (monotonic timestamp, snapshot or None while
+# the last fetch failed). Snapshot shape:
+# ``{"image": [merged model], "video": [merged model], "aliases": {...}}``.
+# The failure marker doubles as a negative cache so an unreachable gateway is
+# retried at most once per TTL window.
+_models_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
 
 def _engine_task(entry: dict) -> str:
@@ -652,41 +661,117 @@ def is_image_mode(entry: dict) -> bool:
     return True
 
 
-def _capability_summary(entry: dict) -> str:
-    """Human-readable capability suffix for an enumerated model description."""
-    bits: list[str] = []
-    task = str(entry.get("engine_task") or "")
-    if task:
-        bits.append(f"engine={task}")
-    durations = entry.get("capabilities", {}).get("duration_tiers") if isinstance(entry.get("capabilities"), dict) else None
+# ── same-family merging (ONE model item per engine family) ────────────────
+# The gateway exposes one mode per quality rung of the same engine (real
+# payload ``quality`` values: preview / draft / balanced / high / ultra / 2k —
+# e.g. h3-frame-* and h3-clip-* are two name spellings of the same t2va
+# engine's rungs). The user-facing lists show ONE merged model per engine
+# family; the resolution rung is chosen at submit time via the ``quality``
+# parameter (std default / hq / ultra / 2k), not via the model name. Grouping
+# is driven by the gateway's own ``engine_task`` + ``quality`` fields; the
+# name-suffix strip below only normalises the display name.
+_FAMILY_QUALITY_SUFFIXES = ("-draft", "-fast", "-preview", "-std", "-hq", "-high", "-ultra", "-2k", "-mini", "-turbo", "-pro", "-max")
+#: Display rung → acceptable gateway ``quality`` values (best first).
+_RUNG_SOURCE_QUALITIES = {"std": ("balanced", "preview", "draft", "fast"), "hq": ("high",), "ultra": ("ultra",), "2k": ("2k",)}
+#: When a family lacks the requested rung, fall down this ladder (2k → ultra → hq → std).
+_RUNG_FALLBACK = {"std": ("std",), "hq": ("std",), "ultra": ("hq", "std"), "2k": ("ultra", "hq", "std")}
+#: Family display names keyed by engine_task. t2va covers both the h3-frame*
+#: and h3-clip* name spellings (user-confirmed: same engine, different rung
+#: names); h3-t2v = 文生视频·音画，可抽帧当生图. fl2va → h3-i2v (图生视频,
+#: user-corrected terminology); ref2va → h3-ref. Anything else derives from the
+#: mode name with the quality rung stripped (moss-image-std → moss-image,
+#: wan-t2v-std → wan-t2v, ...).
+_FAMILY_DISPLAY_NAMES = {"t2va": "h3-t2v", "fl2va": "h3-i2v", "ref2va": "h3-ref"}
+
+
+def _family_name(name: str) -> str:
+    for suffix in _FAMILY_QUALITY_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _entry_rung_rank(entry: dict) -> tuple[int, int]:
     params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
-    if isinstance(durations, list) and durations:
-        bits.append(f"时长档 {min(durations)}–{max(durations)}s")
-    elif isinstance(params.get("duration_seconds"), (int, float)):
-        bits.append(f"时长≤{params['duration_seconds']:g}s")
-    ratios = entry.get("ratios") or entry.get("aspect_ratios")
-    if isinstance(ratios, list) and ratios:
-        bits.append("比例 " + "/".join(str(r) for r in ratios))
-    resolutions = entry.get("resolutions") or entry.get("sizes")
-    if isinstance(resolutions, list) and resolutions:
-        bits.append("分辨率 " + "/".join(str(r) for r in resolutions))
-    if entry.get("needs_reference"):
-        bits.append("必须提供参考图")
-    elif entry.get("accepts_reference_images") or entry.get("supports_reference"):
-        bits.append("可选参考图")
-    return f"（{'；'.join(bits)}）" if bits else ""
+    short_edge = params.get("short_edge") if isinstance(params.get("short_edge"), (int, float)) else 0
+    duration = params.get("duration_seconds") if isinstance(params.get("duration_seconds"), (int, float)) else 0
+    return int(short_edge), int(duration)
 
 
-def _enumerated_model(entry: dict) -> dict:
-    """One registry-facing model dict from a raw modes[] entry."""
-    base_description = entry.get("description") if isinstance(entry.get("description"), str) else ""
-    name = str(entry.get("name") or entry.get("id") or "")
-    display_name = entry.get("display_name") if isinstance(entry.get("display_name"), str) else name
-    return {
-        "name": name,
-        "display_name": display_name,
-        "description": f"{base_description}{_capability_summary(entry)}".strip() or None,
-    }
+def _pick_rung_entry(entries: list[dict], qualities: tuple[str, ...]) -> dict | None:
+    """Best entry among the given quality rungs (largest canvas, then duration)."""
+    # Best quality value first (the tuple is preference-ordered: balanced
+    # beats preview/draft/fast for the std rung), then largest canvas/duration.
+    for quality in qualities:
+        candidates = [entry for entry in entries if entry.get("quality") == quality]
+        if candidates:
+            return max(candidates, key=_entry_rung_rank)
+    return None
+
+
+def merge_same_family_tiers(entries: list[dict]) -> tuple[list[dict], dict[str, dict[str, str]]]:
+    """Collapse same-engine quality ladders into ONE merged model per family.
+
+    Returns ``(models, aliases)`` where ``aliases[display_name]`` maps each
+    resolution rung (``std`` / ``hq`` / ``ultra`` / ``2k``, only those the
+    family actually has) to the real gateway mode to submit.
+    """
+    families: dict[str, list[dict]] = {}
+    for entry in entries:
+        task = _engine_task(entry) or _family_name(str(entry.get("name") or ""))
+        families.setdefault(task, []).append(entry)
+
+    models: list[dict] = []
+    aliases: dict[str, dict[str, str]] = {}
+    for task, tiers in families.items():
+        rungs = {rung: picked for rung, qualities in _RUNG_SOURCE_QUALITIES.items() if (picked := _pick_rung_entry(tiers, qualities)) is not None}
+        if not rungs:
+            continue
+        std_entry = rungs.get("std") or tiers[0]
+        base = _FAMILY_DISPLAY_NAMES.get(task) or _family_name(str(std_entry.get("name") or ""))
+        if base in aliases:
+            continue  # defensive: two engine tasks mapping to one display name
+
+        bits = []
+        if task == "t2va":
+            bits.append("文生视频·音画，可抽帧当生图")
+        if task:
+            bits.append(f"engine={task}")
+        rung_bits = "、".join(f"{rung}={_entry_rung_rank(entry)[0]}p" for rung, entry in rungs.items() if rung != "std") or None
+        if rung_bits:
+            bits.append(f"quality 档：std（默认）、{rung_bits}，提交时用 quality 参数选档")
+        # Reference requirement of the family (from the std representative).
+        if std_entry.get("needs_reference"):
+            bits.append("必须提供参考图")
+        elif std_entry.get("accepts_reference_images") or std_entry.get("supports_reference"):
+            bits.append("可选参考图")
+        summary = f"（{'；'.join(bits)}）" if bits else ""
+        base_description = std_entry.get("description") if isinstance(std_entry.get("description"), str) else ""
+        models.append({"name": base, "display_name": base, "description": f"{base_description}{summary}".strip() or None})
+        aliases[base] = {rung: str(entry.get("name")) for rung, entry in rungs.items()}
+    return models, aliases
+
+
+def resolve_merged_model_alias(display_name: str, quality: str | None, available_modes) -> str:
+    """Map a merged family name (+ optional ``quality`` rung) to a real mode.
+
+    Identity for real mode names. Unknown rungs fall down
+    :data:`_RUNG_FALLBACK`; an unresolvable name is returned unchanged so the
+    caller's not-offered error stays accurate.
+    """
+    available = set(available_modes)
+    if display_name in available:
+        return display_name
+    rung_map = cached_media_gateway_model_aliases().get(display_name)
+    if not rung_map:
+        return display_name
+    requested = (quality or "").strip().lower() or "std"
+    for rung in (requested, *_RUNG_FALLBACK.get(requested, ("std",))):
+        resolved = rung_map.get(rung)
+        if resolved and resolved in available:
+            return resolved
+    fallback = rung_map.get("std")
+    return fallback if fallback and fallback in available else display_name
 
 
 async def _fetch_modes_body(base_url: str, admin_token: str | None) -> dict:
@@ -703,6 +788,26 @@ def clear_media_gateway_models_cache() -> None:
     _models_cache.clear()
 
 
+def _mgw_connection() -> tuple[str | None, str | None]:
+    """Resolve the gateway base URL + admin token for enumeration.
+
+    Primary source is the process environment (the production launcher sources
+    ``.env`` into the worker env). Falls back to the settings singleton —
+    which is dotenv-backed — so processes that configure MGW via ``.env``
+    without exporting it still enumerate instead of silently returning an
+    empty snapshot.
+    """
+    base_url = os.getenv("MEDIA_GATEWAY_BASE_URL")
+    admin_token = os.getenv("MEDIA_GATEWAY_ADMIN_TOKEN")
+    if base_url:
+        return base_url, admin_token
+    try:
+        settings = get_media_gateway_settings()
+    except Exception:
+        return None, None
+    return settings.base_url, settings.admin_token
+
+
 async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, force: bool = False) -> bool:
     """Refresh the per-kind model snapshot from the gateway's modes API.
 
@@ -711,7 +816,7 @@ async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, 
     leaves a negative-cache marker so the registries fall back to the
     env-default tier without re-hitting an unreachable gateway every request.
     """
-    base_url = os.getenv("MEDIA_GATEWAY_BASE_URL")
+    base_url, admin_token = _mgw_connection()
     if not base_url:
         return False
     base_url = base_url.rstrip("/")
@@ -721,9 +826,9 @@ async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, 
         return cached[1] is not None
 
     try:
-        body = await _fetch_modes_body(base_url, os.getenv("MEDIA_GATEWAY_ADMIN_TOKEN"))
+        body = await _fetch_modes_body(base_url, admin_token)
         raw_entries = body.get("modes") if isinstance(body.get("modes"), list) else body.get("models") if isinstance(body.get("models"), list) else body.get("data") if isinstance(body.get("data"), list) else []
-        by_kind: dict[str, list[dict]] = {"image": [], "video": []}
+        kinds_entries: dict[str, list[dict]] = {"image": [], "video": []}
         for entry in raw_entries:
             if not isinstance(entry, dict) or not entry.get("name"):
                 continue
@@ -731,12 +836,24 @@ async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, 
                 continue  # unavailable tiers 400 at submit time — never list them
             # A ``*2va`` tier is video-capable and frame-capable, so it is
             # listed under both kinds (see the classification comment above).
-            model = _enumerated_model(entry)
             if is_video_mode(entry):
-                by_kind["video"].append(model)
+                kinds_entries["video"].append(entry)
             if is_image_mode(entry):
-                by_kind["image"].append(model)
-        _models_cache[base_url] = (now, by_kind)
+                kinds_entries["image"].append(entry)
+
+        # Merge same-engine quality ladders into one model per family, then
+        # drop the merged item whose std rung IS the env-default tier (the
+        # registry prepends the env default itself, so it must not duplicate).
+        by_kind: dict[str, list[dict]] = {}
+        aliases: dict[str, dict[str, str]] = {}
+        env_defaults = {"image": os.getenv("MEDIA_GATEWAY_IMAGE_MODEL"), "video": os.getenv("MEDIA_GATEWAY_VIDEO_MODEL")}
+        for kind, kind_entries in kinds_entries.items():
+            merged, merged_aliases = merge_same_family_tiers(kind_entries)
+            aliases.update(merged_aliases)
+            default = env_defaults.get(kind)
+            by_kind[kind] = [model for model in merged if not (default and merged_aliases.get(model["name"], {}).get("std") == default)]
+
+        _models_cache[base_url] = (now, {**by_kind, "aliases": aliases})
         return True
     except Exception:
         logger.warning("media gateway model enumeration failed; falling back to env-default tier", exc_info=True)
@@ -752,10 +869,22 @@ async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, 
 
 def cached_media_gateway_models(kind: str) -> list[dict]:
     """The last successfully enumerated models for ``kind`` (``[]`` when none)."""
-    base_url = os.getenv("MEDIA_GATEWAY_BASE_URL")
+    base_url = _mgw_connection()[0]
     if not base_url:
         return []
     cached = _models_cache.get(base_url.rstrip("/"))
     if cached is None or cached[1] is None:
         return []
     return list(cached[1].get(kind, []))
+
+
+def cached_media_gateway_model_aliases() -> dict[str, dict[str, str]]:
+    """``{merged_family_name: {rung: real gateway mode}}`` from the last refresh."""
+    base_url = _mgw_connection()[0]
+    if not base_url:
+        return {}
+    cached = _models_cache.get(base_url.rstrip("/"))
+    if cached is None or cached[1] is None:
+        return {}
+    aliases = cached[1].get("aliases")
+    return dict(aliases) if isinstance(aliases, dict) else {}

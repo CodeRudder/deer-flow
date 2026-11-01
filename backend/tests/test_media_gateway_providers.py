@@ -337,7 +337,12 @@ class TestArtifactUrl:
 def _reset_mgw_settings(monkeypatch):
     # The registry gating reads the environment directly (no dotenv), so env
     # control is enough; the settings singleton is only reset for hygiene.
-    set_media_gateway_settings(None)
+    from deerflow.media_gateway.settings import MediaGatewaySettings
+
+    # Explicit *empty* settings (not None): with None the settings singleton
+    # would lazily reload from the environment / dotenv, defeating the env
+    # deletion below.
+    set_media_gateway_settings(MediaGatewaySettings())
     for env in ("MEDIA_GATEWAY_BASE_URL", "MEDIA_GATEWAY_IMAGE_MODEL", "MEDIA_GATEWAY_VIDEO_MODEL"):
         monkeypatch.delenv(env, raising=False)
     yield
@@ -429,15 +434,39 @@ def _fake_modes_body() -> dict:
         "default_mode": "h3-frame-std",
         "baseline_modes": ["h3-frame-draft"],
         "modes": [
-            {"name": "qwen-image-std", "available": True, "engine_task": "qwen-image", "params": {"steps": 30, "short_edge": 1024, "duration_seconds": 5}, "description": "Qwen 文生图 / 参考图生图", "accepts_reference_images": True},
-            {"name": "h3-ref-std", "available": True, "engine_task": "ref2va", "needs_reference": True, "params": {"steps": 4, "short_edge": 768, "duration_seconds": 5}, "description": "ref2va 多参考图 → 短片段抽帧"},
-            {"name": "h3-ref-hq", "available": True, "engine_task": "ref2va", "needs_reference": True, "params": {"steps": 8, "short_edge": 768, "duration_seconds": 5}, "description": "ref2va 多参考图 → 短片段抽帧"},
-            {"name": "h3-i2i-std", "available": True, "engine_task": "fl2va", "needs_reference": True, "params": {"steps": 4, "short_edge": 768, "duration_seconds": 5}, "description": "fl2va 参考图 → 短片段抽帧"},
-            {"name": "moss-image-std", "available": True, "engine_task": "moss", "params": {"steps": 50, "short_edge": 1024, "duration_seconds": 5}, "description": "MOSS 文生图"},
+            {
+                "name": "qwen-image-std",
+                "available": True,
+                "quality": "balanced",
+                "engine_task": "qwen-image",
+                "params": {"steps": 30, "short_edge": 1024, "duration_seconds": 5},
+                "description": "Qwen 文生图",
+                "accepts_reference_images": True,
+            },
+            {"name": "h3-ref-std", "available": True, "quality": "balanced", "engine_task": "ref2va", "needs_reference": True, "params": {"steps": 4, "short_edge": 768, "duration_seconds": 5}, "description": "ref2va 多参考图 → 短片段抽帧"},
+            {"name": "h3-ref-hq", "available": True, "quality": "high", "engine_task": "ref2va", "needs_reference": True, "params": {"steps": 8, "short_edge": 768, "duration_seconds": 5}, "description": "ref2va 多参考图 → 短片段抽帧"},
+            {"name": "h3-i2i-std", "available": True, "quality": "balanced", "engine_task": "fl2va", "needs_reference": True, "params": {"steps": 4, "short_edge": 768, "duration_seconds": 5}, "description": "fl2va 参考图 → 短片段抽帧"},
+            {"name": "moss-image-std", "available": True, "quality": "balanced", "engine_task": "moss", "params": {"steps": 50, "short_edge": 1024, "duration_seconds": 5}, "description": "MOSS 文生图"},
             {"name": "h3-retired-tier", "available": False, "engine_task": "t2va", "params": {"steps": 4, "short_edge": 768, "duration_seconds": 4}, "description": "disabled"},
-            {"name": "wan-t2v-std", "available": True, "engine_task": "wan-t2v", "params": {"steps": 20, "short_edge": 480, "duration_seconds": 5}, "capabilities": {"duration_tiers": [5]}, "description": "Wan t2v"},
-            {"name": "ltx-t2v-std", "available": True, "engine_task": "ltx-t2v", "params": {"steps": 20, "short_edge": 720, "duration_seconds": 8}, "capabilities": {"duration_tiers": [2, 20]}, "description": "LTX t2v"},
-            {"name": "wan-vace-std", "available": True, "engine_task": "wan-vace", "params": {"steps": 20, "short_edge": 480, "duration_seconds": 5}, "capabilities": {"duration_tiers": [5]}, "description": "Wan vace"},
+            {"name": "wan-t2v-std", "available": True, "quality": "balanced", "engine_task": "wan-t2v", "params": {"steps": 20, "short_edge": 480, "duration_seconds": 5}, "capabilities": {"duration_tiers": [5]}, "description": "Wan t2v"},
+            {
+                "name": "ltx-t2v-std",
+                "available": True,
+                "quality": "balanced",
+                "engine_task": "ltx-t2v",
+                "params": {"steps": 20, "short_edge": 720, "duration_seconds": 8},
+                "capabilities": {"duration_tiers": [2, 20]},
+                "description": "LTX t2v",
+            },
+            {
+                "name": "wan-vace-std",
+                "available": True,
+                "quality": "balanced",
+                "engine_task": "wan-vace",
+                "params": {"steps": 20, "short_edge": 480, "duration_seconds": 5},
+                "capabilities": {"duration_tiers": [5]},
+                "description": "Wan vace",
+            },
             {"name": "ltx-offline", "available": False, "engine_task": "ltx-t2v", "params": {"steps": 20, "short_edge": 720, "duration_seconds": 8}, "description": "disabled video"},
         ],
     }
@@ -480,24 +509,25 @@ class TestRuntimeModelEnumeration:
         image_names = [m.name for m in image_by_name["media_gateway"].models]
         video_names = [m.name for m in video_by_name["media_gateway"].models]
 
-        # Full enumeration of available tiers. The *2va frame families are
-        # video-capable engines (output=video keeps the mp4), so they appear in
-        # BOTH kinds; pure image backends only in image, motion tiers only in video.
-        assert image_names == ["qwen-image-std", "h3-ref-std", "h3-ref-hq", "h3-i2i-std", "moss-image-std"]
-        assert video_names == ["wan-t2v-std", "h3-ref-std", "h3-ref-hq", "h3-i2i-std", "ltx-t2v-std", "wan-vace-std"]
-        # moss/qwen never leak into the video list; wan/ltx never into image.
-        assert "moss-image-std" not in video_names and "qwen-image-std" not in video_names
-        assert "wan-vace-std" not in image_names and "ltx-t2v-std" not in image_names
+        # One merged model per engine family. The *2va families are dual-listed
+        # (video-capable engines whose default output is frame extraction); the
+        # merged item whose std rung IS the env-default tier is dropped there
+        # because the registry prepends the env default itself.
+        assert image_names == ["qwen-image-std", "h3-ref", "h3-i2v", "moss-image"]
+        assert video_names == ["wan-t2v-std", "h3-ref", "h3-i2v", "ltx-t2v", "wan-vace"]
+        # merged family names, never raw per-rung mode names
+        for raw in ("h3-ref-std", "h3-ref-hq", "h3-i2i-std", "moss-image-std"):
+            assert raw not in image_names
         # unavailable tiers are dropped in both kinds
         assert "h3-retired-tier" not in image_names and "ltx-offline" not in video_names
         # env-default tier stays, first
         assert image_names[0] == "qwen-image-std" and video_names[0] == "wan-t2v-std"
 
-        # Capability summary in the description: reference requirement + durations.
-        ref_model = next(m for m in image_by_name["media_gateway"].models if m.name == "h3-ref-std")
+        # Capability summary in the merged description: reference requirement,
+        # engine, and the quality rungs selectable via the quality parameter.
+        ref_model = next(m for m in image_by_name["media_gateway"].models if m.name == "h3-ref")
         assert ref_model.description and "ref2va" in ref_model.description and "必须提供参考图" in ref_model.description
-        ltx_model = next(m for m in video_by_name["media_gateway"].models if m.name == "ltx-t2v-std")
-        assert ltx_model.description and "2–20s" in ltx_model.description
+        assert "quality 档：std（默认）、hq=768p" in ref_model.description
 
     async def test_ttl_cache_avoids_refetch(self, monkeypatch, _mgw_enum_env):
         _skills_enabled(monkeypatch)
@@ -541,7 +571,7 @@ class TestRuntimeModelEnumeration:
 
         image_by_name = {p.name: p for p in image_registry.get_image_generation_providers().providers}
         names = [m.name for m in image_by_name["media_gateway"].models]
-        assert "h3-ref-std" in names  # previous snapshot still served
+        assert "h3-ref" in names  # previous snapshot still served
 
     async def test_unconfigured_mgw_is_noop(self, monkeypatch):
         _skills_enabled(monkeypatch)
@@ -559,3 +589,154 @@ class TestRuntimeModelEnumeration:
         provider = image_by_name["media_gateway"]
         assert [m.name for m in provider.models] == ["qwen-image-std"]
         assert provider.models[0].description == "通过 Media Gateway 生成图片；能力（比例/参数域）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。"
+
+
+# --- same-family merging + merged-name submit resolution --------------------------
+
+
+def _full_modes_body() -> dict:
+    """Mirrors the real gateway payload: one mode per quality rung per engine."""
+
+    def tier(name, task, quality, edge, dur, **extra):
+        return {"name": name, "available": True, "quality": quality, "engine_task": task, "params": {"steps": 4, "short_edge": edge, "duration_seconds": dur}, "needs_reference": False, **extra}
+
+    return {
+        "default_mode": "h3-frame-std",
+        "modes": [
+            tier("h3-frame-draft", "t2va", "preview", 256, 4),
+            tier("h3-frame-fast", "t2va", "draft", 256, 4),
+            tier("h3-frame-std", "t2va", "balanced", 768, 4),
+            tier("h3-frame-hq", "t2va", "high", 768, 4),
+            tier("h3-clip-std", "t2va", "balanced", 768, 5),
+            tier("h3-clip-hq", "t2va", "high", 768, 5),
+            tier("h3-clip-ultra", "t2va", "ultra", 1024, 5),
+            tier("h3-clip-2k", "t2va", "2k", 1472, 5),
+            tier("moss-image-fast", "moss", "draft", 1024, 5),
+            tier("moss-image-std", "moss", "balanced", 1024, 5),
+            {
+                "name": "qwen-image-std",
+                "available": True,
+                "quality": "balanced",
+                "engine_task": "qwen-image",
+                "params": {"steps": 30, "short_edge": 1024, "duration_seconds": 5},
+                "description": "Qwen 文生图",
+                "accepts_reference_images": True,
+            },
+            tier("h3-i2i-std", "fl2va", "balanced", 768, 5, needs_reference=True),
+            tier("h3-i2i-hq", "fl2va", "high", 768, 5, needs_reference=True),
+            tier("h3-i2i-ultra", "fl2va", "ultra", 1024, 5, needs_reference=True),
+            tier("h3-i2i-2k", "fl2va", "2k", 1472, 5, needs_reference=True),
+            tier("h3-ref-std", "ref2va", "balanced", 768, 5, needs_reference=True),
+            tier("h3-ref-hq", "ref2va", "high", 768, 5, needs_reference=True),
+            tier("wan-t2v-std", "wan-t2v", "balanced", 480, 5),
+            tier("wan-t2v-fast", "wan-t2v", "draft", 480, 5),
+            tier("wan-i2v-fast", "wan-i2v", "draft", 480, 5, accepts_reference_images=True),
+            tier("wan-vace-std", "wan-vace", "balanced", 480, 5, accepts_reference_images=True),
+            tier("ltx-t2v-std", "ltx-t2v", "balanced", 720, 8),
+            tier("ltx-i2v-std", "ltx-i2v", "balanced", 720, 8, accepts_reference_images=True),
+        ],
+    }
+
+
+class _StubClient:
+    """Minimal client stub: serves the fake modes body, records submissions."""
+
+    def __init__(self, body):
+        self.body = body
+        self.posts = []
+
+    async def get(self, path, **kwargs):
+        return self.body
+
+    async def post(self, path, json=None, **kwargs):
+        self.posts.append({"path": path, "json": json})
+        return {"id": "job-1"}
+
+
+@pytest.mark.anyio
+class TestFamilyMergingAndAliases:
+    async def test_one_model_per_engine_family(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(_full_modes_body()))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        image_names = [m.name for m in {p.name: p for p in image_registry.get_image_generation_providers().providers}["media_gateway"].models]
+        video_names = [m.name for m in {p.name: p for p in video_registry.get_video_generation_providers().providers}["media_gateway"].models]
+
+        # image: 5 items (env default first, then one merged item per family)
+        assert image_names == ["qwen-image-std", "h3-t2v", "moss-image", "h3-i2v", "h3-ref"]
+        # video: 8 items; merged wan-t2v dropped because its std rung is the env default
+        assert video_names == ["wan-t2v-std", "h3-t2v", "h3-i2v", "h3-ref", "wan-i2v", "wan-vace", "ltx-t2v", "ltx-i2v"]
+        # no raw per-rung names leak into either list
+        for raw in ("h3-frame-std", "h3-clip-2k", "h3-i2i-std", "moss-image-fast", "wan-t2v-fast"):
+            assert raw not in image_names + video_names
+
+    async def test_merged_description_carries_rungs_and_reference(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(_full_modes_body()))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        models = {m.name: m for m in {p.name: p for p in image_registry.get_image_generation_providers().providers}["media_gateway"].models}
+        t2v = models["h3-t2v"]
+        # t2va semantics note + selectable resolution rungs with their sizes
+        assert "文生视频·音画，可抽帧当生图" in t2v.description
+        assert "quality 档：std（默认）、hq=768p、ultra=1024p、2k=1472p" in t2v.description
+        assert "engine=t2va" in t2v.description
+        i2v = models["h3-i2v"]
+        assert "必须提供参考图" in i2v.description and "2k=1472p" in i2v.description
+
+    async def test_submit_resolves_merged_name_and_quality(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        body = _full_modes_body()
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(body))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        client = _StubClient(body)
+        provider = MediaGatewayGenerationProvider(client, kind="video")
+
+        cases = [
+            ({"quality": "2k"}, "h3-clip-2k"),
+            ({"quality": "ultra"}, "h3-clip-ultra"),
+            ({"quality": "hq"}, "h3-clip-hq"),
+            ({}, "h3-clip-std"),  # default rung: largest balanced canvas/duration
+            ({"quality": "2k"}, "h3-clip-2k"),
+        ]
+        for params, expected_mode in cases:
+            client.posts.clear()
+            await provider.submit("p", model="h3-t2v", params=dict(params))
+            assert client.posts[-1]["json"]["mode"] == expected_mode
+            # quality is a local selection parameter, never forwarded
+            assert "quality" not in client.posts[-1]["json"]
+
+        # missing rung falls down the ladder: h3-ref has no ultra/2k
+        await provider.submit("p", model="h3-ref", params={"quality": "2k", "reference_images": ["x"]})
+        assert client.posts[-1]["json"]["mode"] == "h3-ref-hq"
+
+        # real mode names stay identity and still work
+        await provider.submit("p", model="wan-t2v-std", params={})
+        assert client.posts[-1]["json"]["mode"] == "wan-t2v-std"
+
+    async def test_alias_resolution_fallbacks(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(_full_modes_body()))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        available = ["h3-ref-std", "h3-ref-hq"]
+        # 2k/ultra missing → falls to hq; unknown quality → std
+        assert mgw_providers.resolve_merged_model_alias("h3-ref", "2k", available) == "h3-ref-hq"
+        assert mgw_providers.resolve_merged_model_alias("h3-ref", None, available) == "h3-ref-std"
+        assert mgw_providers.resolve_merged_model_alias("h3-ref", "weird", available) == "h3-ref-std"
+        # real names pass through; unresolvable names returned unchanged
+        assert mgw_providers.resolve_merged_model_alias("h3-ref-std", None, available) == "h3-ref-std"
+        assert mgw_providers.resolve_merged_model_alias("nope", None, available) == "nope"
+
+    async def test_unknown_quality_value_falls_back_to_std_rung(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        body = _full_modes_body()
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(body))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        client = _StubClient(body)
+        provider = MediaGatewayGenerationProvider(client, kind="image")
+        await provider.submit("p", model="h3-t2v", params={"quality": "garbage"})
+        assert client.posts[-1]["json"]["mode"] == "h3-clip-std"
