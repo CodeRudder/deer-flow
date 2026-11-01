@@ -5,13 +5,49 @@ description: Use this skill when the user wants 文生组图 / 主题系列配�
 
 # 文生组图 / 主题系列配图（t2i-series）
 
+## 执行方法（必读）
+
+**生成组图只跑一条命令**（前台同步执行，脚本内部完成提交/轮询/下载）：
+
+```bash
+python /mnt/skills/public/t2i-series/scripts/generate_series.py \
+  --theme "城市黄昏系列" --count 2 \
+  --style "统一插画风，低饱和暖色调" \
+  --out-dir /mnt/user-data/outputs/t2i-series/city-dusk
+```
+
+- 凭证由平台注入沙箱 env（`MEDIA_GATEWAY_BASE_URL` / `MEDIA_GATEWAY_TOKEN` /
+  `MEDIA_GATEWAY_IMAGE_MODEL`），脚本自动使用当前用户凭证——**禁止**自行置备
+  账号或读取/复用其他用户的令牌。
+- 常用参数：`--count`（1–8，缺省 4）、`--style`（统一风格段）、`--mode`
+  （缺省 `$MEDIA_GATEWAY_IMAGE_MODEL`）、`--aspect-ratio`（缺省 16:9）、
+  `--max-attempts`（每张重试上限，缺省 3）、`--timeout`（每张轮询总超时，
+  缺省 480s；qwen-image-std 实测约 40–60s/张）、`--out-dir`（缺省
+  `/mnt/user-data/outputs/t2i-series/<主题 slug>`）、`--dry-run`（只打印将
+  提交的请求）。逐张定制画面时用 `--prompt-group "第1张画面…" "第2张画面…" …`
+  代替 `--theme/--count`。
+- 产物写入 out-dir：`01.png` / `01.jpg`…（扩展名按产物字节自动判定）；
+  每张进度打到 stderr，结束时 stdout 打印一份 JSON 摘要（`files[]`、
+  `job_ids`、逐张状态）。
+
+**严禁以下做法**（都会导致作业丢失或回合停滞）：
+
+- ❌ 在沙箱里手写驱动脚本/自行调 MGW HTTP 接口；
+- ❌ `nohup`、`&`、tmux 等任何后台化——媒体网关作业是异步的（提交 202 →
+  轮询 `GET /v1/images/jobs/{id}` 到终态 → 从 `data[].url` 取产物），脚本已
+  在前台封装全部轮询与下载，**不要自己实现轮询**，等命令跑完即可；
+- ❌ 自行置备 MGW 账号/申请令牌。
+
+生成完成后，用 `present_files` 把 out-dir 中的图片交付给用户（见文末「交付」）。
+
 ## 概述
 
 本 skill 把**一个主题**变成**一组风格/主体一致的图**：每张图一单"文生图"
-（同一 mode，逐张提交），由媒体网关（MGW）生成。编排逻辑（可测试的调用
-序列）在 `media_gateway/t2i_series.py` 模块（`deerflow.media_gateway.t2i_series`），
-本 skill 按下述流程驱动它；组图账本与作业状态全部落 MGW（`ser_…` 登记 +
-jobs 状态机），会话侧只保留断点游标 sidecar（见文末"中断续作"）。
+（同一 mode，逐张提交），由媒体网关（MGW）生成。沙箱内的实际执行入口是
+`scripts/generate_series.py`（见「执行方法」，一条命令完成全组）；后端侧的
+编排逻辑（可测试的调用序列）在 `media_gateway/t2i_series.py` 模块
+（`deerflow.media_gateway.t2i_series`）。组图账本与作业状态全部落 MGW
+（`ser_…` 登记 + jobs 状态机）。
 
 全程使用当前用户在 MGW 的 `h3t_` 令牌（经后端置备体系获取），用户之间数据
 完全隔离；不做任何"指定用户/令牌"操作。已有参考图/素材要先"改图/垫图"
@@ -46,20 +82,22 @@ jobs 状态机），会话侧只保留断点游标 sidecar（见文末"中断续
 连贯性写进每张的 `scene`（同一世界观/光线方向/主体形象描述保持同样的
 关键词），跨张一致性靠**同一 style_desc + 同一主体描述**，不靠抽卡碰。
 
-### ② 设计层校验 + 确认（checkpoint）/直过（auto）
+### ② 设计层校验（默认直过，不设确认门）
 
-- `check_plan`（零 GPU）：主题/风格段/每张画面与场景齐备、编号连续。
-  任何一项不过都不得提交生成——回显问题清单，补齐后重验。
-- **checkpoint 模式（缺省）**：把规划表（张号/画面/场景/风格参数）给用户
-  目检，确认后才进 ③；用户可改张数/替换某张设计（改 plan，不重算全组）。
-- **auto 模式**：用户明确说"直接生成/自动"时跳过确认，仍执行 `check_plan`。
+- 组图规划是设计层检查（对齐 `check_plan` 语义）：主题/风格段/每张画面与
+  场景齐备、张数 1–8。任何一项不过都不得提交生成——回显问题清单，补齐后再
+  执行。
+- **用户消息本身即生成指令，默认视为已授权，不插入"回复确认"暂停**；只有
+  主题明显缺失（无法成图）时才先追问一次。用户明确给过张数/风格就照做，
+  不要再重复确认。
 
-### ③ 逐张提交生成（`run_t2i_series` / `T2iSeriesOrchestrator`）
+### ③ 逐张提交生成（`generate_series.py` 一条命令）
 
-逐张 `POST /v1/images/generations`：全组同一 `mode`/比例/短边，每张一个
-独立 `Idempotency-Key`（含张号+尝试序+种子摘要——同参数重发返回同一作业
-不重复消耗；重试换 key 天然不会撞 409）。提交后轮询
-`GET /v1/images/jobs/{id}` 到终态，产物从 `data[].url` 取。
+执行入口就是「执行方法」小节的那条命令，脚本逐张 `POST /v1/images/generations`：
+全组同一 `mode`/比例，每张一个独立 `Idempotency-Key`（含张号+尝试序——同参数
+重发返回同一作业不重复消耗；重试换 key 天然不会撞 409）；随后前台轮询
+`GET /v1/images/jobs/{id}` 到终态，从 `data[].url` 取产物字节写入 out-dir。
+单张失败自动按 `--max-attempts` 重试。
 
 ### ④ QC 闭环（每张 ≤3 轮：归因 → 修正 → 重出）
 
@@ -69,7 +107,8 @@ jobs 状态机），会话侧只保留断点游标 sidecar（见文末"中断续
 - 每张自动迭代 ≤3 轮；仍失败标记 `needs_human` 并**继续其余张**（auto 语义，
   失败项不静默丢失，报告里逐张列出）。
 - 生成后可让用户目检；不满意的张回到 ① 只改那张的 `subject`/`scene`
-  （改设计 ≠ 重新生成全组），重新提交该张即可。
+  （改设计 ≠ 重新生成全组），把改后画面写进 `--prompt-group` 单独重跑那张
+  即可（同样一条命令，不要手写脚本）。
 
 ### ⑤ 一致性校验与交付（`check_consistency` + series 登记）
 
@@ -77,8 +116,8 @@ jobs 状态机），会话侧只保留断点游标 sidecar（见文末"中断续
   段、张数齐全（每张都有产物）——有问题在报告里拦截说明。
 - 全组完成后登记进 MGW（`POST /v1/images/series` → `ser_…`），批状态在
   MGW 可查；deer-flow 侧无内容领域表。
-- 交付：逐张列出 张号 / 状态 / 产物链接（deer-flow 代理 URL
-  `/api/media-gateway/file/…`，免令牌直下）/ 迭代轮次。
+- 交付：用 `present_files` 交付 out-dir 中的图片文件，并逐张列出 张号 /
+  状态 / 文件名 / 迭代轮次（脚本的 JSON 摘要里有现成的 `files[]`）。
 
 ## 中断续作
 
