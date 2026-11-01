@@ -112,6 +112,7 @@ class MockMediaGateway:
         self.tickets: dict[str, dict[str, Any]] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.idempotency: dict[str, dict[str, Any]] = {}
+        self.media: dict[str, dict[str, Any]] = {}  # INSERT-GROUPVID: 素材库 media（groupvid.md / media.md）
         self.file_bytes = file_bytes
         self.file_content_type = file_content_type
 
@@ -202,6 +203,8 @@ class MockMediaGateway:
             return self._handle_users(request, user_id)
         if path.startswith("/v1/images"):
             return self._handle_images(request, user_id)
+        if path.startswith("/v1/media"):
+            return self._handle_media(request, user_id)  # INSERT-GROUPVID routing
 
         return _error(404, "not_found", f"mock has no route for {request.method} {path}")
 
@@ -405,6 +408,233 @@ class MockMediaGateway:
             content=self.file_bytes,
             headers={"Content-Type": self.file_content_type, "Cache-Control": "private, max-age=259200, immutable"},
         )
+
+    # ── INSERT-GROUPVID: 组图生视频 media 端点（groupvid.md 流水线 A）──────
+    # 建模：POST /v1/media（multipart 上传 kind=images）→ POST/GET …/analyze →
+    # POST/GET …/storyboard、PATCH …/storyboard/shots/{index} →
+    # POST/GET …/generate（逐镜 ref2va 作业，复用上面的 jobs 状态机）。
+    # 逐镜作业本体走既有 /v1/images/jobs/{id}(/file)（jobs.md：产物统一
+    # /file?kind=video）。
+    def _handle_media(self, request: httpx.Request, user_id: str) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+
+        if method == "POST" and path == "/v1/media":
+            return self._media_upload(request, user_id)
+
+        parts = path.strip("/").split("/")  # ["v1","media", media_id, ...]
+        if len(parts) < 3:
+            return _error(404, "not_found", f"mock has no route for {method} {path}")
+        media = self.media.get(parts[2])
+        if media is None or not (self._is_admin(user_id) or media["owner"] == user_id):
+            # Contract: foreign media reads as 404 (media.md 归属与可见性).
+            return _error(404, "not_found", "media 不存在")
+        rest = parts[3:]
+
+        if not rest and method == "GET":
+            return httpx.Response(200, json=self._media_public(media, detail=True))
+        if rest == ["analyze"] and method == "POST":
+            media["analyzed"] = True
+            return httpx.Response(200, json={"stage": "completed", "progress": 100, "shots": [], "media_id": media["id"]})
+        if rest == ["analysis"] and method == "GET":
+            if not media["analyzed"]:
+                return _error(400, "invalid_request", "还没有组图分析结果")
+            return httpx.Response(200, json={"stage": "completed", "progress": 100, "shots": [], "media_id": media["id"]})
+        if rest == ["storyboard"] and method == "POST":
+            return self._storyboard_design(media, self._json(request))
+        if rest == ["storyboard"] and method == "GET":
+            storyboard = media.get("storyboard")
+            if storyboard is None:
+                return _error(404, "not_found", "还没有组图分镜")
+            return httpx.Response(200, json=storyboard)
+        if len(rest) == 3 and rest[0] == "storyboard" and rest[1] == "shots" and method == "PATCH":
+            return self._storyboard_patch(media, int(rest[2]), self._json(request))
+        if rest == ["generate"] and method == "POST":
+            return self._groupvid_generate(request, media, user_id)
+        if rest == ["generate"] and method == "GET":
+            record = media.get("generate")
+            if record is None:
+                return _error(404, "not_found", "还没有组图生视频提交记录")
+            return httpx.Response(200, json=record)
+        return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+    def _media_upload(self, request: httpx.Request, user_id: str) -> httpx.Response:
+        fields, uploads = self._parse_multipart(request)
+        if not uploads:
+            return _error(400, "invalid_request", "file is required")
+        kinds = {ext for _, filename, _ in uploads if (ext := filename.rsplit(".", 1)[-1].lower()) not in ("png", "jpg", "jpeg", "webp")}
+        kind = str(fields.get("kind") or ("images" if not kinds else "video"))
+        if kind not in ("images", "video"):
+            return _error(400, "invalid_request", "kind must be video or images")
+        media_id = "med_" + secrets.token_hex(6)
+        probe_images = [{"width": 1024, "height": 1024, "index": i + 1} for i in range(len(uploads))]
+        media: dict[str, Any] = {
+            "id": media_id,
+            "kind": kind,
+            "owner": user_id,
+            "created": int(time.time()),
+            "stage": "uploaded",
+            "title": str(fields.get("title") or ""),
+            "description": str(fields.get("description") or "") or None,
+            "count": len(uploads),
+            "probe": {"images": probe_images} if kind == "images" else {"duration_s": 10.0},
+            "analyzed": False,
+            "storyboard": None,
+            "generate": None,
+        }
+        self.media[media_id] = media
+        return httpx.Response(201, json=self._media_public(media))
+
+    def _media_public(self, media: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
+        body = {
+            "id": media["id"],
+            "kind": media["kind"],
+            "owner": media["owner"],
+            "created": media["created"],
+            "stage": media["stage"],
+            "probe": media["probe"],
+            "title": media["title"],
+            "description": media["description"],
+            "thumb_url": f"/v1/media/{media['id']}/file?kind=thumb",
+            "original_url": f"/v1/media/{media['id']}/file?kind=original",
+        }
+        if detail:
+            body["has_plan"] = False
+            body["image_count"] = media["count"]
+        return body
+
+    @staticmethod
+    def _parse_multipart(request: httpx.Request) -> tuple[dict[str, str], list[tuple[str, str, bytes]]]:
+        """Crude multipart/form-data parse: (form fields, file uploads)."""
+        boundary = ""
+        for part in (request.headers.get("content-type") or "").split(";"):
+            part = part.strip()
+            if part.startswith("boundary="):
+                boundary = part[len("boundary=") :].strip('"')
+        fields: dict[str, str] = {}
+        uploads: list[tuple[str, str, bytes]] = []
+        if not boundary:
+            return fields, uploads
+        for section in request.content.split(f"--{boundary}".encode()):
+            section = section.strip(b"\r\n")
+            if not section or section == b"--":
+                continue
+            head, _, body = section.partition(b"\r\n\r\n")
+            headers = head.decode("utf-8", "replace")
+            name = ""
+            filename = ""
+            for line in headers.split("\r\n"):
+                if line.lower().startswith("content-disposition"):
+                    for token in line.split(";"):
+                        token = token.strip()
+                        if token.startswith("name="):
+                            name = token[5:].strip('"')
+                        elif token.startswith("filename="):
+                            filename = token[9:].strip('"')
+            if filename:
+                uploads.append((name, filename, body))
+            elif name:
+                fields[name] = body.decode("utf-8", "replace")
+        return fields, uploads
+
+    def _storyboard_design(self, media: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        if media["kind"] != "images":
+            return _error(400, "invalid_request", "组图功能只用于图片类上传物（kind=images）")
+        if not media["analyzed"]:
+            return _error(400, "invalid_request", "还没有组图分析结果；先 POST /analyze（图片类）")
+        shot_count = min(max(int(body.get("shot_count") or 3), 1), 10)
+        duration_tier = int(body.get("duration_tier") or 5)
+        notes = body.get("notes")
+        shots = []
+        for index in range(1, shot_count + 1):
+            ref = min(index, media["count"])
+            shots.append(
+                {
+                    "index": index,
+                    "subject": f"1位与参考图{ref}一致的主体",
+                    "action": f"主体从参考图{ref}的姿势开始，完成第{index}个分镜动作",
+                    "camera": "固定机位" if index % 2 else "缓推",
+                    "soundscape": "环境声",
+                    "music": "轻配乐",
+                    "duration_tier": duration_tier if duration_tier in (1, 5, 10, 15) else None,
+                    "refs": [ref],
+                }
+            )
+        storyboard = {"version": 1, "created": int(time.time()), "params": {"shot_count": shot_count, "duration_tier": duration_tier, "notes": notes}, "shots": shots}
+        media["storyboard"] = storyboard
+        return httpx.Response(200, json=storyboard)
+
+    def _storyboard_patch(self, media: dict[str, Any], index: int, body: dict[str, Any]) -> httpx.Response:
+        storyboard = media.get("storyboard")
+        if storyboard is None:
+            return _error(404, "not_found", "还没有组图分镜")
+        shot = next((s for s in storyboard["shots"] if s["index"] == index), None)
+        if shot is None:
+            return _error(404, "not_found", f"没有第 {index} 个分镜")
+        count = int(media["count"])
+        refs = body.get("refs")
+        if refs is not None:
+            if not refs:
+                return _error(400, "invalid_request", "refs 不能为空")
+            for ref in refs:
+                if not 1 <= int(ref) <= count:
+                    return _error(400, "invalid_request", f"参考图编号越界：{ref}（共 {count} 张）")
+        for key in ("subject", "action", "camera", "soundscape", "music", "refs", "duration_tier"):
+            if key in body and body[key] is not None:
+                shot[key] = body[key]
+        shot["edited"] = True
+        return httpx.Response(200, json={"shot": shot})
+
+    def _groupvid_generate(self, request: httpx.Request, media: dict[str, Any], user_id: str) -> httpx.Response:
+        if media["kind"] != "images":
+            return _error(400, "invalid_request", "组图功能只用于图片类上传物（kind=images）")
+        storyboard = media.get("storyboard")
+        if storyboard is None:
+            return _error(400, "invalid_request", "还没有分镜设计（先 POST /storyboard）")
+        body_bytes = request.content
+        body = self._json_bytes(body_bytes)
+        key = request.headers.get("Idempotency-Key")
+        idem = getattr(self, "_groupvid_idempotency", None)
+        if idem is None:
+            idem = self._groupvid_idempotency = {}
+        if key:
+            prior = idem.get(key)
+            if prior is not None:
+                if prior["body_sha"] != hashlib.sha256(body_bytes).hexdigest():
+                    return _error(409, "conflict", "same Idempotency-Key with a different request body")
+                return httpx.Response(200, json=prior["response"])
+
+        wanted = body.get("shots")
+        shots = [s for s in storyboard["shots"] if wanted is None or s["index"] in set(int(i) for i in wanted)]
+        if not shots:
+            return _error(400, "invalid_request", "没有这些分镜")
+        candidates = min(max(int(body.get("candidates") or 1), 1), 3)
+        duration_tier = int(body.get("duration_tier") or (storyboard["params"].get("duration_tier") or 5))
+        jobs = []
+        for shot in shots:
+            for candidate in range(candidates):
+                job_id = "ref2va_" + secrets.token_hex(6)
+                self.jobs[job_id] = {
+                    "id": job_id,
+                    "kind": "ref2va",
+                    "owner": user_id,
+                    "request": {"prompt": f"{shot['subject']}：{shot['action']}（{shot['camera']}）", "mode": "ref2va-max", "output": "video"},
+                    "output": "video",
+                    "status": "queued",
+                    "polls_in_stage": self.polls_per_stage,
+                    "fail": None,
+                    "created": int(time.time()),
+                }
+                jobs.append({"shot": shot["index"], "job_id": job_id, "candidate": candidate, "refs": shot["refs"], "duration_tier": shot.get("duration_tier") or duration_tier})
+        response = {
+            "jobs": jobs,
+            "count": len(jobs),
+            "params": {"mode": "ref2va-max", "aspect": "9:16", "short_edge": int(body.get("short_edge") or 720), "seed": body.get("seed"), "duration_tier": duration_tier, "candidates": candidates},
+        }
+        media["generate"] = response
+        if key:
+            idem[key] = {"response": response, "body_sha": hashlib.sha256(body_bytes).hexdigest()}
+        return httpx.Response(200, json=response)
 
     # ── auth helpers ──────────────────────────────────────────────────
     def _identify(self, request: httpx.Request) -> str | None:

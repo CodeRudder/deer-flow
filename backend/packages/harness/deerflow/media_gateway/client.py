@@ -123,6 +123,31 @@ class MediaGatewayClient:
     async def post(self, path: str, **kwargs: object) -> dict:
         return await self.request("POST", path, **kwargs)  # type: ignore[arg-type]
 
+    async def post_multipart(
+        self,
+        path: str,
+        *,
+        fields: dict[str, str] | None = None,
+        files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+        token: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Perform one multipart/form-data request (e.g. ``POST /v1/media`` upload).
+
+        ``files`` entries are ``(field_name, (filename, content, mime))``.
+        """
+        headers: dict[str, str] = {}
+        bearer = self._admin_token if token is None else token
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        try:
+            response = await self._client.post(path, data=fields, files=files, headers=headers)
+        except httpx.HTTPError as exc:
+            raise MediaGatewayError(status=0, code="transport_error", message=str(exc), retryable=True) from exc
+        return self._handle_response(response)
+
     async def patch(self, path: str, **kwargs: object) -> dict:
         return await self.request("PATCH", path, **kwargs)  # type: ignore[arg-type]
 
