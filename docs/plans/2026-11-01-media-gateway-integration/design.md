@@ -289,3 +289,14 @@ MGW 新增一次性票据端点（设计）：
 `content-series` 内部调用 `drama-production` / `video-clips` / `t2i-series`
 / `image-text-post`，不重复实现生成逻辑； deer-flow 不新增内容领域表，
 矩阵与产物状态均在 MGW（sidecar 仅存游标）。
+
+### 5.4 凭证统一注入（2026-11-01 架构定稿）
+
+按用户身份调用 MGW **不在 skill/脚本层处理凭证**，由中间件统一拦截注入：
+
+- `MediaGatewayCredentialMiddleware`（共享运行时基座，SandboxMiddleware 之后、含子代理）：
+  沙箱获取后自动注入 `MEDIA_GATEWAY_BASE_URL / _TOKEN（该用户 h3t_，经 provisioner）/ _IMAGE_MODEL / _VIDEO_MODEL / _CONSOLE_URL` 进沙箱会话环境
+- skill/生成脚本直接读环境变量使用，零凭证感知；未配置 MGW 时零开销直通；
+  get_token 失败降级不注入（warning，绝不阻断会话）；令牌不入日志
+- skill 描述中的路由关键词（如"千问→media_gateway"）仅承担**技能选择**职责，
+  与凭证无关
