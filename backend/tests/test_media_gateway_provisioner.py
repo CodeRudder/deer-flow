@@ -139,7 +139,7 @@ class TestEnsureUser:
         # POST /v1/users then POST /v1/users/{uid}/tokens with label deerflow
         assert client.calls[0][0] == "POST" and client.calls[0][1] == "/v1/users"
         create_payload = client.calls[0][2]
-        assert create_payload["username"] == "alice"
+        assert create_payload["name"] == "alice"
         assert create_payload["role"] == "user"
         assert create_payload["password"]  # random password generated
         assert client.calls[1] == ("POST", "/v1/users/mgw-u1/tokens", {"label": "deerflow"})
@@ -216,7 +216,7 @@ class TestEnsureUser:
     async def test_cjk_username_provisions_with_fallback_slug(self, provisioner, client):
         account = await provisioner.ensure_user(_user(username="王小明"))
         assert account.mgw_username.startswith("deerflow-user-")
-        assert client.calls[0][2]["username"] == account.mgw_username
+        assert client.calls[0][2]["name"] == account.mgw_username
 
 
 class TestDisableUser:

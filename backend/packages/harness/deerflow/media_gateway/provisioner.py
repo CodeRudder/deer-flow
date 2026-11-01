@@ -182,7 +182,8 @@ class MediaGatewayProvisioner:
         try:
             body = await self._client.post(
                 "/v1/users",
-                json={"username": username, "password": password, "role": role, "display": raw_name},
+                # 真实契约（auth.md §POST /v1/users）：字段是 name，不是 username
+                json={"name": username, "password": password, "role": role, "display": raw_name},
             )
             mgw_user_id = str(body.get("id") or (body.get("user") or {}).get("id") or "")
         except MediaGatewayError as exc:
