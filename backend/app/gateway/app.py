@@ -22,6 +22,7 @@ from app.gateway.routers import (
     commands,
     feedback,
     mcp,
+    media_gateway,
     memory,
     models,
     quota,
@@ -486,6 +487,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Channels API is mounted at /api/channels
     app.include_router(channels.router)
+
+    # Media Gateway proxy API is mounted at /api/media-gateway
+    app.include_router(media_gateway.router)
 
     # Assistants compatibility API (LangGraph Platform stub)
     app.include_router(assistants_compat.router)
