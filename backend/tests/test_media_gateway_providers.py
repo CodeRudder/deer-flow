@@ -480,9 +480,14 @@ class TestRuntimeModelEnumeration:
         image_names = [m.name for m in image_by_name["media_gateway"].models]
         video_names = [m.name for m in video_by_name["media_gateway"].models]
 
-        # Full enumeration of available tiers, kind-split by engine_task.
+        # Full enumeration of available tiers. The *2va frame families are
+        # video-capable engines (output=video keeps the mp4), so they appear in
+        # BOTH kinds; pure image backends only in image, motion tiers only in video.
         assert image_names == ["qwen-image-std", "h3-ref-std", "h3-ref-hq", "h3-i2i-std", "moss-image-std"]
-        assert video_names == ["wan-t2v-std", "ltx-t2v-std", "wan-vace-std"]
+        assert video_names == ["wan-t2v-std", "h3-ref-std", "h3-ref-hq", "h3-i2i-std", "ltx-t2v-std", "wan-vace-std"]
+        # moss/qwen never leak into the video list; wan/ltx never into image.
+        assert "moss-image-std" not in video_names and "qwen-image-std" not in video_names
+        assert "wan-vace-std" not in image_names and "ltx-t2v-std" not in image_names
         # unavailable tiers are dropped in both kinds
         assert "h3-retired-tier" not in image_names and "ltx-offline" not in video_names
         # env-default tier stays, first

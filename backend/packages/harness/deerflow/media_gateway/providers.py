@@ -600,12 +600,21 @@ class MediaGatewayGenerationProvider:
 
 MODES_CACHE_TTL_SECONDS = 60.0
 
-# Engine-task → media-kind classification (images.md §1 real payload):
-# image tiers are the frame-extraction families (``t2va`` / ``fl2va`` /
-# ``ref2va`` — h3-frame/clip/i2i/ref) plus the pure image backends (moss,
-# qwen-image); video tiers are the motion families (``*-t2v`` / ``*-i2v`` /
-# ``*-vace`` — wan-*, ltx-*).
-_IMAGE_ENGINE_TASKS = {"t2va", "fl2va", "ref2va", "moss", "qwen-image"}
+# Engine-task → media-kind classification. The modes[] payload carries no
+# explicit kind field, so kinds derive from the engine_task semantics:
+#
+# - ``*2va`` (``t2va`` / ``fl2va`` / ``ref2va`` — h3-frame/clip/i2i/ref) are
+#   **video+audio engines**: the gateway generates a short clip and by default
+#   extracts frames from it; with ``output=video`` the mp4 is kept (gateway
+#   contract: `POST /v1/images/generations` ``output`` parameter, exercised by
+#   the gateway's own ``test_api_frames.py``). They are therefore video-capable
+#   AND frame-capable — listed under BOTH media kinds.
+# - Pure image backends (``moss``, ``qwen-image``) can never yield a video —
+#   image kind only.
+# - Motion families (``*-t2v`` / ``*-i2v`` / ``*-vace`` — wan-*, ltx-*) are
+#   video-only outputs — video kind only.
+_PURE_IMAGE_ENGINE_TASKS = {"moss", "qwen-image"}
+_FRAME_ENGINE_TASK_SUFFIX = "2va"
 _VIDEO_ENGINE_TASK_SUFFIXES = ("-t2v", "-i2v")
 _VIDEO_ENGINE_TASK_KEYWORDS = ("vace",)
 
@@ -615,10 +624,32 @@ _VIDEO_ENGINE_TASK_KEYWORDS = ("vace",)
 _models_cache: dict[str, tuple[float, dict[str, list[dict]] | None]] = {}
 
 
+def _engine_task(entry: dict) -> str:
+    return str(entry.get("engine_task") or "")
+
+
 def is_video_mode(entry: dict) -> bool:
-    """Classify one raw modes[] entry as a video (True) or image (False) tier."""
-    task = str(entry.get("engine_task") or "")
-    return task.endswith(_VIDEO_ENGINE_TASK_SUFFIXES) or any(keyword in task for keyword in _VIDEO_ENGINE_TASK_KEYWORDS)
+    """True when the tier can produce a video artifact (video kind list)."""
+    task = _engine_task(entry)
+    return task.endswith(_FRAME_ENGINE_TASK_SUFFIX) or task.endswith(_VIDEO_ENGINE_TASK_SUFFIXES) or any(keyword in task for keyword in _VIDEO_ENGINE_TASK_KEYWORDS)
+
+
+def is_image_mode(entry: dict) -> bool:
+    """True when the tier can produce an image artifact (image kind list).
+
+    Complement of the motion-only families: pure image backends plus the
+    ``*2va`` frame-extraction families. wan-/ltx-style motion tiers are
+    excluded — their output is a video, not frames.
+    """
+    task = _engine_task(entry)
+    if task.endswith(_FRAME_ENGINE_TASK_SUFFIX) or task in _PURE_IMAGE_ENGINE_TASKS:
+        return True
+    if task.endswith(_VIDEO_ENGINE_TASK_SUFFIXES) or any(keyword in task for keyword in _VIDEO_ENGINE_TASK_KEYWORDS):
+        return False
+    # Unknown engine_task: keep the tier visible in the image list (frame
+    # extraction is the gateway-wide default via ``default_frame_policy``)
+    # rather than silently dropping it from both lists.
+    return True
 
 
 def _capability_summary(entry: dict) -> str:
@@ -698,7 +729,13 @@ async def refresh_media_gateway_models(*, ttl: float = MODES_CACHE_TTL_SECONDS, 
                 continue
             if entry.get("available") is False:
                 continue  # unavailable tiers 400 at submit time — never list them
-            by_kind["video" if is_video_mode(entry) else "image"].append(_enumerated_model(entry))
+            # A ``*2va`` tier is video-capable and frame-capable, so it is
+            # listed under both kinds (see the classification comment above).
+            model = _enumerated_model(entry)
+            if is_video_mode(entry):
+                by_kind["video"].append(model)
+            if is_image_mode(entry):
+                by_kind["image"].append(model)
         _models_cache[base_url] = (now, by_kind)
         return True
     except Exception:
