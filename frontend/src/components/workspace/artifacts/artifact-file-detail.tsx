@@ -8,9 +8,8 @@ import {
   SquareArrowOutUpRightIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Streamdown } from "streamdown";
 
 import {
   Artifact,
@@ -20,6 +19,7 @@ import {
   ArtifactHeader,
   ArtifactTitle,
 } from "@/components/ai-elements/artifact";
+import { Button } from "@/components/ui/button";
 import { Select, SelectItem } from "@/components/ui/select";
 import {
   SelectContent,
@@ -30,11 +30,27 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { CodeEditor } from "@/components/workspace/code-editor";
 import { useArtifactContent } from "@/core/artifacts/hooks";
+import {
+  appendHtmlPreviewBaseHref,
+  appendHtmlPreviewScrollRestoration,
+  createHtmlPreviewScrollKey,
+  getArtifactViewState,
+  HTML_PREVIEW_SCROLL_MESSAGE_SOURCE,
+} from "@/core/artifacts/preview";
 import { urlOfArtifact } from "@/core/artifacts/utils";
+import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
+import { findToolCallResult } from "@/core/messages/utils";
 import { installSkill } from "@/core/skills/api";
-import { streamdownPlugins } from "@/core/streamdown";
-import { checkCodeFile, getFileName } from "@/core/utils/files";
+import { SafeStreamdown } from "@/core/streamdown/components";
+import {
+  canBrowserPreviewFile,
+  checkCodeFile,
+  getFileExtensionDisplayName,
+  getFileIcon,
+  getFileName,
+  isImageFile,
+} from "@/core/utils/files";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +59,10 @@ import { useThread } from "../messages/context";
 import { Tooltip } from "../tooltip";
 
 import { useArtifacts } from "./context";
+import { ImageLightbox } from "./image-lightbox";
+import { artifactMarkdownPlugins } from "./markdown-preview-plugins";
+
+const WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS = 3000;
 
 export function ArtifactFileDetail({
   className,
@@ -55,6 +75,7 @@ export function ArtifactFileDetail({
 }) {
   const { t } = useI18n();
   const { artifacts, setOpen, select } = useArtifacts();
+  const { thread, isMock } = useThread();
   const isWriteFile = useMemo(() => {
     return filepathFromProps.startsWith("write-file:");
   }, [filepathFromProps]);
@@ -65,9 +86,47 @@ export function ArtifactFileDetail({
     }
     return filepathFromProps;
   }, [filepathFromProps, isWriteFile]);
+  // Keep these local because ChatBox replaces context artifacts with thread state.
+  const [openedPresentedFilepaths, setOpenedPresentedFilepaths] = useState<
+    string[]
+  >(() => {
+    if (isWriteFile || artifacts.includes(filepath)) {
+      return [];
+    }
+    return [filepath];
+  });
+  useEffect(() => {
+    if (isWriteFile || artifacts.includes(filepath)) {
+      return;
+    }
+    setOpenedPresentedFilepaths((current) => {
+      if (current.includes(filepath)) {
+        return current;
+      }
+      return [...current, filepath];
+    });
+  }, [artifacts, filepath, isWriteFile]);
+  const artifactOptions = useMemo(() => {
+    if (isWriteFile) {
+      return artifacts;
+    }
+    const currentIsPresented = !artifacts.includes(filepath);
+    const presentedFilepaths =
+      currentIsPresented && !openedPresentedFilepaths.includes(filepath)
+        ? [...openedPresentedFilepaths, filepath]
+        : openedPresentedFilepaths;
+    const presentedSet = new Set(presentedFilepaths);
+    return [
+      ...presentedFilepaths,
+      ...artifacts.filter((artifact) => !presentedSet.has(artifact)),
+    ];
+  }, [artifacts, filepath, isWriteFile, openedPresentedFilepaths]);
   const isSkillFile = useMemo(() => {
     return filepath.endsWith(".skill");
   }, [filepath]);
+  const isImageArtifact = useMemo(() => {
+    return !isWriteFile && isImageFile(filepath);
+  }, [filepath, isWriteFile]);
   const { isCodeFile, language } = useMemo(() => {
     if (isWriteFile) {
       let language = checkCodeFile(filepath).language;
@@ -80,27 +139,50 @@ export function ArtifactFileDetail({
     }
     return checkCodeFile(filepath);
   }, [filepath, isWriteFile, isSkillFile]);
+  const canPreviewInBrowser = useMemo(() => {
+    return canBrowserPreviewFile(filepath);
+  }, [filepath]);
   const isSupportPreview = useMemo(() => {
     return language === "html" || language === "markdown";
   }, [language]);
-  const { content } = useArtifactContent({
+  const toolResult = (() => {
+    if (!isWriteFile) {
+      return undefined;
+    }
+    const url = new URL(filepathFromProps);
+    const toolCallId = url.searchParams.get("tool_call_id");
+    if (!toolCallId) {
+      return undefined;
+    }
+    return findToolCallResult(toolCallId, thread.messages);
+  })();
+  const artifactViewState = getArtifactViewState({
+    filepath: filepathFromProps,
+    isSupportPreview,
+    toolResult,
+  });
+  const { content, url } = useArtifactContent({
     threadId,
     filepath: filepathFromProps,
     enabled: isCodeFile && !isWriteFile,
   });
 
   const displayContent = content ?? "";
+  const isWritingFile = isWriteFile && toolResult === undefined;
+  const visibleContent = useThrottledValue(
+    displayContent,
+    isWritingFile ? WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS : 0,
+    filepathFromProps,
+  );
 
-  const [viewMode, setViewMode] = useState<"code" | "preview">("code");
+  const [viewMode, setViewMode] = useState<"code" | "preview">(
+    artifactViewState.initialViewMode,
+  );
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
-  const { isMock } = useThread();
   useEffect(() => {
-    if (isSupportPreview) {
-      setViewMode("preview");
-    } else {
-      setViewMode("code");
-    }
-  }, [isSupportPreview]);
+    setViewMode(artifactViewState.initialViewMode);
+  }, [artifactViewState.initialViewMode]);
 
   const handleInstallSkill = useCallback(async () => {
     if (isInstalling) return;
@@ -123,6 +205,13 @@ export function ArtifactFileDetail({
       setIsInstalling(false);
     }
   }, [threadId, filepath, isInstalling]);
+  const artifactUrl = useMemo(() => {
+    return urlOfArtifact({ filepath, threadId, isMock });
+  }, [filepath, isMock, threadId]);
+  const artifactDownloadUrl = useMemo(() => {
+    return urlOfArtifact({ filepath, threadId, download: true, isMock });
+  }, [filepath, isMock, threadId]);
+
   return (
     <Artifact className={cn(className)}>
       <ArtifactHeader className="px-2">
@@ -137,9 +226,9 @@ export function ArtifactFileDetail({
                 </SelectTrigger>
                 <SelectContent className="select-none">
                   <SelectGroup>
-                    {(artifacts ?? []).map((filepath) => (
-                      <SelectItem key={filepath} value={filepath}>
-                        {getFileName(filepath)}
+                    {artifactOptions.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {getFileName(option)}
                       </SelectItem>
                     ))}
                   </SelectGroup>
@@ -149,7 +238,7 @@ export function ArtifactFileDetail({
           </ArtifactTitle>
         </div>
         <div className="flex min-w-0 grow items-center justify-center">
-          {isSupportPreview && (
+          {artifactViewState.canPreview && (
             <ToggleGroup
               className="mx-auto"
               type="single"
@@ -207,14 +296,20 @@ export function ArtifactFileDetail({
                 icon={CopyIcon}
                 label={t.clipboard.copyToClipboard}
                 disabled={!content}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(displayContent ?? "");
+                onClick={() => {
+                  void (async () => {
+                    const didCopy = await writeTextToClipboard(
+                      visibleContent ?? "",
+                    );
+                    if (!didCopy) {
+                      toast.error(t.clipboard.failedToCopyToClipboard);
+                      return;
+                    }
+
                     toast.success(t.clipboard.copiedToClipboard);
-                  } catch (error) {
-                    toast.error("Failed to copy to clipboard");
-                    console.error(error);
-                  }
+                  })().catch(() => {
+                    toast.error(t.clipboard.failedToCopyToClipboard);
+                  });
                 }}
                 tooltip={t.clipboard.copyToClipboard}
               />
@@ -249,25 +344,63 @@ export function ArtifactFileDetail({
         </div>
       </ArtifactHeader>
       <ArtifactContent className="p-0">
-        {isSupportPreview &&
+        {artifactViewState.canPreview &&
           viewMode === "preview" &&
           (language === "markdown" || language === "html") && (
             <ArtifactFilePreview
-              content={displayContent}
+              // Streamdown caches parsed output while mounted; remount presented markdown on
+              // content change so an agent rewrite is picked up (drafts/HTML rebuild already).
+              key={
+                isWriteFile || language !== "markdown"
+                  ? undefined
+                  : visibleContent
+              }
+              content={visibleContent}
               language={language ?? "text"}
+              scrollKey={filepathFromProps}
+              url={url}
             />
           )}
         {isCodeFile && viewMode === "code" && (
           <CodeEditor
             className="size-full resize-none rounded-none border-none"
-            value={displayContent ?? ""}
+            value={visibleContent ?? ""}
             readonly
           />
         )}
-        {!isCodeFile && (
+        {isImageArtifact && (
+          <div className="bg-muted/20 flex size-full items-center justify-center overflow-hidden p-4">
+            <img
+              className="max-h-full max-w-full cursor-zoom-in object-contain"
+              src={artifactUrl}
+              alt={getFileName(filepath)}
+              onClick={() => setLightboxOpen(true)}
+            />
+            <ImageLightbox
+              images={[
+                {
+                  alt: getFileName(filepath),
+                  downloadUrl: artifactDownloadUrl,
+                  openUrl: artifactUrl,
+                  src: artifactUrl,
+                },
+              ]}
+              onClose={() => setLightboxOpen(false)}
+              open={lightboxOpen}
+            />
+          </div>
+        )}
+        {!isCodeFile && !isImageArtifact && canPreviewInBrowser && (
           <iframe
             className="size-full"
             src={urlOfArtifact({ filepath, threadId, isMock })}
+          />
+        )}
+        {!isCodeFile && !isImageArtifact && !canPreviewInBrowser && (
+          <ArtifactDownloadFallback
+            filepath={filepath}
+            threadId={threadId}
+            isMock={isMock}
           />
         )}
       </ArtifactContent>
@@ -275,14 +408,112 @@ export function ArtifactFileDetail({
   );
 }
 
+function ArtifactDownloadFallback({
+  filepath,
+  threadId,
+  isMock,
+}: {
+  filepath: string;
+  threadId: string;
+  isMock?: boolean;
+}) {
+  const filename = getFileName(filepath);
+  const fileType = getFileExtensionDisplayName(filepath);
+
+  return (
+    <div className="flex size-full items-center justify-center p-6">
+      <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+        <div className="text-muted-foreground">
+          {getFileIcon(filepath, "size-12")}
+        </div>
+        <div className="space-y-1">
+          <div className="font-medium break-all">{filename}</div>
+          <div className="text-muted-foreground text-sm">{fileType} file</div>
+        </div>
+        <p className="text-muted-foreground text-sm">
+          This file type cannot be previewed in the browser.
+        </p>
+        <Button asChild>
+          <a
+            href={urlOfArtifact({
+              filepath,
+              threadId,
+              download: true,
+              isMock,
+            })}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <DownloadIcon className="size-4" />
+            Download
+          </a>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ArtifactFilePreview({
   content,
   language,
+  scrollKey,
+  url,
 }: {
   content: string;
   language: string;
+  scrollKey: string;
+  url?: string;
 }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const scrollPositionRef = useRef({ x: 0, y: 0 });
+  const scrollMessageKey = useMemo(
+    () => createHtmlPreviewScrollKey(scrollKey),
+    [scrollKey],
+  );
   const [htmlPreviewUrl, setHtmlPreviewUrl] = useState<string>();
+
+  useEffect(() => {
+    scrollPositionRef.current = { x: 0, y: 0 };
+  }, [scrollMessageKey]);
+
+  useEffect(() => {
+    if (language !== "html") {
+      return;
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) {
+        return;
+      }
+      if (!isArtifactScrollMessage(event.data, scrollMessageKey)) {
+        return;
+      }
+
+      if (event.data.type === "save") {
+        const x = scrollCoordinate(event.data.x);
+        const y = scrollCoordinate(event.data.y);
+        if (x !== undefined && y !== undefined) {
+          scrollPositionRef.current = { x, y };
+        }
+        return;
+      }
+
+      iframeRef.current?.contentWindow?.postMessage(
+        {
+          source: HTML_PREVIEW_SCROLL_MESSAGE_SOURCE,
+          key: scrollMessageKey,
+          type: "restore",
+          ...scrollPositionRef.current,
+        },
+        "*",
+      );
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [language, scrollMessageKey]);
 
   useEffect(() => {
     if (language !== "html") {
@@ -290,31 +521,38 @@ export function ArtifactFilePreview({
       return;
     }
 
-    const blob = new Blob([content ?? ""], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    setHtmlPreviewUrl(url);
+    const previewContent = appendHtmlPreviewScrollRestoration(
+      appendHtmlPreviewBaseHref(content ?? "", url),
+      scrollKey,
+    );
+    const blob = new Blob([previewContent], {
+      type: "text/html;charset=utf-8",
+    });
+    const objectUrl = URL.createObjectURL(blob);
+    setHtmlPreviewUrl(objectUrl);
 
     return () => {
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(objectUrl);
     };
-  }, [content, language]);
+  }, [content, language, scrollKey, url]);
 
   if (language === "markdown") {
     return (
       <div className="size-full px-4">
-        <Streamdown
+        <SafeStreamdown
           className="size-full"
-          {...streamdownPlugins}
+          {...artifactMarkdownPlugins}
           components={{ a: ArtifactLink }}
         >
           {content ?? ""}
-        </Streamdown>
+        </SafeStreamdown>
       </div>
     );
   }
   if (language === "html") {
     return (
       <iframe
+        ref={iframeRef}
         className="size-full"
         title="Artifact preview"
         sandbox="allow-scripts allow-forms"
@@ -323,4 +561,101 @@ export function ArtifactFilePreview({
     );
   }
   return null;
+}
+
+function isArtifactScrollMessage(
+  data: unknown,
+  key: string,
+): data is {
+  type: "save" | "restore-request";
+  x?: unknown;
+  y?: unknown;
+} {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "source" in data &&
+    data.source === HTML_PREVIEW_SCROLL_MESSAGE_SOURCE &&
+    "key" in data &&
+    data.key === key &&
+    "type" in data &&
+    (data.type === "save" || data.type === "restore-request")
+  );
+}
+
+function scrollCoordinate(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function useThrottledValue(
+  value: string,
+  intervalMs: number,
+  resetKey: string,
+) {
+  const [throttledValue, setThrottledValue] = useState(value);
+  const latestValueRef = useRef(value);
+  const lastFlushAtRef = useRef(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetKeyRef = useRef(resetKey);
+
+  useEffect(() => {
+    latestValueRef.current = value;
+
+    if (resetKeyRef.current !== resetKey) {
+      resetKeyRef.current = resetKey;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      lastFlushAtRef.current = Date.now();
+      setThrottledValue(value);
+      return;
+    }
+
+    if (intervalMs <= 0) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      lastFlushAtRef.current = Date.now();
+      setThrottledValue(value);
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastFlushAtRef.current;
+    if (lastFlushAtRef.current === 0 || elapsed >= intervalMs) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      lastFlushAtRef.current = now;
+      setThrottledValue(value);
+      return;
+    }
+
+    if (timeoutRef.current) {
+      return;
+    }
+
+    timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      lastFlushAtRef.current = Date.now();
+      setThrottledValue(latestValueRef.current);
+    }, intervalMs - elapsed);
+  }, [intervalMs, resetKey, value]);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  return intervalMs <= 0 || resetKeyRef.current !== resetKey
+    ? value
+    : throttledValue;
 }

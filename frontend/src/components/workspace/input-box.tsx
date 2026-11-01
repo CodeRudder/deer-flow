@@ -4,7 +4,9 @@ import type { ChatStatus } from "ai";
 import {
   CheckIcon,
   GraduationCapIcon,
+  ImageIcon,
   LightbulbIcon,
+  MessageSquareIcon,
   PaperclipIcon,
   PlusIcon,
   SparklesIcon,
@@ -20,7 +22,10 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type KeyboardEvent,
+  type RefObject,
 } from "react";
+import { toast } from "sonner";
 
 import {
   PromptInput,
@@ -55,11 +60,18 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
+import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
+import { ModelProviderLogo as ModelProviderLogoBase } from "@/core/models/logo";
+import type { Skill } from "@/core/skills";
+import { useSkills } from "@/core/skills/hooks";
+import { useSuggestionsConfig } from "@/core/suggestions/hooks";
 import type { AgentThreadContext } from "@/core/threads";
 import { textOfMessage } from "@/core/threads/utils";
+import { isIMEComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 
 import {
@@ -79,11 +91,71 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
+import { ImageGenerationSelector } from "./image-generation-selector";
 import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
+import { ModelOptionContent, modelOptionRowClassName } from "./model-menu";
 import { Tooltip } from "./tooltip";
+import { VideoGenerationSelector } from "./video-generation-selector";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
+type ModelSelectorCategory = "chat" | "vision";
+
+const MAX_SKILL_SUGGESTIONS = 6;
+const SUGGESTION_TEMPLATE_PLACEHOLDER_PATTERN =
+  /\[(?:主题|来源|topic|source)\]/i;
+
+function findSuggestionTemplatePlaceholder(text: string) {
+  const match = SUGGESTION_TEMPLATE_PLACEHOLDER_PATTERN.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    start: match.index,
+    end: match.index + match[0].length,
+  };
+}
+
+function getLeadingSlashSkillQuery(value: string): string | null {
+  if (!value.startsWith("/")) {
+    return null;
+  }
+
+  const query = value.slice(1);
+  if (query.includes("/") || /\s/.test(query)) {
+    return null;
+  }
+
+  return query;
+}
+
+function getMatchingSkillSuggestions(skills: Skill[], query: string): Skill[] {
+  const normalizedQuery = query.toLowerCase();
+
+  return skills
+    .map((skill, index) => ({
+      skill,
+      index,
+      name: skill.name.toLowerCase(),
+    }))
+    .filter(({ skill, name }) => {
+      if (!skill.enabled) {
+        return false;
+      }
+      return !normalizedQuery || name.includes(normalizedQuery);
+    })
+    .sort((a, b) => {
+      const aStartsWith = a.name.startsWith(normalizedQuery);
+      const bStartsWith = b.name.startsWith(normalizedQuery);
+      if (aStartsWith !== bStartsWith) {
+        return aStartsWith ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .slice(0, MAX_SKILL_SUGGESTIONS)
+    .map(({ skill }) => skill);
+}
 
 function getResolvedMode(
   mode: InputMode | undefined,
@@ -98,14 +170,37 @@ function getResolvedMode(
   return supportsThinking ? "pro" : "flash";
 }
 
+type ModelLogoSource = {
+  name: string;
+  model: string;
+  display_name?: string | null;
+};
+
+function ModelProviderLogo({
+  model,
+  className,
+}: {
+  model: ModelLogoSource;
+  className?: string;
+}) {
+  return (
+    <ModelProviderLogoBase
+      className={className}
+      displayName={model.display_name}
+      name={[model.name, model.model].filter(Boolean).join(" ")}
+    />
+  );
+}
+
 export function InputBox({
   className,
   disabled,
+  disabledPlaceholder,
   autoFocus,
   status = "ready",
   context,
   extraHeader,
-  isNewThread,
+  isWelcomeMode,
   threadId,
   initialValue,
   onContextChange,
@@ -117,15 +212,24 @@ export function InputBox({
   assistantId?: string | null;
   status?: ChatStatus;
   disabled?: boolean;
+  /** Replaces the placeholder while `disabled` is true. */
+  disabledPlaceholder?: string;
   context: Omit<
     AgentThreadContext,
     "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
   > & {
     mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
     reasoning_effort?: "minimal" | "low" | "medium" | "high";
+    image_generation_model?: string;
+    video_generation_model?: string;
   };
   extraHeader?: React.ReactNode;
-  isNewThread?: boolean;
+  /**
+   * Whether to render the input in welcome layout (vertically centered,
+   * with hero + quick action suggestions).  This is purely a visual flag,
+   * decoupled from "the backend has created the thread" — see issue #2746.
+   */
+  isWelcomeMode?: boolean;
   threadId: string;
   initialValue?: string;
   onContextChange?: (
@@ -135,25 +239,41 @@ export function InputBox({
     > & {
       mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
       reasoning_effort?: "minimal" | "low" | "medium" | "high";
+      image_generation_model?: string;
+      video_generation_model?: string;
     },
   ) => void;
   onFollowupsVisibilityChange?: (visible: boolean) => void;
-  onSubmit?: (message: PromptInputMessage) => void;
+  onSubmit?: (message: PromptInputMessage) => void | Promise<void>;
   onStop?: () => void;
 }) {
   const { t } = useI18n();
   const searchParams = useSearchParams();
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
-  const { models } = useModels();
+  const [modelSelectorCategory, setModelSelectorCategory] =
+    useState<ModelSelectorCategory>("chat");
+  const { models, visionModels } = useModels();
   const { thread, isMock } = useThread();
   const { textInput } = usePromptInputController();
+  const { skills } = useSkills();
   const promptRootRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const promptHistoryIndexRef = useRef<number | null>(null);
+  const promptHistoryDraftRef = useRef("");
 
   const [followups, setFollowups] = useState<string[]>([]);
+  const { data: suggestionsConfig } = useSuggestionsConfig();
+  const suggestionsConfigLoaded = suggestionsConfig !== undefined;
+  const suggestionsEnabled = suggestionsConfig?.enabled;
   const [followupsHidden, setFollowupsHidden] = useState(false);
   const [followupsLoading, setFollowupsLoading] = useState(false);
+  const [textareaFocused, setTextareaFocused] = useState(false);
+  const [skillSuggestionIndex, setSkillSuggestionIndex] = useState(0);
+  const [dismissedSkillSuggestionValue, setDismissedSkillSuggestionValue] =
+    useState<string | null>(null);
   const lastGeneratedForAiIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(false);
+  const messagesRef = useRef(thread.messages);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingSuggestion, setPendingSuggestion] = useState<string | null>(
@@ -181,12 +301,42 @@ export function InputBox({
     });
   }, [context, models, onContextChange]);
 
+  useEffect(() => {
+    if (!context.vision_model_name) {
+      return;
+    }
+    if (visionModels.some((m) => m.name === context.vision_model_name)) {
+      return;
+    }
+    onContextChange?.({
+      ...context,
+      vision_model_name: undefined,
+    });
+  }, [context, onContextChange, visionModels]);
+
+  useEffect(() => {
+    if (modelSelectorCategory === "vision" && visionModels.length === 0) {
+      setModelSelectorCategory("chat");
+    }
+  }, [modelSelectorCategory, visionModels.length]);
+
   const selectedModel = useMemo(() => {
     if (models.length === 0) {
       return undefined;
     }
     return models.find((m) => m.name === context.model_name) ?? models[0];
   }, [context.model_name, models]);
+
+  const selectedVisionModel = useMemo(() => {
+    if (visionModels.length === 0) {
+      return undefined;
+    }
+    return (
+      visionModels.find((m) => m.name === context.vision_model_name) ??
+      visionModels.find((m) => m.is_default) ??
+      visionModels[0]
+    );
+  }, [context.vision_model_name, visionModels]);
 
   const resolvedModelName = selectedModel?.name;
 
@@ -200,6 +350,44 @@ export function InputBox({
     [selectedModel],
   );
 
+  const promptHistory = useMemo(() => {
+    const history: string[] = [];
+    for (const message of thread.messages) {
+      if (message.type !== "human") {
+        continue;
+      }
+      const additionalKwargs = message.additional_kwargs;
+      if (
+        additionalKwargs &&
+        typeof additionalKwargs === "object" &&
+        Reflect.get(additionalKwargs, "hide_from_ui") === true
+      ) {
+        continue;
+      }
+      const text = textOfMessage(message)?.trim();
+      if (!text) {
+        continue;
+      }
+      if (history.at(-1) !== text) {
+        history.push(text);
+      }
+    }
+    return history;
+  }, [thread.messages]);
+
+  useEffect(() => {
+    promptHistoryIndexRef.current = null;
+    promptHistoryDraftRef.current = "";
+  }, [threadId]);
+
+  useEffect(() => {
+    const currentIndex = promptHistoryIndexRef.current;
+    if (currentIndex !== null && currentIndex >= promptHistory.length) {
+      promptHistoryIndexRef.current = null;
+      promptHistoryDraftRef.current = "";
+    }
+  }, [promptHistory.length]);
+
   const handleModelSelect = useCallback(
     (model_name: string) => {
       const model = models.find((m) => m.name === model_name);
@@ -212,9 +400,22 @@ export function InputBox({
         mode: getResolvedMode(context.mode, model.supports_thinking ?? false),
         reasoning_effort: context.reasoning_effort,
       });
-      setModelDialogOpen(false);
     },
     [onContextChange, context, models],
+  );
+
+  const handleVisionModelSelect = useCallback(
+    (vision_model_name: string) => {
+      const model = visionModels.find((m) => m.name === vision_model_name);
+      if (!model) {
+        return;
+      }
+      onContextChange?.({
+        ...context,
+        vision_model_name,
+      });
+    },
+    [context, onContextChange, visionModels],
   );
 
   const handleModeSelect = useCallback(
@@ -245,15 +446,52 @@ export function InputBox({
     [onContextChange, context],
   );
 
+  const handleImageGenerationSelectionChange = useCallback(
+    (selection: { image_generation_model?: string }) => {
+      onContextChange?.({
+        ...context,
+        ...selection,
+      });
+    },
+    [context, onContextChange],
+  );
+
+  const handleVideoGenerationSelectionChange = useCallback(
+    (selection: { video_generation_model?: string }) => {
+      onContextChange?.({
+        ...context,
+        ...selection,
+      });
+    },
+    [context, onContextChange],
+  );
+
   const handleSubmit = useCallback(
-    async (message: PromptInputMessage) => {
+    (message: PromptInputMessage) => {
       if (status === "streaming") {
         onStop?.();
         return;
       }
-      if (!message.text) {
+      if (!message.text.trim() && message.files.length === 0) {
         return;
       }
+      const placeholder = findSuggestionTemplatePlaceholder(message.text);
+      if (placeholder) {
+        toast.error(t.inputBox.suggestionPlaceholderRequired);
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          if (!textarea) {
+            return;
+          }
+          textarea.focus();
+          textarea.setSelectionRange(placeholder.start, placeholder.end);
+        });
+        return Promise.reject(
+          new Error("Suggestion template placeholder is unresolved."),
+        );
+      }
+      promptHistoryIndexRef.current = null;
+      promptHistoryDraftRef.current = "";
       setFollowups([]);
       setFollowupsHidden(false);
       setFollowupsLoading(false);
@@ -269,11 +507,14 @@ export function InputBox({
             selectedModel?.supports_thinking ?? false,
           ),
         });
-        setTimeout(() => onSubmit?.(message), 0);
-        return;
+        return new Promise<void>((resolve, reject) => {
+          setTimeout(() => {
+            Promise.resolve(onSubmit?.(message)).then(resolve).catch(reject);
+          }, 0);
+        });
       }
 
-      onSubmit?.(message);
+      return onSubmit?.(message);
     },
     [
       context,
@@ -283,6 +524,7 @@ export function InputBox({
       resolvedModelName,
       selectedModel?.supports_thinking,
       status,
+      t.inputBox.suggestionPlaceholderRequired,
     ],
   );
 
@@ -337,25 +579,206 @@ export function InputBox({
     setTimeout(() => requestFormSubmit(), 0);
   }, [pendingSuggestion, requestFormSubmit, textInput]);
 
+  const slashSkillQuery = useMemo(
+    () => getLeadingSlashSkillQuery(textInput.value ?? ""),
+    [textInput.value],
+  );
+  const skillSuggestions = useMemo(
+    () =>
+      slashSkillQuery === null
+        ? []
+        : getMatchingSkillSuggestions(skills, slashSkillQuery),
+    [skills, slashSkillQuery],
+  );
+  const showSkillSuggestions =
+    !disabled &&
+    textareaFocused &&
+    slashSkillQuery !== null &&
+    skillSuggestions.length > 0 &&
+    dismissedSkillSuggestionValue !== textInput.value;
+
+  useEffect(() => {
+    setSkillSuggestionIndex(0);
+  }, [slashSkillQuery, skillSuggestions.length]);
+
+  const applySkillSuggestion = useCallback(
+    (skill: Skill) => {
+      const nextValue = `/${skill.name} `;
+      textInput.setInput(nextValue);
+      setDismissedSkillSuggestionValue(nextValue);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
+        }
+        textarea.focus();
+        textarea.setSelectionRange(nextValue.length, nextValue.length);
+      });
+    },
+    [textInput],
+  );
+
+  const handleSkillSuggestionKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (!showSkillSuggestions) {
+        return;
+      }
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSkillSuggestionIndex(
+          (index) => (index + 1) % skillSuggestions.length,
+        );
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSkillSuggestionIndex(
+          (index) =>
+            (index - 1 + skillSuggestions.length) % skillSuggestions.length,
+        );
+        return;
+      }
+
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (event.shiftKey) {
+          return;
+        }
+        event.preventDefault();
+        const selectedSkill = skillSuggestions[skillSuggestionIndex];
+        if (selectedSkill) {
+          applySkillSuggestion(selectedSkill);
+        }
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissedSkillSuggestionValue(textInput.value);
+      }
+    },
+    [
+      applySkillSuggestion,
+      showSkillSuggestions,
+      skillSuggestionIndex,
+      skillSuggestions,
+      textInput.value,
+    ],
+  );
+
+  const setPromptHistoryValue = useCallback(
+    (value: string) => {
+      textInput.setInput(value);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
+        }
+        textarea.focus();
+        textarea.setSelectionRange(value.length, value.length);
+      });
+    },
+    [textInput],
+  );
+
+  const handlePromptHistoryKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        isIMEComposing(event) ||
+        promptHistory.length === 0 ||
+        (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+      ) {
+        return;
+      }
+
+      const currentValue = textInput.value ?? "";
+      const currentHistoryIndex = promptHistoryIndexRef.current;
+      const isBrowsingHistory = currentHistoryIndex !== null;
+
+      if (!isBrowsingHistory && currentValue.length > 0) {
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        const nextIndex = isBrowsingHistory
+          ? Math.max(currentHistoryIndex - 1, 0)
+          : promptHistory.length - 1;
+        if (!isBrowsingHistory) {
+          promptHistoryDraftRef.current = currentValue;
+        }
+        promptHistoryIndexRef.current = nextIndex;
+        setPromptHistoryValue(promptHistory[nextIndex] ?? "");
+        return;
+      }
+
+      if (!isBrowsingHistory) {
+        return;
+      }
+
+      event.preventDefault();
+      if (currentHistoryIndex >= promptHistory.length - 1) {
+        promptHistoryIndexRef.current = null;
+        setPromptHistoryValue(promptHistoryDraftRef.current);
+        promptHistoryDraftRef.current = "";
+        return;
+      }
+
+      const nextIndex = currentHistoryIndex + 1;
+      promptHistoryIndexRef.current = nextIndex;
+      setPromptHistoryValue(promptHistory[nextIndex] ?? "");
+    },
+    [promptHistory, setPromptHistoryValue, textInput.value],
+  );
+
+  const handlePromptTextareaKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (
+        status === "streaming" &&
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !isIMEComposing(event)
+      ) {
+        event.preventDefault();
+        return;
+      }
+      handleSkillSuggestionKeyDown(event);
+      if (event.defaultPrevented) {
+        return;
+      }
+      handlePromptHistoryKeyDown(event);
+    },
+    [handlePromptHistoryKeyDown, handleSkillSuggestionKeyDown, status],
+  );
+
+  const handlePromptTextareaChange = useCallback(() => {
+    promptHistoryIndexRef.current = null;
+    promptHistoryDraftRef.current = "";
+  }, []);
+
   const showFollowups =
     !disabled &&
-    !isNewThread &&
+    !isWelcomeMode &&
+    !showSkillSuggestions &&
     !followupsHidden &&
     (followupsLoading || followups.length > 0);
 
-  const followupsVisibilityChangeRef = useRef(onFollowupsVisibilityChange);
+  useEffect(() => {
+    onFollowupsVisibilityChange?.(showFollowups);
+  }, [onFollowupsVisibilityChange, showFollowups]);
 
   useEffect(() => {
-    followupsVisibilityChangeRef.current = onFollowupsVisibilityChange;
+    return () => onFollowupsVisibilityChange?.(false);
   }, [onFollowupsVisibilityChange]);
 
   useEffect(() => {
-    followupsVisibilityChangeRef.current?.(showFollowups);
-  }, [showFollowups]);
-
-  useEffect(() => {
-    return () => followupsVisibilityChangeRef.current?.(false);
-  }, []);
+    messagesRef.current = thread.messages;
+  }, [thread.messages]);
 
   useEffect(() => {
     const streaming = status === "streaming";
@@ -369,15 +792,21 @@ export function InputBox({
       return;
     }
 
-    const lastAi = [...thread.messages].reverse().find((m) => m.type === "ai");
+    const lastAi = [...messagesRef.current]
+      .reverse()
+      .find((m) => m.type === "ai");
     const lastAiId = lastAi?.id ?? null;
     if (!lastAiId || lastAiId === lastGeneratedForAiIdRef.current) {
       return;
     }
+    if (!suggestionsConfigLoaded) {
+      return;
+    }
     lastGeneratedForAiIdRef.current = lastAiId;
 
-    const recent = thread.messages
+    const recent = messagesRef.current
       .filter((m) => m.type === "human" || m.type === "ai")
+      .filter((m) => !isHiddenFromUIMessage(m))
       .map((m) => {
         const role = m.type === "human" ? "user" : "assistant";
         const content = textOfMessage(m) ?? "";
@@ -387,6 +816,11 @@ export function InputBox({
       .slice(-6);
 
     if (recent.length === 0) {
+      return;
+    }
+
+    if (!suggestionsEnabled) {
+      setFollowups([]);
       return;
     }
 
@@ -401,7 +835,6 @@ export function InputBox({
       body: JSON.stringify({
         messages: recent,
         n: 3,
-        model_name: context.model_name ?? undefined,
       }),
       signal: controller.signal,
     })
@@ -426,29 +859,44 @@ export function InputBox({
       });
 
     return () => controller.abort();
-  }, [context.model_name, disabled, isMock, status, thread.messages, threadId]);
+  }, [
+    context.model_name,
+    disabled,
+    isMock,
+    status,
+    suggestionsConfigLoaded,
+    suggestionsEnabled,
+    threadId,
+  ]);
 
   return (
-    <div ref={promptRootRef} className="relative flex flex-col gap-4">
+    <div
+      ref={promptRootRef}
+      className={cn(
+        "relative flex min-w-0 flex-col",
+        isWelcomeMode ? "gap-4" : "gap-2",
+      )}
+    >
       {showFollowups && (
-        <div className="flex items-center justify-center pb-2">
+        <div className="flex items-center justify-center pb-1">
           <div className="flex items-center gap-2">
             {followupsLoading ? (
-              <div className="text-muted-foreground bg-background/80 rounded-full border px-4 py-2 text-xs backdrop-blur-sm">
+              <div className="text-muted-foreground bg-background/80 rounded-full border px-4 py-1.5 text-xs backdrop-blur-sm">
                 {t.inputBox.followupLoading}
               </div>
             ) : (
-              <Suggestions className="min-h-16 w-fit items-start">
+              <Suggestions className="w-fit items-center">
                 {followups.map((s) => (
                   <Suggestion
                     key={s}
+                    className="py-1.5"
                     suggestion={s}
                     onClick={() => handleFollowupClick(s)}
                   />
                 ))}
                 <Button
                   aria-label={t.common.close}
-                  className="text-muted-foreground cursor-pointer rounded-full px-3 text-xs font-normal"
+                  className="text-muted-foreground h-auto cursor-pointer rounded-full px-2.5 py-1.5 text-xs font-normal"
                   variant="outline"
                   size="sm"
                   type="button"
@@ -458,6 +906,48 @@ export function InputBox({
                 </Button>
               </Suggestions>
             )}
+          </div>
+        </div>
+      )}
+      {showSkillSuggestions && (
+        <div className="absolute right-0 bottom-full left-0 z-40 mb-2 px-1">
+          <div
+            aria-label="Skill suggestions"
+            className="bg-popover/95 text-popover-foreground border-border max-h-72 overflow-y-auto rounded-xl border p-1 shadow-lg backdrop-blur-sm"
+            role="listbox"
+          >
+            {skillSuggestions.map((skill, index) => {
+              const selected = index === skillSuggestionIndex;
+              return (
+                <button
+                  aria-selected={selected}
+                  className={cn(
+                    "flex min-h-12 w-full min-w-0 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors",
+                    selected
+                      ? "bg-accent text-accent-foreground"
+                      : "text-popover-foreground hover:bg-accent/70 hover:text-accent-foreground",
+                  )}
+                  key={skill.name}
+                  onClick={() => applySkillSuggestion(skill)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setSkillSuggestionIndex(index)}
+                  role="option"
+                  type="button"
+                >
+                  <SparklesIcon className="text-muted-foreground size-4 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">
+                      /{skill.name}
+                    </span>
+                    {skill.description && (
+                      <span className="text-muted-foreground block truncate text-xs">
+                        {skill.description}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -486,13 +976,22 @@ export function InputBox({
           <PromptInputTextarea
             className={cn("size-full")}
             disabled={disabled}
-            placeholder={t.inputBox.placeholder}
+            placeholder={
+              disabled && disabledPlaceholder
+                ? disabledPlaceholder
+                : t.inputBox.placeholder
+            }
             autoFocus={autoFocus}
             defaultValue={initialValue}
+            onBlur={() => setTextareaFocused(false)}
+            onChange={handlePromptTextareaChange}
+            onFocus={() => setTextareaFocused(true)}
+            onKeyDown={handlePromptTextareaKeyDown}
+            ref={textareaRef}
           />
         </PromptInputBody>
-        <PromptInputFooter className="flex">
-          <PromptInputTools>
+        <PromptInputFooter className="flex flex-wrap gap-2 sm:flex-nowrap">
+          <PromptInputTools className="min-w-0 flex-1 flex-nowrap">
             {/* TODO: Add more connectors here
           <PromptInputActionMenu>
             <PromptInputActionMenuTrigger className="px-2!" />
@@ -514,22 +1013,24 @@ export function InputBox({
                     : "flash"
                 }
               >
-                <PromptInputActionMenuTrigger className="gap-1! px-2!">
+                <PromptInputActionMenuTrigger className="max-w-28 min-w-0 shrink gap-1! px-2! sm:max-w-none">
                   <div>
-                    {context.mode === "flash" && <ZapIcon className="size-3" />}
+                    {context.mode === "flash" && (
+                      <ZapIcon className="size-3.5" />
+                    )}
                     {context.mode === "thinking" && (
-                      <LightbulbIcon className="size-3" />
+                      <LightbulbIcon className="size-3.5" />
                     )}
                     {context.mode === "pro" && (
-                      <GraduationCapIcon className="size-3" />
+                      <GraduationCapIcon className="size-3.5" />
                     )}
                     {context.mode === "ultra" && (
-                      <RocketIcon className="size-3 text-[#dabb5e]" />
+                      <RocketIcon className="size-3.5 text-[#dabb5e]" />
                     )}
                   </div>
                   <div
                     className={cn(
-                      "text-xs font-normal",
+                      "truncate text-xs font-normal",
                       context.mode === "ultra" ? "golden-text" : "",
                     )}
                   >
@@ -674,9 +1175,21 @@ export function InputBox({
                 </DropdownMenuGroup>
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>
+            <ImageGenerationSelector
+              selection={{
+                image_generation_model: context.image_generation_model,
+              }}
+              onSelectionChange={handleImageGenerationSelectionChange}
+            />
+            <VideoGenerationSelector
+              selection={{
+                video_generation_model: context.video_generation_model,
+              }}
+              onSelectionChange={handleVideoGenerationSelectionChange}
+            />
             {supportReasoningEffort && context.mode !== "flash" && (
               <PromptInputActionMenu>
-                <PromptInputActionMenuTrigger className="gap-1! px-2!">
+                <PromptInputActionMenuTrigger className="hidden gap-1! px-2! sm:inline-flex">
                   <div className="text-xs font-normal">
                     {t.inputBox.reasoningEffort}:
                     {context.reasoning_effort === "minimal" &&
@@ -791,43 +1304,109 @@ export function InputBox({
               </PromptInputActionMenu>
             )}
           </PromptInputTools>
-          <PromptInputTools>
+          <PromptInputTools className="min-w-0 flex-nowrap justify-end">
             <ModelSelector
               open={modelDialogOpen}
               onOpenChange={setModelDialogOpen}
             >
               <ModelSelectorTrigger asChild>
-                <PromptInputButton>
-                  <div className="flex min-w-0 flex-col items-start text-left">
-                    <ModelSelectorName className="text-xs font-normal">
-                      {selectedModel?.display_name}
-                    </ModelSelectorName>
-                  </div>
+                <PromptInputButton className="max-w-40 min-w-0 shrink sm:max-w-56">
+                  {selectedModel && (
+                    <ModelProviderLogo
+                      className="size-4"
+                      model={selectedModel}
+                    />
+                  )}
+                  <ModelSelectorName className="text-xs font-normal">
+                    {selectedModel?.display_name}
+                  </ModelSelectorName>
                 </PromptInputButton>
               </ModelSelectorTrigger>
-              <ModelSelectorContent>
+              <ModelSelectorContent className="sm:max-w-lg">
                 <ModelSelectorInput placeholder={t.inputBox.searchModels} />
-                <ModelSelectorList>
-                  {models.map((m) => (
-                    <ModelSelectorItem
-                      key={m.name}
-                      value={m.name}
-                      onSelect={() => handleModelSelect(m.name)}
-                    >
-                      <div className="flex min-w-0 flex-1 flex-col">
-                        <ModelSelectorName>{m.display_name}</ModelSelectorName>
-                        <span className="text-muted-foreground truncate text-[10px]">
-                          {m.model}
-                        </span>
+                <div className="border-t">
+                  {visionModels.length > 0 ? (
+                    <div className="border-b px-3 py-2">
+                      <div className="bg-muted inline-grid w-full grid-cols-2 rounded-md p-1">
+                        <button
+                          className={cn(
+                            "flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-sm transition-colors",
+                            modelSelectorCategory === "chat"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                          type="button"
+                          onClick={() => setModelSelectorCategory("chat")}
+                        >
+                          <MessageSquareIcon className="size-4 shrink-0" />
+                          <span className="truncate">
+                            {t.inputBox.chatModel}
+                          </span>
+                        </button>
+                        <button
+                          className={cn(
+                            "flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-sm px-3 text-sm transition-colors",
+                            modelSelectorCategory === "vision"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                          type="button"
+                          onClick={() => setModelSelectorCategory("vision")}
+                        >
+                          <ImageIcon className="size-4 shrink-0" />
+                          <span className="truncate">
+                            {t.inputBox.visionModel}
+                          </span>
+                        </button>
                       </div>
-                      {m.name === context.model_name ? (
-                        <CheckIcon className="ml-auto size-4" />
-                      ) : (
-                        <div className="ml-auto size-4" />
-                      )}
-                    </ModelSelectorItem>
-                  ))}
-                </ModelSelectorList>
+                    </div>
+                  ) : null}
+                  <ModelSelectorList className="max-h-80 p-1">
+                    {modelSelectorCategory === "chat"
+                      ? models.map((m) => (
+                          <ModelSelectorItem
+                            key={m.name}
+                            className={modelOptionRowClassName(
+                              m.name === selectedModel?.name,
+                            )}
+                            value={`chat:${m.name} ${m.display_name}`}
+                            onSelect={() => handleModelSelect(m.name)}
+                          >
+                            <ModelOptionContent
+                              label={m.display_name}
+                              logo={
+                                <ModelProviderLogo
+                                  className="size-4"
+                                  model={m}
+                                />
+                              }
+                              selected={m.name === selectedModel?.name}
+                            />
+                          </ModelSelectorItem>
+                        ))
+                      : visionModels.map((m) => (
+                          <ModelSelectorItem
+                            key={m.name}
+                            className={modelOptionRowClassName(
+                              m.name === selectedVisionModel?.name,
+                            )}
+                            value={`vision:${m.name} ${m.display_name ?? ""}`}
+                            onSelect={() => handleVisionModelSelect(m.name)}
+                          >
+                            <ModelOptionContent
+                              label={m.display_name ?? m.name}
+                              logo={
+                                <ModelProviderLogo
+                                  className="size-4"
+                                  model={m}
+                                />
+                              }
+                              selected={m.name === selectedVisionModel?.name}
+                            />
+                          </ModelSelectorItem>
+                        ))}
+                  </ModelSelectorList>
+                </div>
               </ModelSelectorContent>
             </ModelSelector>
             <PromptInputSubmit
@@ -838,16 +1417,18 @@ export function InputBox({
             />
           </PromptInputTools>
         </PromptInputFooter>
-        {!isNewThread && (
+        {!isWelcomeMode && (
           <div className="bg-background absolute right-0 -bottom-[17px] left-0 z-0 h-4"></div>
         )}
       </PromptInput>
 
-      {isNewThread && searchParams.get("mode") !== "skill" && (
-        <div className="flex items-center justify-center pt-2">
-          <SuggestionList />
-        </div>
-      )}
+      {isWelcomeMode &&
+        searchParams.get("mode") !== "skill" &&
+        !showSkillSuggestions && (
+          <div className="flex items-center justify-center pt-2">
+            <SuggestionList textareaRef={textareaRef} />
+          </div>
+        )}
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
@@ -874,31 +1455,30 @@ export function InputBox({
   );
 }
 
-function SuggestionList() {
+function SuggestionList({
+  textareaRef,
+}: {
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+}) {
   const { t } = useI18n();
   const { textInput } = usePromptInputController();
   const handleSuggestionClick = useCallback(
     (prompt: string | undefined) => {
       if (!prompt) return;
       textInput.setInput(prompt);
-      setTimeout(() => {
-        const textarea = document.querySelector<HTMLTextAreaElement>(
-          "textarea[name='message']",
-        );
-        if (textarea) {
-          const selStart = prompt.indexOf("[");
-          const selEnd = prompt.indexOf("]");
-          if (selStart !== -1 && selEnd !== -1) {
-            textarea.setSelectionRange(selStart, selEnd + 1);
-            textarea.focus();
-          }
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        const placeholder = findSuggestionTemplatePlaceholder(prompt);
+        if (textarea && placeholder) {
+          textarea.focus();
+          textarea.setSelectionRange(placeholder.start, placeholder.end);
         }
-      }, 500);
+      });
     },
-    [textInput],
+    [textareaRef, textInput],
   );
   return (
-    <Suggestions className="min-h-16 w-fit items-start">
+    <Suggestions className="min-h-16 w-full max-w-full justify-center px-4 sm:w-fit sm:px-0">
       <ConfettiButton
         className="text-muted-foreground cursor-pointer rounded-full px-4 text-xs font-normal"
         variant="outline"
@@ -952,7 +1532,7 @@ function AddAttachmentsButton({ className }: { className?: string }) {
         className={cn("px-2!", className)}
         onClick={() => attachments.openFileDialog()}
       >
-        <PaperclipIcon className="size-3" />
+        <PaperclipIcon className="size-3.5" />
       </PromptInputButton>
     </Tooltip>
   );

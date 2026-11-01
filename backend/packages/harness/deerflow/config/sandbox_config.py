@@ -4,7 +4,20 @@ from pydantic import BaseModel, ConfigDict, Field
 class VolumeMountConfig(BaseModel):
     """Configuration for a volume mount."""
 
-    host_path: str = Field(..., description="Path on the host machine")
+    host_path: str = Field(
+        ...,
+        description=(
+            "Source path for the mount. Resolution depends on the active provider: "
+            "``LocalSandboxProvider`` checks this path from the gateway process — in "
+            "``make dev`` that is the host machine, but in Docker deployments "
+            "(``make up`` / docker-compose) it is the path *inside* the "
+            "``deer-flow-gateway`` container, so the host directory must also be "
+            "bind-mounted into the gateway service for the mount to take effect. "
+            "``AioSandboxProvider`` (DooD) passes this value straight to ``docker -v`` "
+            "for the sandbox container, where it is resolved by the host Docker daemon "
+            "from the host machine's perspective."
+        ),
+    )
     container_path: str = Field(..., description="Path inside the container")
     read_only: bool = Field(default=False, description="Whether the mount is read-only")
 
@@ -62,6 +75,19 @@ class SandboxConfig(BaseModel):
     environment: dict[str, str] = Field(
         default_factory=dict,
         description="Environment variables to inject into the sandbox container. Values starting with $ will be resolved from host environment variables.",
+    )
+
+    command_timeout: int = Field(
+        default=120,
+        ge=10,
+        description="Timeout in seconds for bash command execution (default: 120). On timeout the process tree is killed and partial output is returned. Minimum: 10s.",
+    )
+
+    max_background_commands: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of concurrent background commands per thread (default: 10).",
     )
 
     bash_output_max_chars: int = Field(

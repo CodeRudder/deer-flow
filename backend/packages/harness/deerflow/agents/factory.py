@@ -47,10 +47,33 @@ You have access to the `write_todos` tool to help you manage and track complex m
 - Keep EXACTLY ONE task as `in_progress` at any time (unless tasks can run in parallel)
 - Update the todo list in REAL-TIME as you work - this gives users visibility into your progress
 - DO NOT use this tool for simple tasks (< 3 steps) - just complete them directly
+
+**Incremental Operations (preferred for updates):**
+1. **Full replace** (`todos`): Provide entire list. Use ONLY for new plan creation.
+   Pass `todos` as a native JSON array/list, not a quoted JSON string.
+2. **Update items** (`updates`): Change status/content by index. Other items preserved.
+   Pass `updates` as a native JSON array/list, not a quoted JSON string.
+   Remove: `{"index": N, "remove": true}`
+   Example: `write_todos(updates=[{"index": 0, "status": "completed"}, {"index": 1, "status": "in_progress"}])`
+3. **Add items** (`adds`): Insert new tasks. Without `index` → append. With `index` → insert at position.
+   Pass `adds` as a native JSON array/list, not a quoted JSON string.
+   Example: `write_todos(adds=[{"content": "New task", "status": "pending"}])`
+Combine updates+adds: `write_todos(updates=[...], adds=[...])`
+Do NOT combine `todos` with `updates`/`adds`.
+
+**Subtask Execution:**
+- Use the `task` tool to delegate todos to sub-agents for parallel execution
+- Split work into subtasks of ~10 minutes each — avoid oversized tasks
+- When a subtask is abnormally interrupted or fails, create a new subtask to resume and complete the remaining work
+- After all subtasks finish, verify results and proceed to the next todo item
 </todo_list_system>
 """
 
-_TODO_TOOL_DESCRIPTION = "Use this tool to create and manage a structured task list for complex work sessions.  Only use for complex tasks (3+ steps)."
+_TODO_TOOL_DESCRIPTION = (
+    "Use this tool to create and manage a structured task list for complex work sessions. "
+    "Supports full replace (todos), incremental updates (updates by index), and adding new tasks (adds with optional position). "
+    "Only use for complex tasks (3+ steps)."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +196,7 @@ def _assemble_from_features(
       9.   MemoryMiddleware (memory feature)
       10.  ViewImageMiddleware (vision feature)
       11.  SubagentLimitMiddleware (subagent feature)
-      12.  LoopDetectionMiddleware (always)
+      12.  LoopDetectionMiddleware (loop_detection feature)
       13.  ClarificationMiddleware (always last)
 
     Two-phase ordering:
@@ -254,9 +277,11 @@ def _assemble_from_features(
             from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 
             chain.append(ViewImageMiddleware())
-        from deerflow.tools.builtins import view_image_tool
 
-        extra_tools.append(view_image_tool)
+        if feat.sandbox is not False:
+            from deerflow.tools.builtins import view_image_tool
+
+            extra_tools.append(view_image_tool)
 
     # --- [11] Subagent ---
     if feat.subagent is not False:
@@ -270,12 +295,27 @@ def _assemble_from_features(
 
         extra_tools.append(task_tool)
 
-    # --- [12] LoopDetection (always) ---
-    from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
+    # --- [12] LoopDetection ---
+    if feat.loop_detection is not False:
+        if isinstance(feat.loop_detection, AgentMiddleware):
+            chain.append(feat.loop_detection)
+        else:
+            from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
+            from deerflow.config.loop_detection_config import LoopDetectionConfig
 
-    chain.append(LoopDetectionMiddleware())
+            chain.append(LoopDetectionMiddleware.from_config(LoopDetectionConfig()))
 
-    # --- [13] Clarification (always last among built-ins) ---
+    # --- [13] TokenBudget ---
+    if feat.token_budget is not False:
+        if isinstance(feat.token_budget, AgentMiddleware):
+            chain.append(feat.token_budget)
+        else:
+            from deerflow.agents.middlewares.token_budget_middleware import TokenBudgetMiddleware
+            from deerflow.config.token_budget_config import TokenBudgetConfig
+
+            chain.append(TokenBudgetMiddleware.from_config(TokenBudgetConfig()))
+
+    # --- [14] Clarification (always last among built-ins) ---
     chain.append(ClarificationMiddleware())
     extra_tools.append(ask_clarification_tool)
 

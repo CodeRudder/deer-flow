@@ -1,0 +1,54 @@
+/*
+ * The model dialog's touch rules, for every mobile route that opens it.
+ *
+ * These rules used to sit at the bottom of `chat-surface.css`, which only the
+ * chat route imports. CSS is split per route, so a phone that opens (or
+ * reloads) an artifact link *directly* never loads that chunk: the file
+ * switcher on the artifact screen — the same `ModelSelector` dialog — fell
+ * back to desktop geometry, i.e. 36px rows (`modelOptionRowClassName`'s `h-9`)
+ * under the 44px touch floor and a 14px search box that iOS zooms the whole
+ * page into on focus. It only looked right when the artifact screen was reached
+ * by a soft navigation from the chat, whose chunk was still in memory.
+ *
+ * Both routes must therefore import it themselves - the chat through the
+ * `@import` at the top of `chat-surface.css` (that file is its only entry
+ * point, and the chat page cannot be edited by this change), the artifact
+ * screen directly from its `page.tsx`. Do not fold this back into either
+ * surface stylesheet: the bug above is exactly "one route has it, the other
+ * does not".
+ */
+
+/*
+ * The `ModelSelector` portals itself to `document.body`, so the chat sheet's
+ * close-button rule (`mobile-chat-sheet`) cannot reach it. Its close button
+ * gets the same treatment, plus a width cap so the dialog keeps a 16px gutter
+ * at 390px instead of running edge to edge.
+ */
+.mobile-model-dialog {
+  max-width: calc(100vw - 2rem);
+}
+
+.mobile-model-dialog > button {
+  top: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+/*
+ * Two desktop sizes inside that dialog are below the phone floors. The rows
+ * are `modelOptionRowClassName`'s `h-9` (36px) — a `min-height` wins over the
+ * fixed `height`, so the row grows without the shared helper changing. The
+ * search box is `text-sm` (14px), which iOS zooms into on focus.
+ */
+.mobile-model-dialog [role="option"] {
+  min-height: 2.75rem;
+}
+
+.mobile-model-dialog input {
+  font-size: 1rem;
+}

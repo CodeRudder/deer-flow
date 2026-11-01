@@ -1,6 +1,8 @@
 import json
 import os
+import sys
 from io import BytesIO
+from pathlib import Path
 
 from PIL import Image
 from pptx import Presentation
@@ -11,6 +13,7 @@ def generate_ppt(
     plan_file: str,
     slide_images: list[str],
     output_file: str,
+    overwrite: bool = False,
 ) -> str:
     """
     Generate a PowerPoint presentation from slide images.
@@ -19,10 +22,18 @@ def generate_ppt(
         plan_file: Path to JSON file containing presentation plan
         slide_images: List of paths to slide images in order
         output_file: Path to output PPTX file
+        overwrite: Whether to overwrite an existing output file
 
     Returns:
         Status message
     """
+    output_path = Path(output_file)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Output file already exists and will not be overwritten: {output_file}. "
+            "Choose a unique output filename, or pass --overwrite to replace it."
+        )
+
     # Load presentation plan
     with open(plan_file, "r", encoding="utf-8") as f:
         plan = json.load(f)
@@ -146,6 +157,11 @@ if __name__ == "__main__":
         required=True,
         help="Output path for generated PPTX file",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite the output PPTX file if it already exists",
+    )
 
     args = parser.parse_args()
 
@@ -155,7 +171,9 @@ if __name__ == "__main__":
                 args.plan_file,
                 args.slide_images,
                 args.output_file,
+                args.overwrite,
             )
         )
     except Exception as e:
-        print(f"Error while generating presentation: {e}")
+        print(f"Error while generating presentation: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)

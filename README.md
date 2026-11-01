@@ -18,13 +18,9 @@ https://github.com/user-attachments/assets/a8bcadc4-e040-4cf2-8fda-dd768b999c18
 
 ## Official Website
 
-[<img width="2880" height="1600" alt="image" src="https://github.com/user-attachments/assets/a598c49f-3b2f-41ea-a052-05e21349188a" />](https://deerflow.tech)
-
 Learn more and see **real demos** on our [**official website**](https://deerflow.tech).
 
 ## Coding Plan from ByteDance Volcengine
-
-<img width="4808" height="2400" alt="英文方舟" src="https://github.com/user-attachments/assets/2ecc7b9d-50be-4185-b1f7-5542d222fb2d" />
 
 - We strongly recommend using Doubao-Seed-2.0-Code, DeepSeek v3.2 and Kimi 2.5 to run DeerFlow
 - [Learn more](https://www.byteplus.com/en/activity/codingplan?utm_campaign=deer_flow&utm_content=deer_flow&utm_medium=devrel&utm_source=OWO&utm_term=deer_flow)
@@ -70,9 +66,11 @@ DeerFlow has newly integrated the intelligent search and crawling toolset indepe
     - [Sub-Agents](#sub-agents)
     - [Sandbox \& File System](#sandbox--file-system)
     - [Context Engineering](#context-engineering)
+    - [Interactive Clarification Cards](#interactive-clarification-cards)
     - [Long-Term Memory](#long-term-memory)
   - [Recommended Models](#recommended-models)
   - [Embedded Python Client](#embedded-python-client)
+  - [Terminal Workbench (TUI)](#terminal-workbench-tui)
   - [Documentation](#documentation)
   - [⚠️ Security Notice](#️-security-notice)
     - [Improper Deployment May Introduce Security Risks](#improper-deployment-may-introduce-security-risks)
@@ -120,6 +118,25 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
 
    > **Advanced / manual configuration**: If you prefer to edit `config.yaml` directly, run `make config` instead to copy the full template. See `config.example.yaml` for the complete reference including CLI-backed providers (Codex CLI, Claude Code OAuth), OpenRouter, Responses API, and more.
 
+   Administrators manage per-user model-group, image-generation, and video-generation quotas entirely in `/workspace/admin`; there is no `config.yaml` quota switch or default. Video point accounting is designed for `database.backend: postgres`; SQLite concurrency is outside this feature's deployment scope. Administrators create model groups or the single image-generation / video-generation scope, configure `models[].model` exact/prefix matching, natural week/month request limits, and per-user current-period overrides. Video billing is fixed to points: 1 point equals 1 CNY, and administrators maintain per-model/resolution CNY-per-second rates as JSON. Video requests reserve the estimated amount before provider dispatch and then settle, release, or retain it for reconciliation based on the provider receipt. A user-side quota indicator in the chat header (`GET /api/quotas/me`) surfaces the same aggregation to the signed-in user — a compact pill showing only a wallet icon, a quota label, and a dropdown chevron (warning/exceeded emphasis), whose dropdown details every configured dimension (model groups, image, and video generation, record-only included) in a backend-controlled order (general model group, premium model group, image, then video generation) as compact used[/limit] rows with a per-row weekly/monthly badge (the limit part only renders for enforced dimensions); there is still no quota page or wallet — the video model selector does show each configured model's point rate inline, but there is no per-generation pre-cost estimate. Quota-range cards assign distinct low-emphasis colors to their stable-code badges for quick identification without changing card or status colors. Model requests, image generations, and video generations are the only blocking dimensions; Token usage is accumulated per model group for observation only. The user quota table generates one column for every enabled model group, shows numeric request/Token usage in the matching column plus fixed image/video generation-usage columns, marks per-user temporary overrides, and leaves editing to the adjustment drawer. Each drawer card promotes current requests, Token observation, and the effective limit into separate read-only metrics before the current-period override form. Lead and delegated subagent calls share the initiating user's quota, and a dispatched provider request remains counted even when the provider later errors. The same dashboard also provides global usage statistics, independent Token/request/image/video user Top 20 rankings, and read-only session tracing with user, thread, Run, and event detail.
+
+   Local email/password registration and email changes are restricted to configured company email domains. The default is `sz-jlc.com`; password-login enforcement is independently configurable and remains off by default so existing accounts are not locked out during an upgrade:
+
+   ```yaml
+   auth:
+     allowed_email_domains:
+       - sz-jlc.com
+     enforce_email_domain_on_login: false
+     local_registration:
+       require_admin_approval: false
+       approval_email:
+         enabled: false
+   ```
+
+   Registration and any `new_email` submitted to the password-change endpoint always enforce `allowed_email_domains`. Setting `enforce_email_domain_on_login: true` also checks the persisted account email after a local password has been verified and before a new session is issued. The policy does not change first-admin creation, OIDC/SSO provisioning, or platform-JWT provisioning, but every account that later uses the local password-login endpoint is subject to the login switch, including administrators. Verify at least one administrator has an allowed email before enabling it.
+
+   The admin dashboard also includes **User Management**. It lists active, pending, and disabled users; administrators can approve local registrations, disable or restore normal users, retry a failed approval notification, and edit a normal local account's email. Administrator profiles remain read-only. Email edits invalidate that account's existing sessions. Account and approval-email lifecycle values are centrally defined string enums while their database and API values remain unchanged. To place new public local registrations into the pending state, set `auth.local_registration.require_admin_approval: true` and enable the SMTP SSL block shown in `config.example.yaml`; the default remains immediate registration for backward compatibility. Approval mail uses implicit TLS on port 465 (`smtp.exmail.qq.com` in the Tencent Exmail example); IMAP and POP are not involved.
+
    <details>
    <summary>Manual model configuration examples</summary>
 
@@ -162,6 +179,27 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
    OpenRouter and similar OpenAI-compatible gateways should be configured with `langchain_openai:ChatOpenAI` plus `base_url`. If you prefer a provider-specific environment variable name, point `api_key` at that variable explicitly (for example `api_key: $OPENROUTER_API_KEY`).
 
    To route OpenAI models through `/v1/responses`, keep using `langchain_openai:ChatOpenAI` and set `use_responses_api: true` with `output_version: responses/v1`.
+
+   To give text-only main models image-understanding ability, configure optional `vision.models` entries. DeerFlow still exposes the same `view_image` tool; it sends base64 image data to the selected vision endpoint asynchronously and returns the text understanding to the main model. Each request includes shared `vision.system_prompt` and `vision.prompt` values, using DeerFlow's built-in defaults when omitted.
+
+   ```yaml
+   vision:
+     system_prompt: |
+       你是一个专业的多模态视觉理解模型。
+       请客观、准确、结构化地描述图片内容，提取对后续任务有帮助的信息。
+       不要输出推理过程。
+     prompt: |
+       请理解这张图片的主要内容，提取对后续任务有帮助的信息。
+     models:
+       - name: company-vision
+         display_name: 公司视觉理解模型
+         model: kimi-k2.6
+         base_url: https://claude.jlcops.com/api/v1/messages
+         api_key: $COMPANY_VISION_API_KEY
+         max_tokens: 10240
+         stream: false
+         timeout: 60.0
+   ```
 
    For vLLM 0.19.0, use `deerflow.models.vllm_provider:VllmChatModel`. For Qwen-style reasoning models, DeerFlow toggles reasoning with `extra_body.chat_template_kwargs.enable_thinking` and preserves vLLM's non-standard `reasoning` field across multi-turn tool-call conversations. Legacy `thinking` configs are normalized automatically for backward compatibility. Reasoning models may also require the server to be started with `--reasoning-parser ...`. If your local vLLM deployment accepts any non-empty API key, you can still set `VLLM_API_KEY` to a placeholder value.
 
@@ -243,10 +281,12 @@ make up     # Build images and start all production services
 make down   # Stop and remove containers
 ```
 
-> [!NOTE]
-> The LangGraph agent server currently runs via `langgraph dev` (the open-source CLI server).
-
 Access: http://localhost:2026
+
+The unified nginx endpoint is same-origin by default and does not emit browser CORS headers. If you run a split-origin or port-forwarded browser client, set `GATEWAY_CORS_ORIGINS` to comma-separated exact origins such as `http://localhost:3000`; the Gateway then applies the CORS allowlist and matching CSRF origin checks.
+
+> [!IMPORTANT]
+> The Gateway holds run state (RunManager and the stream bridge) in process, so production defaults to a single Gateway worker (`GATEWAY_WORKERS=1`). Raising the worker count without a shared cross-worker stream bridge — which is not yet available — breaks run cancellation, SSE reconnects, request de-duplication, and IM channels, because nginx uses no sticky sessions and each worker keeps its own run state. Scale a single worker up with more CPU/RAM (or move the database and sandbox onto dedicated tiers) instead of raising `GATEWAY_WORKERS`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed Docker development guide.
 
@@ -254,7 +294,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed Docker development guide.
 
 If you prefer running services locally:
 
-Prerequisite: complete the "Configuration" steps above first (`make setup`). `make dev` requires a valid `config.yaml` in the project root (can be overridden via `DEER_FLOW_CONFIG_PATH`). Run `make doctor` to verify your setup before starting.
+Prerequisite: complete the "Configuration" steps above first (`make setup`). `make dev` requires a valid `config.yaml` in the project root. Set `DEER_FLOW_PROJECT_ROOT` to define that root explicitly, or `DEER_FLOW_CONFIG_PATH` to point at a specific config file. Runtime state defaults to `.deer-flow` under the project root and can be moved with `DEER_FLOW_HOME`; skills default to `skills/` under the project root and can be moved with `DEER_FLOW_SKILLS_PATH`. Run `make doctor` to verify your setup before starting.
 On Windows, run the local development flow from Git Bash. Native `cmd.exe` and PowerShell shells are not supported for the bash-based service scripts, and WSL is not guaranteed because some scripts rely on Git for Windows utilities such as `cygpath`.
 
 1. **Check prerequisites**:
@@ -264,7 +304,7 @@ On Windows, run the local development flow from Git Bash. Native `cmd.exe` and P
 
 2. **Install dependencies**:
    ```bash
-   make install  # Install backend + frontend dependencies
+   make install  # Install backend + frontend dependencies + pre-commit hooks
    ```
 
 3. **(Optional) Pre-pull sandbox image**:
@@ -289,53 +329,31 @@ On Windows, run the local development flow from Git Bash. Native `cmd.exe` and P
 
 #### Startup Modes
 
-DeerFlow supports multiple startup modes across two dimensions:
-
-- **Dev / Prod** — dev enables hot-reload; prod uses pre-built frontend
-- **Standard / Gateway** — standard uses a separate LangGraph server (4 processes); Gateway mode (experimental) embeds the agent runtime in the Gateway API (3 processes)
+DeerFlow runs the agent runtime inside the Gateway API. Development mode enables hot-reload; production mode uses a pre-built frontend.
 
 | | **Local Foreground** | **Local Daemon** | **Docker Dev** | **Docker Prod** |
 |---|---|---|---|---|
 | **Dev** | `./scripts/serve.sh --dev`<br/>`make dev` | `./scripts/serve.sh --dev --daemon`<br/>`make dev-daemon` | `./scripts/docker.sh start`<br/>`make docker-start` | — |
-| **Dev + Gateway** | `./scripts/serve.sh --dev --gateway`<br/>`make dev-pro` | `./scripts/serve.sh --dev --gateway --daemon`<br/>`make dev-daemon-pro` | `./scripts/docker.sh start --gateway`<br/>`make docker-start-pro` | — |
 | **Prod** | `./scripts/serve.sh --prod`<br/>`make start` | `./scripts/serve.sh --prod --daemon`<br/>`make start-daemon` | — | `./scripts/deploy.sh`<br/>`make up` |
-| **Prod + Gateway** | `./scripts/serve.sh --prod --gateway`<br/>`make start-pro` | `./scripts/serve.sh --prod --gateway --daemon`<br/>`make start-daemon-pro` | — | `./scripts/deploy.sh --gateway`<br/>`make up-pro` |
 
 | Action | Local | Docker Dev | Docker Prod |
 |---|---|---|---|
 | **Stop** | `./scripts/serve.sh --stop`<br/>`make stop` | `./scripts/docker.sh stop`<br/>`make docker-stop` | `./scripts/deploy.sh down`<br/>`make down` |
 | **Restart** | `./scripts/serve.sh --restart [flags]` | `./scripts/docker.sh restart` | — |
 
-> **Gateway mode** eliminates the LangGraph server process — the Gateway API handles agent execution directly via async tasks, managing its own concurrency.
-
-#### Why Gateway Mode?
-
-In standard mode, DeerFlow runs a dedicated [LangGraph Platform](https://langchain-ai.github.io/langgraph/) server alongside the Gateway API. This architecture works well but has trade-offs:
-
-| | Standard Mode | Gateway Mode |
-|---|---|---|
-| **Architecture** | Gateway (REST API) + LangGraph (agent runtime) | Gateway embeds agent runtime |
-| **Concurrency** | `--n-jobs-per-worker` per worker (requires license) | `--workers` × async tasks (no per-worker cap) |
-| **Containers / Processes** | 4 (frontend, gateway, langgraph, nginx) | 3 (frontend, gateway, nginx) |
-| **Resource usage** | Higher (two Python runtimes) | Lower (single Python runtime) |
-| **LangGraph Platform license** | Required for production images | Not required |
-| **Cold start** | Slower (two services to initialize) | Faster |
-
-Both modes are functionally equivalent — the same agents, tools, and skills work in either mode.
+Gateway owns `/api/langgraph/*` and translates those public LangGraph-compatible paths to its native `/api/*` routers behind nginx.
 
 #### Docker Production Deployment
 
-`deploy.sh` supports building and starting separately. Images are mode-agnostic — runtime mode is selected at start time:
+`deploy.sh` supports building and starting separately:
 
 ```bash
 # One-step (build + start)
-deploy.sh                    # standard mode (default)
-deploy.sh --gateway          # gateway mode
+deploy.sh
 
-# Two-step (build once, start with any mode)
+# Two-step (build once, start later)
 deploy.sh build              # build all images
-deploy.sh start              # start in standard mode
-deploy.sh start --gateway    # start in gateway mode
+deploy.sh start              # start pre-built images
 
 # Stop
 deploy.sh down
@@ -363,6 +381,8 @@ See the [MCP Server Guide](backend/docs/MCP_SERVER.md) for detailed instructions
 
 DeerFlow supports receiving tasks from messaging apps. Channels auto-start when configured — no public IP required for any of them.
 
+DeerFlow can also expose user-owned IM channel connections in the workspace UI. When `channel_connections` is enabled, logged-in users can bind Telegram, Slack, Discord, Feishu/Lark, DingTalk, WeChat, or WeCom from the sidebar / Settings > Channels. It reuses the existing outbound `channels.*` transports, so no public IP or provider callback URL is required. Incoming IM messages then run under the connected DeerFlow user account. See [IM Channel Connections](backend/docs/IM_CHANNEL_CONNECTIONS.md) for setup and security notes.
+
 | Channel | Transport | Difficulty |
 |---------|-----------|------------|
 | Telegram | Bot API (long-polling) | Easy |
@@ -370,13 +390,14 @@ DeerFlow supports receiving tasks from messaging apps. Channels auto-start when 
 | Feishu / Lark | WebSocket | Moderate |
 | WeChat | Tencent iLink (long-polling) | Moderate |
 | WeCom | WebSocket | Moderate |
+| DingTalk | Stream Push (WebSocket) | Moderate |
 
 **Configuration in `config.yaml`:**
 
 ```yaml
 channels:
-  # LangGraph Server URL (default: http://localhost:2024)
-  langgraph_url: http://localhost:2024
+  # LangGraph-compatible Gateway API base URL (default: http://localhost:8001/api)
+  langgraph_url: http://localhost:8001/api
   # Gateway API URL (default: http://localhost:8001)
   gateway_url: http://localhost:8001
 
@@ -439,11 +460,19 @@ channels:
           context:
             thinking_enabled: true
             subagent_enabled: true
+
+  dingtalk:
+    enabled: true
+    client_id: $DINGTALK_CLIENT_ID             # Client ID of your DingTalk application
+    client_secret: $DINGTALK_CLIENT_SECRET     # Client Secret of your DingTalk application
+    allowed_users: []                          # empty = allow all
+    card_template_id: ""                       # Optional: AI Card template ID for streaming typewriter effect
 ```
 
 Notes:
 - `assistant_id: lead_agent` calls the default LangGraph assistant directly.
 - If `assistant_id` is set to a custom agent name, DeerFlow still routes through `lead_agent` and injects that value as `agent_name`, so the custom agent's SOUL/config takes effect for IM channels.
+- IM channel workers call Gateway's LangGraph-compatible API internally and automatically attach process-local internal auth plus the CSRF cookie/header pair required for thread and run creation.
 
 Set the corresponding API keys in your `.env` file:
 
@@ -466,6 +495,10 @@ WECHAT_ILINK_BOT_ID=your_ilink_bot_id
 # WeCom
 WECOM_BOT_ID=your_bot_id
 WECOM_BOT_SECRET=your_bot_secret
+
+# DingTalk
+DINGTALK_CLIENT_ID=your_client_id
+DINGTALK_CLIENT_SECRET=your_client_secret
 ```
 
 **Telegram Setup**
@@ -504,7 +537,15 @@ WECOM_BOT_SECRET=your_bot_secret
 4. Make sure backend dependencies include `wecom-aibot-python-sdk`. The channel uses a WebSocket long connection and does not require a public callback URL.
 5. The current integration supports inbound text, image, and file messages. Final images/files generated by the agent are also sent back to the WeCom conversation.
 
-When DeerFlow runs in Docker Compose, IM channels execute inside the `gateway` container. In that case, do not point `channels.langgraph_url` or `channels.gateway_url` at `localhost`; use container service names such as `http://langgraph:2024` and `http://gateway:8001`, or set `DEER_FLOW_CHANNELS_LANGGRAPH_URL` and `DEER_FLOW_CHANNELS_GATEWAY_URL`.
+**DingTalk Setup**
+
+1. Create a DingTalk application in the [DingTalk Developer Console](https://open.dingtalk.com/) and enable **Robot** capability.
+2. Set the message receiving mode to **Stream Mode** in the robot configuration page.
+3. Copy the `Client ID` and `Client Secret`, set `DINGTALK_CLIENT_ID` and `DINGTALK_CLIENT_SECRET` in `.env`, and enable the channel in `config.yaml`.
+4. *(Optional)* To enable streaming AI Card replies (typewriter effect), create an **AI Card** template on the [DingTalk Card Platform](https://open.dingtalk.com/document/dingstart/typewriter-effect-streaming-ai-card), then set `card_template_id` in `config.yaml` to the template ID. You also need to apply for the `Card.Streaming.Write` and `Card.Instance.Write` permissions.
+
+
+When DeerFlow runs in Docker Compose, IM channels execute inside the `gateway` container. In that case, do not point `channels.langgraph_url` or `channels.gateway_url` at `localhost`; use container service names such as `http://gateway:8001/api` and `http://gateway:8001`, or set `DEER_FLOW_CHANNELS_LANGGRAPH_URL` and `DEER_FLOW_CHANNELS_GATEWAY_URL`.
 
 **Commands**
 
@@ -519,6 +560,7 @@ Once a channel is connected, you can interact with DeerFlow directly from the ch
 | `/help` | Show help |
 
 > Messages without a command prefix are treated as regular chat — DeerFlow creates a thread and responds conversationally.
+
 
 #### LangSmith Tracing
 
@@ -548,6 +590,15 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 
 If you are using a self-hosted Langfuse instance, set `LANGFUSE_BASE_URL` to your deployment URL.
 
+**Trace correlation fields.** Every agent run is annotated with Langfuse's reserved trace attributes so the Sessions and Users pages light up automatically:
+
+- `session_id` = LangGraph `thread_id` — groups every trace of the same conversation
+- `user_id` = effective user from `get_effective_user_id()` (falls back to `default` in no-auth mode)
+- `trace_name` = assistant id (defaults to `lead-agent`)
+- `tags` = `[env:<DEER_FLOW_ENV>, model:<model_name>]` (omitted when not set)
+
+These are injected into `RunnableConfig.metadata` at the graph invocation root for both the gateway path (`runtime/runs/worker.py::run_agent`) and the embedded path (`client.py::DeerFlowClient.stream`), so any LangChain-compatible callback can read them. Set `DEER_FLOW_ENV` (or `ENVIRONMENT`) to tag traces by deployment environment.
+
 #### Using Both Providers
 
 If both LangSmith and Langfuse are enabled, DeerFlow attaches both tracing callbacks and reports the same model activity to both systems.
@@ -576,7 +627,11 @@ Skills are what make DeerFlow do *almost anything*.
 
 A standard Agent Skill is a structured capability module — a Markdown file that defines a workflow, best practices, and references to supporting resources. DeerFlow ships with built-in skills for research, report generation, slide creation, web pages, image and video generation, and more. But the real power is extensibility: add your own skills, replace the built-in ones, or combine them into compound workflows.
 
+Image and video generation use the workspace model pickers: each selector shows model names directly and sends only `image_generation_model` / `video_generation_model` as thread context, with the provider resolved from the model name by the backend. Image editing is backend-only in this iteration and is triggered through the `image-editing` skill when an uploaded or previously generated image is the source to preserve or transform. This includes turning design drawings, sketches, blueprints, or CAD-style images into realistic product images, even when the request uses words such as "generate" or "create". Video generation runs a staged confirmation flow — the agent first shows a prefilled input information table (subject, action, optional creative fields), then a generation plan card (mode, materials, output settings, a user-language prompt refinement), and waits for the user's go-ahead before spending quota, drafts default to 768P/5 s, and a take the user likes can be confirmed and upgraded to 2K via MiniMax's regeneration endpoint; finished videos play inline in the chat. Video providers are independent of one another: the cloud MiniMax H3 (`minimax_h3`) and a self-hosted sglang MiniMax H3 (`minimax_h3_sglang`) are separate providers with different protocols, so a self-hosted deployment is wired by declaring its own `video_generation.providers` entry and setting `SGLANG_H3_API_BASE_URL` — it supports text-to-video and first/last-keyframe image-to-video, but not reference generation or 2K upgrade, and its single-GPU queue is serial. Administrator usage and quota control count image generation and image editing together under the image-generation metric, while video generation is metered separately under its own video-generation quota dimension.
+
 Skills are loaded progressively — only when the task needs them, not all at once. This keeps the context window lean and makes DeerFlow work well even with token-sensitive models.
+
+Users can explicitly activate an enabled skill for a single turn by starting the request with `/skill-name`, for example `/data-analysis analyze uploads/foo.csv`. DeerFlow loads that skill's `SKILL.md` as hidden current-turn context while leaving the base prompt limited to skill metadata. Slash activation respects disabled skills, custom-agent skill whitelists, and existing channel commands such as `/new` and `/help`.
 
 When you install `.skill` archives through the Gateway, DeerFlow accepts standard optional frontmatter metadata such as `version`, `author`, and `compatibility` instead of rejecting otherwise valid external skills.
 
@@ -591,7 +646,8 @@ Gateway-generated follow-up suggestions now normalize both plain-string model ou
 ├── report-generation/SKILL.md
 ├── slide-creation/SKILL.md
 ├── web-page/SKILL.md
-└── image-generation/SKILL.md
+├── image-generation/SKILL.md
+└── video-generation/SKILL.md + references/ (structured-prompt specs)
 
 /mnt/skills/custom
 └── your-custom-skill/SKILL.md      ← yours
@@ -630,7 +686,7 @@ See [`skills/public/claude-to-deerflow/SKILL.md`](skills/public/claude-to-deerfl
 
 Complex tasks rarely fit in a single pass. DeerFlow decomposes them.
 
-The lead agent can spawn sub-agents on the fly — each with its own scoped context, tools, and termination conditions. Sub-agents run in parallel when possible, report back structured results, and the lead agent synthesizes everything into a coherent output.
+The lead agent can spawn sub-agents on the fly — each with its own scoped context, tools, and termination conditions. Sub-agents run in parallel when possible, report back structured results, and the lead agent synthesizes everything into a coherent output. When token usage tracking is enabled, completed sub-agent usage is attributed back to the dispatching step.
 
 This is how DeerFlow handles tasks that take minutes to hours: a research task might fan out into a dozen sub-agents, each exploring a different angle, then converge into a single report — or a website — or a slide deck with generated visuals. One harness, many hands.
 
@@ -641,6 +697,10 @@ DeerFlow doesn't just *talk* about doing things. It has its own computer.
 Each task gets its own execution environment with a full filesystem view — skills, workspace, uploads, outputs. The agent reads, writes, and edits files. It can view images and, when configured safely, execute shell commands.
 
 With `AioSandboxProvider`, shell execution runs inside isolated containers. With `LocalSandboxProvider`, file tools still map to per-thread directories on the host, but host `bash` is disabled by default because it is not a secure isolation boundary. Re-enable host bash only for fully trusted local workflows.
+
+The lead agent and built-in `general-purpose`/`bash` sub-agents share protected-data prompt guidance. They must refuse, before using tools or delegation, requests to read or expose runtime environment-variable values, deployment credential files, secrets, or local source code for DeerFlow's backend and agent runtime; implementation questions must use public web sources. For untrusted user-uploaded, agent-generated, or downloaded scripts, they should read the script first and refuse destructive or secret-reading behavior. This review does not apply to ordinary commands executed directly with the built-in `bash` tool or the documented image-generation, image-editing, and video-generation scripts; wrappers, copies, and modified scripts remain untrusted. Normal access to `/mnt/user-data` and authorized `/mnt/skills` remains available, although secrets found there must not be disclosed.
+
+This protection is prompt guidance, not hard sandbox or path enforcement. Deployments that require a security boundary must also restrict sandbox and tool access.
 
 This is the difference between a chatbot with tool access and an agent with an actual execution environment.
 
@@ -657,6 +717,14 @@ This is the difference between a chatbot with tool access and an agent with an a
 **Isolated Sub-Agent Context**: Each sub-agent runs in its own isolated context. This means that the sub-agent will not be able to see the context of the main agent or other sub-agents. This is important to ensure that the sub-agent is able to focus on the task at hand and not be distracted by the context of the main agent or other sub-agents.
 
 **Summarization**: Within a session, DeerFlow manages context aggressively — summarizing completed sub-tasks, offloading intermediate results to the filesystem, compressing what's no longer immediately relevant. This lets it stay sharp across long, multi-step tasks without blowing the context window.
+
+**Strict Tool-Call Recovery**: When a provider or middleware interrupts a tool-call loop, DeerFlow now strips provider-level raw tool-call metadata on forced-stop assistant messages and injects placeholder tool results for dangling calls before the next model invocation. This keeps OpenAI-compatible reasoning models that strictly validate `tool_call_id` sequences from failing with malformed history errors.
+
+**Run-Scoped Model Errors**: Model fallback errors are attributed only to the run that produced them. A fallback retained in a thread's checkpoint remains visible in conversation history, but it cannot mark a later successful run as failed, including after switching models.
+
+### Interactive Clarification Cards
+
+When the agent needs your input mid-task (`ask_clarification`), the web UI no longer shows a plain-text question: unanswered requests render as interactive cards — single-choice buttons, free text, or structured forms (text, number, select, multi-select, checkbox, textarea fields) — with required-field validation and markdown rendering for the question itself. While a card awaits your answer the composer is locked and the card is the only way to reply ("other" free-text input on choice cards is still available); regenerate is also blocked until the turn is answered. Your answer is sent as a hidden message that the agent reads on resume, so the card itself switches to a read-only answered state instead of adding a duplicate chat bubble. IM channels and old clients keep receiving the plain-text question, so the feature degrades gracefully outside the web UI.
 
 ### Long-Term Memory
 
@@ -701,6 +769,26 @@ client.upload_files("thread-1", ["./report.pdf"])  # {"success": True, "files": 
 
 All dict-returning methods are validated against Gateway Pydantic response models in CI (`TestGatewayConformance`), ensuring the embedded client stays in sync with the HTTP API schemas. See `backend/packages/harness/deerflow/client.py` for full API documentation.
 
+## Terminal Workbench (TUI)
+
+`deerflow` is a terminal-native workbench for people who live in the shell. It runs **embedded** over `DeerFlowClient` — no Gateway, frontend, nginx, or Docker required — while honoring the same `config.yaml`, checkpointer, skills, memory, MCP, and sandbox settings as the rest of DeerFlow.
+
+![DeerFlow TUI](docs/tui/tui-preview.svg)
+
+```bash
+uv pip install 'deerflow-harness[tui]'        # optional 'textual' dependency
+
+deerflow                                      # launch the terminal UI (TTY required)
+deerflow --continue                           # resume the most recent thread
+deerflow --resume THREAD                      # resume a thread by id
+deerflow --print "summarize this repo"        # headless one-shot answer to stdout
+deerflow --json  "hello"                       # headless newline-delimited StreamEvents
+```
+
+A keyboard-driven chat surface with a streaming transcript (Markdown-rendered answers), compact tool-activity cards, a `/` slash-command palette, `/model` and `/threads` pickers, input history, and `Esc` / `Ctrl+C` interrupt. Sessions opened in the TUI also appear in the Web UI sidebar — it writes the shared thread store under the local default user, so terminal and web stay in sync **without running the Gateway**.
+
+See [backend/docs/TUI.md](backend/docs/TUI.md) for the full guide.
+
 ## Documentation
 
 - [Contributing Guide](CONTRIBUTING.md) - Development environment setup and workflow
@@ -731,6 +819,12 @@ DeerFlow has key high-privilege capabilities including **system command executio
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guidelines.
 
 Regression coverage includes Docker sandbox mode detection and provisioner kubeconfig-path handling tests in `backend/tests/`.
+Backend blocking-IO diagnostics are available from the repository root with
+`make detect-blocking-io`: it statically scans backend business code for
+blocking IO that may run on the backend event loop, prints a concise summary,
+and writes complete JSON findings to `.deer-flow/blocking-io-findings.json`.
+The JSON includes compact review records with `priority`, `location`,
+`blocking_call`, `event_loop_exposure`, `reason`, and `code`.
 Gateway artifact serving now forces active web content types (`text/html`, `application/xhtml+xml`, `image/svg+xml`) to download as attachments instead of inline rendering, reducing XSS risk for generated artifacts.
 
 ## License

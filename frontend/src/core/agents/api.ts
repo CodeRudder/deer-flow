@@ -1,3 +1,4 @@
+import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 
 import type { Agent, CreateAgentRequest, UpdateAgentRequest } from "./types";
@@ -8,10 +9,42 @@ export class AgentNameCheckError extends Error {
   constructor(
     message: string,
     public readonly reason: "backend_unreachable" | "request_failed",
+    /**
+     * Raw backend `detail` string when the failure came from a backend
+     * response carrying one. `null` when no detail was provided (e.g.
+     * network-layer failure, empty response body, unparseable body) — in
+     * which case `message` is a generated fallback like "Failed to check
+     * agent name: Bad Gateway" and the UI should prefer its own localized
+     * fallback instead of surfacing the generated string.
+     */
+    public readonly detail: string | null = null,
   ) {
     super(message);
     this.name = "AgentNameCheckError";
   }
+}
+
+export class AgentsApiDisabledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentsApiDisabledError";
+  }
+}
+
+/**
+ * Raised when the target agent only exists in the legacy shared layout, which
+ * PUT refuses to modify (HTTP 409). The UI degrades to read-only and asks the
+ * operator to run the migration script.
+ */
+export class AgentLegacyLayoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentLegacyLayoutError";
+  }
+}
+
+function isAgentsApiDisabledDetail(detail: string | undefined): boolean {
+  return typeof detail === "string" && detail.includes("agents_api.enabled");
 }
 
 export async function listAgents(): Promise<Agent[]> {
@@ -35,6 +68,9 @@ export async function createAgent(request: CreateAgentRequest): Promise<Agent> {
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { detail?: string };
+    if (isAgentsApiDisabledDetail(err.detail)) {
+      throw new AgentsApiDisabledError(err.detail!);
+    }
     throw new Error(err.detail ?? `Failed to create agent: ${res.statusText}`);
   }
   return res.json() as Promise<Agent>;
@@ -51,6 +87,15 @@ export async function updateAgent(
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { detail?: string };
+    if (res.status === 409) {
+      throw new AgentLegacyLayoutError(
+        err.detail ??
+          `Agent '${name}' only exists in the legacy shared layout and cannot be updated.`,
+      );
+    }
+    if (isAgentsApiDisabledDetail(err.detail)) {
+      throw new AgentsApiDisabledError(err.detail!);
+    }
     throw new Error(err.detail ?? `Failed to update agent: ${res.statusText}`);
   }
   return res.json() as Promise<Agent>;
@@ -80,15 +125,20 @@ export async function checkAgentName(
 
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { detail?: string };
+    if (isAgentsApiDisabledDetail(err.detail)) {
+      throw new AgentsApiDisabledError(err.detail!);
+    }
     if (BACKEND_UNAVAILABLE_STATUSES.has(res.status)) {
       throw new AgentNameCheckError(
         "Could not reach the DeerFlow backend.",
         "backend_unreachable",
       );
     }
+    const backendDetail = typeof err.detail === "string" ? err.detail : null;
     throw new AgentNameCheckError(
-      err.detail ?? `Failed to check agent name: ${res.statusText}`,
+      backendDetail ?? `Failed to check agent name: ${res.statusText}`,
       "request_failed",
+      backendDetail,
     );
   }
   return res.json() as Promise<{ available: boolean; name: string }>;

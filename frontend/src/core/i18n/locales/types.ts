@@ -18,6 +18,8 @@ export interface Translations {
     close: string;
     more: string;
     search: string;
+    loadMore: string;
+    retry: string;
     download: string;
     thinking: string;
     artifacts: string;
@@ -38,6 +40,7 @@ export interface Translations {
     exportAsMarkdown: string;
     exportAsJSON: string;
     exportSuccess: string;
+    regenerate: string;
   };
 
   home: {
@@ -61,6 +64,38 @@ export interface Translations {
     linkCopied: string;
   };
 
+  // Artifact viewer (mobile full-screen page, prototype ⑤)
+  artifactViewer: {
+    /** Header subtitle, e.g. "3 artifacts". */
+    count: (count: number) => string;
+    /** Code view toggle: long lines wrap onto the next line. */
+    wrapLines: string;
+    /** Code view toggle: long lines scroll horizontally instead. */
+    noWrapLines: string;
+    /** Fallback view for a file the browser cannot display. */
+    downloadOnly: string;
+    /** Shown when the thread or the artifact could not be fetched. */
+    loadFailed: string;
+    /** Screen-reader label of the header back button. */
+    back: string;
+    /**
+     * Accessible name of the header's file switcher, which is the filename
+     * itself followed by a chevron; the value says what tapping it does.
+     */
+    switchFile: (current: string) => string;
+    /** Placeholder of the file picker's search box. */
+    searchFiles: string;
+    /**
+     * Prototype ⑤b's tools menu: the label of its header, and the accessible
+     * name of both the header's ⋯ button and the menu list.
+     */
+    tools: string;
+    /** ⑤b's footnote: which tools are there depends on the file type. */
+    toolsNote: string;
+    /** Re-fetches the artifact's bytes (prototype ⑤b's tools menu). */
+    refresh: string;
+  };
+
   // Input Box
   inputBox: {
     placeholder: string;
@@ -75,6 +110,26 @@ export interface Translations {
     proModeDescription: string;
     ultraMode: string;
     ultraModeDescription: string;
+    imageGeneration: string;
+    imageGenerationNotConfigured: string;
+    imageGenerationSkillDisabled: string;
+    imageGenerationLoadFailed: string;
+    videoGeneration: string;
+    videoGenerationNotConfigured: string;
+    videoGenerationSkillDisabled: string;
+    videoGenerationLoadFailed: string;
+    videoPointsPerSecond: string;
+    videoRateFromLabel: (rate: string) => string;
+    videoRegenerationLabel: string;
+    videoDurationRange: string;
+    videoDurationSeconds: string;
+    // Label of the mobile `＋` panel's model row. The row opens the same
+    // chat/vision picker as the desktop, so the two labels below are the
+    // category toggle *inside* it, not this one.
+    model: string;
+    chatModel: string;
+    visionModel: string;
+    defaultVisionModel: string;
     reasoningEffort: string;
     reasoningEffortMinimal: string;
     reasoningEffortMinimalDescription: string;
@@ -92,6 +147,7 @@ export interface Translations {
     followupConfirmDescription: string;
     followupConfirmAppend: string;
     followupConfirmReplace: string;
+    suggestionPlaceholderRequired: string;
     suggestions: {
       suggestion: string;
       prompt: string;
@@ -107,6 +163,26 @@ export interface Translations {
           type: "separator";
         }
     )[];
+    // Mobile composer (prototype ②③): the main row keeps only ＋ / input /
+    // send, so this is where the labels for the controls that moved into the
+    // ＋ panel, plus the two submit-button states, live.
+    composerOptions: string;
+    /**
+     * Accessible name of the composer's persistent mode pill, carrying the
+     * current value because the pill itself only shows the short label.
+     */
+    switchMode: (current: string) => string;
+    /** Accessible name of the composer's persistent model pill. */
+    switchModel: (current: string) => string;
+    photoLibrary: string;
+    takePhoto: string;
+    file: string;
+    sendMessage: string;
+    stopGenerating: string;
+    planMode: string;
+    planModeOn: string;
+    planModeOff: string;
+    skillCommands: string;
   };
 
   // Sidebar
@@ -116,6 +192,7 @@ export interface Translations {
     chats: string;
     demoChats: string;
     agents: string;
+    channels: string;
   };
 
   // Agents
@@ -140,6 +217,8 @@ export interface Translations {
     nameStepAlreadyExistsError: string;
     nameStepNetworkError: string;
     nameStepCheckError: string;
+    nameStepCheckErrorWithDetail: string;
+    nameStepApiDisabledError: string;
     nameStepBootstrapMessage: string;
     save: string;
     saving: string;
@@ -151,6 +230,44 @@ export interface Translations {
     agentCreated: string;
     startChatting: string;
     backToGallery: string;
+    edit: string;
+    editTitle: string;
+    editDescription: string;
+    descriptionLabel: string;
+    soulLabel: string;
+    modelLabel: string;
+    modelDefault: string;
+    capabilitiesLabel: string;
+    skillsLabel: string;
+    toolGroupsLabel: string;
+    skillsInheritAll: string;
+    skillsNone: string;
+    toolGroupsInheritAll: string;
+    toolGroupsNone: string;
+    dirtyConfirmTitle: string;
+    dirtyConfirmBody: string;
+    dirtyConfirmDiscard: string;
+    dirtyConfirmKeep: string;
+    saveSuccess: string;
+    apiDisabledError: string;
+    legacyOnlyError: string;
+    loadDetailFailed: string;
+    /**
+     * The gallery itself could not be fetched. Distinct from `loadDetailFailed`
+     * (which says "showing stale data"): here there is nothing to show at all,
+     * so the mobile list renders this with a retry instead of an empty state.
+     */
+    loadFailed: string;
+    createChoiceDescription: string;
+    createChoiceManualTitle: string;
+    createChoiceManualDescription: string;
+    createChoiceChatTitle: string;
+    createChoiceChatDescription: string;
+    createTitle: string;
+    createDescription: string;
+    nameLabel: string;
+    createSoulPlaceholder: string;
+    createSuccess: string;
   };
 
   // Breadcrumb
@@ -168,6 +285,9 @@ export interface Translations {
     reportIssue: string;
     contactUs: string;
     about: string;
+    logout: string;
+    gatewayUnavailable: string;
+    gatewayUnavailableRetrying: string;
   };
 
   // Conversation
@@ -179,6 +299,62 @@ export interface Translations {
   // Chats
   chats: {
     searchChats: string;
+    loadMoreToSearch: string;
+    loadingMore: string;
+    loadOlderChats: string;
+    // Mobile thread list (prototype ①): time-group headers and row actions.
+    pinned: string;
+    today: string;
+    yesterday: string;
+    earlier: string;
+    empty: string;
+    noSearchResults: string;
+    /**
+     * Deliberately distinct from `empty`: the list must not tell the user they
+     * have no conversations when the request that fetches them failed. The
+     * mobile thread list renders this — with a retry — once the query errors.
+     */
+    loadFailed: string;
+    pin: string;
+    unpin: string;
+    actions: string;
+    deleteConfirmTitle: string;
+    deleteConfirm: string;
+    // Mobile chat screen (prototype ②): the header's ⋯ menu and the floating
+    // "back to bottom" affordance. The desktop header hardcodes the session
+    // status title, so it is spelled out here for both trees.
+    sessionStatus: string;
+    scrollToBottom: string;
+    /**
+     * Row state of a thread with a run in flight (prototype ①'s「● 生成中」).
+     * The mobile list's second core scenario is "see the progress at a
+     * glance", so a running thread must not look like a finished one.
+     */
+    generating: string;
+  };
+
+  // Channels
+  channels: {
+    title: string;
+    connect: string;
+    modify: string;
+    reconnect: string;
+    disconnect: string;
+    connected: string;
+    notConnected: string;
+    pending: string;
+    revoked: string;
+    disabled: string;
+    unconfigured: string;
+    unavailable: string;
+    unavailableShort: string;
+    setupTitle: (name: string) => string;
+    setupEditTitle: (name: string) => string;
+    setupDescription: string;
+    saveAndConnect: string;
+    saveChanges: string;
+    descriptions: Record<string, string>;
+    connectedAs: (name: string) => string;
   };
 
   // Page titles (document title)
@@ -193,6 +369,8 @@ export interface Translations {
   toolCalls: {
     moreSteps: (count: number) => string;
     lessSteps: string;
+    executedSteps: (count: number) => string;
+    toolsUsed: (count: number) => string;
     executeCommand: string;
     presentFiles: string;
     needYourHelp: string;
@@ -209,6 +387,34 @@ export interface Translations {
     clickToViewContent: string;
     writeTodos: string;
     skillInstallTooltip: string;
+    /**
+     * Reasoning trigger. `ReasoningTrigger` ships hardcoded English
+     * ("Thinking...", "Thought for 12s") and only exposes it through an
+     * injectable `getThinkingMessage`, so the localized wording has to come
+     * from the caller. These live here rather than in a mobile-only section
+     * because the hardcoded English is wrong on the desktop too.
+     */
+    thinking: string;
+    thoughtFor: (duration: string) => string;
+    thoughtBriefly: string;
+    /** Duration formatter for the two above; units are not universal. */
+    durationSeconds: (seconds: number) => string;
+    durationMinutes: (minutes: number, seconds: number) => string;
+  };
+
+  // Human Input (clarification cards)
+  humanInput: {
+    answered: string;
+    pending: string;
+    readOnly: string;
+    otherLabel: string;
+    otherPlaceholder: string;
+    submit: string;
+    emptyError: string;
+    requiredError: string;
+    requiredA11yLabel: string;
+    selectPlaceholder: string;
+    inputDisabledHint: string;
   };
 
   // Uploads
@@ -226,12 +432,49 @@ export interface Translations {
     failed: string;
   };
 
+  // Quota indicator (feat-df-8)
+  quotaIndicator: {
+    label: string;
+    prefixLabel: string;
+    reserved: string;
+    unitPoints: string;
+    unitCount: string;
+    periodWeekly: string;
+    periodMonthly: string;
+    overrideNote: string;
+  };
+
   // Token Usage
   tokenUsage: {
     title: string;
+    label: string;
     input: string;
     output: string;
     total: string;
+    view: string;
+    unavailable: string;
+    unavailableShort: string;
+    note: string;
+    presets: {
+      off: string;
+      summary: string;
+      perTurn: string;
+      debug: string;
+    };
+    presetDescriptions: {
+      off: string;
+      summary: string;
+      perTurn: string;
+      debug: string;
+    };
+    finalAnswer: string;
+    stepTotal: string;
+    sharedAttribution: string;
+    subagent: (description: string) => string;
+    startTodo: (content: string) => string;
+    completeTodo: (content: string) => string;
+    updateTodo: (content: string) => string;
+    removeTodo: (content: string) => string;
   };
 
   // Shortcuts
@@ -250,8 +493,11 @@ export interface Translations {
     title: string;
     description: string;
     sections: {
+      account: string;
       appearance: string;
+      channels: string;
       memory: string;
+      models: string;
       tools: string;
       skills: string;
       notification: string;
@@ -342,9 +588,81 @@ export interface Translations {
       languageTitle: string;
       languageDescription: string;
     };
+    models: {
+      title: string;
+      description: string;
+      adminRequired: string;
+      loadError: string;
+      empty: string;
+      add: string;
+      addTitle: string;
+      edit: string;
+      editTitle: string;
+      delete: string;
+      deleteConfirmTitle: string;
+      deleteConfirm: string;
+      test: string;
+      testOk: string;
+      testFailed: string;
+      saving: string;
+      save: string;
+      cancel: string;
+      saveSuccess: string;
+      deleteSuccess: string;
+      name: string;
+      namePlaceholder: string;
+      provider: string;
+      providerPlaceholder: string;
+      providerUnavailable: string;
+      providerUnavailableHint: string;
+      apiBase: string;
+      apiBasePlaceholder: string;
+      apiBaseOptionalHint: string;
+      apiBaseRequiredHint: string;
+      apiBaseRequired: string;
+      model: string;
+      modelPlaceholder: string;
+      displayName: string;
+      displayNamePlaceholder: string;
+      apiKey: string;
+      apiKeyPlaceholder: string;
+      apiKeyKeepHint: string;
+      apiKeyStoredAsHint: string;
+      keyNotSet: string;
+      required: string;
+      requiredForProvider: string;
+      editTitleProviderFallback: string;
+      supportsThinking: string;
+      supportsThinkingHint: string;
+      probeThinking: string;
+      thinkingUnavailable: string;
+      budgetTokens: string;
+      budgetHint: string;
+      thinkingDisabledTitle: string;
+      thinkingDisabledHint: string;
+      thinkingDisabledPreset: string;
+      thinkingDisabledOmit: string;
+      maxTokens: string;
+      maxTokensHint: string;
+      thinkNotProbed: string;
+      thinkProbing: string;
+      thinkProbeFailed: string;
+      thinkEnabled: string;
+      thinkNotEnabled: string;
+      thinkDisables: string;
+      thinkIgnoresDisable: string;
+      thinkAlwaysOn: string;
+    };
     tools: {
       title: string;
       description: string;
+      adminRequired: string;
+      empty: string;
+    };
+    channels: {
+      title: string;
+      description: string;
+      disabled: string;
     };
     skills: {
       title: string;
@@ -365,9 +683,92 @@ export interface Translations {
       notSupported: string;
       disableNotification: string;
     };
+    account: {
+      profileTitle: string;
+      email: string;
+      role: string;
+      changePasswordTitle: string;
+      changePasswordDescription: string;
+      ssoProvider: string;
+      ssoPasswordDescription: string;
+      ssoPasswordMessage: string;
+      currentPassword: string;
+      newPassword: string;
+      confirmNewPassword: string;
+      passwordMismatch: string;
+      passwordTooShort: string;
+      passwordChangedSuccess: string;
+      networkError: string;
+      updating: string;
+      updatePassword: string;
+      signOut: string;
+    };
     acknowledge: {
       emptyTitle: string;
       emptyDescription: string;
+    };
+  };
+
+  // Login / Auth
+  login: {
+    signInTitle: string;
+    createAccountTitle: string;
+    email: string;
+    emailPlaceholder: string;
+    password: string;
+    passwordPlaceholder: string;
+    pleaseWait: string;
+    signIn: string;
+    createAccount: string;
+    registrationPendingTitle: string;
+    registrationPendingDescription: string;
+    registrationPendingBackToLogin: string;
+    createAdminAccount: string;
+    adminSetupRequiredTitle: string;
+    adminSetupRequiredDescription: string;
+    orContinueWith: string;
+    ssoHint: string;
+    continueWith: (provider: string) => string;
+    noAccountSignUp: string;
+    haveAccountSignIn: string;
+    backToHome: string;
+    officialWebsite: string;
+    networkError: string;
+    authFailed: string;
+    errors: {
+      sso_failed: string;
+      sso_cancelled: string;
+      sso_account_exists: string;
+      sso_not_allowed: string;
+      registration_pending: string;
+      account_disabled: string;
+    };
+    // Password validation failures on the mobile setup screen. The desktop
+    // setup page hardcodes these English strings; the mobile page routes them
+    // through i18n like the rest of `login`.
+    passwordsDoNotMatch: string;
+    passwordTooShort: string;
+    // Mobile SSO callback screen states.
+    signingIn: string;
+    redirecting: string;
+    authFailedRedirecting: string;
+    // Mobile setup screen: admin bootstrap and the forced password change that
+    // follows a first login. The desktop page hardcodes its copy in English.
+    setup: {
+      createAdminTitle: string;
+      createAdminDescription: string;
+      passwordPlaceholder: string;
+      confirmPassword: string;
+      confirmPasswordPlaceholder: string;
+      creatingAccount: string;
+      completeSetupTitle: string;
+      completeSetupDescription: string;
+      emailPlaceholder: string;
+      currentPassword: string;
+      newPassword: string;
+      confirmNewPassword: string;
+      settingUp: string;
+      completeSetupAction: string;
     };
   };
 }

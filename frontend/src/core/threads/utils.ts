@@ -2,6 +2,12 @@ import type { Message } from "@langchain/langgraph-sdk";
 
 import type { AgentThread, AgentThreadContext } from "./types";
 
+export type ChannelThreadSource = {
+  type: "im_channel";
+  provider: string;
+  label: string;
+};
+
 type ThreadRouteTarget =
   | string
   | {
@@ -37,15 +43,75 @@ export function textOfMessage(message: Message) {
   if (typeof message.content === "string") {
     return message.content;
   } else if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part.type === "text") {
-        return part.text;
-      }
-    }
+    // Flat join ("") for single-line consumers (input box, titles); the rendered
+    // body uses extractContentFromMessage, which joins multi-part content with "\n".
+    const text = message.content
+      .map((part) =>
+        typeof part === "string" ? part : part.type === "text" ? part.text : "",
+      )
+      .join("");
+    return text.length > 0 ? text : null;
   }
   return null;
 }
 
 export function titleOfThread(thread: AgentThread) {
   return thread.values?.title ?? "Untitled";
+}
+
+export function lastMessagePreview(
+  thread: AgentThread,
+  maxLen = 60,
+): string | null {
+  const messages = thread.values?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.type !== "human" && msg.type !== "ai") continue;
+    const text = textOfMessage(msg);
+    const clean = text?.trim().replace(/\s+/g, " ");
+    if (clean) {
+      return clean.length > maxLen ? clean.slice(0, maxLen) + "…" : clean;
+    }
+  }
+  return null;
+}
+
+const CHANNEL_PROVIDER_LABELS: Record<string, string> = {
+  dingtalk: "DingTalk",
+  discord: "Discord",
+  feishu: "Feishu",
+  slack: "Slack",
+  telegram: "Telegram",
+  wechat: "WeChat",
+  wecom: "WeCom",
+};
+
+function labelOfChannelProvider(provider: string) {
+  return CHANNEL_PROVIDER_LABELS[provider] ?? provider;
+}
+
+export function channelSourceOfThread(
+  thread: Pick<AgentThread, "metadata">,
+): ChannelThreadSource | null {
+  const source = thread.metadata?.channel_source;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return null;
+  }
+
+  if (Reflect.get(source, "type") !== "im_channel") {
+    return null;
+  }
+
+  const provider = Reflect.get(source, "provider");
+  if (typeof provider !== "string" || provider.trim().length === 0) {
+    return null;
+  }
+
+  const normalizedProvider = provider.trim().toLowerCase();
+  return {
+    type: "im_channel",
+    provider: normalizedProvider,
+    label: labelOfChannelProvider(normalizedProvider),
+  };
 }

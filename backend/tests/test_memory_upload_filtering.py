@@ -3,14 +3,14 @@
 Covers two functions introduced to prevent ephemeral file-upload context from
 persisting in long-term memory:
 
-  - _filter_messages_for_memory  (memory_middleware)
+  - filter_messages_for_memory  (message_processing)
   - _strip_upload_mentions_from_memory  (updater)
 """
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from deerflow.agents.memory.message_processing import detect_correction, detect_reinforcement, filter_messages_for_memory
 from deerflow.agents.memory.updater import _strip_upload_mentions_from_memory
-from deerflow.agents.middlewares.memory_middleware import _filter_messages_for_memory, detect_correction, detect_reinforcement
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,7 +31,7 @@ def _ai(text: str, tool_calls=None) -> AIMessage:
 
 
 # ===========================================================================
-# _filter_messages_for_memory
+# filter_messages_for_memory
 # ===========================================================================
 
 
@@ -45,7 +45,7 @@ class TestFilterMessagesForMemory:
             _human(_UPLOAD_BLOCK),
             _ai("I have read the file. It says: Hello."),
         ]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
         assert result == []
 
     def test_upload_with_real_question_preserves_question(self):
@@ -56,7 +56,7 @@ class TestFilterMessagesForMemory:
             _human(combined),
             _ai("The file contains: Hello DeerFlow."),
         ]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
 
         assert len(result) == 2
         human_result = result[0]
@@ -71,7 +71,7 @@ class TestFilterMessagesForMemory:
             _human("What is the capital of France?"),
             _ai("The capital of France is Paris."),
         ]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
         assert len(result) == 2
         assert result[0].content == "What is the capital of France?"
         assert result[1].content == "The capital of France is Paris."
@@ -84,7 +84,7 @@ class TestFilterMessagesForMemory:
             ToolMessage(content="Search results", tool_call_id="1"),
             _ai("Here are the results."),
         ]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
         human_msgs = [m for m in result if m.type == "human"]
         ai_msgs = [m for m in result if m.type == "ai"]
         assert len(human_msgs) == 1
@@ -101,7 +101,7 @@ class TestFilterMessagesForMemory:
             _human("What is 2 + 2?"),
             _ai("4"),
         ]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
         human_contents = [m.content for m in result if m.type == "human"]
         ai_contents = [m.content for m in result if m.type == "ai"]
 
@@ -121,17 +121,69 @@ class TestFilterMessagesForMemory:
             ]
         )
         msgs = [msg, _ai("Done.")]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
         assert result == []
 
     def test_file_path_not_in_filtered_content(self):
         """After filtering, no upload file path should appear in any message."""
         combined = _UPLOAD_BLOCK + "\n\nSummarise the file please."
         msgs = [_human(combined), _ai("It says hello.")]
-        result = _filter_messages_for_memory(msgs)
+        result = filter_messages_for_memory(msgs)
         all_content = " ".join(m.content for m in result if isinstance(m.content, str))
         assert "/mnt/user-data/uploads/" not in all_content
         assert "<uploaded_files>" not in all_content
+
+    # --- hide_from_ui messages are excluded ---
+
+    def test_hide_from_ui_human_message_is_excluded(self):
+        """Middleware-injected hidden HumanMessages (TodoMiddleware.todo_reminder,
+        ViewImageMiddleware, p0 DynamicContextMiddleware.__memory) must never reach
+        the memory-updating LLM."""
+        hidden_reminder = HumanMessage(
+            content="<system_reminder>\nYour todo list from earlier is no longer visible.\n</system_reminder>",
+            additional_kwargs={"hide_from_ui": True, "name": "todo_reminder"},
+        )
+        msgs = [
+            _human("What is the capital of France?"),
+            _ai("The capital of France is Paris."),
+            hidden_reminder,  # should be skipped
+            _ai("Is there anything else I can help with?"),  # should be kept
+        ]
+        result = filter_messages_for_memory(msgs)
+
+        human_contents = [m.content for m in result if m.type == "human"]
+        assert len(human_contents) == 1
+        assert "What is the capital of France?" in human_contents[0]
+        assert not any("todo list" in c for c in human_contents)
+        assert not any(m.additional_kwargs.get("hide_from_ui") for m in result if m.type == "human")
+
+    def test_p0_memory_payload_is_excluded(self):
+        """The p0 DynamicContextMiddleware.__memory HumanMessage carries extracted
+        memory facts back to the memory LLM; feeding it again risks a
+        self-amplification loop, so it must be filtered out."""
+        memory_payload = HumanMessage(
+            content="<memory>User prefers concise answers</memory>",
+            additional_kwargs={"hide_from_ui": True},
+        )
+        msgs = [
+            _human("Help me with Python."),
+            _ai("Sure."),
+            memory_payload,  # should be skipped
+        ]
+        result = filter_messages_for_memory(msgs)
+
+        human_contents = [m.content for m in result if m.type == "human"]
+        assert len(human_contents) == 1
+        assert "Help me with Python." in human_contents[0]
+        assert not any("<memory>" in c for c in human_contents)
+
+    def test_hide_from_ui_false_is_preserved(self):
+        """Messages without hide_from_ui (or with it set to False) are kept."""
+        visible_msg = HumanMessage(content="Visible message", additional_kwargs={"hide_from_ui": False})
+        msgs = [visible_msg, _ai("Reply.")]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 2
+        assert result[0].content == "Visible message"
 
 
 # ===========================================================================
@@ -340,3 +392,74 @@ class TestDetectReinforcement:
         ]
 
         assert detect_reinforcement(msgs) is False
+
+
+# ===========================================================================
+# hide_from_ui + human_input_response exemption
+# ===========================================================================
+
+
+class TestHideFromUiHumanInputResponse:
+    def _hidden(self, text: str, extra_kwargs=None) -> HumanMessage:
+        kwargs = {"hide_from_ui": True}
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
+        return HumanMessage(content=text, additional_kwargs=kwargs)
+
+    def test_hide_from_ui_without_response_is_excluded(self):
+        """Framework-injected hidden messages (reminders etc.) stay excluded."""
+        msgs = [self._hidden("todo reminder"), _ai("ok")]
+        assert filter_messages_for_memory(msgs) == [_ai("ok")]
+
+    def test_hidden_clarification_response_is_preserved(self):
+        """The user's clarification-card answer must reach long-term memory."""
+        response = {
+            "version": 1,
+            "kind": "human_input_response",
+            "source": "ask_clarification",
+            "request_id": "clarification:call-1",
+            "response_kind": "option",
+            "option_id": "option-2",
+            "value": "staging",
+        }
+        msgs = [
+            _human("Deploy the app"),
+            _ai("Which environment?", tool_calls=[{"name": "ask_clarification", "id": "call-1", "args": {}}]),
+            self._hidden('For your clarification "Which environment?", my answer is: staging', {"human_input_response": response}),
+            _ai("Deploying to staging."),
+        ]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 3
+        assert result[1].content.startswith("For your clarification")
+        assert result[2].content == "Deploying to staging."
+
+    def test_hidden_text_kind_response_is_preserved(self):
+        response = {
+            "version": 1,
+            "kind": "human_input_response",
+            "source": "ask_clarification",
+            "request_id": "clarification:call-1",
+            "response_kind": "text",
+            "value": "staging (note: db password changed yesterday)",
+        }
+        msgs = [self._hidden("answer", {"human_input_response": response}), _ai("got it")]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 2
+        assert result[0].content == "answer"
+
+    def test_malformed_human_input_response_is_excluded(self):
+        """A structurally broken payload is not trusted as user content."""
+        for broken in (
+            {"version": 2, "kind": "human_input_response", "source": "s", "request_id": "r", "response_kind": "text", "value": "v"},
+            {"version": 1, "kind": "other", "source": "s", "request_id": "r", "response_kind": "text", "value": "v"},
+            {"version": 1, "kind": "human_input_response", "source": "s", "request_id": "r", "response_kind": "option", "value": "v"},
+            {"version": 1, "kind": "human_input_response", "source": "", "request_id": "r", "response_kind": "text", "value": "v"},
+        ):
+            msgs = [self._hidden("answer", {"human_input_response": broken}), _ai("ok")]
+            assert filter_messages_for_memory(msgs) == [_ai("ok")], f"broken payload should be dropped: {broken}"
+
+    def test_visible_false_hide_from_ui_is_not_treated_as_hidden(self):
+        """hide_from_ui=False (visible) human messages pass through as before."""
+        msgs = [HumanMessage(content="hello", additional_kwargs={"hide_from_ui": False}), _ai("hi")]
+        result = filter_messages_for_memory(msgs)
+        assert len(result) == 2

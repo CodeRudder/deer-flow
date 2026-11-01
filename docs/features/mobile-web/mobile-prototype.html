@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeerFlow 移动端 — 界面原型</title>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   设计 token 直接取自 frontend/src/styles/globals.css（oklch 原值），
+   不是目测近似 —— 原型与真实页面同色。
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --background:oklch(0.9855 0.0098 87.47);
+  --foreground:oklch(0.145 0 0);
+  --card:oklch(1 0.0098 87.47);
+  --card-foreground:oklch(0.145 0 0);
+  --primary:oklch(0 0 0);
+  --primary-foreground:oklch(0.985 0 0);
+  --secondary:oklch(0.9455 0.0098 87.47);
+  --muted:oklch(0.97 0.0098 87.47);
+  --muted-foreground:oklch(0.556 0 0);
+  --accent:oklch(0.94 0.0098 87.47);
+  --border:oklch(0.922 0.0098 87.47);
+  --destructive:oklch(0.577 0.245 27.325);
+  --sidebar:oklch(0.965 0.0098 87.47);
+  --success:oklch(0.6 0.14 155);
+  --warn:oklch(0.68 0.15 75);
+  --radius:0.625rem;
+  --safe-b:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --background:oklch(0.145 0 0);
+    --foreground:oklch(0.945 0 0);
+    --card:oklch(0.185 0 0);
+    --card-foreground:oklch(0.945 0 0);
+    --primary:oklch(0.945 0 0);
+    --primary-foreground:oklch(0.145 0 0);
+    --secondary:oklch(0.235 0 0);
+    --muted:oklch(0.205 0 0);
+    --muted-foreground:oklch(0.66 0 0);
+    --accent:oklch(0.25 0 0);
+    --border:oklch(1 0 0 / 8%);
+    --destructive:oklch(0.704 0.191 22.216);
+    --sidebar:oklch(0.205 0 0);
+    --success:oklch(0.7 0.15 155);
+    --warn:oklch(0.78 0.15 75);
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{
+  margin:0;padding:40px 24px 80px;background:var(--muted);color:var(--foreground);
+  font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+.page-head{max-width:1800px;margin:0 auto 36px}
+.page-head h1{font-size:22px;font-weight:650;margin:0 0 8px}
+.page-head p{color:var(--muted-foreground);font-size:13.5px;margin:0 0 4px;max-width:900px}
+.page-head code{background:var(--card);padding:1px 6px;border-radius:5px;font-size:12.5px;font-family:ui-monospace,Menlo,monospace}
+
+.grid{display:flex;flex-wrap:wrap;gap:44px 34px;max-width:1800px;margin:0 auto;align-items:flex-start}
+.frame{width:390px}
+.frame>figcaption{margin-bottom:12px}
+.frame h2{font-size:15px;font-weight:650;margin:0 0 3px}
+.frame .why{color:var(--muted-foreground);font-size:12px;line-height:1.5;margin:0}
+.tag{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:5px;background:var(--accent);color:var(--muted-foreground);margin-right:6px;vertical-align:1px}
+.tag.new{background:oklch(0.6 0.14 155 / .16);color:var(--success)}
+.tag.fix{background:oklch(0.68 0.15 75 / .18);color:var(--warn)}
+
+/* ── 手机外壳 390×844 (iPhone 14/15) ── */
+.phone{
+  width:390px;height:844px;border-radius:44px;padding:11px;
+  background:linear-gradient(160deg,oklch(0.32 0 0),oklch(0.2 0 0));
+  box-shadow:0 24px 60px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.2);
+  flex:0 0 auto;
+}
+.screen{
+  width:100%;height:100%;border-radius:34px;overflow:hidden;background:var(--background);
+  display:flex;flex-direction:column;position:relative;
+}
+/* 状态栏 + 灵动岛，用来交代安全区 */
+.statusbar{
+  height:52px;flex:0 0 auto;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 26px 5px;font-size:14px;font-weight:600;letter-spacing:.2px;
+  position:relative;z-index:5;
+}
+.statusbar .icons{display:flex;gap:5px;align-items:center;font-size:12px;letter-spacing:-1px}
+.island{
+  position:absolute;top:9px;left:50%;transform:translateX(-50%);
+  width:118px;height:33px;border-radius:20px;background:oklch(0.12 0 0);
+}
+.screen.dark-island .statusbar{color:#fff}
+.homebar{height:9px;flex:0 0 auto;display:flex;justify-content:center;align-items:center;padding-bottom:8px}
+.homebar i{width:134px;height:5px;border-radius:3px;background:var(--foreground);opacity:.28}
+
+/* ── 通用组件 ── */
+.nav{
+  height:52px;flex:0 0 auto;display:flex;align-items:center;gap:4px;
+  padding:0 8px;border-bottom:1px solid var(--border);background:var(--background);
+  position:relative;z-index:4;
+}
+.nav .title{font-size:16px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px}
+.nav .title small{display:block;font-size:11.5px;font-weight:400;color:var(--muted-foreground);margin-top:-1px}
+.iconbtn{
+  width:44px;height:44px;flex:0 0 auto;border:0;background:none;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;color:var(--foreground);font-size:19px;cursor:pointer;
+}
+.iconbtn:active{background:var(--accent)}
+.body{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
+.body.pad{padding:0 16px 16px}
+
+/* 底部标签栏 */
+.tabbar{
+  flex:0 0 auto;display:flex;border-top:1px solid var(--border);background:var(--card);
+  padding-bottom:var(--safe-b);
+}
+.tabbar a{
+  flex:1;min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  font-size:11px;color:var(--muted-foreground);text-decoration:none;padding-top:7px;
+}
+.tabbar a.on{color:var(--foreground);font-weight:600}
+.tabbar .gl{font-size:19px;line-height:1}
+
+/* 列表行 */
+.row{
+  display:flex;align-items:center;gap:12px;padding:12px 14px;min-height:56px;
+  background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;
+}
+.row .grow{flex:1;min-width:0}
+.row .t{font-size:15px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .s{font-size:12.5px;color:var(--muted-foreground);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grouphd{
+  font-size:12px;font-weight:650;color:var(--muted-foreground);text-transform:uppercase;letter-spacing:.6px;
+  padding:16px 4px 8px;position:sticky;top:0;background:var(--background);z-index:2;
+}
+.grouphd:first-child{padding-top:6px}
+
+/* 搜索 */
+.search{display:flex;align-items:center;gap:8px;background:var(--muted);border-radius:11px;padding:0 12px;height:40px;margin:4px 0 2px}
+.search input{border:0;background:none;outline:none;font:inherit;font-size:16px;color:var(--foreground);width:100%}
+.search input::placeholder{color:var(--muted-foreground)}
+
+/* 消息气泡 */
+.msg{margin:14px 0}
+.msg.user{display:flex;justify-content:flex-end}
+.msg.user .bubble{
+  max-width:80%;background:var(--accent);border-radius:18px 18px 5px 18px;
+  padding:10px 14px;font-size:15px;line-height:1.5;
+}
+.msg.ai .bubble{font-size:15px;line-height:1.65}
+.msg.ai .bubble p{margin:0 0 10px}
+.msg.ai .bubble p:last-child{margin-bottom:0}
+.msg.ai .bubble strong{font-weight:650}
+.msg.ai .bubble code{
+  background:var(--muted);padding:1.5px 5px;border-radius:5px;font-size:13px;
+  font-family:ui-monospace,Menlo,monospace;
+}
+/* 思考块 / 工具步骤：可折叠 */
+.disc{
+  border:1px solid var(--border);border-radius:10px;background:var(--muted);
+  margin:10px 0;overflow:hidden;
+}
+.disc-hd{
+  display:flex;align-items:center;gap:8px;padding:10px 12px;min-height:44px;
+  font-size:13px;color:var(--muted-foreground);cursor:pointer;
+}
+.disc-hd .caret{font-size:10px;transition:transform .15s}
+.disc-hd .grow{flex:1;min-width:0}
+.disc-hd .n{font-variant-numeric:tabular-nums}
+.disc.open .disc-hd .caret{transform:rotate(90deg)}
+/* 默认不保留源码换行 —— 否则 HTML 里的缩进会被渲染成大片空白。
+   只有思考正文需要 pre-wrap，用 .reasoning 单独开。 */
+.disc-bd{padding:0 12px 12px;font-size:13.5px;line-height:1.6;color:var(--muted-foreground)}
+.disc-bd.reasoning{white-space:pre-wrap}
+.disc.open .disc-bd{border-top:1px solid var(--border);padding-top:8px}
+.step{display:flex;align-items:flex-start;gap:9px;padding:9px 0;font-size:13px}
+.step .ico{flex:0 0 16px;text-align:center;font-size:12px;line-height:1.4}
+.step .txt{flex:1;min-width:0}
+/* 工具名与参数必须分行 —— 同为行内元素时 margin 无效，会挤成
+   "web_searchquantum computing basics" 这样的一坨。 */
+.step .st{display:block;font-weight:550;color:var(--foreground)}
+.step .sd{display:block;color:var(--muted-foreground);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disc-bd .step+.step{border-top:1px solid var(--border)}
+
+/* 消息操作条 —— 常驻，不用悬停 */
+.acts{display:flex;gap:2px;margin-top:8px;margin-left:-8px}
+.acts button{
+  border:0;background:none;color:var(--muted-foreground);font:inherit;font-size:12px;
+  padding:8px 9px;border-radius:9px;display:flex;align-items:center;gap:5px;min-height:36px;cursor:pointer;
+}
+.acts button:active{background:var(--accent);color:var(--foreground)}
+
+/* 追问 chip */
+.chips{display:flex;gap:8px;overflow-x:auto;padding:4px 0 10px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{
+  flex:0 0 auto;border:1px solid var(--border);background:var(--card);border-radius:99px;
+  padding:9px 14px;font-size:13px;white-space:nowrap;min-height:40px;display:flex;align-items:center;cursor:pointer;
+}
+.chip:active{background:var(--accent)}
+
+/* 输入区 */
+.composer{
+  flex:0 0 auto;border-top:1px solid var(--border);background:var(--background);
+  padding:10px 12px calc(10px + var(--safe-b));
+}
+.cbox{border:1px solid var(--border);background:var(--card);border-radius:20px;padding:9px 12px}
+.cbox textarea{
+  border:0;background:none;outline:none;resize:none;font:inherit;font-size:16px;line-height:1.4;
+  color:var(--foreground);width:100%;height:24px;display:block;
+}
+.cbox textarea::placeholder{color:var(--muted-foreground)}
+.crow{display:flex;align-items:center;gap:2px;margin-top:6px}
+.crow .grow{flex:1}
+.crow .pill{min-width:0;max-width:134px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{
+  display:flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:99px;
+  padding:6px 11px;font-size:12.5px;min-height:34px;background:var(--card);cursor:pointer;color:var(--foreground);
+}
+.pill:active{background:var(--accent)}
+.send{
+  width:34px;height:34px;border-radius:50%;background:var(--primary);color:var(--primary-foreground);
+  border:0;display:flex;align-items:center;justify-content:center;font-size:15px;flex:0 0 auto;
+}
+.send.off{opacity:.35}
+.send.stop{background:var(--destructive)}
+
+/* 待办列表（C11，帧 ⑨⑩）—— 数据来自 thread state（`thread.values.todos`）。
+   面板是输入框**上方的一张独立卡片**：外层左右缩进 8px、上下各留 6px，
+   四角圆整（--radius-xl）。默认折叠。
+
+   为什么不是共享组件出厂时那种「贴进输入框下沿」的形态：`todo-list.tsx`
+   原本靠 translate-y-4 + 去掉下边框、只留上沿两角圆，把自己塞进桌面输入框
+   底下；手机上输入区自带 border-t，那个形态会撞成双线。移动端因此用作用域
+   CSS 把它改回独立卡片 —— 与 chat-surface.css 的 `.mobile-todo-panel` 一一对应。 */
+.todos{flex:0 0 auto;padding:6px 8px}
+.todos .panel{border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden}
+.todos .thd{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  min-height:44px;padding:0 14px;font-size:13px;color:var(--muted-foreground);cursor:pointer;
+  background:var(--accent);
+}
+.todos .thd .l{display:flex;align-items:center;gap:8px}
+.todos .thd .r{display:flex;align-items:center;gap:10px}
+/* 处理进度三桶计数：已完成 / 执行中 / 待执行。
+   tabular-nums 让它们逐条变化时不跳字。 */
+.todos .thd .c{display:flex;align-items:center;gap:9px;font-variant-numeric:tabular-nums;font-size:12px}
+.todos .thd .c span{display:flex;align-items:center;gap:3px}
+.todos .thd .c .d{color:var(--muted-foreground)}
+.todos .thd .c .p{color:var(--foreground);opacity:.85}
+.todos .thd .c .w{color:var(--muted-foreground);opacity:.65}
+.todos .thd .caret{font-size:11px;transition:transform .25s}
+/* 组件里是 ChevronUpIcon：折叠时不旋转（朝上），展开时 rotate-180（朝下）。 */
+.todos.open .thd .caret{transform:rotate(180deg)}
+/* 「正在执行」那一行：折叠态也保留 —— 这正是「看一眼进度」要的那一眼。
+   多个执行中的任务时纵向轮换（见下面的 .rot 动画）。 */
+.todos .now{
+  display:flex;align-items:center;gap:8px;padding:0 14px 10px;
+  background:var(--accent);font-size:12.5px;color:var(--muted-foreground);
+}
+.todos .now .bdot{width:6px;height:6px;border-radius:50%;background:var(--foreground);opacity:.62;flex:0 0 auto}
+.todos .rot{flex:1;min-width:0;height:18px;overflow:hidden}
+/* display:block 是必需的 —— `transform` 对非替换的行内元素无效，
+   少了这一行动画会静默地完全不动（实测踩过）。 */
+.todos .rot .rail{display:block;animation:rot 20s ease-in-out infinite}
+.todos .rot .rail>span{
+  display:block;height:18px;line-height:18px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* 两个名字交替，每个停留 10s：20s 一轮，其中 9s 静置 + 1s 滑动。
+   末帧与首帧都是 A，所以循环回跳看不出来。
+   实现时**必须**尊重 prefers-reduced-motion（下面那条），只留静态首项。 */
+@keyframes rot{
+  0%,45%{transform:translateY(0)}
+  50%,95%{transform:translateY(-18px)}
+  100%{transform:translateY(-36px)}
+}
+@media (prefers-reduced-motion:reduce){.todos .rot .rail{animation:none}}
+.todos .tbody{display:flex;padding:0 8px 12px;background:var(--accent)}
+.todos.open .tbody{padding:8px 8px 14px}
+.todos:not(.open) .inner{display:none}
+.todos .inner{
+  width:100%;max-height:112px;overflow-y:auto;padding:6px 0;
+  background:var(--background);border-radius:12px;
+}
+.todos .td{display:flex;align-items:center;gap:10px;padding:7px 14px;font-size:13.5px;color:var(--foreground)}
+/* 任务耗时。正文让位并截断，耗时列不换行 —— 与列表行的做法一致。
+   只显示时长、不显示具体时刻：时刻对「做到哪一步」没有增量信息，
+   却在 390px 上占掉一半宽度。 */
+.todos .td .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.todos .tm{
+  flex:0 0 auto;font-size:11.5px;color:var(--muted-foreground);
+  font-variant-numeric:tabular-nums;
+}
+.todos .td.cur .tm{color:var(--foreground);opacity:.62}
+/* 「正在执行」那一行右侧的实时耗时：与列表行同源，但更亮一档 ——
+   它是折叠态下唯一在动的数字。 */
+.todos .now .tm{font-size:12px;color:var(--foreground);opacity:.62}
+.todos .td .dot{
+  width:15px;height:15px;border-radius:50%;border:1.5px solid var(--border);flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--primary-foreground);
+}
+.todos .td.done .dot{background:var(--primary);border-color:var(--primary)}
+.todos .td.done .tx{text-decoration:line-through;color:var(--muted-foreground)}
+.todos .td.cur .dot{background:var(--foreground);opacity:.62;border-color:transparent}
+.todos .td.cur .tx{color:var(--muted-foreground)}
+
+/* 附带的「+」展开面板 */
+.sheet{
+  position:absolute;inset:0;background:oklch(0 0 0 / .42);display:flex;flex-direction:column;justify-content:flex-end;z-index:20;
+}
+.sheet .panel{
+  background:var(--card);border-radius:20px 20px 0 0;padding:8px 0 calc(8px + var(--safe-b));
+  box-shadow:0 -8px 30px rgba(0,0,0,.18);
+}
+.sheet .handle{width:38px;height:4px;border-radius:3px;background:var(--border);margin:6px auto 10px}
+.sheet .grab{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:0 8px}
+.sheet .grab button{
+  border:0;background:none;font:inherit;font-size:12px;color:var(--foreground);cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:7px;padding:10px 4px;border-radius:12px;min-height:76px;
+}
+.sheet .grab button:active{background:var(--accent)}
+.sheet .grab .gl{
+  width:46px;height:46px;border-radius:14px;background:var(--muted);display:flex;align-items:center;justify-content:center;font-size:20px;
+}
+.sheet .grab .gl.on{background:var(--primary);color:var(--primary-foreground)}
+.sheet .list{border-top:1px solid var(--border);margin-top:8px;padding:6px 8px 0}
+.sheet .list button{
+  width:100%;border:0;background:none;font:inherit;color:var(--foreground);cursor:pointer;
+  display:flex;align-items:center;gap:12px;padding:13px 12px;border-radius:11px;min-height:50px;text-align:left;font-size:14.5px;
+}
+.sheet .list button:active{background:var(--accent)}
+.sheet .list .k{margin-left:auto;color:var(--muted-foreground);font-size:12.5px}
+
+/* 澄清卡片 */
+.clarify{
+  border:1px solid var(--border);border-radius:14px;background:var(--card);padding:14px;margin:14px 0;
+}
+.clarify .q{font-size:14.5px;font-weight:600;line-height:1.5;margin-bottom:4px}
+.clarify .qd{font-size:12.5px;color:var(--muted-foreground);margin-bottom:14px}
+.fld{margin-bottom:13px}
+.fld label{display:block;font-size:13px;font-weight:550;margin-bottom:6px}
+.fld label .req{color:var(--destructive)}
+.fld .inp{
+  border:1px solid var(--border);border-radius:11px;background:var(--background);
+  padding:11px 12px;font-size:16px;color:var(--foreground);min-height:44px;display:flex;align-items:center;
+}
+.fld .inp.ph{color:var(--muted-foreground)}
+.opts{display:flex;flex-direction:column;gap:7px}
+.opt{
+  border:1px solid var(--border);border-radius:11px;padding:12px;font-size:14px;min-height:46px;
+  display:flex;align-items:center;gap:10px;background:var(--background);cursor:pointer;
+}
+.opt.sel{border-color:var(--primary);border-width:1.5px}
+.opt .box{
+  width:19px;height:19px;border-radius:6px;border:1.5px solid var(--border);flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--primary-foreground);
+}
+.opt.sel .box{background:var(--primary);border-color:var(--primary)}
+.cbtn{
+  width:100%;border:0;border-radius:12px;background:var(--primary);color:var(--primary-foreground);
+  font:inherit;font-size:15px;font-weight:600;padding:13px;min-height:48px;cursor:pointer;margin-top:4px;
+}
+.cbtn.gh{background:none;color:var(--muted-foreground);font-weight:400;min-height:40px;padding:9px;margin-top:2px}
+.lockbar{
+  flex:0 0 auto;border-top:1px solid var(--border);background:var(--muted);
+  padding:13px 16px calc(13px + var(--safe-b));text-align:center;color:var(--muted-foreground);font-size:13px;
+}
+
+/* 已作答折叠行 */
+.answered{
+  display:flex;align-items:center;gap:9px;font-size:13px;color:var(--muted-foreground);
+  padding:9px 12px;background:var(--muted);border-radius:10px;margin:12px 0;
+}
+.answered .ck{color:var(--success);font-weight:700}
+
+/* 产物全屏页：工具收进标题栏的「⋯」（见原型 ⑤b），不再有底部操作条 */
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 12px;border-bottom:1px solid var(--border);flex:0 0 auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs .tb{
+  flex:0 0 auto;font-size:12.5px;padding:7px 12px;border-radius:8px;background:var(--muted);
+  color:var(--muted-foreground);white-space:nowrap;font-family:ui-monospace,Menlo,monospace;
+}
+.tabs .tb.on{background:var(--primary);color:var(--primary-foreground)}
+
+/* ⑤ 产物页的文件切换（取代上面的横向 tab 条）
+   形态＝居中对话框，不是锚定在标题下方的浮层：真实实现直接复用模型选择器的
+   ModelSelector（shadcn Dialog + Command），左中右各留 16px，即
+   `max-width: calc(100vw - 2rem)`；本仓库没有 ui/popover.tsx，锚定浮层
+   不是这套 registry 生成的组件树能手工搭的东西。 */
+.nav .title .caret{font-size:11px;color:var(--muted-foreground);vertical-align:2px}
+.switcher{
+  position:absolute;inset:0;z-index:8;background:oklch(0 0 0 / .42);
+  display:flex;align-items:center;justify-content:center;padding:0 16px;
+}
+.switcher .panel{
+  width:100%;max-height:72%;display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--border);border-radius:16px;background:var(--card);
+  box-shadow:0 18px 44px rgba(0,0,0,.24);padding:9px;
+}
+.switcher .dsearch{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;margin-bottom:7px;padding:0 12px;min-height:44px;
+  border:1px solid var(--border);border-radius:11px;background:var(--background);
+  font-size:16px;color:var(--muted-foreground);
+}
+.switcher .dlabel{flex:0 0 auto;padding:0 10px 6px;font-size:11.5px;color:var(--muted-foreground)}
+.switcher .dlist{min-height:0;overflow-y:auto}
+.switcher .ditem{
+  display:flex;align-items:center;gap:9px;width:100%;min-height:44px;padding:0 10px;
+  border:0;background:none;border-radius:10px;color:var(--foreground);font-size:13.5px;cursor:pointer;
+  font-family:ui-monospace,Menlo,monospace;text-align:left;
+}
+.switcher .ditem+.ditem{margin-top:2px}
+.switcher .ditem:active{background:var(--accent)}
+.switcher .ditem .dn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.switcher .ditem.on{color:var(--foreground);font-weight:600}
+/* 工具菜单（原型 ⑤b）复用 .ditem，但行首是图标而不是文件名，字体也不是等宽 */
+.switcher .ditem .gl{flex:0 0 auto;width:18px;text-align:center;font-size:16px}
+.switcher .panel.tools .ditem{font-family:inherit;font-size:14px}
+.switcher .dnote{
+  flex:0 0 auto;margin-top:7px;padding:7px 10px 0;border-top:1px solid var(--border);
+  font-size:11.5px;line-height:1.5;color:var(--muted-foreground);
+}
+
+/* 卡片网格（智能体） */
+.card{
+  border:1px solid var(--border);border-radius:14px;background:var(--card);padding:15px;margin-bottom:11px;
+}
+.card .hd{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.card .av{
+  width:38px;height:38px;border-radius:11px;background:var(--muted);display:flex;align-items:center;
+  justify-content:center;font-size:17px;flex:0 0 auto;
+}
+.card .nm{font-size:15px;font-weight:600}
+.card .ds{font-size:13px;color:var(--muted-foreground);line-height:1.55;margin-bottom:12px}
+.card .ft{display:flex;gap:8px}
+.card .ft button{
+  border:1px solid var(--border);background:none;font:inherit;font-size:13px;color:var(--foreground);
+  border-radius:10px;padding:9px 14px;min-height:40px;cursor:pointer;
+}
+.card .ft button.pri{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);font-weight:550}
+
+/* 设置列表 */
+.sec{font-size:12px;font-weight:650;color:var(--muted-foreground);padding:16px 6px 7px}
+.srow{
+  display:flex;align-items:center;gap:13px;padding:14px;min-height:56px;
+  background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:7px;
+}
+.srow .gl{
+  width:34px;height:34px;border-radius:10px;background:var(--muted);display:flex;align-items:center;
+  justify-content:center;font-size:16px;flex:0 0 auto;
+}
+.srow .grow{flex:1;min-width:0;font-size:15px}
+.srow .v{color:var(--muted-foreground);font-size:13px}
+.srow .chev{color:var(--muted-foreground);font-size:14px}
+.srow.ro{opacity:.72}
+.srow .ro-badge{
+  font-size:10.5px;padding:2px 7px;border-radius:5px;background:var(--muted);color:var(--muted-foreground);font-weight:550;
+}
+
+/* 登录页 */
+.auth{flex:1;display:flex;flex-direction:column;justify-content:center;padding:0 28px 40px}
+.logo{width:60px;height:60px;border-radius:17px;background:var(--primary);color:var(--primary-foreground);
+  display:flex;align-items:center;justify-content:center;font-size:29px;margin:0 auto 20px}
+.auth h3{font-size:23px;font-weight:650;text-align:center;margin:0 0 6px}
+.auth .sub{text-align:center;color:var(--muted-foreground);font-size:13.5px;margin:0 0 30px}
+.afld{margin-bottom:13px}
+.afld label{display:block;font-size:13px;font-weight:550;margin-bottom:6px}
+.afld input{
+  width:100%;height:48px;border:1px solid var(--border);border-radius:11px;background:var(--card);
+  padding:0 13px;font:inherit;font-size:16px;color:var(--foreground);outline:none;
+}
+.afld input:focus{border-color:var(--primary)}
+.abtn{
+  width:100%;height:50px;border:0;border-radius:12px;background:var(--primary);color:var(--primary-foreground);
+  font:inherit;font-size:15.5px;font-weight:600;cursor:pointer;margin-top:8px;
+}
+.sep{display:flex;align-items:center;gap:12px;color:var(--muted-foreground);font-size:12px;margin:22px 0}
+.sep::before,.sep::after{content:"";flex:1;height:1px;background:var(--border)}
+.sso{display:flex;gap:10px}
+.sso button{
+  flex:1;height:46px;border:1px solid var(--border);border-radius:11px;background:var(--card);
+  font:inherit;font-size:14px;color:var(--foreground);cursor:pointer;
+}
+.auth-foot{text-align:center;font-size:13.5px;color:var(--muted-foreground);margin-top:26px}
+.auth-foot b{color:var(--foreground);font-weight:600}
+
+/* 回到底部浮标 */
+.jump{
+  position:absolute;right:14px;bottom:104px;width:40px;height:40px;border-radius:50%;
+  background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+  font-size:15px;box-shadow:0 3px 12px rgba(0,0,0,.14);z-index:6;
+}
+/* 眉批 */
+.anno{
+  border-left:3px solid var(--warn);background:oklch(0.68 0.15 75 / .1);
+  padding:9px 12px;border-radius:0 8px 8px 0;font-size:12.5px;color:var(--muted-foreground);
+  margin-top:12px;line-height:1.6;
+}
+.anno b{color:var(--foreground);font-weight:600}
+.note{max-width:1800px;margin:56px auto 0;padding:22px 26px;background:var(--card);border:1px solid var(--border);border-radius:14px}
+.note h3{font-size:15px;margin:0 0 12px}
+.note table{width:100%;border-collapse:collapse;font-size:13px}
+.note th,.note td{border-bottom:1px solid var(--border);padding:9px 10px;text-align:left;vertical-align:top}
+.note th{font-weight:600;color:var(--muted-foreground);font-size:12px}
+.note code{background:var(--muted);padding:1.5px 5px;border-radius:4px;font-size:12px;font-family:ui-monospace,Menlo,monospace}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>DeerFlow 移动端 — 界面原型</h1>
+  <p>390×844（iPhone 14/15）静态渲染，非真实截图。色值取自 <code>frontend/src/styles/globals.css</code> 的 oklch 原值，支持深色模式（跟随系统）。</p>
+  <p>范围见 <code>docs/features/mobile-web/FEATURE_LIST.md</code>：核心优先，管理后台不做。</p>
+</div>
+
+<div class="grid">
+
+<!-- ══════════════════ 1. 会话列表 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>① 会话列表（根屏幕）</h2>
+    <p class="why"><span class="tag new">新形态</span>侧边栏抽屉改为底部标签栏 + 根屏幕。手机上一眼看到「继续哪个对话」，而不是先打开一个抽屉。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">☰</button>
+      <div class="title">对话</div>
+      <button class="iconbtn">🔍</button>
+      <button class="iconbtn" style="font-size:22px">＋</button>
+    </div>
+    <div class="body pad">
+      <div class="grouphd">今天</div>
+      <div class="row">
+        <div class="grow">
+          <div class="t">量子计算入门</div>
+          <div class="s">量子计算利用叠加与纠缠两个特性…</div>
+        </div>
+        <div class="v" style="color:var(--muted-foreground);font-size:11.5px">14:22</div>
+      </div>
+      <div class="row" style="background:var(--accent)">
+        <div class="grow">
+          <div class="t">帮我写个周报</div>
+          <div class="s">本周完成 3 个接口…● 生成中</div>
+        </div>
+        <div class="v" style="color:var(--muted-foreground);font-size:11.5px">11:08</div>
+      </div>
+      <div class="grouphd">昨天</div>
+      <div class="row">
+        <div class="grow">
+          <div class="t">飞书渠道接入排查</div>
+          <div class="s">长按可置顶、重命名、删除</div>
+        </div>
+        <div class="v" style="color:var(--muted-foreground);font-size:11.5px">周二</div>
+      </div>
+      <div class="grouphd">更早</div>
+      <div class="row"><div class="grow"><div class="t">产品原型评审要点</div><div class="s">移动端的信息层级…</div></div></div>
+      <div class="row"><div class="grow"><div class="t">SQL 慢查询优化</div><div class="s">先看执行计划…</div></div></div>
+      <div class="anno"><b>长按任一行</b>出操作菜单（置顶 / 重命名 / 删除）—— 对应 M4：触屏没有 hover，桌面端的悬停菜单在这里必须换成长期存在的入口。</div>
+    </div>
+    <nav class="tabbar">
+      <a class="on"><span class="gl">💬</span>对话</a>
+      <a><span class="gl">🤖</span>智能体</a>
+      <a><span class="gl">⚙️</span>设置</a>
+    </nav>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 2. 对话主界面 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>② 对话主界面</h2>
+    <p class="why"><span class="tag fix">改形态</span>顶部 6 个图标收进「⋯」（<b>文件</b>除外 —— 它是高频入口，单独留在标题栏右侧）；消息操作常驻不悬停；输入区底部常驻当前模式与模型，点击直接切换。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算入门</div>
+      <button class="iconbtn" title="文件">🗂</button>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px">
+      <div class="msg user"><div class="bubble">帮我讲讲量子计算</div></div>
+
+      <div class="msg ai">
+        <div class="disc">
+          <div class="disc-hd"><span class="caret">▸</span><span class="grow">思考了 12 秒</span></div>
+        </div>
+        <div class="disc open">
+          <div class="disc-hd"><span class="caret">▸</span><span class="grow">执行了 3 步 · 2 个工具</span><span class="n">✓</span></div>
+          <div class="disc-bd">
+            <div class="step">
+              <span class="ico">🔍</span>
+              <span class="txt"><span class="st">web_search</span><span class="sd">quantum computing basics</span></span>
+            </div>
+            <div class="step">
+              <span class="ico">📄</span>
+              <span class="txt"><span class="st">web_fetch</span><span class="sd">en.wikipedia.org/wiki/Quantum_computing</span></span>
+            </div>
+            <div class="step">
+              <span class="ico">✓</span>
+              <span class="txt"><span class="st">整理答案</span></span>
+            </div>
+          </div>
+        </div>
+        <div class="bubble">
+          <p>量子计算利用 <strong>叠加</strong> 与 <strong>纠缠</strong> 两个特性处理信息：</p>
+          <p>· <strong>叠加</strong>：量子比特可同时处于 0 和 1 的叠加态，n 个比特能表示 2ⁿ 个状态<br>
+             · <strong>纠缠</strong>：多个比特状态关联，改变一个即刻影响另一个</p>
+          <p>这让它在因式分解、模拟分子等特定问题上具备指数级加速潜力，但对通用计算并不更快。</p>
+        </div>
+        <div class="acts">
+          <button>⧉ 复制</button>
+          <button>↻ 重新生成</button>
+        </div>
+      </div>
+
+      <div class="grouphd" style="background:transparent;position:static;padding-top:18px">追问</div>
+      <div class="chips">
+        <div class="chip">展开讲讲量子纠缠</div>
+        <div class="chip">有什么实际应用？</div>
+      </div>
+    </div>
+    <div class="jump">↓</div>
+    <div class="composer">
+      <div class="cbox">
+        <textarea placeholder="继续提问…"></textarea>
+        <div class="crow">
+          <button class="iconbtn" style="width:34px;height:34px;font-size:18px">＋</button>
+          <button class="pill">⚡ 思考 ▾</button>
+          <button class="pill">⚙ GLM-5.3 Flash ▾</button>
+          <span class="grow"></span>
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 3. 输入框展开面板 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>③ 输入框「＋」面板</h2>
+    <p class="why"><span class="tag fix">改形态</span>桌面端底部一行塞了模式/图片/视频/推理强度/模型 5 个控件；手机上模式与模型移到输入区底部快速切换（见 ②），其余收进本面板。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算入门</div>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px;filter:blur(1.5px);opacity:.5">
+      <div class="msg user"><div class="bubble">帮我讲讲量子计算</div></div>
+      <div class="msg ai"><div class="bubble"><p>量子计算利用叠加与纠缠…</p></div></div>
+    </div>
+    <div class="sheet">
+      <div class="panel">
+        <div class="handle"></div>
+        <div class="grab">
+          <button><span class="gl">🖼</span>相册</button>
+          <button><span class="gl">📷</span>拍照</button>
+          <button><span class="gl">📎</span>文件</button>
+          <button><span class="gl on">🧠</span>思考</button>
+        </div>
+        <div class="list">
+          <button><span>🎨</span>图片生成模型<span class="k">未指定 ›</span></button>
+          <button><span>🎬</span>视频生成模型<span class="k">未指定 ›</span></button>
+          <button><span>📊</span>推理强度<span class="k">中 ›</span></button>
+          <button><span>📝</span>计划模式<span class="k">关 ›</span></button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 4. 澄清表单 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>④ 澄清卡片（作答中）</h2>
+    <p class="why"><span class="tag new">窄屏难点</span>v2 表单字段在 390px 下需整屏可滚；作答期间输入框锁定（与桌面端一致）。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">部署方案确认</div>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px">
+      <div class="msg ai"><div class="bubble"><p>开始前需要确认几个关键信息：</p></div></div>
+      <div class="clarify">
+        <div class="q">部署环境与规模</div>
+        <div class="qd">这些信息会影响架构选型，请尽量填全</div>
+
+        <div class="fld">
+          <label>部署环境 <span class="req">*</span></label>
+          <div class="opts">
+            <div class="opt sel"><span class="box">✓</span>生产环境（对外可用）</div>
+            <div class="opt"><span class="box"></span>预发 / 测试环境</div>
+            <div class="opt"><span class="box"></span>本地开发</div>
+          </div>
+        </div>
+
+        <div class="fld">
+          <label>预期并发量</label>
+          <div class="inp ph">例如 1000 QPS</div>
+        </div>
+
+        <div class="fld">
+          <label>需要高可用吗</label>
+          <div class="opts">
+            <div class="opt sel"><span class="box">✓</span>需要，多可用区</div>
+            <div class="opt"><span class="box"></span>不需要，单点即可</div>
+          </div>
+        </div>
+
+        <button class="cbtn">提交</button>
+        <button class="cbtn gh">跳过</button>
+      </div>
+      <div class="anno">窄屏实测要点：<b>选项改成整行大按钮</b>（桌面端是 inline 单选），触控目标 ≥ 46px；滚动时卡片整体跟随，不内嵌滚动条。</div>
+    </div>
+    <div class="lockbar">🔒 请先回答上方的问题</div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 5. 产物预览（常态） ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑤ 产物预览（全屏 · 常态）</h2>
+    <p class="why"><span class="tag fix">改形态</span>桌面的可拖拽 60/40 分栏在手机上不可用，改为全屏页。标题栏只留三样：<b>返回</b>、<b>文件名（点它切换文件）</b>、<b>「⋯」工具</b>；底部操作条已整条取消（见 <b>⑤b</b>），内容区最大化留给文档本身。下面两帧是这一页各自的弹框态。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
+        <div style="font-size:40px;margin-bottom:10px">🖼</div>
+        沙箱 iframe 渲染预览<br>
+        <span style="font-size:12px">真实实现：注入 base-href + 滚动位置回传</span>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 5a. 产物页的文件切换 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑤a 产物页 · 文件切换</h2>
+    <p class="why">文件切换＝<b>点标题栏的文件名</b>（桌面用的是面板头部的文件 <code>Select</code>，这里是它的移动端形态），弹出<b>垂直居中、占满屏宽的对话框</b>，带关键字筛选 —— 一个会话写出十几个文件是常事，纯菜单没法找。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
+        <div style="font-size:40px;margin-bottom:10px">🖼</div>
+        沙箱 iframe 渲染预览
+      </div>
+    </div>
+    <div class="switcher">
+      <div class="panel">
+        <div class="dsearch">🔍 输入关键字筛选文件</div>
+        <div class="dlabel">文件</div>
+        <div class="dlist">
+          <button class="ditem on"><span class="dn">report.html</span><span class="gl">✓</span></button>
+          <button class="ditem"><span class="dn">chart.png</span></button>
+          <button class="ditem"><span class="dn">data.json</span></button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 5b. 产物页的「⋯」工具菜单 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑤b 产物页「⋯」工具菜单</h2>
+    <p class="why"><span class="tag fix">改形态</span>底部操作条整条移除，工具收进标题栏右侧的<b>「⋯」</b>。底部条占掉的是阅读区高度，而它列的工具都不是高频动作 —— 手机上为文档预览让出这 56px 更值。菜单沿用<b>垂直居中、占满屏宽</b>的对话框，与文件切换同一套形态，不再多一种弹层语言。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算报告.html <span class="caret">▾</span><small>3 个产物</small></div>
+      <button class="iconbtn" style="background:var(--accent)">⋯</button>
+    </div>
+    <div class="body" style="background:var(--card);display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="text-align:center;color:var(--muted-foreground);font-size:13px">
+        <div style="font-size:40px;margin-bottom:10px">🖼</div>
+        沙箱 iframe 渲染预览
+      </div>
+    </div>
+    <div class="switcher">
+      <div class="panel tools">
+        <div class="dlabel">工具</div>
+        <div class="dlist">
+          <button class="ditem"><span class="gl">↗</span><span class="dn">分享</span></button>
+          <button class="ditem"><span class="gl">⤓</span><span class="dn">下载</span></button>
+          <button class="ditem"><span class="gl">⧉</span><span class="dn">复制到剪贴板</span></button>
+          <button class="ditem"><span class="gl">⤢</span><span class="dn">在新窗口打开</span></button>
+          <button class="ditem"><span class="gl">⤶</span><span class="dn">自动换行</span></button>
+          <button class="ditem"><span class="gl">↺</span><span class="dn">刷新</span></button>
+        </div>
+        <div class="dnote">按文件类型出现：图片 / HTML 没有「自动换行」，纯代码才有「复制」。</div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 6. 智能体列表 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑥ 智能体列表</h2>
+    <p class="why">桌面端 1/2/3/4 列网格 → 单列卡片。「对话式创建」本身就是对话，天然适配。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">☰</button>
+      <div class="title">智能体</div>
+      <button class="iconbtn" style="font-size:22px">＋</button>
+    </div>
+    <div class="body pad">
+      <div class="card">
+        <div class="hd"><span class="av">🧑🔬</span><span class="nm">研究员</span></div>
+        <div class="ds">深度检索多来源资料，输出带引用的分析报告。擅长长链路调研。</div>
+        <div class="ft"><button class="pri">开始对话</button><button>编辑</button></div>
+      </div>
+      <div class="card">
+        <div class="hd"><span class="av">✍️</span><span class="nm">周报助手</span></div>
+        <div class="ds">按本周提交记录与待办生成周报，语气精简。</div>
+        <div class="ft"><button class="pri">开始对话</button><button>编辑</button></div>
+      </div>
+      <div class="card">
+        <div class="hd"><span class="av">🐳</span><span class="nm">运维排查</span></div>
+        <div class="ds">读日志、定位异常、给出复现与修复建议。</div>
+        <div class="ft"><button class="pri">开始对话</button><button>编辑</button></div>
+      </div>
+      <div class="anno"><b>＋</b> 弹出两个选项：手动表单（名称/描述/模型/SOUL.md）或「对话式创建」—— 后者跳一个引导对话，本身就是聊天，手机上体验反而比桌面好。</div>
+    </div>
+    <nav class="tabbar">
+      <a><span class="gl">💬</span>对话</a>
+      <a class="on"><span class="gl">🤖</span>智能体</a>
+      <a><span class="gl">⚙️</span>设置</a>
+    </nav>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 7. 设置 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑦ 设置（全屏页）</h2>
+    <p class="why"><span class="tag fix">改形态</span>桌面是 75vh 居中弹窗；手机上改全屏页。模型/技能降为只读，MCP 移除入口。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">☰</button>
+      <div class="title">设置</div>
+    </div>
+    <div class="body pad">
+      <div class="sec" style="padding-top:8px">个人</div>
+      <div class="srow"><span class="gl">👤</span><span class="grow">账号</span><span class="v">admin@sz-jlc.com</span><span class="chev">›</span></div>
+      <div class="srow"><span class="gl">🎨</span><span class="grow">外观</span><span class="v">跟随系统</span><span class="chev">›</span></div>
+      <div class="srow"><span class="gl">🔔</span><span class="grow">通知</span><span class="v">已开启</span><span class="chev">›</span></div>
+      <div class="srow"><span class="gl">🧠</span><span class="grow">记忆</span><span class="chev">›</span></div>
+
+      <div class="sec">连接</div>
+      <div class="srow"><span class="gl">🔗</span><span class="grow">渠道</span><span class="v">2 个已连接</span><span class="chev">›</span></div>
+
+      <div class="sec">模型与能力</div>
+      <div class="srow ro"><span class="gl">⚙️</span><span class="grow">模型</span><span class="ro-badge">只读</span><span class="chev">›</span></div>
+      <div class="srow ro"><span class="gl">✨</span><span class="grow">技能</span><span class="ro-badge">只读</span><span class="chev">›</span></div>
+
+      <div class="sec">其他</div>
+      <div class="srow"><span class="gl">ℹ️</span><span class="grow">关于</span><span class="v">v2.1.0</span><span class="chev">›</span></div>
+
+      <div class="anno"><b>「只读」的含义</b>：能看已配置的模型与技能列表、启用状态，<b>增删改留在桌面端</b>。这些是配置一次长期不动的管理员操作，放在手机上徒增误操作风险 —— 对应功能清单 §1.4。MCP 工具入口直接移除。</div>
+    </div>
+    <nav class="tabbar">
+      <a><span class="gl">💬</span>对话</a>
+      <a><span class="gl">🤖</span>智能体</a>
+      <a class="on"><span class="gl">⚙️</span>设置</a>
+    </nav>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 8. 登录 ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑧ 登录</h2>
+    <p class="why">键盘类型与输入框字号是关键：<code>type=email</code> 唤起邮箱键盘；字号 ≥16px 避免 iOS 自动放大。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="auth">
+      <div class="logo">🦌</div>
+      <h3>登录 DeerFlow</h3>
+      <p class="sub">智能体工作台</p>
+      <div class="afld"><label>邮箱</label><input value="admin@sz-jlc.com" type="email"></div>
+      <div class="afld"><label>密码</label><input value="••••••••" type="password"></div>
+      <button class="abtn">登录</button>
+      <div class="sep">或</div>
+      <div class="sso"><button>使用 SSO 登录</button></div>
+      <div class="auth-foot">还没有账号？<b>申请注册</b></div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 9. 待办列表（展开） ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑨ 待办列表 · 展开</h2>
+    <p class="why"><span class="tag new">补充</span>C11：待办常驻在<b>输入框上方</b>（数据同桌面，取自 <code>thread.values.todos</code>）。标题行右侧是<b>三桶计数</b>：<b>✓ 已完成 · ◐ 执行中 · ○ 待执行</b>；下一行是<b>正在执行的任务名 + 它的实时耗时</b>，多个执行中时纵向定时轮换（原型里是真的在动，<b>每个停留 10 秒</b>）。列表里<b>已完成与执行中的行右侧显示该任务的耗时</b>：已完成是总耗时，执行中是从开始到现在（会走）。待执行没有耗时，留空不占位。只给时长不给具体时刻 —— 时刻对「做到哪一步」没有增量信息，却要在 390px 上占掉近一半宽度。「看一眼进度」是移动端两个核心场景之一，不该逼用户展开列表才知道做到哪一步。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算入门</div>
+      <button class="iconbtn" title="文件">🗂</button>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px">
+      <div class="msg user"><div class="bubble">帮我讲讲量子计算</div></div>
+      <div class="msg ai">
+        <div class="disc open">
+          <div class="disc-hd"><span class="caret">▸</span><span class="grow">执行了 4 步 · 3 个工具</span><span class="n">✓</span></div>
+          <div class="disc-bd">
+            <div class="step"><span class="ico">🔍</span><span class="txt"><span class="st">web_search</span><span class="sd">quantum computing basics</span></span></div>
+            <div class="step"><span class="ico">📄</span><span class="txt"><span class="st">web_fetch</span><span class="sd">en.wikipedia.org/wiki/Quantum_computing</span></span></div>
+            <div class="step"><span class="ico">✓</span><span class="txt"><span class="st">整理答案</span></span></div>
+          </div>
+        </div>
+        <div class="bubble"><p>正在按计划整理，先给出叠加与纠缠的通俗解释…</p></div>
+      </div>
+    </div>
+    <div class="todos open">
+      <div class="panel">
+        <div class="thd">
+          <span class="l">☑ 待办</span>
+          <span class="r">
+            <span class="c"><span class="d">✓ 2</span><span class="p">◐ 2</span><span class="w">○ 1</span></span>
+            <span class="caret">▴</span>
+          </span>
+        </div>
+        <div class="now">
+          <span class="bdot"></span>
+          <span class="rot"><span class="rail">
+            <span>整理叠加与纠缠的通俗解释</span>
+            <span>交叉核对两张对照表</span>
+            <span>整理叠加与纠缠的通俗解释</span>
+          </span></span>
+          <span class="tm">3m</span>
+        </div>
+        <div class="tbody">
+          <div class="inner">
+            <div class="td done"><span class="dot">✓</span><span class="tx">梳理量子比特与经典比特的差异</span><span class="tm">12m</span></div>
+            <div class="td done"><span class="dot">✓</span><span class="tx">检索公开资料并核对来源</span><span class="tm">8m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">整理叠加与纠缠的通俗解释</span><span class="tm">3m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">交叉核对两张对照表</span><span class="tm">1m</span></div>
+            <div class="td"><span class="dot"></span><span class="tx">补充实际应用与局限</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="cbox">
+        <textarea placeholder="继续提问…"></textarea>
+        <div class="crow">
+          <button class="iconbtn" style="width:34px;height:34px;font-size:18px">＋</button>
+          <button class="pill">⚡ 思考 ▾</button>
+          <button class="pill">⚙ GLM-5.3 Flash ▾</button>
+          <span class="grow"></span>
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+<!-- ══════════════════ 10. 待办列表（折叠） ══════════════════ -->
+<figure class="frame" style="margin:0">
+  <figcaption>
+    <h2>⑩ 待办列表 · 折叠（默认）</h2>
+    <p class="why"><span class="tag new">补充</span><b>默认就是折叠态</b>（组件内 <code>useState(true)</code>），收起明细列表 —— 待办是背景信息，不该一进对话就占掉 112px 的正文高度。但<b>进度不跟着折叠</b>：三桶计数与「正在执行」那一行（含它的实时耗时）都保留，所以收起时依然能一眼看出做到哪一步、卡在哪一项、已经跑了多久 —— 不必为了看这些而展开列表。这也是折叠态唯一值得占位的两组信息。点标题行展开/收起。</p>
+  </figcaption>
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="statusbar"><span>9:41</span><span class="icons">▮▮▮ ⌾ ▰</span></div>
+    <div class="nav">
+      <button class="iconbtn">‹</button>
+      <div class="title">量子计算入门</div>
+      <button class="iconbtn" title="文件">🗂</button>
+      <button class="iconbtn">⋯</button>
+    </div>
+    <div class="body" style="padding:2px 16px 16px">
+      <div class="msg user"><div class="bubble">帮我讲讲量子计算</div></div>
+      <div class="msg ai">
+        <div class="disc">
+          <div class="disc-hd"><span class="caret">▸</span><span class="grow">执行了 4 步 · 3 个工具</span></div>
+        </div>
+        <div class="bubble">
+          <p>量子计算利用 <strong>叠加</strong> 与 <strong>纠缠</strong> 两个特性处理信息：</p>
+          <p>· <strong>叠加</strong>：量子比特可同时处于 0 和 1 的叠加态<br>
+             · <strong>纠缠</strong>：多个比特状态关联，改变一个即刻影响另一个</p>
+        </div>
+        <div class="acts"><button>⧉ 复制</button><button>↻ 重新生成</button></div>
+      </div>
+      <div class="anno">折叠态只留标题行，正文区一点没被挤占。展开后列表区固定 112px、内部滚动 —— <b>条目多少都不改变输入区的位置</b>。</div>
+    </div>
+    <div class="todos">
+      <div class="panel">
+        <div class="thd">
+          <span class="l">☑ 待办</span>
+          <span class="r">
+            <span class="c"><span class="d">✓ 2</span><span class="p">◐ 2</span><span class="w">○ 1</span></span>
+            <span class="caret">▴</span>
+          </span>
+        </div>
+        <div class="now">
+          <span class="bdot"></span>
+          <span class="rot"><span class="rail">
+            <span>整理叠加与纠缠的通俗解释</span>
+            <span>交叉核对两张对照表</span>
+            <span>整理叠加与纠缠的通俗解释</span>
+          </span></span>
+          <span class="tm">3m</span>
+        </div>
+        <div class="tbody">
+          <div class="inner">
+            <div class="td done"><span class="dot">✓</span><span class="tx">梳理量子比特与经典比特的差异</span><span class="tm">12m</span></div>
+            <div class="td done"><span class="dot">✓</span><span class="tx">检索公开资料并核对来源</span><span class="tm">8m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">整理叠加与纠缠的通俗解释</span><span class="tm">3m</span></div>
+            <div class="td cur"><span class="dot"></span><span class="tx">交叉核对两张对照表</span><span class="tm">1m</span></div>
+            <div class="td"><span class="dot"></span><span class="tx">补充实际应用与局限</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="cbox">
+        <textarea placeholder="继续提问…"></textarea>
+        <div class="crow">
+          <button class="iconbtn" style="width:34px;height:34px;font-size:18px">＋</button>
+          <button class="pill">⚡ 思考 ▾</button>
+          <button class="pill">⚙ GLM-5.3 Flash ▾</button>
+          <span class="grow"></span>
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"><i></i></div>
+  </div></div>
+</figure>
+
+</div>
+
+<div class="note">
+  <h3>原型里体现的结构性改动（对应功能清单 §2）</h3>
+  <table>
+    <tr><th>#</th><th>桌面现状</th><th>移动端形态</th><th>出现于</th></tr>
+    <tr><td>M1</td><td>产物是可拖拽的 60/40 分栏（<code>ResizablePanelGroup</code>）</td><td>全屏页；文件切换与工具各自是一个弹框，无底部操作条</td><td>⑤ ⑤a ⑤b</td></tr>
+    <tr><td>M2</td><td>顶部 6 个图标按钮（状态/Token/额度/导出/产物…）</td><td>只留标题，「⋯」溢出菜单</td><td>②</td></tr>
+    <tr><td>M3</td><td>底部一行塞 5 个控件（模式/图片/视频/推理强度/模型）</td><td>输入区底部常驻「模式 / 模型」pill，点击直接切换；其余进「＋」面板</td><td>② ③</td></tr>
+    <tr><td>M4</td><td>消息操作 <code>opacity-0 group-hover:</code>，触屏没有 hover</td><td>操作条常驻；列表行改长按菜单</td><td>② ①</td></tr>
+    <tr><td>M5</td><td>无 <code>viewport-fit</code>、无安全区变量</td><td><code>env(safe-area-inset-bottom)</code> 用于标签栏/输入区/操作条</td><td>全部</td></tr>
+    <tr><td>M6</td><td>输入框 <code>autoFocus</code></td><td>移动端默认不聚焦（否则键盘一进页面遮半屏）</td><td>②</td></tr>
+    <tr><td>M7</td><td><code>h-screen</code> 在地址栏收缩时跳动</td><td><code>100dvh</code></td><td>全部</td></tr>
+    <tr><td>M8</td><td>侧边栏抽屉承载导航</td><td>底部标签栏 + 根屏幕（对话/智能体/设置）</td><td>① ⑥ ⑦</td></tr>
+  </table>
+  <h3 style="margin-top:22px">两处待你定夺</h3>
+  <p style="font-size:13px;color:var(--muted-foreground);margin:0 0 8px">
+    <b style="color:var(--foreground)">1. 底部标签栏 vs 侧边抽屉。</b>原型按标签栏出图（手机原生范式，智能体与设置一键可达）。
+    若你希望与桌面信息架构严格一致，可改回全屏抽屉 —— 但标签栏在多一层功能时更省一次点击。
+  </p>
+  <p style="font-size:13px;color:var(--muted-foreground);margin:0">
+    <b style="color:var(--foreground)">2. 产物是「全屏页」还是「底部抽屉」。</b>原型按全屏页出图。
+    全屏利于看 HTML 报告与图片；底部抽屉的好处是能一边看对话一边看产物。二者可后续按产物类型分：图片走灯箱、HTML 走全屏。
+  </p>
+  <h3 style="margin-top:22px">⑨ 的任务时间：数据从哪来</h3>
+  <p style="font-size:13px;color:var(--muted-foreground);margin:0 0 16px">
+    <code>Todo</code> 本体<b>没有任何时间字段</b> —— 它是上游 LangChain 的 TypedDict，
+    只有 <code>{content, status}</code>；转录里的消息也没有时间戳。所以图上那个耗时
+    需要后端补：在 <code>todo_middleware.py</code> 调用 <code>apply_todo_ops</code> 的
+    收口点，给转成 <code>in_progress</code> 的打 <code>started_at</code>、
+    转成 <code>completed</code> 的打 <code>completed_at</code> ——
+    耗时 = 两者之差（执行中则 = 现在 − <code>started_at</code>）。
+    即便是只显示时长，两个戳也都要有。
+    <br><br>
+    <b style="color:var(--foreground)">口径提醒：</b>这个窗口是「计划里把它标为进行中 → 标成完成」，
+    含空转（agent 可能先标了进行中再去做别的），<b>不等于实际工时</b>。
+    真正接近工时的是子代理会话的 <code>started_at/completed_at</code>（已有数据，
+    在 <code>/api/threads/&#123;id&#125;/subagents</code>），但它与 todo 之间
+    <b>没有任何关联字段</b>，且只覆盖派给子代理的任务 —— 要按 todo 显示实际工时，
+    得再新增一层关联。
+  </p>
+
+  <h3 style="margin-top:22px">原型与实现已知的文案缺口</h3>
+  <p style="font-size:13px;color:var(--muted-foreground);margin:0">
+    ⑨⑩ 的标题按中文出图（<b>待办</b>），但共享组件 <code>todo-list.tsx</code> 里这一行是<b>硬编码英文
+    <code>To-dos</code></b>，不读 locale —— 与 <code>Reasoning</code> 触发文案的
+    <code>Thought for 12s</code> 是同一类缺口（见 <code>DEVELOPMENT_PLAN.md</code> T19 / §1.3 例外 #3）。
+    原型按「应该长成什么样」出图，实现要补齐这处 i18n。
+  </p>
+</div>
+
+</body>
+</html>

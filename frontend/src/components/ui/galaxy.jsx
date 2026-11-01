@@ -199,25 +199,27 @@ export default function Galaxy({
     if (!ctnDom.current) return;
     const ctn = ctnDom.current;
 
+    // Check WebGL support before attempting to create renderer
+    const testCanvas = document.createElement("canvas");
+    const testGl =
+      testCanvas.getContext("webgl2") || testCanvas.getContext("webgl");
+    if (!testGl) {
+      return;
+    }
+    testGl.getExtension("WEBGL_lose_context")?.loseContext();
+
     let renderer;
     try {
       renderer = new Renderer({
         alpha: transparent,
         premultipliedAlpha: false,
       });
-    } catch (error) {
-      console.warn(
-        "Galaxy: WebGL is not available. The galaxy background will not be rendered.",
-        error,
-      );
+    } catch {
       return;
     }
 
     const gl = renderer.gl;
     if (!gl) {
-      console.warn(
-        "Galaxy: WebGL context is null. The galaxy background will not be rendered.",
-      );
       return;
     }
 

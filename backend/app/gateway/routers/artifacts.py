@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import mimetypes
 import zipfile
@@ -7,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
+from app.gateway.authz import require_permission
 from app.gateway.path_utils import resolve_thread_virtual_path
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,9 @@ ACTIVE_CONTENT_MIME_TYPES = {
     "application/xhtml+xml",
     "image/svg+xml",
 }
+
+MAX_SKILL_ARCHIVE_MEMBER_BYTES = 16 * 1024 * 1024
+_SKILL_ARCHIVE_READ_CHUNK_SIZE = 64 * 1024
 
 
 def _build_content_disposition(disposition_type: str, filename: str) -> str:
@@ -43,6 +48,22 @@ def is_text_file_by_content(path: Path, sample_size: int = 8192) -> bool:
         return False
 
 
+def _read_skill_archive_member(zip_ref: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    """Read a .skill archive member while enforcing an uncompressed size cap."""
+    if info.file_size > MAX_SKILL_ARCHIVE_MEMBER_BYTES:
+        raise HTTPException(status_code=413, detail="Skill archive member is too large to preview")
+
+    chunks: list[bytes] = []
+    total_read = 0
+    with zip_ref.open(info, "r") as src:
+        while chunk := src.read(_SKILL_ARCHIVE_READ_CHUNK_SIZE):
+            total_read += len(chunk)
+            if total_read > MAX_SKILL_ARCHIVE_MEMBER_BYTES:
+                raise HTTPException(status_code=413, detail="Skill archive member is too large to preview")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _extract_file_from_skill_archive(zip_path: Path, internal_path: str) -> bytes | None:
     """Extract a file from a .skill ZIP archive.
 
@@ -59,16 +80,16 @@ def _extract_file_from_skill_archive(zip_path: Path, internal_path: str) -> byte
     try:
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             # List all files in the archive
-            namelist = zip_ref.namelist()
+            infos_by_name = {info.filename: info for info in zip_ref.infolist()}
 
             # Try direct path first
-            if internal_path in namelist:
-                return zip_ref.read(internal_path)
+            if internal_path in infos_by_name:
+                return _read_skill_archive_member(zip_ref, infos_by_name[internal_path])
 
             # Try with any top-level directory prefix (e.g., "skill-name/SKILL.md")
-            for name in namelist:
+            for name, info in infos_by_name.items():
                 if name.endswith("/" + internal_path) or name == internal_path:
-                    return zip_ref.read(name)
+                    return _read_skill_archive_member(zip_ref, info)
 
             # Not found
             return None
@@ -76,11 +97,57 @@ def _extract_file_from_skill_archive(zip_path: Path, internal_path: str) -> byte
         return None
 
 
+def _load_skill_archive_member(actual_skill_path: Path, skill_file_path: str, internal_path: str) -> tuple[bytes, str | None]:
+    """Worker-thread body for the ``.skill`` branch of ``get_artifact``.
+
+    The ``exists`` / ``is_file`` probes, the ZIP open+extract, and the MIME
+    sniff (``mimetypes`` lazily stats the system MIME database on first use) are
+    blocking filesystem IO and must stay off the event loop. Raised
+    ``HTTPException``s propagate through ``asyncio.to_thread`` unchanged,
+    preserving status codes.
+    """
+    if not actual_skill_path.exists():
+        raise HTTPException(status_code=404, detail=f"Skill file not found: {skill_file_path}")
+    if not actual_skill_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Path is not a file: {skill_file_path}")
+    content = _extract_file_from_skill_archive(actual_skill_path, internal_path)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"File '{internal_path}' not found in skill archive")
+    mime_type, _ = mimetypes.guess_type(internal_path)
+    return content, mime_type
+
+
+def _read_artifact_payload(actual_path: Path, path: str, download: bool) -> tuple[str, str | None, bytes | str | None]:
+    """Worker-thread body for the regular branch of ``get_artifact``.
+
+    Stat probes, MIME sniffing (``mimetypes`` lazily stats the system MIME
+    database on first use), and full-file reads are all blocking filesystem IO.
+    Returns a ``(kind, mime_type, payload)`` plan the handler turns into a
+    response on the loop: ``("file", mime, None)`` (let ``FileResponse`` stream
+    it), ``("text", mime, str)``, or ``("bytes", mime, bytes)``. Behavior/error
+    codes match the previous inline logic.
+    """
+    if not actual_path.exists():
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {path}")
+    if not actual_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Path is not a file: {path}")
+    mime_type, _ = mimetypes.guess_type(actual_path)
+    # Active content / explicit download is streamed by FileResponse — no read here.
+    if download or mime_type in ACTIVE_CONTENT_MIME_TYPES:
+        return ("file", mime_type, None)
+    if mime_type and mime_type.startswith("text/"):
+        return ("text", mime_type, actual_path.read_text(encoding="utf-8"))
+    if is_text_file_by_content(actual_path):
+        return ("text", mime_type, actual_path.read_text(encoding="utf-8"))
+    return ("bytes", mime_type, actual_path.read_bytes())
+
+
 @router.get(
     "/threads/{thread_id}/artifacts/{path:path}",
     summary="Get Artifact File",
     description="Retrieve an artifact file generated by the AI agent. Text and binary files can be viewed inline, while active web content is always downloaded.",
 )
+@require_permission("threads", "read", owner_check=True)
 async def get_artifact(thread_id: str, path: str, request: Request, download: bool = False) -> Response:
     """Get an artifact file by its path.
 
@@ -122,21 +189,11 @@ async def get_artifact(thread_id: str, path: str, request: Request, download: bo
         skill_file_path = path[: marker_pos + len(".skill")]  # e.g., "mnt/user-data/outputs/my-skill.skill"
         internal_path = path[marker_pos + len(skill_marker) :]  # e.g., "SKILL.md"
 
-        actual_skill_path = resolve_thread_virtual_path(thread_id, skill_file_path)
+        actual_skill_path = await asyncio.to_thread(resolve_thread_virtual_path, thread_id, skill_file_path)
 
-        if not actual_skill_path.exists():
-            raise HTTPException(status_code=404, detail=f"Skill file not found: {skill_file_path}")
+        # Offload the stat probes + ZIP open/extract + MIME sniff (blocking filesystem IO).
+        content, mime_type = await asyncio.to_thread(_load_skill_archive_member, actual_skill_path, skill_file_path, internal_path)
 
-        if not actual_skill_path.is_file():
-            raise HTTPException(status_code=400, detail=f"Path is not a file: {skill_file_path}")
-
-        # Extract the file from the .skill archive
-        content = _extract_file_from_skill_archive(actual_skill_path, internal_path)
-        if content is None:
-            raise HTTPException(status_code=404, detail=f"File '{internal_path}' not found in skill archive")
-
-        # Determine MIME type based on the internal file
-        mime_type, _ = mimetypes.guess_type(internal_path)
         # Add cache headers to avoid repeated ZIP extraction (cache for 5 minutes)
         cache_headers = {"Cache-Control": "private, max-age=300"}
         download_name = Path(internal_path).name or actual_skill_path.stem
@@ -152,30 +209,21 @@ async def get_artifact(thread_id: str, path: str, request: Request, download: bo
         except UnicodeDecodeError:
             return Response(content=content, media_type=mime_type or "application/octet-stream", headers=cache_headers)
 
-    actual_path = resolve_thread_virtual_path(thread_id, path)
+    actual_path = await asyncio.to_thread(resolve_thread_virtual_path, thread_id, path)
 
     logger.info(f"Resolving artifact path: thread_id={thread_id}, requested_path={path}, actual_path={actual_path}")
 
-    if not actual_path.exists():
-        raise HTTPException(status_code=404, detail=f"Artifact not found: {path}")
+    # Offload path stat + MIME sniff + file reads (all blocking filesystem IO).
+    # Active content and explicit downloads are streamed by FileResponse, so the
+    # worker only reports the kind; inline text/binary payloads are read in-thread.
+    kind, mime_type, payload = await asyncio.to_thread(_read_artifact_payload, actual_path, path, download)
 
-    if not actual_path.is_file():
-        raise HTTPException(status_code=400, detail=f"Path is not a file: {path}")
-
-    mime_type, _ = mimetypes.guess_type(actual_path)
-
-    if download:
+    if kind == "file":
+        # Always force download for active content types to prevent script
+        # execution in the application origin when users open generated artifacts.
         return FileResponse(path=actual_path, filename=actual_path.name, media_type=mime_type, headers=_build_attachment_headers(actual_path.name))
 
-    # Always force download for active content types to prevent script execution
-    # in the application origin when users open generated artifacts.
-    if mime_type in ACTIVE_CONTENT_MIME_TYPES:
-        return FileResponse(path=actual_path, filename=actual_path.name, media_type=mime_type, headers=_build_attachment_headers(actual_path.name))
+    if kind == "text":
+        return PlainTextResponse(content=payload, media_type=mime_type)
 
-    if mime_type and mime_type.startswith("text/"):
-        return PlainTextResponse(content=actual_path.read_text(encoding="utf-8"), media_type=mime_type)
-
-    if is_text_file_by_content(actual_path):
-        return PlainTextResponse(content=actual_path.read_text(encoding="utf-8"), media_type=mime_type)
-
-    return Response(content=actual_path.read_bytes(), media_type=mime_type, headers={"Content-Disposition": _build_content_disposition("inline", actual_path.name)})
+    return Response(content=payload, media_type=mime_type, headers={"Content-Disposition": _build_content_disposition("inline", actual_path.name)})

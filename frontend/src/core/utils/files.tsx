@@ -143,12 +143,58 @@ const extensionMap: Record<string, string> = {
   v: "v",
 };
 
+const browserPreviewExtensions = new Set([
+  "pdf",
+  "apng",
+  "avif",
+  "bmp",
+  "gif",
+  "ico",
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+  "mp3",
+  "wav",
+  "ogg",
+  "aac",
+  "m4a",
+  "flac",
+  "mp4",
+  "mov",
+  "m4v",
+  "webm",
+]);
+
 export function getFileName(filepath: string) {
   return filepath.split("/").pop()!;
 }
 
 export function getFileExtension(filepath: string) {
   return filepath.split(".").pop()!.toLocaleLowerCase();
+}
+
+const imageExtensions = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "bmp",
+  "tiff",
+  "ico",
+  "webp",
+  "svg",
+  "heic",
+]);
+
+export function isImageFile(filepath: string) {
+  return imageExtensions.has(getFileExtension(filepath));
+}
+
+const videoExtensions = new Set(["mp4", "mov", "m4v", "webm"]);
+
+export function isVideoFile(filepath: string) {
+  return videoExtensions.has(getFileExtension(filepath));
 }
 
 export function checkCodeFile(
@@ -168,6 +214,10 @@ export function checkCodeFile(
     isCodeFile: false,
     language: null,
   };
+}
+
+export function canBrowserPreviewFile(filepath: string) {
+  return browserPreviewExtensions.has(getFileExtension(filepath));
 }
 
 export function getFileExtensionDisplayName(filepath: string) {
@@ -195,6 +245,10 @@ export function getFileExtensionDisplayName(filepath: string) {
 export function getFileIcon(filepath: string, className?: string) {
   const extension = getFileExtension(filepath);
   const { isCodeFile } = checkCodeFile(filepath);
+  if (isImageFile(filepath)) {
+    return <ImageIcon className={className} />;
+  }
+
   switch (extension) {
     case "skill":
       return <FileCogIcon className={className} />;
@@ -203,17 +257,6 @@ export function getFileIcon(filepath: string, className?: string) {
     case "txt":
     case "md":
       return <BookOpenTextIcon className={className} />;
-    case "jpg":
-    case "jpeg":
-    case "png":
-    case "gif":
-    case "bmp":
-    case "tiff":
-    case "ico":
-    case "webp":
-    case "svg":
-    case "heic":
-      return <ImageIcon className={className} />;
     case "mp3":
     case "wav":
     case "ogg":

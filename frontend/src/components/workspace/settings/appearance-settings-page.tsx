@@ -156,7 +156,7 @@ function ThemePreviewCard({
         className={cn(
           "relative overflow-hidden rounded-md border text-xs transition-colors",
           previewMode === "dark"
-            ? "border-neutral-800 bg-neutral-900 text-neutral-200"
+            ? "border-white/10 bg-[#0a0a0a] text-neutral-200"
             : "border-slate-200 bg-white text-slate-900",
         )}
       >

@@ -1,0 +1,632 @@
+"""Tests for Sub-Agent session persistence (subagents/session.py).
+
+Covers:
+- Message serialization (Human/AI/Tool messages)
+- JSONL append and read
+- Status markers (completed/failed/interrupted)
+- Summary JSON generation
+- is_terminal property
+- find_interrupted / list_sessions class methods
+- Edge cases: empty files, corrupt lines, missing directories
+"""
+
+import json
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+# Break circular imports for testing
+_MOCKED_MODULES = [
+    "deerflow.agents",
+    "deerflow.agents.thread_state",
+    "deerflow.agents.middlewares",
+    "deerflow.agents.middlewares.thread_data_middleware",
+    "deerflow.sandbox",
+    "deerflow.sandbox.middleware",
+    "deerflow.sandbox.security",
+    "deerflow.models",
+    "deerflow.subagents.executor",
+]
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _mock_heavy_deps():
+    """Mock heavy dependencies to allow importing session module."""
+    saved = {name: sys.modules.get(name) for name in _MOCKED_MODULES}
+    for name in _MOCKED_MODULES:
+        if name not in sys.modules:
+            sys.modules[name] = MagicMock()
+
+    yield
+
+    for name in _MOCKED_MODULES:
+        if saved[name] is None and name in sys.modules:
+            del sys.modules[name]
+        elif saved[name] is not None:
+            sys.modules[name] = saved[name]
+
+
+@pytest.fixture(autouse=True)
+def _reset_imports():
+    """Force re-import of session module for each test."""
+    for mod in list(sys.modules.keys()):
+        if "deerflow.subagents.session" in mod:
+            del sys.modules[mod]
+    yield
+
+
+@pytest.fixture
+def tmp_session_dir(tmp_path):
+    """Create a temporary session directory structure."""
+    session_dir = tmp_path / "threads" / "test-thread-123" / "subagents"
+    session_dir.mkdir(parents=True)
+    return session_dir
+
+
+@pytest.fixture
+def mock_paths(tmp_path):
+    """Mock get_paths to use temp directory."""
+    from deerflow.config import paths as paths_mod
+
+    # Create a mock Paths object
+    mock_p = MagicMock()
+    mock_p.subagent_dir = MagicMock(return_value=tmp_path / "threads" / "test-thread" / "subagents")
+    mock_p.subagent_dir.return_value.mkdir(parents=True, exist_ok=True)
+
+    with patch.object(paths_mod, "get_paths", return_value=mock_p):
+        yield mock_p
+
+
+def _make_session(thread_id="test-thread", task_id="task-001", subagent_name="developer", description="test task"):
+    """Helper: create a SubagentSession with mocked paths."""
+    from deerflow.subagents.session import SubagentSession
+
+    return SubagentSession(
+        thread_id=thread_id,
+        task_id=task_id,
+        subagent_name=subagent_name,
+        description=description,
+    )
+
+
+# ── Message Serialization Tests ──────────────────────────────────────────
+
+
+class TestSerializeMessage:
+    """Test _serialize_message helper."""
+
+    def test_serialize_human_message(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(content="Hello agent")
+        result = _serialize_message(msg)
+        assert result["role"] == "human"
+        assert result["content"] == "Hello agent"
+        assert "ts" in result
+
+    def test_serialize_ai_message_no_tools(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = AIMessage(content="I will help you")
+        result = _serialize_message(msg)
+        assert result["role"] == "ai"
+        assert result["content"] == "I will help you"
+        assert "tool_calls" not in result
+
+    def test_serialize_ai_message_with_tools(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = AIMessage(
+            content="Let me read that file",
+            tool_calls=[{"id": "tc-1", "name": "read_file", "args": {"path": "/tmp/x.py"}}],
+        )
+        result = _serialize_message(msg)
+        assert result["role"] == "ai"
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["id"] == "tc-1"
+        assert result["tool_calls"][0]["name"] == "read_file"
+
+    def test_serialize_tool_message(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = ToolMessage(content="file contents here", tool_call_id="tc-1", name="read_file")
+        result = _serialize_message(msg)
+        assert result["role"] == "tool"
+        assert result["tool_call_id"] == "tc-1"
+        assert result["content"] == "file contents here"
+        assert result["name"] == "read_file"
+
+    def test_sanitizes_image_url_data_url_content(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(
+            content=[
+                {"type": "text", "text": "Here are the images you've viewed:"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
+            ]
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["content"][1] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_sanitizes_anthropic_image_source_data(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(
+            content=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "SECRETBASE64",
+                    },
+                }
+            ]
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["content"][0] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_sanitizes_langchain_image_base64_block(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = ToolMessage(
+            content=[
+                {
+                    "type": "image",
+                    "base64": "SECRETBASE64",
+                    "mime_type": "image/png",
+                }
+            ],
+            tool_call_id="tc-1",
+            name="mcp_tool",
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["content"][0] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_preserves_non_inline_image_urls(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = HumanMessage(content=[{"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}])
+        result = _serialize_message(msg)
+        assert result["content"] == [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}]
+
+    def test_sanitizes_tool_call_args(self):
+        from deerflow.subagents.session import _serialize_message
+
+        msg = AIMessage(
+            content="Inspecting image",
+            tool_calls=[
+                {
+                    "id": "tc-1",
+                    "name": "custom_tool",
+                    "args": {"payload": "prefix data:image/png;base64,SECRETBASE64 suffix"},
+                }
+            ],
+        )
+        result = _serialize_message(msg)
+        raw = json.dumps(result, ensure_ascii=False)
+        assert "SECRETBASE64" not in raw
+        assert result["tool_calls"][0]["args"]["payload"] == "prefix [图片 base64 已省略：image/png] suffix"
+
+
+# ── Append & Read Tests ──────────────────────────────────────────────────
+
+
+class TestAppendAndRead:
+    """Test JSONL append and read operations."""
+
+    def test_append_single_message(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        session.append_message(HumanMessage(content="Start task"))
+        assert jsonl.exists()
+        lines = jsonl.read_text().strip().split("\n")
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["role"] == "human"
+        assert entry["content"] == "Start task"
+
+    def test_append_multiple_messages(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        msgs = [
+            HumanMessage(content="Task prompt"),
+            AIMessage(content="Working on it", tool_calls=[{"id": "tc1", "name": "bash", "args": {"cmd": "ls"}}]),
+            ToolMessage(content="file1.txt\nfile2.txt", tool_call_id="tc1", name="bash"),
+            AIMessage(content="Done"),
+        ]
+        session.append_messages(msgs)
+
+        lines = jsonl.read_text().strip().split("\n")
+        assert len(lines) == 4
+        roles = [json.loads(line)["role"] for line in lines]
+        assert roles == ["human", "ai", "tool", "ai"]
+
+    def test_append_messages_sanitizes_image_base64(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        session.append_messages(
+            [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": "- /tmp/cat.png (image/png)"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRETBASE64"}},
+                    ]
+                )
+            ]
+        )
+
+        raw = jsonl.read_text()
+        entry = json.loads(raw)
+        assert "SECRETBASE64" not in raw
+        assert entry["content"][1] == {"type": "text", "text": "[图片 base64 已省略：image/png]"}
+
+    def test_read_messages_excludes_status_markers(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        # Write messages + status marker manually
+        lines = [
+            json.dumps({"ts": "2026-01-01", "role": "human", "content": "hi"}),
+            json.dumps({"ts": "2026-01-01", "role": "ai", "content": "hello"}),
+            json.dumps({"ts": "2026-01-01", "status": "completed", "result": "done"}),
+        ]
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        messages = session.read_messages()
+        assert len(messages) == 2
+        assert messages[0]["role"] == "human"
+        assert messages[1]["role"] == "ai"
+
+    def test_read_messages_empty_file(self, mock_paths, tmp_path):
+        session = _make_session()
+
+        # File doesn't exist yet
+        messages = session.read_messages()
+        assert messages == []
+
+    def test_read_messages_skips_corrupt_lines(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        jsonl.write_text("not json\n{bad\n" + json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n")
+        messages = session.read_messages()
+        assert len(messages) == 1
+        assert messages[0]["content"] == "ok"
+
+
+# ── Status Marker Tests ──────────────────────────────────────────────────
+
+
+class TestStatusMarkers:
+    """Test mark_completed, mark_failed, mark_interrupted."""
+
+    def test_mark_completed(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        summary = mock_paths.subagent_dir.return_value / "task-001.summary.json"
+
+        session.append_message(HumanMessage(content="Do work"))
+        session.mark_completed(result="Work done", message_count=1)
+
+        # Check JSONL has status marker
+        lines = jsonl.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["status"] == "completed"
+        assert "result" in last
+
+        # Check summary JSON
+        assert summary.exists()
+        s = json.loads(summary.read_text())
+        assert s["status"] == "completed"
+        assert s["task_id"] == "task-001"
+        assert s["message_count"] == 1
+
+    def test_mark_failed(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="Do work"))
+        session.mark_failed(error="Connection timeout", message_count=1)
+
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        lines = jsonl.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["status"] == "failed"
+        assert "Connection timeout" in last["error"]
+
+    def test_mark_interrupted(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="Do work"))
+        session.mark_interrupted(message_count=3)
+
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        lines = jsonl.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["status"] == "interrupted"
+
+
+# ── is_terminal Property Tests ───────────────────────────────────────────
+
+
+class TestIsTerminal:
+    """Test is_terminal property."""
+
+    def test_terminal_when_completed(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="hi"))
+        session.mark_completed(result="done")
+        assert session.is_terminal is True
+
+    def test_terminal_when_failed(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="hi"))
+        session.mark_failed(error="oops")
+        assert session.is_terminal is True
+
+    def test_not_terminal_when_running(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="hi"))
+        assert session.is_terminal is False
+
+    def test_not_terminal_when_no_file(self, mock_paths, tmp_path):
+        session = _make_session()
+        # No JSONL file created yet
+        assert session.is_terminal is False
+
+
+# ── Summary Tests ────────────────────────────────────────────────────────
+
+
+class TestReadSummary:
+    """Test read_summary."""
+
+    def test_read_summary_exists(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="hi"))
+        session.mark_completed(result="done", message_count=1)
+
+        s = session.read_summary()
+        assert s is not None
+        assert s["status"] == "completed"
+        assert s["subagent_name"] == "developer"
+        assert s["thread_id"] == "test-thread"
+
+    def test_read_summary_missing(self, mock_paths, tmp_path):
+        session = _make_session()
+        assert session.read_summary() is None
+
+
+# ── Class Method Tests ──────────────────────────────────────────────────
+
+
+class TestFindInterrupted:
+    """Test find_interrupted static method."""
+
+    def test_find_interrupted_returns_non_terminal(self, mock_paths, tmp_path):
+        from deerflow.subagents.session import SubagentSession
+
+        d = mock_paths.subagent_dir.return_value
+        # Create a running session (no terminal marker)
+        jsonl = d / "task-running.jsonl"
+        jsonl.write_text(json.dumps({"ts": "t", "role": "human", "content": "work"}) + "\n")
+
+        # Create a completed session
+        jsonl2 = d / "task-done.jsonl"
+        jsonl2.write_text(json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n" + json.dumps({"ts": "t", "status": "completed", "result": "done"}) + "\n")
+
+        interrupted = SubagentSession.find_interrupted("test-thread")
+        task_ids = [s.task_id for s in interrupted]
+        assert "task-running" in task_ids
+        assert "task-done" not in task_ids
+
+    def test_find_interrupted_empty_dir(self, mock_paths, tmp_path):
+        from deerflow.subagents.session import SubagentSession
+
+        result = SubagentSession.find_interrupted("test-thread")
+        assert result == []
+
+
+class TestListSessions:
+    """Test list_sessions static method."""
+
+    def test_list_sessions_includes_all(self, mock_paths, tmp_path):
+        from deerflow.subagents.session import SubagentSession
+
+        d = mock_paths.subagent_dir.return_value
+        # Create two sessions with summaries
+        for tid in ["task-a", "task-b"]:
+            (d / f"{tid}.jsonl").write_text(json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n" + json.dumps({"ts": "t", "status": "completed", "result": "done"}) + "\n")
+            (d / f"{tid}.summary.json").write_text(json.dumps({"subagent_name": "dev", "description": f"task {tid}", "started_at": "t"}))
+
+        sessions = SubagentSession.list_sessions("test-thread")
+        assert len(sessions) == 2
+        task_ids = {s.task_id for s in sessions}
+        assert task_ids == {"task-a", "task-b"}
+
+
+# ── read_last_message_ts Tests ────────────────────────────────────────────
+
+
+class TestReadLastMessageTs:
+    """Test read_last_message_ts — efficient tail-read of last message timestamp."""
+
+    def test_returns_last_message_ts(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        lines = [
+            json.dumps({"ts": "2026-04-13T10:00:00+00:00", "role": "human", "content": "start"}),
+            json.dumps({"ts": "2026-04-13T10:01:00+00:00", "role": "ai", "content": "working"}),
+            json.dumps({"ts": "2026-04-13T10:02:00+00:00", "role": "tool", "tool_call_id": "tc1", "name": "bash", "content": "ok"}),
+            json.dumps({"ts": "2026-04-13T10:03:00+00:00", "role": "ai", "content": "done"}),
+        ]
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        assert session.read_last_message_ts() == "2026-04-13T10:03:00+00:00"
+
+    def test_skips_status_marker(self, mock_paths, tmp_path):
+        """Status marker lines at end should be skipped."""
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+
+        lines = [
+            json.dumps({"ts": "2026-04-13T10:00:00+00:00", "role": "human", "content": "hi"}),
+            json.dumps({"ts": "2026-04-13T10:00:05+00:00", "status": "completed", "result": "done"}),
+        ]
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        assert session.read_last_message_ts() == "2026-04-13T10:00:00+00:00"
+
+    def test_empty_file(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text("")
+
+        assert session.read_last_message_ts() == ""
+
+    def test_no_jsonl_file(self, mock_paths, tmp_path):
+        session = _make_session()
+
+        assert session.read_last_message_ts() == ""
+
+    def test_only_corrupt_lines(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text("not json\n{broken\n")
+
+        assert session.read_last_message_ts() == ""
+
+    def test_only_status_markers(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text(json.dumps({"ts": "t", "status": "failed", "error": "x"}) + "\n")
+
+        assert session.read_last_message_ts() == ""
+
+    def test_single_message(self, mock_paths, tmp_path):
+        session = _make_session()
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        jsonl.write_text(json.dumps({"ts": "2026-04-13T12:00:00+00:00", "role": "human", "content": "hi"}) + "\n")
+
+        assert session.read_last_message_ts() == "2026-04-13T12:00:00+00:00"
+
+
+# ── Cancel Marker Tests ─────────────────────────────────────────────────
+
+
+class TestCancelMarker:
+    """Test cross-process cancel marker file operations."""
+
+    def test_request_cancel_writes_marker(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.request_cancel()
+
+        marker = session.cancel_marker_path
+        assert marker.exists()
+        assert marker.read_text(encoding="utf-8") == "cancelled"
+
+    def test_is_cancel_requested_true(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.request_cancel()
+        assert session.is_cancel_requested() is True
+
+    def test_is_cancel_requested_false(self, mock_paths, tmp_path):
+        session = _make_session()
+        assert session.is_cancel_requested() is False
+
+    def test_clear_cancel_marker_removes_file(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.request_cancel()
+        assert session.cancel_marker_path.exists()
+
+        session.clear_cancel_marker()
+        assert not session.cancel_marker_path.exists()
+
+    def test_clear_cancel_marker_noop_when_absent(self, mock_paths, tmp_path):
+        session = _make_session()
+        # Should not raise
+        session.clear_cancel_marker()
+        assert not session.cancel_marker_path.exists()
+
+    def test_cancel_marker_path_under_subagent_dir(self, mock_paths, tmp_path):
+        session = _make_session(task_id="tc-42")
+        assert session.cancel_marker_path.name == "tc-42.cancel"
+        assert session.cancel_marker_path.parent == mock_paths.subagent_dir.return_value
+
+    def test_request_cancel_creates_parent_dir(self, tmp_path):
+        """Ensure request_cancel works even when subagent dir doesn't exist yet."""
+        from deerflow.subagents.session import SubagentSession
+
+        deep_dir = tmp_path / "threads" / "t1" / "subagents"
+        # Don't create deep_dir — request_cancel should mkdir it via cancel_marker_path
+        session = SubagentSession.__new__(SubagentSession)
+        session.thread_id = "t1"
+        session.task_id = "tc-99"
+        session._jsonl_path = deep_dir / "tc-99.jsonl"
+        session._summary_path = deep_dir / "tc-99.summary.json"
+
+        # Mock cancel_marker_path to point to the non-existent dir
+        marker_path = deep_dir / "tc-99.cancel"
+        with patch.object(type(session), "cancel_marker_path", new_callable=lambda: property(lambda self: marker_path)):
+            session.request_cancel()
+
+        assert marker_path.exists()
+
+
+# ── mark_cancelled Tests ────────────────────────────────────────────────
+
+
+class TestMarkCancelled:
+    """Test mark_cancelled method and its effect on is_terminal."""
+
+    def test_mark_cancelled_writes_status_marker(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="work"))
+        session.mark_cancelled(message_count=2)
+
+        jsonl = mock_paths.subagent_dir.return_value / "task-001.jsonl"
+        lines = jsonl.read_text().strip().split("\n")
+        last = json.loads(lines[-1])
+        assert last["status"] == "cancelled"
+        assert last["message_count"] == 2
+
+    def test_mark_cancelled_writes_summary(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="work"))
+        session.mark_cancelled(message_count=1)
+
+        summary_path = mock_paths.subagent_dir.return_value / "task-001.summary.json"
+        assert summary_path.exists()
+        s = json.loads(summary_path.read_text())
+        assert s["status"] == "cancelled"
+        assert s["task_id"] == "task-001"
+        assert s["message_count"] == 1
+
+    def test_is_terminal_when_cancelled(self, mock_paths, tmp_path):
+        session = _make_session()
+        session.append_message(HumanMessage(content="work"))
+        session.mark_cancelled(message_count=1)
+        assert session.is_terminal is True
+
+    def test_find_interrupted_excludes_cancelled(self, mock_paths, tmp_path):
+        """Cancelled sessions should not appear in find_interrupted results."""
+        from deerflow.subagents.session import SubagentSession
+
+        d = mock_paths.subagent_dir.return_value
+        # Create a cancelled session
+        (d / "task-cancel.jsonl").write_text(json.dumps({"ts": "t", "role": "ai", "content": "ok"}) + "\n" + json.dumps({"ts": "t", "status": "cancelled", "message_count": 1}) + "\n")
+        (d / "task-cancel.summary.json").write_text(json.dumps({"subagent_name": "dev", "description": "cancel me", "started_at": "t"}))
+
+        interrupted = SubagentSession.find_interrupted("test-thread")
+        task_ids = [s.task_id for s in interrupted]
+        assert "task-cancel" not in task_ids

@@ -1,51 +1,158 @@
 import type { Message } from "@langchain/langgraph-sdk";
-import { FileIcon, Loader2Icon } from "lucide-react";
-import { memo, useMemo, type ImgHTMLAttributes } from "react";
-import rehypeKatex from "rehype-katex";
+import {
+  FileIcon,
+  Loader2Icon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
+} from "lucide-react";
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useState,
+  useEffect,
+  type AnchorHTMLAttributes,
+  type ImgHTMLAttributes,
+} from "react";
 
 import { Loader } from "@/components/ai-elements/loader";
 import {
   Message as AIElementMessage,
   MessageContent as AIElementMessageContent,
-  MessageResponse as AIElementMessageResponse,
   MessageToolbar,
 } from "@/components/ai-elements/message";
 import {
   Reasoning,
-  ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
 import { Task, TaskTrigger } from "@/components/ai-elements/task";
 import { Badge } from "@/components/ui/badge";
+import {
+  deleteFeedback,
+  upsertFeedback,
+  type FeedbackData,
+} from "@/core/api/feedback";
 import { resolveArtifactURL } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   extractContentFromMessage,
   extractReasoningContentFromMessage,
+  hasToolCalls,
   parseUploadedFiles,
   stripUploadedFilesTag,
   type FileInMessage,
 } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
-import { humanMessagePlugins } from "@/core/streamdown";
+import { SafeReasoningContent } from "@/core/streamdown/components";
 import { cn } from "@/lib/utils";
 
+import { ImageLightbox } from "../artifacts/image-lightbox";
 import { CopyButton } from "../copy-button";
 
 import { MarkdownContent } from "./markdown-content";
+import { useGetThinkingMessage } from "./thinking-message";
+
+function FeedbackButtons({
+  threadId,
+  runId,
+  initialFeedback,
+}: {
+  threadId: string;
+  runId: string;
+  initialFeedback: FeedbackData | null;
+}) {
+  const [feedback, setFeedback] = useState<FeedbackData | null>(
+    initialFeedback,
+  );
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleClick = useCallback(
+    async (rating: number) => {
+      if (isSubmitting) return;
+      setIsSubmitting(true);
+      try {
+        if (feedback?.rating === rating) {
+          await deleteFeedback(threadId, runId);
+          setFeedback(null);
+        } else {
+          const result = await upsertFeedback(threadId, runId, rating);
+          setFeedback(result);
+        }
+      } catch {
+        // Revert on error — feedback state unchanged on catch
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [threadId, runId, feedback, isSubmitting],
+  );
+
+  return (
+    <div className="flex gap-1">
+      <button
+        type="button"
+        className={cn(
+          "text-muted-foreground hover:text-foreground rounded-md p-1 transition-colors",
+          feedback?.rating === 1 && "text-foreground",
+        )}
+        onClick={() => handleClick(1)}
+        disabled={isSubmitting}
+      >
+        <ThumbsUpIcon
+          className={cn("size-4", feedback?.rating === 1 && "fill-current")}
+        />
+      </button>
+      <button
+        type="button"
+        className={cn(
+          "text-muted-foreground hover:text-foreground rounded-md p-1 transition-colors",
+          feedback?.rating === -1 && "text-foreground",
+        )}
+        onClick={() => handleClick(-1)}
+        disabled={isSubmitting}
+      >
+        <ThumbsDownIcon
+          className={cn("size-4", feedback?.rating === -1 && "fill-current")}
+        />
+      </button>
+    </div>
+  );
+}
 
 export function MessageListItem({
   className,
   message,
   isLoading,
+  feedback,
+  runId,
   threadId,
+  showCopyButton = true,
+  turnStartTime,
 }: {
   className?: string;
   message: Message;
   isLoading?: boolean;
   threadId: string;
+  feedback?: FeedbackData | null;
+  runId?: string;
+  showCopyButton?: boolean;
+  turnStartTime?: number | null;
 }) {
   const isHuman = message.type === "human";
+  // What the toolbar copies (backend-injected context stripped), memoized per
+  // row so chunk re-renders reuse it (#5094); the guard mirrors the toolbar's
+  // render condition.
+  const copyData = useMemo(
+    () =>
+      !isLoading && showCopyButton
+        ? stripUploadedFilesTag(
+            extractContentFromMessage(message) ??
+              extractReasoningContentFromMessage(message) ??
+              "",
+          )
+        : "",
+    [isLoading, message, showCopyButton],
+  );
   return (
     <AIElementMessage
       className={cn("group/conversation-message relative w-full", className)}
@@ -56,22 +163,26 @@ export function MessageListItem({
         message={message}
         isLoading={isLoading}
         threadId={threadId}
+        turnStartTime={turnStartTime}
       />
-      {!isLoading && (
+      {!isLoading && showCopyButton && (
         <MessageToolbar
           className={cn(
-            isHuman ? "-bottom-9 justify-end" : "-bottom-8",
-            "absolute right-0 left-0 z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
+            isHuman
+              ? "absolute right-0 -bottom-9 left-0 justify-end"
+              : "absolute right-0 bottom-0 left-0",
+            "z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
           )}
         >
-          <div className="flex gap-1">
-            <CopyButton
-              clipboardData={
-                extractContentFromMessage(message) ??
-                extractReasoningContentFromMessage(message) ??
-                ""
-              }
-            />
+          <div className="pointer-events-auto flex gap-1">
+            <CopyButton clipboardData={copyData} />
+            {feedback !== undefined && runId && threadId && (
+              <FeedbackButtons
+                threadId={threadId}
+                runId={runId}
+                initialFeedback={feedback}
+              />
+            )}
           </div>
         </MessageToolbar>
       )}
@@ -109,24 +220,86 @@ function MessageImage({
   );
 }
 
+const clientTurnDurations = new Map<string, number>();
+
 function MessageContent_({
   className,
   message,
   isLoading = false,
   threadId,
+  turnStartTime,
 }: {
   className?: string;
   message: Message;
   isLoading?: boolean;
   threadId: string;
+  turnStartTime?: number | null;
 }) {
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
+  const getThinkingMessage = useGetThinkingMessage();
   const isHuman = message.type === "human";
+  const rawTurnDuration = message.additional_kwargs?.turn_duration as
+    | number
+    | undefined;
+
+  const [cachedDuration, setCachedDuration] = useState<number | undefined>(
+    () =>
+      message.id
+        ? clientTurnDurations.get(`${threadId}:${message.id}`)
+        : undefined,
+  );
+  const turnDuration = rawTurnDuration ?? cachedDuration;
+
+  useEffect(() => {
+    if (rawTurnDuration !== undefined && message.id) {
+      clientTurnDurations.set(`${threadId}:${message.id}`, rawTurnDuration);
+      setCachedDuration(rawTurnDuration);
+    }
+  }, [rawTurnDuration, message.id]);
+
+  const handleDurationChange = useCallback(
+    (d: number | undefined) => {
+      if (d !== undefined && message.id) {
+        clientTurnDurations.set(`${threadId}:${message.id}`, d);
+        setCachedDuration(d);
+      }
+    },
+    [message.id],
+  );
+
+  useEffect(() => {
+    return () => {
+      for (const key of clientTurnDurations.keys()) {
+        if (key.startsWith(`${threadId}:`)) {
+          clientTurnDurations.delete(key);
+        }
+      }
+    };
+  }, [threadId]);
+
+  const [wasLoading, setWasLoading] = useState(isLoading);
+  useEffect(() => {
+    if (isLoading) setWasLoading(true);
+  }, [isLoading]);
   const components = useMemo(
     () => ({
       img: (props: ImgHTMLAttributes<HTMLImageElement>) => (
         <MessageImage {...props} threadId={threadId} maxWidth="90%" />
       ),
+      a: ({ href, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => {
+        if (href?.startsWith("/mnt/")) {
+          const url = resolveArtifactURL(href, threadId);
+          return (
+            <a
+              {...props}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+            />
+          );
+        }
+        return <a {...props} href={href} />;
+      },
     }),
     [threadId],
   );
@@ -146,6 +319,25 @@ function MessageContent_({
     return files as FileInMessage[];
   }, [message.additional_kwargs?.files, rawContent]);
 
+  // Uploaded images open in the shared lightbox; order here defines the
+  // lightbox navigation order, and RichFilesList indexes into it the same way.
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const lightboxImages = useMemo(() => {
+    if (!files) return [];
+    return files.filter(isLightboxImageFile);
+  }, [files]);
+
+  const handleImageClick = useCallback(
+    (file: FileInMessage) => {
+      if (!isLightboxImageFile(file)) return;
+      const index = lightboxImages.indexOf(file);
+      if (index !== -1) {
+        setLightboxIndex(index);
+      }
+    },
+    [lightboxImages],
+  );
+
   const contentToDisplay = useMemo(() => {
     if (isHuman) {
       return rawContent ? stripUploadedFilesTag(rawContent) : "";
@@ -155,7 +347,24 @@ function MessageContent_({
 
   const filesList =
     files && files.length > 0 ? (
-      <RichFilesList files={files} threadId={threadId} />
+      <RichFilesList
+        files={files}
+        threadId={threadId}
+        onImageClick={handleImageClick}
+      />
+    ) : null;
+
+  const lightbox =
+    lightboxIndex !== null && lightboxImages.length > 0 ? (
+      <ImageLightbox
+        images={lightboxImages.map((file) => ({
+          alt: file.filename,
+          src: resolveArtifactURL(file.path, threadId),
+        }))}
+        initialIndex={lightboxIndex}
+        onClose={() => setLightboxIndex(null)}
+        open
+      />
     ) : null;
 
   // Uploading state: mock AI message shown while files upload
@@ -178,33 +387,40 @@ function MessageContent_({
   if (!isHuman && reasoningContent && !rawContent) {
     return (
       <AIElementMessageContent className={className}>
-        <Reasoning isStreaming={isLoading}>
-          <ReasoningTrigger />
-          <ReasoningContent>{reasoningContent}</ReasoningContent>
+        <Reasoning
+          isStreaming={isLoading}
+          startTimeProp={turnStartTime}
+          duration={turnDuration}
+          onTurnDurationChange={handleDurationChange}
+        >
+          <ReasoningTrigger getThinkingMessage={getThinkingMessage} />
+          <SafeReasoningContent>{reasoningContent}</SafeReasoningContent>
         </Reasoning>
       </AIElementMessageContent>
     );
   }
 
   if (isHuman) {
-    const messageResponse = contentToDisplay ? (
-      <AIElementMessageResponse
-        remarkPlugins={humanMessagePlugins.remarkPlugins}
-        rehypePlugins={humanMessagePlugins.rehypePlugins}
-        components={components}
-        parseIncompleteMarkdown={false}
-      >
-        {contentToDisplay}
-      </AIElementMessageResponse>
-    ) : null;
+    // Composer input is plain text, not authored Markdown. Parsing it as
+    // Markdown mangles pasted code/logs (indented lines become code blocks,
+    // "$...$" spans become math) and lets pathological input crash the page
+    // through marked's recursive blockquote lexer, so render it verbatim.
     return (
-      <div className={cn("ml-auto flex flex-col gap-2", className)}>
+      <div
+        className={cn(
+          "ml-auto flex max-w-full min-w-0 flex-col gap-2",
+          className,
+        )}
+      >
         {filesList}
-        {messageResponse && (
-          <AIElementMessageContent className="w-fit">
-            {messageResponse}
+        {contentToDisplay && (
+          <AIElementMessageContent className="w-full max-w-full">
+            <div className="break-words whitespace-pre-wrap">
+              {contentToDisplay}
+            </div>
           </AIElementMessageContent>
         )}
+        {lightbox}
       </div>
     );
   }
@@ -212,10 +428,29 @@ function MessageContent_({
   return (
     <AIElementMessageContent className={className}>
       {filesList}
+      {/* Tool-calling bubbles keep reasoning in the CoT panel (#3868). */}
+      {!isHuman &&
+        !hasToolCalls(message) &&
+        (!!reasoningContent || wasLoading || turnDuration !== undefined) && (
+          <Reasoning
+            isStreaming={isLoading}
+            startTimeProp={turnStartTime}
+            duration={turnDuration}
+            onTurnDurationChange={handleDurationChange}
+          >
+            <ReasoningTrigger
+              hasContent={!!reasoningContent}
+              getThinkingMessage={getThinkingMessage}
+            />
+            {reasoningContent && (
+              <SafeReasoningContent>{reasoningContent}</SafeReasoningContent>
+            )}
+          </Reasoning>
+        )}
       <MarkdownContent
         content={contentToDisplay}
         isLoading={isLoading}
-        rehypePlugins={[...rehypePlugins, [rehypeKatex, { output: "html" }]]}
+        rehypePlugins={rehypePlugins}
         className="my-3"
         components={components}
       />
@@ -266,6 +501,16 @@ function isImageFile(filename: string): boolean {
   return IMAGE_EXTENSIONS.includes(getFileExt(filename));
 }
 
+// Uploaded image ready to show in the lightbox: image extension, already
+// uploaded (has a path), and not still in flight.
+function isLightboxImageFile(
+  file: FileInMessage,
+): file is FileInMessage & { path: string } {
+  return (
+    isImageFile(file.filename) && !!file.path && file.status !== "uploading"
+  );
+}
+
 /**
  * Format bytes to human-readable size string
  */
@@ -282,11 +527,23 @@ function formatBytes(bytes: number): string {
 function RichFilesList({
   files,
   threadId,
+  onImageClick,
 }: {
   files: FileInMessage[];
   threadId: string;
+  onImageClick?: (file: FileInMessage) => void;
 }) {
   if (files.length === 0) return null;
+
+  // Lightbox order = first-ready-image order, computed once here so the
+  // click index always matches MessageContent_'s lightboxImages array.
+  const lightboxIndexes = new Map<FileInMessage, number>();
+  for (const file of files) {
+    if (isLightboxImageFile(file)) {
+      lightboxIndexes.set(file, lightboxIndexes.size);
+    }
+  }
+
   return (
     <div className="mb-2 flex flex-wrap justify-end gap-2">
       {files.map((file, index) => (
@@ -294,6 +551,11 @@ function RichFilesList({
           key={`${file.filename}-${index}`}
           file={file}
           threadId={threadId}
+          onImageClick={
+            onImageClick && lightboxIndexes.has(file)
+              ? () => onImageClick(file)
+              : undefined
+          }
         />
       ))}
     </div>
@@ -306,9 +568,11 @@ function RichFilesList({
 function RichFileCard({
   file,
   threadId,
+  onImageClick,
 }: {
   file: FileInMessage;
   threadId: string;
+  onImageClick?: () => void;
 }) {
   const { t } = useI18n();
   const isUploading = file.status === "uploading";
@@ -346,17 +610,38 @@ function RichFileCard({
   const fileUrl = resolveArtifactURL(file.path, threadId);
 
   if (isImage) {
+    if (onImageClick) {
+      return (
+        // Named group scope: the message wrapper also carries a plain `group`,
+        // so an unnamed group-hover here would scale every card in the message
+        // at once.
+        <button
+          type="button"
+          className="group/file border-border/40 relative block cursor-zoom-in overflow-hidden rounded-lg border"
+          onClick={onImageClick}
+        >
+          <img
+            src={fileUrl}
+            alt={file.filename}
+            className="h-32 w-auto max-w-60 object-cover transition-transform group-hover/file:scale-105"
+          />
+        </button>
+      );
+    }
     return (
       <a
         href={fileUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="group border-border/40 relative block overflow-hidden rounded-lg border"
+        // Named group scope: the message wrapper also carries a plain `group`,
+        // so an unnamed group-hover here would scale every card in the message
+        // at once.
+        className="group/file border-border/40 relative block overflow-hidden rounded-lg border"
       >
         <img
           src={fileUrl}
           alt={file.filename}
-          className="h-32 w-auto max-w-60 object-cover transition-transform group-hover:scale-105"
+          className="h-32 w-auto max-w-60 object-cover transition-transform group-hover/file:scale-105"
         />
       </a>
     );

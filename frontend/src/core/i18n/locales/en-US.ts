@@ -29,6 +29,8 @@ export const enUS: Translations = {
     close: "Close",
     more: "More",
     search: "Search",
+    loadMore: "Load more",
+    retry: "Retry",
     download: "Download",
     thinking: "Thinking",
     artifacts: "Artifacts",
@@ -49,6 +51,7 @@ export const enUS: Translations = {
     exportAsMarkdown: "Export as Markdown",
     exportAsJSON: "Export as JSON",
     exportSuccess: "Conversation exported",
+    regenerate: "Regenerate",
   },
 
   // Home
@@ -65,7 +68,7 @@ export const enUS: Translations = {
 
     createYourOwnSkill: "Create Your Own Skill",
     createYourOwnSkillDescription:
-      "Create your own skill to release the power of DeerFlow. With customized skills,\nDeerFlow can help you search on the web, analyze data, and generate\n artifacts like slides, web pages and do almost anything.",
+      "Create your own skill to release the power of DeerFlow. With customized skills, DeerFlow can help you search on the web, analyze data, and generate artifacts like slides, web pages and do almost anything.",
   },
 
   // Clipboard
@@ -74,6 +77,24 @@ export const enUS: Translations = {
     copiedToClipboard: "Copied to clipboard",
     failedToCopyToClipboard: "Failed to copy to clipboard",
     linkCopied: "Link copied to clipboard",
+  },
+
+  // Artifact viewer (mobile full-screen page, prototype ⑤)
+  artifactViewer: {
+    count: (count: number) =>
+      count === 1 ? "1 artifact" : `${count} artifacts`,
+    wrapLines: "Wrap lines",
+    noWrapLines: "No wrap",
+    downloadOnly:
+      "This file type cannot be previewed in the browser. Download it to open it.",
+    loadFailed: "This artifact could not be loaded.",
+    back: "Back to chat",
+    switchFile: (current: string) => `Switch file (currently ${current})`,
+    searchFiles: "Filter files by name",
+    tools: "Tools",
+    toolsNote:
+      "Shown per file type: images and HTML have no wrap toggle, and only source code can be copied.",
+    refresh: "Refresh",
   },
 
   // Input Box
@@ -94,6 +115,23 @@ export const enUS: Translations = {
     ultraMode: "Ultra",
     ultraModeDescription:
       "Pro mode with subagents to divide work; best for complex multi-step tasks",
+    imageGeneration: "Image generation model",
+    imageGenerationNotConfigured: "API key not configured",
+    imageGenerationSkillDisabled: "image-generation skill is disabled",
+    imageGenerationLoadFailed: "Failed to load image generation models",
+    videoGeneration: "Video generation model",
+    videoGenerationNotConfigured: "API key not configured",
+    videoGenerationSkillDisabled: "video-generation skill is disabled",
+    videoGenerationLoadFailed: "Failed to load video generation models",
+    videoPointsPerSecond: "pts/s",
+    videoRateFromLabel: (rate: string) => `from ${rate} pts/s`,
+    videoRegenerationLabel: "768p->2k",
+    videoDurationRange: "Duration ",
+    videoDurationSeconds: "s",
+    model: "Model",
+    chatModel: "Chat model",
+    visionModel: "Vision model",
+    defaultVisionModel: "Default",
     reasoningEffort: "Reasoning Effort",
     reasoningEffortMinimal: "Minimal",
     reasoningEffortMinimalDescription: "Retrieval + Direct Output",
@@ -114,6 +152,8 @@ export const enUS: Translations = {
       "You already have text in the input. Choose how to send it.",
     followupConfirmAppend: "Append & send",
     followupConfirmReplace: "Replace & send",
+    suggestionPlaceholderRequired:
+      "Replace the suggestion placeholder before sending.",
     suggestions: [
       {
         suggestion: "Write",
@@ -163,12 +203,27 @@ export const enUS: Translations = {
         icon: SparklesIcon,
       },
     ],
+    // Mobile composer (prototype ②③): the main row is ＋ / mode / model /
+    // send — mode and model are persistent pills that open a picker layer.
+    composerOptions: "More options",
+    switchMode: (current: string) => `Switch mode (currently ${current})`,
+    switchModel: (current: string) => `Switch model (currently ${current})`,
+    photoLibrary: "Photo library",
+    takePhoto: "Take photo",
+    file: "File",
+    sendMessage: "Send",
+    stopGenerating: "Stop generating",
+    planMode: "Plan mode",
+    planModeOn: "On",
+    planModeOff: "Off",
+    skillCommands: "Skill commands",
   },
 
   // Sidebar
   sidebar: {
     newChat: "New chat",
     chats: "Chats",
+    channels: "Channels",
     recentChats: "Recent chats",
     demoChats: "Demo chats",
     agents: "Agents",
@@ -188,7 +243,7 @@ export const enUS: Translations = {
     deleteConfirm:
       "Are you sure you want to delete this agent? This action cannot be undone.",
     deleteSuccess: "Agent deleted",
-    newChat: "New chat",
+    newChat: "New chat with this agent",
     createPageTitle: "Design your Agent",
     createPageSubtitle:
       "Describe the agent you want — I'll help you create it through conversation.",
@@ -203,8 +258,11 @@ export const enUS: Translations = {
     nameStepNetworkError:
       "Network request failed — check your network or backend connection",
     nameStepCheckError: "Could not verify name availability — please try again",
+    nameStepCheckErrorWithDetail: "Name check failed: {detail}",
+    nameStepApiDisabledError:
+      "Custom agent management is not enabled on this server. Please contact your administrator.",
     nameStepBootstrapMessage:
-      "The new custom agent name is {name}. Let's bootstrap it's **SOUL**.",
+      "The new custom agent name is {name}. Help me design its purpose, behavior, and SOUL.md before saving it.",
     save: "Save agent",
     saving: "Saving agent...",
     saveRequested:
@@ -219,6 +277,47 @@ export const enUS: Translations = {
     agentCreated: "Agent created!",
     startChatting: "Start chatting",
     backToGallery: "Back to Gallery",
+    edit: "Edit",
+    editTitle: "Edit Agent",
+    editDescription:
+      "View and update the agent's soul, description, and model. Changes take effect on the next turn.",
+    descriptionLabel: "Description",
+    soulLabel: "SOUL.md (personality & guardrails)",
+    modelLabel: "Model",
+    modelDefault: "Follow default model",
+    capabilitiesLabel: "Capability whitelists (read-only)",
+    skillsLabel: "Skills",
+    toolGroupsLabel: "Tool groups",
+    skillsInheritAll: "Inherits all enabled skills",
+    skillsNone: "No skills",
+    toolGroupsInheritAll: "Inherits all tool groups",
+    toolGroupsNone: "No tool groups",
+    dirtyConfirmTitle: "Discard unsaved changes?",
+    dirtyConfirmBody:
+      "Your SOUL.md, description, or model changes have not been saved. Closing now will discard them.",
+    dirtyConfirmDiscard: "Discard changes",
+    dirtyConfirmKeep: "Keep editing",
+    saveSuccess: "Agent saved. Takes effect on the next turn",
+    apiDisabledError:
+      "Custom agent management is not enabled on this server. Please contact your administrator.",
+    legacyOnlyError:
+      "This agent only exists in the legacy shared layout and is not scoped to your user, so it cannot be edited here.",
+    loadDetailFailed:
+      "Failed to load agent details. Showing the stale gallery data instead.",
+    loadFailed: "Agents could not be loaded.",
+    createChoiceDescription: "Choose how to create your agent",
+    createChoiceManualTitle: "Create manually",
+    createChoiceManualDescription:
+      "Fill in the name, description, model, and SOUL.md to create an agent directly.",
+    createChoiceChatTitle: "Create through chat",
+    createChoiceChatDescription:
+      "Describe the agent you want — DeerFlow designs and saves it through conversation.",
+    createTitle: "Create Agent Manually",
+    createDescription:
+      "Fill in the basics — everything can be edited later in the edit panel.",
+    nameLabel: "Name",
+    createSoulPlaceholder: "Optional — fill it in later from the edit panel.",
+    createSuccess: "Agent created",
   },
 
   // Breadcrumb
@@ -236,6 +335,9 @@ export const enUS: Translations = {
     reportIssue: "Report a issue",
     contactUs: "Contact us",
     about: "About DeerFlow",
+    logout: "Log out",
+    gatewayUnavailable: "Gateway is temporarily unavailable.",
+    gatewayUnavailableRetrying: "Retrying in the background…",
   },
 
   // Conversation
@@ -247,6 +349,59 @@ export const enUS: Translations = {
   // Chats
   chats: {
     searchChats: "Search chats",
+    loadMoreToSearch: "Load more to search older conversations",
+    loadingMore: "Loading more...",
+    loadOlderChats: "Load older chats",
+    pinned: "Pinned",
+    today: "Today",
+    yesterday: "Yesterday",
+    earlier: "Earlier",
+    empty: "No conversations yet.",
+    noSearchResults: "No conversations match your search.",
+    loadFailed: "Conversations could not be loaded.",
+    pin: "Pin",
+    unpin: "Unpin",
+    actions: "Conversation actions",
+    deleteConfirmTitle: "Delete conversation",
+    deleteConfirm: "This conversation will be deleted. This cannot be undone.",
+    // Mobile chat screen (prototype ②): the header's ⋯ menu and the floating
+    // "back to bottom" affordance.
+    sessionStatus: "Session status",
+    scrollToBottom: "Back to bottom",
+    generating: "Generating",
+  },
+
+  // Channels
+  channels: {
+    title: "Channels",
+    connect: "Connect",
+    modify: "Modify",
+    reconnect: "Reconnect",
+    disconnect: "Disconnect",
+    connected: "Connected",
+    notConnected: "Not connected",
+    pending: "Pending",
+    revoked: "Disconnected",
+    disabled: "Disabled",
+    unconfigured: "Not configured",
+    unavailable: "Channel connections are unavailable right now.",
+    unavailableShort: "Unavailable",
+    setupTitle: (name: string) => `Connect ${name}`,
+    setupEditTitle: (name: string) => `Modify ${name}`,
+    setupDescription:
+      "Enter the values needed by this server process. They are not written to config.yaml.",
+    saveAndConnect: "Save and connect",
+    saveChanges: "Save changes",
+    descriptions: {
+      telegram: "Telegram direct messages through your DeerFlow bot.",
+      slack: "Slack workspace messages and mentions.",
+      discord: "Discord server messages through your DeerFlow bot.",
+      feishu: "Feishu and Lark messages through your DeerFlow app.",
+      dingtalk: "DingTalk Stream Push messages through your DeerFlow bot.",
+      wechat: "WeChat iLink messages through your DeerFlow bot.",
+      wecom: "WeCom messages through your DeerFlow AI bot.",
+    },
+    connectedAs: (name: string) => `Connected as ${name}.`,
   },
 
   // Page titles (document title)
@@ -261,6 +416,9 @@ export const enUS: Translations = {
   toolCalls: {
     moreSteps: (count: number) => `${count} more step${count === 1 ? "" : "s"}`,
     lessSteps: "Less steps",
+    executedSteps: (count: number) =>
+      `Ran ${count} step${count === 1 ? "" : "s"}`,
+    toolsUsed: (count: number) => `${count} tool${count === 1 ? "" : "s"}`,
     executeCommand: "Execute command",
     presentFiles: "Present files",
     needYourHelp: "Need your help",
@@ -278,9 +436,30 @@ export const enUS: Translations = {
     clickToViewContent: "Click to view file content",
     writeTodos: "Update to-do list",
     skillInstallTooltip: "Install skill and make it available to DeerFlow",
+    thinking: "Thinking…",
+    thoughtFor: (duration: string) => `Thought for ${duration}`,
+    thoughtBriefly: "Thought for a few seconds",
+    durationSeconds: (seconds: number) => `${seconds}s`,
+    durationMinutes: (minutes: number, seconds: number) =>
+      `${minutes}m ${seconds}s`,
   },
 
   // Subtasks
+  humanInput: {
+    answered: "Answered",
+    pending: "Sending...",
+    readOnly: "Read only",
+    otherLabel: "Other answer",
+    otherPlaceholder: "Type another answer...",
+    submit: "Submit",
+    emptyError: "Enter an answer before submitting.",
+    requiredError: "Fill in all required fields before submitting.",
+    requiredA11yLabel: "required",
+    selectPlaceholder: "Select...",
+    inputDisabledHint:
+      "A question above needs your answer before you can continue.",
+  },
+
   uploads: {
     uploading: "Uploading...",
     uploadingFiles: "Uploading files, please wait...",
@@ -295,12 +474,51 @@ export const enUS: Translations = {
     failed: "Subtask failed",
   },
 
+  // Quota indicator (feat-df-8)
+  quotaIndicator: {
+    label: "My quota",
+    prefixLabel: "Quota",
+    reserved: "Reserved",
+    unitPoints: "pts",
+    unitCount: "runs",
+    periodWeekly: "Weekly",
+    periodMonthly: "Monthly",
+    overrideNote: "Admin adjusted this period",
+  },
+
   // Token Usage
   tokenUsage: {
     title: "Token Usage",
+    label: "Tokens",
     input: "Input",
     output: "Output",
     total: "Total",
+    view: "Display",
+    unavailable:
+      "No token usage yet. Usage appears only after a successful model response when the provider returns usage_metadata.",
+    unavailableShort: "No usage returned",
+    note: "Header totals use persisted thread usage, plus visible in-flight usage while a run is still streaming. Per-turn and debug usage come from currently visible messages only. Totals may differ from provider billing pages.",
+    presets: {
+      off: "Off",
+      summary: "Summary",
+      perTurn: "Per turn",
+      debug: "Debug",
+    },
+    presetDescriptions: {
+      off: "Hide token usage in the header and conversation.",
+      summary: "Show only the current conversation total in the header.",
+      perTurn:
+        "Show the header total and one token summary per assistant turn.",
+      debug: "Show the header total and step-level token debugging details.",
+    },
+    finalAnswer: "Final answer",
+    stepTotal: "Step total",
+    sharedAttribution: "Shared across multiple actions in this step",
+    subagent: (description: string) => `Subagent: ${description}`,
+    startTodo: (content: string) => `Start To-do: ${content}`,
+    completeTodo: (content: string) => `Complete To-do: ${content}`,
+    updateTodo: (content: string) => `Update To-do: ${content}`,
+    removeTodo: (content: string) => `Remove To-do: ${content}`,
   },
 
   // Shortcuts
@@ -320,8 +538,11 @@ export const enUS: Translations = {
     title: "Settings",
     description: "Adjust how DeerFlow looks and behaves for you.",
     sections: {
+      account: "Account",
       appearance: "Appearance",
+      channels: "Channels",
       memory: "Memory",
+      models: "Models",
       tools: "Tools",
       skills: "Skills",
       notification: "Notification",
@@ -419,9 +640,99 @@ export const enUS: Translations = {
       languageTitle: "Language",
       languageDescription: "Switch between languages.",
     },
+    models: {
+      title: "Models",
+      description:
+        "Manage the language models in the `models:` region of config.yaml. Saves write to the config file and keep a timestamped backup.",
+      adminRequired: "Admin privileges are required to manage model configs.",
+      loadError: "Failed to load model configs: {detail}",
+      empty: "No model configs yet.",
+      add: "Add model",
+      addTitle: "Add model",
+      edit: "Edit",
+      editTitle: "Edit model",
+      delete: "Delete",
+      deleteConfirmTitle: "Delete model",
+      deleteConfirm: "Delete model “{name}”? This cannot be undone.",
+      test: "Test",
+      testOk: "Connected ({latency} ms)",
+      testFailed: "Connection failed: {detail}",
+      saving: "Saving…",
+      save: "Save",
+      cancel: "Cancel",
+      saveSuccess: "Model config saved.",
+      deleteSuccess: "Model config deleted.",
+      name: "Name",
+      namePlaceholder: "e.g. gpt-4o",
+      model: "Model ID",
+      modelPlaceholder: "gpt-4o",
+      displayName: "Display name",
+      displayNamePlaceholder: "GPT-4o",
+      apiKey: "API key",
+      apiKeyPlaceholder: "sk-... or $OPENAI_API_KEY",
+      apiKeyKeepHint: "Leave blank to keep the stored key untouched.",
+      apiKeyStoredAsHint:
+        "The key is saved to .env as {name}; the config file keeps only the reference.",
+      keyNotSet: "Not set",
+      required: "Name, provider, and model ID are required.",
+      requiredForProvider: "Enter a base URL before saving.",
+      provider: "Provider",
+      providerPlaceholder: "Select a provider",
+      providerUnavailable: "Unavailable",
+      providerUnavailableHint:
+        "This provider's package is not installed; install it to select it.",
+      apiBase: "Base URL",
+      apiBasePlaceholder: "https://api.example.com/v1",
+      apiBaseOptionalHint:
+        "Leave blank to use the provider's default endpoint.",
+      apiBaseRequiredHint: "An OpenAI-compatible provider requires a base URL.",
+      apiBaseRequired:
+        "A base URL is required for an OpenAI-compatible provider.",
+      editTitleProviderFallback:
+        "This model uses a custom provider class path; it is preserved as-is on save.",
+      supportsThinking: "This model supports thinking",
+      supportsThinkingHint:
+        "Ticking this writes the provider's thinking parameters. Left unticked, the chat thinking toggle does nothing for this model — turning it off will not stop the reasoning.",
+      probeThinking: "Detect",
+      thinkingUnavailable:
+        "This provider has no thinking parameters, so it cannot be enabled.",
+      budgetTokens: "Thinking budget (budget_tokens)",
+      budgetHint: "Upper bound on thinking output. Defaults to 4096.",
+      thinkingDisabledTitle: "What is sent when thinking is off",
+      thinkingDisabledHint:
+        "Turning thinking off adds this provider's own disable parameters (e.g. thinking.type = disabled). Most endpoints need them to stop reasoning.",
+      thinkingDisabledPreset: "This provider's disable parameters",
+      thinkingDisabledOmit: "Nothing — the endpoint rejects a disable signal",
+      maxTokens: "Max output (max_tokens)",
+      maxTokensHint: "Must exceed the thinking budget. Defaults to 8192.",
+      thinkNotProbed:
+        "Not detected yet — run Detect to confirm this endpoint really supports thinking.",
+      thinkProbing:
+        "Detecting… — sending 2–3 real requests; this usually takes 10–30 seconds. Please keep this window open.",
+      thinkProbeFailed: "Detection failed.",
+      thinkEnabled:
+        "The response with thinking enabled contains thinking blocks.",
+      thinkNotEnabled:
+        "No thinking blocks came back with thinking enabled — this endpoint may not support it.",
+      thinkDisables:
+        "Thinking blocks stop when thinking is disabled, so the toggle works.",
+      thinkIgnoresDisable:
+        "This run still returned thinking blocks with thinking disabled — the toggle may have no effect. Some endpoints do this intermittently; run Detect again to confirm.",
+      thinkAlwaysOn:
+        "This endpoint thinks even without thinking parameters, so thinking is always on.",
+    },
     tools: {
       title: "Tools",
       description: "Manage the configuration and enabled status of MCP tools.",
+      adminRequired: "Admin privileges are required to manage MCP tools.",
+      empty: "No MCP tools configured.",
+    },
+    channels: {
+      title: "Channels",
+      description:
+        "Connect IM accounts that can send messages to DeerFlow from outside the browser.",
+      disabled:
+        "Channel connections are not enabled on this server. Ask an administrator to enable channel_connections.",
     },
     skills: {
       title: "Agent Skills",
@@ -446,9 +757,93 @@ export const enUS: Translations = {
       notSupported: "Your browser does not support notifications.",
       disableNotification: "Disable notification",
     },
+    account: {
+      profileTitle: "Profile",
+      email: "Email",
+      role: "Role",
+      ssoProvider: "SSO",
+      changePasswordTitle: "Change Password",
+      changePasswordDescription: "Update your account password.",
+      ssoPasswordDescription: "Password is managed by your SSO provider.",
+      ssoPasswordMessage:
+        "This account signs in with {provider}, so DeerFlow cannot manage or change its password here. Use your SSO provider's account settings instead.",
+      currentPassword: "Current password",
+      newPassword: "New password",
+      confirmNewPassword: "Confirm new password",
+      passwordMismatch: "New passwords do not match",
+      passwordTooShort: "Password must be at least 8 characters",
+      passwordChangedSuccess: "Password changed successfully",
+      networkError: "Network error. Please try again.",
+      updating: "Updating...",
+      updatePassword: "Update Password",
+      signOut: "Sign Out",
+    },
     acknowledge: {
       emptyTitle: "Acknowledgements",
       emptyDescription: "Credits and acknowledgements will show here.",
+    },
+  },
+  login: {
+    signInTitle: "Sign in to your account",
+    createAccountTitle: "Create a new account",
+    email: "Email",
+    emailPlaceholder: "you@sz-jlc.com",
+    password: "Password",
+    passwordPlaceholder: "•••••••",
+    pleaseWait: "Please wait...",
+    signIn: "Sign In",
+    createAccount: "Create Account",
+    registrationPendingTitle: "Application submitted",
+    registrationPendingDescription:
+      "Contact your administrator for approval. We will notify your company email after approval.",
+    registrationPendingBackToLogin: "Back to sign in",
+    createAdminAccount: "Create admin account",
+    adminSetupRequiredTitle: "Administrator setup is required",
+    adminSetupRequiredDescription:
+      "DeerFlow needs an administrator account before new regular accounts can be created.",
+    orContinueWith: "Or continue with",
+    ssoHint:
+      "If your account uses single sign-on, sign in with the option below instead.",
+    continueWith: (provider: string) => `Continue with ${provider}`,
+    noAccountSignUp: "Don't have an account? Sign up with your company email",
+    haveAccountSignIn: "Already have an account? Sign in",
+    backToHome: "← Back to home",
+    officialWebsite: "Visit DeerFlow official website",
+    networkError: "Network error. Please try again.",
+    authFailed: "Authentication failed.",
+    errors: {
+      sso_failed: "SSO login failed. Please try again or use email login.",
+      sso_cancelled: "SSO login was cancelled.",
+      sso_account_exists:
+        "An account with this email already exists. Please sign in with your password or contact your administrator.",
+      sso_not_allowed:
+        "SSO login is not allowed for your account. Contact your administrator.",
+      registration_pending:
+        "Your registration is awaiting administrator approval.",
+      account_disabled:
+        "Your account has been disabled. Contact your administrator.",
+    },
+    passwordsDoNotMatch: "Passwords do not match",
+    passwordTooShort: "Password must be at least 8 characters",
+    signingIn: "Signing you in…",
+    redirecting: "Redirecting…",
+    authFailedRedirecting: "Authentication failed. Redirecting to sign in…",
+    setup: {
+      createAdminTitle: "Create admin account",
+      createAdminDescription:
+        "Set up the administrator account to get started.",
+      passwordPlaceholder: "Password (min. 8 characters)",
+      confirmPassword: "Confirm Password",
+      confirmPasswordPlaceholder: "Confirm password",
+      creatingAccount: "Creating account…",
+      completeSetupTitle: "Complete account setup",
+      completeSetupDescription: "Set your real email and a new password.",
+      emailPlaceholder: "Your email",
+      currentPassword: "Current password",
+      newPassword: "New password",
+      confirmNewPassword: "Confirm new password",
+      settingUp: "Setting up…",
+      completeSetupAction: "Complete Setup",
     },
   },
 };

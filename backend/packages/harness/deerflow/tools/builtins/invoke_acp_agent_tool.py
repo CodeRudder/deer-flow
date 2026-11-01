@@ -27,17 +27,19 @@ def _get_work_dir(thread_id: str | None) -> str:
     Falls back to the legacy global ``{base_dir}/acp-workspace/`` when
     ``thread_id`` is not available (e.g. embedded / direct invocation).
 
-    The directory is created automatically if it does not exist.
+    The directory is created during thread initialization by
+    ``ThreadDataMiddleware`` via ``Paths.ensure_thread_dirs()``.
 
     Returns:
         An absolute physical filesystem path to use as the working directory.
     """
     from deerflow.config.paths import get_paths
+    from deerflow.runtime.user_context import get_effective_user_id
 
     paths = get_paths()
     if thread_id:
         try:
-            work_dir = paths.acp_workspace_dir(thread_id)
+            work_dir = paths.acp_workspace_dir(thread_id, user_id=get_effective_user_id())
         except ValueError:
             logger.warning("Invalid thread_id %r for ACP workspace, falling back to global", thread_id)
             work_dir = paths.base_dir / "acp-workspace"

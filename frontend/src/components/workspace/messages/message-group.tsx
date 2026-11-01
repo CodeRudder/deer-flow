@@ -2,17 +2,17 @@ import type { Message } from "@langchain/langgraph-sdk";
 import {
   BookOpenTextIcon,
   ChevronUp,
+  CoinsIcon,
   FolderOpenIcon,
   GlobeIcon,
   LightbulbIcon,
   ListTodoIcon,
-  MessageCircleQuestionMarkIcon,
   NotebookPenIcon,
   SearchIcon,
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   ChainOfThought,
@@ -24,7 +24,10 @@ import {
 import { CodeBlock } from "@/components/ai-elements/code-block";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/core/i18n/hooks";
+import { formatTokenCount } from "@/core/messages/usage";
+import type { TokenDebugStep } from "@/core/messages/usage-model";
 import {
+  extractContentFromMessage,
   extractReasoningContentFromMessage,
   findToolCallResult,
 } from "@/core/messages/utils";
@@ -43,10 +46,24 @@ export function MessageGroup({
   className,
   messages,
   isLoading = false,
+  tokenDebugSteps = [],
+  showTokenDebugSummaries = false,
+  collapsedSteps = false,
 }: {
   className?: string;
   messages: Message[];
   isLoading?: boolean;
+  tokenDebugSteps?: TokenDebugStep[];
+  showTokenDebugSummaries?: boolean;
+  /**
+   * Mobile-only (T13 / `FEATURE_LIST.md` C6): render the tool-call process as a
+   * single "ran N steps · M tools" row that expands into the usual detail,
+   * instead of starting with the panel open. The phone transcript has the
+   * narrow column to spare and the dense panel is what a 390px screen cannot
+   * afford; the desktop keeps the panel exactly as it was, because the default
+   * is `false` and the false branch is the original JSX, untouched.
+   */
+  collapsedSteps?: boolean;
 }) {
   const { t } = useI18n();
   const [showAbove, setShowAbove] = useState(
@@ -56,6 +73,28 @@ export function MessageGroup({
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
   );
   const steps = useMemo(() => convertToSteps(messages), [messages]);
+  const debugStepByMessageId = useMemo(
+    () =>
+      new Map(
+        tokenDebugSteps.map(
+          (step) => [step.messageId || step.id, step] as const,
+        ),
+      ),
+    [tokenDebugSteps],
+  );
+  const toolCallCountByMessageId = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    for (const step of steps) {
+      if (step.type !== "toolCall" || !step.messageId) {
+        continue;
+      }
+
+      counts.set(step.messageId, (counts.get(step.messageId) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [steps]);
   const lastToolCallStep = useMemo(() => {
     const filteredSteps = steps.filter((step) => step.type === "toolCall");
     return filteredSteps[filteredSteps.length - 1];
@@ -67,6 +106,15 @@ export function MessageGroup({
     }
     return [];
   }, [lastToolCallStep, steps]);
+  const afterLastToolCallAssistantTextSteps = useMemo(() => {
+    if (!lastToolCallStep) {
+      return [];
+    }
+    const index = steps.indexOf(lastToolCallStep);
+    return steps
+      .slice(index + 1)
+      .filter((step) => step.type === "assistantText");
+  }, [lastToolCallStep, steps]);
   const lastReasoningStep = useMemo(() => {
     if (lastToolCallStep) {
       const index = steps.indexOf(lastToolCallStep);
@@ -77,6 +125,190 @@ export function MessageGroup({
     }
   }, [lastToolCallStep, steps]);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
+  const firstEligibleDebugSummaryStepIndexByMessageId = useMemo(() => {
+    const firstIndices = new Map<string, number>();
+
+    if (!showTokenDebugSummaries) {
+      return firstIndices;
+    }
+
+    for (const [index, step] of steps.entries()) {
+      const messageId = step.messageId;
+      if (!messageId || firstIndices.has(messageId)) {
+        continue;
+      }
+
+      const debugStep = debugStepByMessageId.get(messageId);
+      if (!debugStep) {
+        continue;
+      }
+
+      const toolCallCount = toolCallCountByMessageId.get(messageId) ?? 0;
+      if (!debugStep.sharedAttribution && toolCallCount > 0) {
+        continue;
+      }
+      if (
+        !debugStep.sharedAttribution &&
+        toolCallCount === 0 &&
+        debugStep.label === t.common.thinking &&
+        debugStep.secondaryLabels.length === 0
+      ) {
+        continue;
+      }
+
+      firstIndices.set(messageId, index);
+    }
+
+    return firstIndices;
+  }, [
+    debugStepByMessageId,
+    showTokenDebugSummaries,
+    steps,
+    t.common.thinking,
+    toolCallCountByMessageId,
+  ]);
+
+  const renderDebugSummary = (
+    messageId: string | undefined,
+    stepIndex: number,
+  ) => {
+    if (!showTokenDebugSummaries || !messageId) {
+      return null;
+    }
+
+    const debugStep = debugStepByMessageId.get(messageId);
+    if (!debugStep) {
+      return null;
+    }
+    if (
+      firstEligibleDebugSummaryStepIndexByMessageId.get(messageId) !== stepIndex
+    ) {
+      return null;
+    }
+
+    return (
+      <ChainOfThoughtStep
+        key={`token-debug-${messageId}`}
+        icon={CoinsIcon}
+        label={
+          <DebugStepLabel
+            label={debugStep.label}
+            token={formatDebugToken(debugStep, t)}
+          />
+        }
+        description={
+          debugStep.sharedAttribution
+            ? t.tokenUsage.sharedAttribution
+            : undefined
+        }
+      >
+        {debugStep.secondaryLabels.length > 0 && (
+          <ChainOfThoughtSearchResults>
+            {debugStep.secondaryLabels.map((label, index) => (
+              <ChainOfThoughtSearchResult
+                key={`${debugStep.id}-${index}-${label}`}
+              >
+                {label}
+              </ChainOfThoughtSearchResult>
+            ))}
+          </ChainOfThoughtSearchResults>
+        )}
+      </ChainOfThoughtStep>
+    );
+  };
+
+  const renderToolCall = (
+    step: CoTToolCallStep,
+    options?: { isLast?: boolean },
+  ) => {
+    const debugStep =
+      showTokenDebugSummaries && step.messageId
+        ? debugStepByMessageId.get(step.messageId)
+        : undefined;
+
+    return (
+      <ToolCall
+        key={step.id}
+        {...step}
+        isLast={options?.isLast}
+        isLoading={isLoading}
+        tokenDebugStep={
+          debugStep && !debugStep.sharedAttribution ? debugStep : undefined
+        }
+      />
+    );
+  };
+
+  const renderStep = (step: CoTStep) => {
+    const stepIndex = steps.indexOf(step);
+    if (step.type === "reasoning") {
+      return [
+        renderDebugSummary(step.messageId, stepIndex),
+        <ChainOfThoughtStep
+          key={step.id}
+          label={
+            <MarkdownContent
+              content={step.reasoning ?? ""}
+              isLoading={isLoading}
+              rehypePlugins={rehypePlugins}
+            />
+          }
+        ></ChainOfThoughtStep>,
+      ];
+    }
+    if (step.type === "assistantText") {
+      return [
+        renderDebugSummary(step.messageId, stepIndex),
+        <ChainOfThoughtStep
+          key={step.id}
+          label={
+            <MarkdownContent
+              content={step.content}
+              isLoading={isLoading}
+              rehypePlugins={rehypePlugins}
+            />
+          }
+        ></ChainOfThoughtStep>,
+      ];
+    }
+    return [
+      renderDebugSummary(step.messageId, stepIndex),
+      renderToolCall(step),
+    ];
+  };
+
+  const lastReasoningDebugStep =
+    showTokenDebugSummaries && lastReasoningStep?.messageId
+      ? debugStepByMessageId.get(lastReasoningStep.messageId)
+      : undefined;
+
+  // All steps filtered out (e.g. a clarification-only message) — no panel.
+  if (steps.length === 0) {
+    return null;
+  }
+
+  // Mobile: summarise first, detail on tap. Reasoning-only groups have no
+  // tool call to summarise, so they keep the panel below rather than reading
+  // "ran 0 steps · 0 tools".
+  if (collapsedSteps && steps.some((step) => step.type === "toolCall")) {
+    // Only the *process* folds. `assistantText` steps stay out of the summary
+    // (and out of its count) and render below it — prototype ② keeps the answer
+    // in a `.bubble` outside the `.disc`, and `AGENTS.md` requires the panel to
+    // paint assistant text with or without tool calls, "in collapsed state"
+    // included. Without this a streaming turn that already saw a tool call
+    // would show no words at all until the run ended.
+    return (
+      <CollapsedSteps
+        className={className}
+        renderStep={renderStep}
+        steps={steps.filter((step) => step.type !== "assistantText")}
+        assistantTextSteps={steps.filter(
+          (step): step is CoTAssistantTextStep => step.type === "assistantText",
+        )}
+      />
+    );
+  }
+
   return (
     <ChainOfThought
       className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
@@ -108,39 +340,37 @@ export function MessageGroup({
           ></ChainOfThoughtStep>
         </Button>
       )}
-      {lastToolCallStep && (
+      {(lastToolCallStep ??
+        steps.some((step) => step.type === "assistantText")) && (
         <ChainOfThoughtContent className="px-4 pb-2">
-          {showAbove &&
-            aboveLastToolCallSteps.map((step) =>
-              step.type === "reasoning" ? (
-                <ChainOfThoughtStep
-                  key={step.id}
-                  label={
-                    <MarkdownContent
-                      content={step.reasoning ?? ""}
-                      isLoading={isLoading}
-                      rehypePlugins={rehypePlugins}
-                    />
-                  }
-                ></ChainOfThoughtStep>
-              ) : (
-                <ToolCall key={step.id} {...step} isLoading={isLoading} />
-              ),
-            )}
+          {(lastToolCallStep
+            ? showAbove
+              ? aboveLastToolCallSteps
+              : aboveLastToolCallSteps.filter(
+                  (step) => step.type === "assistantText",
+                )
+            : steps.filter((step) => step.type === "assistantText")
+          ).flatMap(renderStep)}
           {lastToolCallStep && (
-            <FlipDisplay uniqueKey={lastToolCallStep.id ?? ""}>
-              <ToolCall
-                key={lastToolCallStep.id}
-                {...lastToolCallStep}
-                isLast={true}
-                isLoading={isLoading}
-              />
-            </FlipDisplay>
+            <>
+              {renderDebugSummary(
+                lastToolCallStep.messageId,
+                steps.indexOf(lastToolCallStep),
+              )}
+              <FlipDisplay uniqueKey={lastToolCallStep.id ?? ""}>
+                {renderToolCall(lastToolCallStep, { isLast: true })}
+              </FlipDisplay>
+              {afterLastToolCallAssistantTextSteps.flatMap(renderStep)}
+            </>
           )}
         </ChainOfThoughtContent>
       )}
       {lastReasoningStep && (
         <>
+          {renderDebugSummary(
+            lastReasoningStep.messageId,
+            steps.indexOf(lastReasoningStep),
+          )}
           <Button
             key={lastReasoningStep.id}
             className="w-full items-start justify-start text-left"
@@ -150,7 +380,22 @@ export function MessageGroup({
             <div className="flex w-full items-center justify-between">
               <ChainOfThoughtStep
                 className="font-normal"
-                label={t.common.thinking}
+                label={
+                  <DebugStepLabel
+                    label={t.common.thinking}
+                    token={shouldInlineThinkingToken({
+                      debugStep: lastReasoningDebugStep,
+                      toolCallCount: lastReasoningStep.messageId
+                        ? (toolCallCountByMessageId.get(
+                            lastReasoningStep.messageId,
+                          ) ?? 0)
+                        : 0,
+                      enabled: showTokenDebugSummaries,
+                      thinkingLabel: t.common.thinking,
+                      t,
+                    })}
+                  />
+                }
                 icon={LightbulbIcon}
               ></ChainOfThoughtStep>
               <div>
@@ -183,6 +428,171 @@ export function MessageGroup({
   );
 }
 
+/**
+ * Steps whose row is a link rather than a log line: `ToolCall` turns one of
+ * these into the mobile artifact screen's entry point (`select()` +
+ * `setOpen(true)` → the page navigates). On the phone that row is the *only*
+ * route to a draft — a draft exists only in the tool call's arguments, so it is
+ * not in `thread.values.artifacts`, which is what the title bar's "文件" button
+ * (the artifact entry point since `d6177297`) lists.
+ */
+const ARTIFACT_STEP_NAMES = new Set(["write_file", "str_replace"]);
+
+/**
+ * Mobile rendering of a step group (T13 / C6, prototype ②'s `.disc` block):
+ * one row — "ran 3 steps · 2 tools" — that expands into the very same steps
+ * the desktop panel paints. The row is a 44px tap target, and the count is the
+ * number of rows the expansion holds (`steps`), so the summary and the detail
+ * can never disagree.
+ *
+ * `steps` is therefore the folded rows only: `assistantText` steps come in
+ * separately and paint below the summary whether or not it is open. The answer
+ * is not part of the folded *process* (prototype ② keeps it in a `.bubble`
+ * outside the `.disc`), and it is the only thing a streaming turn has on screen
+ * before the first tool result — folding it away would blank the transcript
+ * until the run ended (`AGENTS.md`: assistant text renders "with or without
+ * tool calls — before the first tool call, in collapsed state, and after the
+ * last tool call").
+ *
+ * A group whose steps open an artifact starts expanded: collapsing it would
+ * hide the entry point to the draft screen behind an extra tap, which is a
+ * behaviour the transcript had before this summary existed (T6 / F7-3). The
+ * summary still folds everything on a run that only reads and searches.
+ *
+ * This is only reached when `MessageGroup` is given `collapsedSteps`, which no
+ * desktop caller passes.
+ */
+function CollapsedSteps({
+  className,
+  renderStep,
+  steps,
+  assistantTextSteps,
+}: {
+  className?: string;
+  renderStep: (step: CoTStep) => React.ReactNode[];
+  steps: CoTStep[];
+  assistantTextSteps: CoTAssistantTextStep[];
+}) {
+  const { t } = useI18n();
+  const artifactStepCount = steps.filter(
+    (step) => step.type === "toolCall" && ARTIFACT_STEP_NAMES.has(step.name),
+  ).length;
+  const [open, setOpen] = useState(artifactStepCount > 0);
+  // A processing group is keyed by its first AI message, so this component
+  // stays mounted for the whole turn: an artifact step that arrives after the
+  // group opened on `ls`/`read_file` would otherwise never be seen here, and
+  // the new draft would sit one tap deeper than it was before this summary
+  // existed (T6 / F7-3). Re-open whenever another one lands.
+  useEffect(() => {
+    if (artifactStepCount > 0) {
+      setOpen(true);
+    }
+  }, [artifactStepCount]);
+  const toolCallCount = steps.filter((step) => step.type === "toolCall").length;
+
+  return (
+    <>
+      <ChainOfThought
+        className={cn("w-full gap-2 rounded-lg border p-0.5", className)}
+        open={open}
+        onOpenChange={setOpen}
+      >
+        <Button
+          aria-expanded={open}
+          className="min-h-11 w-full items-start justify-start text-left"
+          data-testid="mobile-collapsed-steps"
+          variant="ghost"
+          onClick={() => setOpen(!open)}
+        >
+          <div className="flex w-full items-center justify-between">
+            <ChainOfThoughtStep
+              className="font-normal"
+              icon={WrenchIcon}
+              label={
+                <span className="opacity-60">
+                  {t.toolCalls.executedSteps(steps.length)}
+                  {" · "}
+                  {t.toolCalls.toolsUsed(toolCallCount)}
+                </span>
+              }
+            />
+            <ChevronUp
+              className={cn(
+                "text-muted-foreground size-4 shrink-0",
+                open ? "" : "rotate-180",
+              )}
+            />
+          </div>
+        </Button>
+        {open && (
+          <ChainOfThoughtContent className="px-4 pb-2">
+            {steps.flatMap(renderStep)}
+          </ChainOfThoughtContent>
+        )}
+      </ChainOfThought>
+      {assistantTextSteps.length > 0 && (
+        <div className="w-full pt-2" data-testid="mobile-collapsed-answer">
+          {assistantTextSteps.flatMap(renderStep)}
+        </div>
+      )}
+    </>
+  );
+}
+
+function formatDebugToken(
+  debugStep: TokenDebugStep,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  return debugStep.usage
+    ? `${formatTokenCount(debugStep.usage.totalTokens)} ${t.tokenUsage.label}`
+    : t.tokenUsage.unavailableShort;
+}
+
+function shouldInlineThinkingToken({
+  debugStep,
+  toolCallCount,
+  enabled,
+  thinkingLabel,
+  t,
+}: {
+  debugStep?: TokenDebugStep;
+  toolCallCount: number;
+  enabled: boolean;
+  thinkingLabel: string;
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  if (
+    !enabled ||
+    !debugStep ||
+    debugStep.sharedAttribution ||
+    toolCallCount > 0 ||
+    debugStep.label !== thinkingLabel
+  ) {
+    return null;
+  }
+
+  return formatDebugToken(debugStep, t);
+}
+
+function DebugStepLabel({
+  label,
+  token,
+}: {
+  label: React.ReactNode;
+  token?: string | null;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0 flex-1">{label}</div>
+      {token ? (
+        <div className="text-muted-foreground shrink-0 font-mono text-[11px]">
+          {token}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolCall({
   id,
   messageId,
@@ -191,6 +601,7 @@ function ToolCall({
   result,
   isLast = false,
   isLoading = false,
+  tokenDebugStep,
 }: {
   id?: string;
   messageId?: string;
@@ -199,10 +610,20 @@ function ToolCall({
   result?: string | Record<string, unknown>;
   isLast?: boolean;
   isLoading?: boolean;
+  tokenDebugStep?: TokenDebugStep;
 }) {
   const { t } = useI18n();
   const { setOpen, autoOpen, autoSelect, selectedArtifact, select } =
     useArtifacts();
+  const tokenLabel = tokenDebugStep
+    ? formatDebugToken(tokenDebugStep, t)
+    : null;
+  const resolveLabel = (fallback: React.ReactNode) =>
+    tokenDebugStep ? (
+      <DebugStepLabel label={tokenDebugStep.label} token={tokenLabel} />
+    ) : (
+      fallback
+    );
 
   if (name === "web_search") {
     let label: React.ReactNode = t.toolCalls.searchForRelatedInfo;
@@ -210,7 +631,11 @@ function ToolCall({
       label = t.toolCalls.searchOnWebFor(args.query);
     }
     return (
-      <ChainOfThoughtStep key={id} label={label} icon={SearchIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={resolveLabel(label)}
+        icon={SearchIcon}
+      >
         {Array.isArray(result) && (
           <ChainOfThoughtSearchResults>
             {result.map((item) => (
@@ -240,7 +665,11 @@ function ToolCall({
       }
     )?.results;
     return (
-      <ChainOfThoughtStep key={id} label={label} icon={SearchIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={resolveLabel(label)}
+        icon={SearchIcon}
+      >
         {Array.isArray(results) && (
           <ChainOfThoughtSearchResults>
             {Array.isArray(results) &&
@@ -280,7 +709,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={t.toolCalls.viewWebPage}
+        label={resolveLabel(t.toolCalls.viewWebPage)}
         icon={GlobeIcon}
       >
         <ChainOfThoughtSearchResult>
@@ -305,7 +734,11 @@ function ToolCall({
     }
     const path: string | undefined = (args as { path: string })?.path;
     return (
-      <ChainOfThoughtStep key={id} label={description} icon={FolderOpenIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={resolveLabel(description)}
+        icon={FolderOpenIcon}
+      >
         {path && (
           <ChainOfThoughtSearchResult className="cursor-pointer">
             {path}
@@ -321,7 +754,11 @@ function ToolCall({
     }
     const { path } = args as { path: string; content: string };
     return (
-      <ChainOfThoughtStep key={id} label={description} icon={BookOpenTextIcon}>
+      <ChainOfThoughtStep
+        key={id}
+        label={resolveLabel(description)}
+        icon={BookOpenTextIcon}
+      >
         {path && (
           <ChainOfThoughtSearchResult className="cursor-pointer">
             {path}
@@ -329,14 +766,14 @@ function ToolCall({
         )}
       </ChainOfThoughtStep>
     );
-  } else if (name === "write_file" || name === "str_replace") {
+  } else if (ARTIFACT_STEP_NAMES.has(name)) {
     let description: string | undefined = (args as { description: string })
       ?.description;
     if (!description) {
       description = t.toolCalls.writeFile;
     }
     const path: string | undefined = (args as { path: string })?.path;
-    if (isLoading && isLast && autoOpen && autoSelect && path) {
+    if (isLoading && isLast && autoOpen && autoSelect && path && !result) {
       setTimeout(() => {
         const url = new URL(
           `write-file:${path}?message_id=${messageId}&tool_call_id=${id}`,
@@ -353,7 +790,7 @@ function ToolCall({
       <ChainOfThoughtStep
         key={id}
         className="cursor-pointer"
-        label={description}
+        label={resolveLabel(description)}
         icon={NotebookPenIcon}
         onClick={() => {
           select(
@@ -375,13 +812,19 @@ function ToolCall({
     const description: string | undefined = (args as { description: string })
       ?.description;
     if (!description) {
-      return t.toolCalls.executeCommand;
+      return (
+        <ChainOfThoughtStep
+          key={id}
+          label={resolveLabel(t.toolCalls.executeCommand)}
+          icon={SquareTerminalIcon}
+        />
+      );
     }
     const command: string | undefined = (args as { command: string })?.command;
     return (
       <ChainOfThoughtStep
         key={id}
-        label={description}
+        label={resolveLabel(description)}
         icon={SquareTerminalIcon}
       >
         {command && (
@@ -394,19 +837,11 @@ function ToolCall({
         )}
       </ChainOfThoughtStep>
     );
-  } else if (name === "ask_clarification") {
-    return (
-      <ChainOfThoughtStep
-        key={id}
-        label={t.toolCalls.needYourHelp}
-        icon={MessageCircleQuestionMarkIcon}
-      ></ChainOfThoughtStep>
-    );
   } else if (name === "write_todos") {
     return (
       <ChainOfThoughtStep
         key={id}
-        label={t.toolCalls.writeTodos}
+        label={resolveLabel(t.toolCalls.writeTodos)}
         icon={ListTodoIcon}
       ></ChainOfThoughtStep>
     );
@@ -416,7 +851,7 @@ function ToolCall({
     return (
       <ChainOfThoughtStep
         key={id}
-        label={description ?? t.toolCalls.useTool(name)}
+        label={resolveLabel(description ?? t.toolCalls.useTool(name))}
         icon={WrenchIcon}
       ></ChainOfThoughtStep>
     );
@@ -439,11 +874,15 @@ interface CoTToolCallStep extends GenericCoTStep<"toolCall"> {
   result?: string;
 }
 
-type CoTStep = CoTReasoningStep | CoTToolCallStep;
+interface CoTAssistantTextStep extends GenericCoTStep<"assistantText"> {
+  content: string;
+}
+
+type CoTStep = CoTReasoningStep | CoTToolCallStep | CoTAssistantTextStep;
 
 function convertToSteps(messages: Message[]): CoTStep[] {
   const steps: CoTStep[] = [];
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.type === "ai") {
       const reasoning = extractReasoningContentFromMessage(message);
       if (reasoning) {
@@ -451,12 +890,32 @@ function convertToSteps(messages: Message[]): CoTStep[] {
           id: message.id,
           messageId: message.id,
           type: "reasoning",
-          reasoning: extractReasoningContentFromMessage(message),
+          reasoning,
         };
         steps.push(step);
       }
+      // Clarification text/question render outside the panel (bubble + card).
+      const isClarificationMessage =
+        message.tool_calls?.some(
+          (toolCall) => toolCall.name === "ask_clarification",
+        ) === true;
+      // Keep assistant text visible even without tool calls (#4304).
+      const content = isClarificationMessage
+        ? ""
+        : extractContentFromMessage(message);
+      if (content) {
+        steps.push({
+          id: `${message.id ?? `ai-${messageIndex}`}-content`,
+          messageId: message.id,
+          type: "assistantText",
+          content,
+        });
+      }
       for (const tool_call of message.tool_calls ?? []) {
-        if (tool_call.name === "task") {
+        if (
+          tool_call.name === "task" ||
+          tool_call.name === "ask_clarification"
+        ) {
           continue;
         }
         const step: CoTToolCallStep = {

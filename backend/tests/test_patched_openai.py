@@ -9,8 +9,9 @@ fallback, camelCase keys, and several edge-cases.
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage
+from langchain_core.tools import tool
 
-from deerflow.models.patched_openai import _restore_tool_call_signatures
+from deerflow.models.patched_openai import PatchedChatOpenAI, _normalize_gemini_tool_schema, _restore_tool_call_signatures
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,6 +45,12 @@ PAYLOAD_TC_2 = {
 
 def _ai_msg_with_raw_tool_calls(raw_tool_calls: list[dict]) -> AIMessage:
     return AIMessage(content="", additional_kwargs={"tool_calls": raw_tool_calls})
+
+
+@tool
+def nullable_filter_tool(query: str, optional_filter: str | None = None) -> str:
+    """Search with an optional filter."""
+    return query if optional_filter is None else f"{query}:{optional_filter}"
 
 
 # ---------------------------------------------------------------------------
@@ -172,5 +179,49 @@ def test_tool_call_multiple_sequential_signatures():
     assert payload_tc_b["thought_signature"] == "SIG_STEP2=="
 
 
-# Integration behavior for PatchedChatOpenAI is validated indirectly via
-# _restore_tool_call_signatures unit coverage above.
+# ---------------------------------------------------------------------------
+# Gemini-compatible tool schema normalization
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_gemini_tool_schema_promotes_nullable_anyof():
+    tool_schema = {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "filter": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "default": None,
+                        "description": "Optional filter.",
+                    },
+                },
+            },
+        },
+    }
+
+    normalized = _normalize_gemini_tool_schema(tool_schema)
+    field_schema = normalized["function"]["parameters"]["properties"]["filter"]
+
+    assert field_schema["type"] == "string"
+    assert field_schema["default"] is None
+    assert field_schema["description"] == "Optional filter."
+    assert "anyOf" not in field_schema
+    assert "anyOf" in tool_schema["function"]["parameters"]["properties"]["filter"]
+
+
+def test_bind_tools_normalizes_nullable_schema_and_preserves_tool_choice():
+    model = PatchedChatOpenAI(model="gemini-test", api_key="test-key", base_url="https://example.com/v1")
+
+    bound = model.bind_tools([nullable_filter_tool], tool_choice="nullable_filter_tool")
+    bound_tools = bound.kwargs["tools"]
+    bound_tool_choice = bound.kwargs["tool_choice"]
+    optional_filter_schema = bound_tools[0]["function"]["parameters"]["properties"]["optional_filter"]
+
+    assert optional_filter_schema["type"] == "string"
+    assert optional_filter_schema["default"] is None
+    assert "anyOf" not in optional_filter_schema
+    assert bound_tool_choice == {"type": "function", "function": {"name": "nullable_filter_tool"}}

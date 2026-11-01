@@ -1,91 +1,59 @@
+// NOTE: Keep feature parity with src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx —
+// new header indicators / message-list features must be added to both pages.
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-
-import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
-import {
-  ChatBox,
-  useSpecificChatMode,
-  useThreadChat,
-} from "@/components/workspace/chats";
+import { ChatBox, useChatPage } from "@/components/workspace/chats";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { InputBox } from "@/components/workspace/input-box";
 import {
   MessageList,
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
-  MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { QuotaIndicator } from "@/components/workspace/quota-indicator";
+import { SessionStatusButton } from "@/components/workspace/session-status-dialog";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
-import { useNotification } from "@/core/notification/hooks";
-import { useThreadSettings } from "@/core/settings";
-import { useThreadStream } from "@/core/threads/hooks";
-import { textOfMessage } from "@/core/threads/utils";
-import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 export default function ChatPage() {
   const { t } = useI18n();
-  const [showFollowups, setShowFollowups] = useState(false);
-  const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
-    useThreadChat();
-  const [settings, setSettings] = useThreadSettings(threadId);
-  const [mounted, setMounted] = useState(false);
-  useSpecificChatMode();
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  const { showNotification } = useNotification();
-
-  const [thread, sendMessage, isUploading] = useThreadStream({
-    threadId: isNewThread ? undefined : threadId,
-    context: settings.context,
+  // All streaming state, settings, effects and composer callbacks live in the
+  // shared hook so the mobile chat page can reuse them verbatim — only the
+  // layout below is desktop-specific. See `use-chat-page.ts`.
+  const {
+    threadId,
     isMock,
-    onStart: (createdThreadId) => {
-      setThreadId(createdThreadId);
-      setIsNewThread(false);
-      // ! Important: Never use next.js router for navigation in this case, otherwise it will cause the thread to re-mount and lose all states. Use native history API instead.
-      history.replaceState(null, "", `/workspace/chats/${createdThreadId}`);
-    },
-    onFinish: (state) => {
-      if (document.hidden || !document.hasFocus()) {
-        let body = "Conversation finished";
-        const lastMessage = state.messages.at(-1);
-        if (lastMessage) {
-          const textContent = textOfMessage(lastMessage);
-          if (textContent) {
-            body =
-              textContent.length > 200
-                ? textContent.substring(0, 200) + "..."
-                : textContent;
-          }
-        }
-        showNotification(state.title, { body });
-      }
-    },
-  });
-
-  const handleSubmit = useCallback(
-    (message: PromptInputMessage) => {
-      void sendMessage(threadId, message);
-    },
-    [sendMessage, threadId],
-  );
-  const handleStop = useCallback(async () => {
-    await thread.stop();
-  }, [thread]);
-
-  const messageListPaddingBottom = showFollowups
-    ? MESSAGE_LIST_DEFAULT_PADDING_BOTTOM +
-      MESSAGE_LIST_FOLLOWUPS_EXTRA_PADDING_BOTTOM
-    : undefined;
+    isNewThread,
+    isWelcomeMode,
+    thread,
+    pendingUsageMessages,
+    backendTokenUsage,
+    tokenUsageEnabled,
+    tokenUsageInlineMode,
+    settings,
+    setSettings,
+    localSettings,
+    setLocalSettings,
+    isHistoryLoading,
+    hasMoreHistory,
+    loadMoreHistory,
+    hasOpenHumanInputCard,
+    handleSubmitHumanInput,
+    handleSubmit,
+    handleStop,
+    handleRegenerate,
+    hasTodos,
+    mountedRef,
+    isDemoMode,
+    isInputDisabled,
+    canRegenerate,
+  } = useChatPage();
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -93,57 +61,105 @@ export default function ChatPage() {
         <div className="relative flex size-full min-h-0 justify-between">
           <header
             className={cn(
-              "absolute top-0 right-0 left-0 z-30 flex h-12 shrink-0 items-center px-4",
-              isNewThread
+              "absolute top-0 right-0 left-0 z-30 flex h-12 shrink-0 items-center gap-2 px-2 sm:px-4",
+              isWelcomeMode
                 ? "bg-background/0 backdrop-blur-none"
                 : "bg-background/80 shadow-xs backdrop-blur",
             )}
           >
-            <div className="flex w-full items-center text-sm font-medium">
+            <SidebarTrigger className="md:hidden" />
+            <div className="flex min-w-0 flex-1 items-center text-sm font-medium">
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
-            <div className="flex items-center gap-2">
-              <TokenUsageIndicator messages={thread.messages} />
+            <div className="flex shrink-0 items-center gap-2">
+              {!isNewThread && !isMock && (
+                <SessionStatusButton
+                  threadId={threadId}
+                  enabled
+                  forcePolling={thread.isLoading}
+                />
+              )}
+              <TokenUsageIndicator
+                threadId={isNewThread ? undefined : threadId}
+                backendUsage={backendTokenUsage}
+                enabled={tokenUsageEnabled}
+                messages={thread.messages}
+                pendingMessages={pendingUsageMessages}
+                preferences={localSettings.tokenUsage}
+                onPreferencesChange={(preferences) =>
+                  setLocalSettings("tokenUsage", preferences)
+                }
+              />
+              {!isMock && <QuotaIndicator isThreadBusy={thread.isLoading} />}
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />
             </div>
           </header>
           <main className="flex min-h-0 max-w-full grow flex-col">
-            <div className="flex size-full justify-center">
+            <div className="flex min-h-0 flex-1 justify-center">
               <MessageList
-                className={cn("size-full", !isNewThread && "pt-10")}
+                className={cn("size-full", !isWelcomeMode && "pt-10")}
                 threadId={threadId}
                 thread={thread}
-                paddingBottom={messageListPaddingBottom}
+                paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
+                hasMoreHistory={hasMoreHistory}
+                loadMoreHistory={loadMoreHistory}
+                isHistoryLoading={isHistoryLoading}
+                tokenUsageInlineMode={tokenUsageInlineMode}
+                canRegenerate={canRegenerate}
+                onRegenerateMessage={handleRegenerate}
+                onSubmitHumanInput={
+                  isMock || isDemoMode ? undefined : handleSubmitHumanInput
+                }
               />
             </div>
-            <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
+            <div
+              className={cn(
+                "right-0 bottom-0 left-0 z-30 flex justify-center px-3 sm:px-4",
+                isWelcomeMode ? "absolute" : "relative shrink-0 pb-4",
+              )}
+            >
               <div
                 className={cn(
                   "relative w-full",
-                  isNewThread && "-translate-y-[calc(50vh-96px)]",
-                  isNewThread
+                  isWelcomeMode &&
+                    "-translate-y-[calc(50vh-48px)] sm:-translate-y-[calc(50vh-96px)]",
+                  isWelcomeMode
                     ? "max-w-(--container-width-sm)"
                     : "max-w-(--container-width-md)",
                 )}
               >
-                <div className="absolute -top-4 right-0 left-0 z-0">
-                  <div className="absolute right-0 bottom-0 left-0">
-                    <TodoList
-                      className="bg-background/5"
-                      todos={thread.values.todos ?? []}
-                      hidden={
-                        !thread.values.todos || thread.values.todos.length === 0
-                      }
-                    />
+                {hasTodos && (
+                  <div
+                    className={cn(
+                      "right-0 left-0 z-0",
+                      isWelcomeMode ? "absolute -top-4" : "relative",
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        "right-0 bottom-0 left-0",
+                        isWelcomeMode ? "absolute" : "relative",
+                      )}
+                    >
+                      <TodoList
+                        className="bg-background/5"
+                        todos={thread.values.todos ?? []}
+                        hidden={false}
+                        showProgress
+                      />
+                    </div>
                   </div>
-                </div>
-                {mounted ? (
+                )}
+                {mountedRef.current ? (
                   <InputBox
-                    className={cn("bg-background/5 w-full -translate-y-4")}
-                    isNewThread={isNewThread}
+                    className={cn(
+                      "bg-background/5 w-full",
+                      isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
+                    )}
+                    isWelcomeMode={isWelcomeMode}
                     threadId={threadId}
-                    autoFocus={isNewThread}
+                    autoFocus={isWelcomeMode}
                     status={
                       thread.error
                         ? "error"
@@ -153,16 +169,17 @@ export default function ChatPage() {
                     }
                     context={settings.context}
                     extraHeader={
-                      isNewThread && <Welcome mode={settings.context.mode} />
+                      isWelcomeMode && <Welcome mode={settings.context.mode} />
                     }
-                    disabled={
-                      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                      isUploading
+                    disabled={isInputDisabled}
+                    disabledPlaceholder={
+                      hasOpenHumanInputCard
+                        ? t.humanInput.inputDisabledHint
+                        : undefined
                     }
                     onContextChange={(context) =>
                       setSettings("context", context)
                     }
-                    onFollowupsVisibilityChange={setShowFollowups}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                   />
@@ -170,11 +187,12 @@ export default function ChatPage() {
                   <div
                     aria-hidden="true"
                     className={cn(
-                      "bg-background/5 h-32 w-full -translate-y-4 rounded-2xl border",
+                      "bg-background/5 h-32 w-full rounded-2xl",
+                      isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
                     )}
                   />
                 )}
-                {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
+                {isDemoMode && (
                   <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">
                     {t.common.notAvailableInDemoMode}
                   </div>

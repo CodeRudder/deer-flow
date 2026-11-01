@@ -18,7 +18,7 @@ interface AssistantClarificationGroup extends GenericMessageGroup<"assistant:cla
 
 interface AssistantSubagentGroup extends GenericMessageGroup<"assistant:subagent"> {}
 
-type MessageGroup =
+export type MessageGroup =
   | HumanMessageGroup
   | AssistantProcessingGroup
   | AssistantMessageGroup
@@ -26,15 +26,36 @@ type MessageGroup =
   | AssistantClarificationGroup
   | AssistantSubagentGroup;
 
-export function groupMessages<T>(
+const HIDDEN_CONTROL_MESSAGE_NAMES = new Set([
+  "summary",
+  "loop_warning",
+  "todo_reminder",
+  "todo_completion_reminder",
+]);
+
+export function getMessageGroups(
   messages: Message[],
-  mapper: (group: MessageGroup) => T,
-): T[] {
+  { isCurrentTurnLoading = false }: { isCurrentTurnLoading?: boolean } = {},
+): MessageGroup[] {
   if (messages.length === 0) {
     return [];
   }
 
   const groups: MessageGroup[] = [];
+  const toolCallGroupMap = new Map<string, MessageGroup>();
+
+  // While loading, AI messages after the last visible human message are
+  // still unresolved: providers may append tool-call chunks later (#4304).
+  let currentTurnStartIndex = -1;
+  if (isCurrentTurnLoading) {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (message?.type === "human" && !isHiddenFromUIMessage(message)) {
+        currentTurnStartIndex = index;
+        break;
+      }
+    }
+  }
 
   // Returns the last group if it can still accept tool messages
   // (i.e. it's an in-flight processing group, not a terminal human/assistant group).
@@ -51,12 +72,16 @@ export function groupMessages<T>(
     return null;
   }
 
-  for (const message of messages) {
-    if (isHiddenFromUIMessage(message)) {
-      continue;
+  function registerToolCalls(message: AIMessage, group: MessageGroup) {
+    for (const toolCall of message.tool_calls ?? []) {
+      if (toolCall.id) {
+        toolCallGroupMap.set(toolCall.id, group);
+      }
     }
+  }
 
-    if (message.name === "todo_reminder") {
+  for (const [messageIndex, message] of messages.entries()) {
+    if (isHiddenFromUIMessage(message)) {
       continue;
     }
 
@@ -69,64 +94,248 @@ export function groupMessages<T>(
       if (isClarificationToolMessage(message)) {
         // Add to the preceding processing group to preserve tool-call association,
         // then also open a standalone clarification group for prominent display.
-        lastOpenGroup()?.messages.push(message);
+        const parent = message.tool_call_id
+          ? (toolCallGroupMap.get(message.tool_call_id) ?? lastOpenGroup())
+          : lastOpenGroup();
+        parent?.messages.push(message);
         groups.push({
           id: message.id,
           type: "assistant:clarification",
           messages: [message],
         });
       } else {
-        const open = lastOpenGroup();
+        const open = message.tool_call_id
+          ? (toolCallGroupMap.get(message.tool_call_id) ?? lastOpenGroup())
+          : lastOpenGroup();
         if (open) {
           open.messages.push(message);
-        } else {
-          console.error(
-            "Unexpected tool message outside a processing group",
-            message,
-          );
         }
       }
       continue;
     }
 
     if (message.type === "ai") {
+      // Streaming text may still gain tool-call chunks later (#4304): keep
+      // it in the processing group until the turn settles.
+      const isUnresolvedAssistantText =
+        currentTurnStartIndex >= 0 &&
+        messageIndex > currentTurnStartIndex &&
+        hasContent(message) &&
+        !hasToolCalls(message);
+
+      // Content-bearing bubbles own their reasoning; never also feed the
+      // processing group or the CoT panel paints it twice (#3868).
+      const becomesAssistantBubble =
+        hasContent(message) &&
+        !hasToolCalls(message) &&
+        !isUnresolvedAssistantText;
+
       if (hasPresentFiles(message)) {
-        groups.push({
+        const group: MessageGroup = {
           id: message.id,
           type: "assistant:present-files",
           messages: [message],
-        });
+        };
+        groups.push(group);
+        registerToolCalls(message, group);
       } else if (hasSubagent(message)) {
-        groups.push({
+        const group: MessageGroup = {
           id: message.id,
           type: "assistant:subagent",
           messages: [message],
-        });
-      } else if (hasReasoning(message) || hasToolCalls(message)) {
+        };
+        groups.push(group);
+        registerToolCalls(message, group);
+      } else if (
+        !becomesAssistantBubble &&
+        (hasReasoning(message) ||
+          hasToolCalls(message) ||
+          isUnresolvedAssistantText)
+      ) {
         const lastGroup = groups[groups.length - 1];
+        let group: MessageGroup;
         // Accumulate consecutive intermediate AI messages into one processing group.
         if (lastGroup?.type !== "assistant:processing") {
-          groups.push({
+          group = {
             id: message.id,
             type: "assistant:processing",
             messages: [message],
-          });
+          };
+          groups.push(group);
         } else {
           lastGroup.messages.push(message);
+          group = lastGroup;
         }
+        registerToolCalls(message, group);
       }
 
-      // Not an else-if: a message with reasoning + content (but no tool calls) goes
-      // into the processing group above AND gets its own assistant bubble here.
-      if (hasContent(message) && !hasToolCalls(message)) {
+      const hasClarificationToolCall = hasToolCallNamed(
+        message,
+        "ask_clarification",
+      );
+
+      // A tool-calling clarification message keeps its processing steps above
+      // AND gets an assistant bubble carrying the question text.
+      if (
+        becomesAssistantBubble ||
+        (hasClarificationToolCall && hasDisplayableContent(message))
+      ) {
         groups.push({ id: message.id, type: "assistant", messages: [message] });
       }
     }
   }
 
-  return groups
+  return groups;
+}
+
+export function groupMessages<T>(
+  messages: Message[],
+  mapper: (group: MessageGroup) => T,
+): T[] {
+  return getMessageGroups(messages)
     .map(mapper)
     .filter((result) => result !== undefined && result !== null) as T[];
+}
+
+export function getAssistantTurnUsageMessages(groups: MessageGroup[]) {
+  const usageMessagesByGroupIndex: Array<Message[] | null> = Array.from(
+    { length: groups.length },
+    () => null,
+  );
+
+  let turnStartIndex: number | null = null;
+
+  for (const [index, group] of groups.entries()) {
+    if (group.type === "human") {
+      turnStartIndex = null;
+      continue;
+    }
+
+    turnStartIndex ??= index;
+
+    const nextGroup = groups[index + 1];
+    const isTurnEnd = !nextGroup || nextGroup.type === "human";
+
+    if (!isTurnEnd) {
+      continue;
+    }
+
+    usageMessagesByGroupIndex[index] = groups
+      .slice(turnStartIndex, index + 1)
+      .flatMap((currentGroup) => currentGroup.messages)
+      .filter((message) => message.type === "ai");
+
+    turnStartIndex = null;
+  }
+
+  return usageMessagesByGroupIndex;
+}
+
+type MessageMetadataLookup = (
+  message: Message,
+  index: number,
+) => { streamMetadata?: Record<string, unknown> } | undefined;
+
+export type StreamingMessageLookup = {
+  ids: ReadonlySet<string>;
+  messages: ReadonlySet<Message>;
+};
+
+export function getStreamingMessageLookup(
+  messages: Message[],
+  isStreaming: boolean,
+  getMessagesMetadata?: MessageMetadataLookup,
+): StreamingMessageLookup {
+  const streamingMessageIds = new Set<string>();
+  const streamingMessages = new Set<Message>();
+
+  if (!isStreaming) {
+    return {
+      ids: streamingMessageIds,
+      messages: streamingMessages,
+    };
+  }
+
+  messages.forEach((message, index) => {
+    if (!getMessagesMetadata?.(message, index)?.streamMetadata) {
+      return;
+    }
+
+    if (typeof message.id === "string" && message.id.length > 0) {
+      streamingMessageIds.add(message.id);
+    }
+    streamingMessages.add(message);
+  });
+
+  return {
+    ids: streamingMessageIds,
+    messages: streamingMessages,
+  };
+}
+
+export function isAssistantMessageGroupStreaming(
+  groupMessages: Message[],
+  streamingMessages: StreamingMessageLookup,
+) {
+  return groupMessages.some((message) => {
+    if (message.type !== "ai") {
+      return false;
+    }
+
+    return (
+      (typeof message.id === "string" &&
+        message.id.length > 0 &&
+        streamingMessages.ids.has(message.id)) ||
+      streamingMessages.messages.has(message)
+    );
+  });
+}
+
+// The clarification card renders directly below the assistant bubble that
+// carries its question; a copy/regenerate toolbar in between would break the
+// text-to-card flow, so that bubble's actions are suppressed.
+export function isClarificationPreambleGroup(
+  groups: MessageGroup[],
+  index: number,
+): boolean {
+  return groups[index + 1]?.type === "assistant:clarification";
+}
+
+// Cache per array reference: the copy button re-reads the settled array on
+// every message-list render (#5094). A rebuilt array misses and recomputes, so
+// the cache never serves a stale value.
+const assistantTurnCopyDataCache = new WeakMap<Message[], string>();
+
+export function getAssistantTurnCopyData(
+  messages: Message[],
+  { isStreaming = false }: { isStreaming?: boolean } = {},
+) {
+  if (isStreaming) {
+    return null;
+  }
+
+  const cached = assistantTurnCopyDataCache.get(messages);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const copyData =
+    [...messages]
+      .reverse()
+      .filter((message) => message.type === "ai")
+      .map((message) => {
+        // extractContentFromMessage never returns null: fall back to reasoning
+        // on empty text, or a reasoning-only turn loses its copy button.
+        const content = extractContentFromMessage(message);
+        return content.length > 0
+          ? content
+          : (extractReasoningContentFromMessage(message) ?? "");
+      })
+      .find((content) => content.length > 0) ?? null;
+  if (copyData !== null) {
+    assistantTurnCopyDataCache.set(messages, copyData);
+  }
+  return copyData;
 }
 
 export function extractTextFromMessage(message: Message) {
@@ -138,38 +347,84 @@ export function extractTextFromMessage(message: Message) {
   }
   if (Array.isArray(message.content)) {
     return message.content
-      .map((content) => (content.type === "text" ? content.text : ""))
+      .map((content) =>
+        typeof content === "string"
+          ? content
+          : content.type === "text"
+            ? content.text
+            : "",
+      )
       .join("\n")
       .trim();
   }
   return "";
 }
 
+const THINK_OPEN_TAG = "<think>";
 const THINK_TAG_RE = /<think>\s*([\s\S]*?)\s*<\/think>/g;
 
-function splitInlineReasoning(content: string) {
+interface InlineReasoningSplit {
+  content: string;
+  reasoning: string | null;
+}
+
+function splitInlineReasoning(content: string): InlineReasoningSplit {
   const reasoningParts: string[] = [];
-  const cleaned = content
-    .replace(THINK_TAG_RE, (_, reasoning: string) => {
-      const normalized = reasoning.trim();
-      if (normalized) {
-        reasoningParts.push(normalized);
-      }
-      return "";
-    })
-    .trim();
+
+  // First pass: strip every fully closed `<think>...</think>` pair and
+  // collect its body as reasoning.
+  let cleaned = content.replace(THINK_TAG_RE, (_, reasoning: string) => {
+    const normalized = reasoning.trim();
+    if (normalized) {
+      reasoningParts.push(normalized);
+    }
+    return "";
+  });
+
+  // Streaming-safe pass: a `<think>` opener whose `</think>` has not arrived
+  // yet means the rest of the chunk is reasoning in flight. Route it into the
+  // reasoning slot instead of letting it render as message content (the
+  // raw-HTML markdown pipeline would otherwise paint the inner text on
+  // screen until the closing tag lands).
+  //
+  // Skip when the opener sits right after a backtick — that is the model
+  // talking about `<think>` literally inside markdown inline code, not
+  // actually streaming reasoning.
+  const openTagIndex = cleaned.indexOf(THINK_OPEN_TAG);
+  if (openTagIndex !== -1 && cleaned[openTagIndex - 1] !== "`") {
+    const tail = cleaned.slice(openTagIndex + THINK_OPEN_TAG.length).trim();
+    if (tail) {
+      reasoningParts.push(tail);
+    }
+    cleaned = cleaned.slice(0, openTagIndex);
+  }
 
   return {
-    content: cleaned,
+    content: cleaned.trim(),
     reasoning: reasoningParts.length > 0 ? reasoningParts.join("\n\n") : null,
   };
 }
+
+// Cache per message object, keyed by the exact content string so reassignment
+// recomputes. The split is re-derived every render and its consumers scan the
+// whole list per stream chunk — quadratic across a long run.
+const inlineReasoningCache = new WeakMap<
+  object,
+  { content: string; split: InlineReasoningSplit }
+>();
 
 function splitInlineReasoningFromAIMessage(message: Message) {
   if (message.type !== "ai" || typeof message.content !== "string") {
     return null;
   }
-  return splitInlineReasoning(message.content);
+  const content = message.content;
+  const cached = inlineReasoningCache.get(message);
+  if (cached?.content === content) {
+    return cached.split;
+  }
+  const split = splitInlineReasoning(content);
+  inlineReasoningCache.set(message, { content, split });
+  return split;
 }
 
 export function extractContentFromMessage(message: Message) {
@@ -182,6 +437,9 @@ export function extractContentFromMessage(message: Message) {
   if (Array.isArray(message.content)) {
     return message.content
       .map((content) => {
+        if (typeof content === "string") {
+          return content;
+        }
         switch (content.type) {
           case "text":
             return content.text;
@@ -210,12 +468,12 @@ export function extractReasoningContentFromMessage(message: Message) {
   }
   if (Array.isArray(message.content)) {
     const part = message.content[0];
-    if (part && "thinking" in part) {
+    if (part && typeof part === "object" && "thinking" in part) {
       return part.thinking as string;
     }
   }
   if (typeof message.content === "string") {
-    return splitInlineReasoning(message.content).reasoning;
+    return splitInlineReasoningFromAIMessage(message)?.reasoning ?? null;
   }
   return null;
 }
@@ -238,6 +496,47 @@ export function extractURLFromImageURLContent(
     return content;
   }
   return content.url;
+}
+
+// The thinking placeholder is hidden once the current turn paints assistant
+// text. Hidden human messages (e.g. a submitted clarification answer) start a
+// new turn without forming a group, so the turn boundary must come from the raw
+// transcript rather than from the groups.
+export function hasAssistantTextInCurrentTurn(
+  messages: Message[],
+  groups: MessageGroup[],
+): boolean {
+  let lastHumanMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.type === "human") {
+      lastHumanMessageIndex = index;
+      break;
+    }
+  }
+  if (lastHumanMessageIndex === -1) {
+    return false;
+  }
+
+  const messageIndexById = new Map(
+    messages.map((message, index) => [message.id, index] as const),
+  );
+
+  return groups.some((group) => {
+    const groupStartIndex = messageIndexById.get(group.messages[0]?.id);
+    if (
+      groupStartIndex === undefined ||
+      groupStartIndex <= lastHumanMessageIndex
+    ) {
+      return false;
+    }
+    return (
+      group.type === "assistant" ||
+      (group.type === "assistant:processing" &&
+        group.messages.some(
+          (message) => message.type === "ai" && hasContent(message),
+        ))
+    );
+  });
 }
 
 export function hasContent(message: Message) {
@@ -268,7 +567,9 @@ export function hasReasoning(message: Message) {
     return (part as unknown as { type: "thinking" })?.type === "thinking";
   }
   if (typeof message.content === "string") {
-    return splitInlineReasoning(message.content).reasoning !== null;
+    return (
+      (splitInlineReasoningFromAIMessage(message)?.reasoning ?? null) !== null
+    );
   }
   return false;
 }
@@ -277,6 +578,17 @@ export function hasToolCalls(message: Message) {
   return (
     message.type === "ai" && message.tool_calls && message.tool_calls.length > 0
   );
+}
+
+function hasToolCallNamed(message: Message, toolName: string) {
+  return (
+    message.type === "ai" &&
+    message.tool_calls?.some((toolCall) => toolCall.name === toolName) === true
+  );
+}
+
+function hasDisplayableContent(message: Message) {
+  return extractContentFromMessage(message).length > 0;
 }
 
 export function hasPresentFiles(message: Message) {
@@ -328,7 +640,25 @@ export function findToolCallResult(toolCallId: string, messages: Message[]) {
 }
 
 export function isHiddenFromUIMessage(message: Message) {
-  return message.additional_kwargs?.hide_from_ui === true;
+  if (message.additional_kwargs?.hide_from_ui === true) {
+    return true;
+  }
+  if (
+    typeof message.name === "string" &&
+    HIDDEN_CONTROL_MESSAGE_NAMES.has(message.name)
+  ) {
+    return true;
+  }
+  // Only the human branch needs the text; extracting up front made every
+  // discarded AI message pay a full content scan per stream chunk.
+  if (message.type !== "human") {
+    return false;
+  }
+  const content = extractTextFromMessage(message);
+  return (
+    content.includes("<slash_skill_activation>") &&
+    stripUploadedFilesTag(content).length === 0
+  );
 }
 
 /**
@@ -343,13 +673,60 @@ export interface FileInMessage {
 }
 
 /**
- * Strip <uploaded_files> tag from message content.
- * Returns the content with the tag removed.
+ * Strip backend-injected human context tags from message content.
+ * Kept under its historical name because callers use it for uploaded-file
+ * display cleanup.
  */
 export function stripUploadedFilesTag(content: string): string {
   return content
-    .replace(/<uploaded_files>[\s\S]*?<\/uploaded_files>/g, "")
+    .replace(/<(uploaded_files|slash_skill_activation)>[\s\S]*?<\/\1>/g, "")
     .trim();
+}
+
+/**
+ * Tag names that backend middlewares wrap around internal payloads before
+ * letting them ride along inside LangGraph message ``content``.
+ *
+ * These markers are *not* user copy — they come from:
+ *
+ * - ``UploadsMiddleware`` → ``<uploaded_files>``
+ * - ``SkillActivationMiddleware`` → ``<slash_skill_activation>``
+ * - ``DynamicContextMiddleware`` → ``<system-reminder>`` (carrying
+ *   ``<memory>`` / ``<current_date>`` inside)
+ * - ``TodoListMiddleware`` / ``LoopDetectionMiddleware`` style reminders
+ *   live in ``hide_from_ui`` HumanMessages, but their inner payload uses
+ *   the same tag vocabulary.
+ *
+ * The primary export filter is {@link isHiddenFromUIMessage}. This list is
+ * the defence-in-depth strip for any message that — by middleware bug,
+ * provider quirk, or merge-conflict regression — slips through without
+ * its ``hide_from_ui`` flag set.
+ */
+export const INTERNAL_MARKER_TAGS = [
+  "uploaded_files",
+  "slash_skill_activation",
+  "system-reminder",
+  "memory",
+  "current_date",
+] as const;
+
+const INTERNAL_MARKER_RE = new RegExp(
+  `<(${INTERNAL_MARKER_TAGS.join("|")})>[\\s\\S]*?</\\1>`,
+  "g",
+);
+
+/**
+ * Strip every known backend-injected marker from message content.
+ *
+ * Intended for the chat export path where a marker leaking through is a
+ * privacy regression. UI render paths should keep using
+ * {@link stripUploadedFilesTag} — they receive ``hide_from_ui`` messages
+ * via a separate filter and the narrower function avoids stripping content
+ * a user might legitimately type into a meta-discussion (e.g. asking the
+ * model about its own ``<memory>`` system).
+ */
+export function stripInternalMarkers(content: string): string {
+  return content.replace(INTERNAL_MARKER_RE, "").trim();
 }
 
 export function parseUploadedFiles(content: string): FileInMessage[] {

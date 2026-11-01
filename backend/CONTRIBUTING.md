@@ -56,11 +56,8 @@ export OPENAI_API_KEY="your-api-key"
 ### Run the Development Server
 
 ```bash
-# Terminal 1: LangGraph server
+# Gateway API + embedded agent runtime
 make dev
-
-# Terminal 2: Gateway API
-make gateway
 ```
 
 ## Project Structure
@@ -117,6 +114,7 @@ backend/src/
 │   ├── tavily/             # Tavily web search
 │   ├── jina/               # Jina web fetch
 │   ├── firecrawl/          # Firecrawl scraping
+│   ├── fastcrw/            # fastCRW scraping (Firecrawl-compatible)
 │   └── aio_sandbox/        # Docker sandbox
 │
 ├── reflection/              # Dynamic loading
@@ -229,10 +227,12 @@ Example test:
 import pytest
 from deerflow.models.factory import create_chat_model
 
+
 def test_create_chat_model_with_valid_name():
     """Test that a valid model name creates a model instance."""
     model = create_chat_model("gpt-4")
     assert model is not None
+
 
 def test_create_chat_model_with_invalid_name():
     """Test that an invalid model name raises ValueError."""
@@ -275,6 +275,7 @@ Include in your PR description:
 # packages/harness/deerflow/tools/builtins/my_tool.py
 from langchain_core.tools import tool
 
+
 @tool
 def my_tool(param: str) -> str:
     """Tool description for the agent.
@@ -305,6 +306,7 @@ tools:
 # packages/harness/deerflow/agents/middlewares/my_middleware.py
 from langchain.agents.middleware import BaseMiddleware
 from langchain_core.runnables import RunnableConfig
+
 
 class MyMiddleware(BaseMiddleware):
     """Middleware description."""
@@ -337,10 +339,12 @@ from fastapi import APIRouter
 
 router = APIRouter(prefix="/my-endpoint", tags=["my-endpoint"])
 
+
 @router.get("/")
 async def get_items():
     """Get all items."""
     return {"items": []}
+
 
 @router.post("/")
 async def create_item(data: dict):

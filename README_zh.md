@@ -18,13 +18,9 @@ https://github.com/user-attachments/assets/a8bcadc4-e040-4cf2-8fda-dd768b999c18
 
 ## 官网
 
-[<img width="2880" height="1600" alt="image" src="https://github.com/user-attachments/assets/a598c49f-3b2f-41ea-a052-05e21349188a" />](https://deerflow.tech)
-
 想了解更多，或者直接看**真实演示**，可以访问[**官网**](https://deerflow.tech)。
 
 ## 字节跳动火山引擎方舟 Coding Plan
-
-[<img width="4808" height="2400" alt="codingplan -banner 素材" src="https://github.com/user-attachments/assets/d30dae52-84f2-4021-b32f-6d281252b9ea" />](https://www.volcengine.com/activity/codingplan?utm_campaign=deer_flow&utm_content=deer_flow&utm_medium=devrel&utm_source=OWO&utm_term=deer_flow)
 
 - 我们推荐使用 Doubao-Seed-2.0-Code、DeepSeek v3.2 和 Kimi 2.5 运行 DeerFlow
 - [现在就加入 Coding Plan](https://www.volcengine.com/activity/codingplan?utm_campaign=deer_flow&utm_content=deer_flow&utm_medium=devrel&utm_source=OWO&utm_term=deer_flow)
@@ -55,9 +51,11 @@ https://github.com/user-attachments/assets/a8bcadc4-e040-4cf2-8fda-dd768b999c18
     - [Sub-Agents](#sub-agents)
     - [Sandbox 与文件系统](#sandbox-与文件系统)
     - [Context Engineering](#context-engineering)
+    - [交互式问题澄清卡片](#交互式问题澄清卡片)
     - [长期记忆](#长期记忆)
   - [推荐模型](#推荐模型)
   - [内嵌 Python Client](#内嵌-python-client)
+  - [终端工作台 (TUI)](#终端工作台-tui)
   - [文档](#文档)
   - [⚠️ 安全使用](#️-安全使用)
   - [参与贡献](#参与贡献)
@@ -184,7 +182,7 @@ make down   # 停止并移除容器
 ```
 
 > [!NOTE]
-> 当前 LangGraph agent server 通过开源 CLI 服务 `langgraph dev` 运行。
+> 当前 Agent 运行时嵌入在 Gateway 中运行，`/api/langgraph/*` 会由 nginx 重写到 Gateway 的 LangGraph-compatible API。
 
 访问地址：http://localhost:2026
 
@@ -194,7 +192,7 @@ make down   # 停止并移除容器
 
 如果你更希望直接在本地启动各个服务：
 
-前提：先完成上面的“配置”步骤（`make config` 和模型 API key 配置）。`make dev` 需要有效配置文件，默认读取项目根目录下的 `config.yaml`，也可以通过 `DEER_FLOW_CONFIG_PATH` 覆盖。
+前提：先完成上面的“配置”步骤（`make config` 和模型 API key 配置）。`make dev` 需要有效配置文件，默认读取项目根目录下的 `config.yaml`。可以用 `DEER_FLOW_PROJECT_ROOT` 显式指定项目根目录，也可以用 `DEER_FLOW_CONFIG_PATH` 指向某个具体配置文件。运行期状态默认写到项目根目录下的 `.deer-flow`，可用 `DEER_FLOW_HOME` 覆盖；skills 默认读取项目根目录下的 `skills/`，可用 `DEER_FLOW_SKILLS_PATH` 覆盖。
 在 Windows 上，请使用 Git Bash 运行本地开发流程。基于 bash 的服务脚本不支持直接在原生 `cmd.exe` 或 PowerShell 中执行，且 WSL 也不保证可用，因为部分脚本依赖 Git for Windows 的 `cygpath` 等工具。
 
 1. **检查依赖环境**：
@@ -248,13 +246,14 @@ DeerFlow 支持从即时通讯应用接收任务。只要配置完成，对应�
 | Slack | Socket Mode | 中等 |
 | Feishu / Lark | WebSocket | 中等 |
 | 企业微信智能机器人 | WebSocket | 中等 |
+| 钉钉 | Stream Push（WebSocket） | 中等 |
 
 **`config.yaml` 中的配置示例：**
 
 ```yaml
 channels:
-  # LangGraph Server URL（默认：http://localhost:2024）
-  langgraph_url: http://localhost:2024
+  # LangGraph-compatible Gateway API base URL（默认：http://localhost:8001/api）
+  langgraph_url: http://localhost:8001/api
   # Gateway API URL（默认：http://localhost:8001）
   gateway_url: http://localhost:8001
 
@@ -304,6 +303,13 @@ channels:
           context:
             thinking_enabled: true
             subagent_enabled: true
+
+  dingtalk:
+    enabled: true
+    client_id: $DINGTALK_CLIENT_ID             # 钉钉开放平台 ClientId
+    client_secret: $DINGTALK_CLIENT_SECRET     # 钉钉开放平台 ClientSecret
+    allowed_users: []                          # 留空表示允许所有人
+    card_template_id: ""                       # 可选：AI 卡片模板 ID，用于流式打字机效果
 ```
 
 说明：
@@ -327,6 +333,10 @@ FEISHU_APP_SECRET=your_app_secret
 # 企业微信智能机器人
 WECOM_BOT_ID=your_bot_id
 WECOM_BOT_SECRET=your_bot_secret
+
+# 钉钉
+DINGTALK_CLIENT_ID=your_client_id
+DINGTALK_CLIENT_SECRET=your_client_secret
 ```
 
 **Telegram 配置**
@@ -356,6 +366,13 @@ WECOM_BOT_SECRET=your_bot_secret
 3. 在 `.env` 中设置 `WECOM_BOT_ID` 和 `WECOM_BOT_SECRET`。
 4. 安装后端依赖时确保包含 `wecom-aibot-python-sdk`，渠道会通过 WebSocket 长连接接收消息，无需公网回调地址。
 5. 当前支持文本、图片和文件入站消息；agent 生成的最终图片/文件也会回传到企业微信会话中。
+
+**钉钉配置**
+
+1. 在 [钉钉开放平台](https://open.dingtalk.com/) 创建应用，并启用 **机器人** 能力。
+2. 在机器人配置页面设置消息接收模式为 **Stream模式**。
+3. 复制 `Client ID` 和 `Client Secret`，在 `.env` 中设置 `DINGTALK_CLIENT_ID` 和 `DINGTALK_CLIENT_SECRET`，并在 `config.yaml` 中启用该渠道。
+4. *（可选）* 如需开启流式 AI 卡片回复（打字机效果），请在[钉钉卡片平台](https://open.dingtalk.com/document/dingstart/typewriter-effect-streaming-ai-card)创建 **AI 卡片**模板，然后在 `config.yaml` 中将 `card_template_id` 设为该模板 ID。同时需要申请 `Card.Streaming.Write` 和 `Card.Instance.Write` 权限。
 
 **命令**
 
@@ -486,6 +503,10 @@ DeerFlow 不只是“会说它能做”，它是真的有一台自己的“电�
 
 **摘要压缩**：在单个 session 内，DeerFlow 会比较积极地管理上下文，包括总结已完成的子任务、把中间结果转存到文件系统、压缩暂时不重要的信息。这样在长链路、多步骤任务里，它也能保持聚焦，而不会轻易把上下文窗口打爆。
 
+### 交互式问题澄清卡片
+
+当 agent 在任务中需要你补充信息（`ask_clarification`）时，Web UI 不再只展示一段纯文本问题：未回答的请求会渲染为可交互的卡片 —— 单选按钮、自由文本，或结构化表单（text / number / select / multi-select / checkbox / textarea 字段，带必填校验，问题本身支持 markdown 渲染）。卡片等待回答期间，底部输入框会被锁定，卡片是唯一的回答入口（选择型卡片仍提供“其他”自由文本框）；重新生成也会被阻止，直到本轮回答完成。你的回答以一条隐藏消息发送，agent 恢复运行时读取，卡片切换为只读的已回答状态，不会在历史里多出一条重复的对话气泡。IM 渠道与旧客户端仍收到纯文本问题，功能在 Web UI 之外优雅降级。
+
 ### 长期记忆
 
 大多数 agents 会在对话结束后把一切都忘掉，DeerFlow 不一样。
@@ -526,6 +547,26 @@ client.upload_files("thread-1", ["./report.pdf"])  # {"success": True, "files": 
 ```
 
 所有返回 dict 的方法都会在 CI 中通过 Gateway 的 Pydantic 响应模型校验（`TestGatewayConformance`），以确保内嵌 client 始终和 HTTP API schema 保持同步。完整 API 说明见 `backend/packages/harness/deerflow/client.py`。
+
+## 终端工作台 (TUI)
+
+`deerflow` 是一个面向终端用户的工作台，**内嵌**运行在 `DeerFlowClient` 之上——无需启动 Gateway、前端、nginx 或 Docker，同时沿用与 DeerFlow 其它部分相同的 `config.yaml`、checkpointer、技能、记忆、MCP 和沙箱配置。
+
+![DeerFlow TUI](docs/tui/tui-preview.svg)
+
+```bash
+uv pip install 'deerflow-harness[tui]'        # 可选的 'textual' 依赖
+
+deerflow                                      # 启动终端 UI（需要 TTY）
+deerflow --continue                           # 恢复最近一次会话
+deerflow --resume THREAD                      # 按 id 恢复指定会话
+deerflow --print "总结一下这个仓库"             # 无头模式，结果打印到 stdout
+deerflow --json  "hello"                       # 无头模式，输出按行分隔的 StreamEvent
+```
+
+键盘驱动的对话界面：流式渲染的对话区（回答按 Markdown 渲染）、紧凑的工具活动卡片、`/` 斜杠命令面板、`/model` 与 `/threads` 选择器、输入历史，以及 `Esc` / `Ctrl+C` 打断。在 TUI 里开启的会话也会出现在 Web UI 侧边栏——它会以本地默认用户身份写入共享的会话存储，因此终端与网页保持同步，**无需运行 Gateway**。
+
+完整说明见 [backend/docs/TUI.md](backend/docs/TUI.md)。
 
 ## 文档
 

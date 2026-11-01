@@ -25,6 +25,12 @@ Makefile text eol=lf
 # Windows scripts
 *.bat text eol=crlf
 *.cmd text eol=crlf
+# PowerShell scripts run on Windows: CRLF is expected by some tooling, and the
+# file is stored with a UTF-8 BOM because Windows PowerShell 5.1 decodes
+# BOM-less scripts as ANSI (GBK on zh-CN), which corrupts non-ASCII text.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
 
 # Binary assets
 *.png binary

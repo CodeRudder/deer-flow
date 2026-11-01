@@ -19,13 +19,9 @@ https://github.com/user-attachments/assets/a8bcadc4-e040-4cf2-8fda-dd768b999c18
 
 ## Официальный сайт
 
-[<img width="2880" height="1600" alt="image" src="https://github.com/user-attachments/assets/a598c49f-3b2f-41ea-a052-05e21349188a" />](https://deerflow.tech)
-
 Больше информации и живые демо на [**официальном сайте**](https://deerflow.tech).
 
 ## Coding Plan от ByteDance Volcengine
-
-<img width="4808" height="2400" alt="英文方舟" src="https://github.com/user-attachments/assets/2ecc7b9d-50be-4185-b1f7-5542d222fb2d" />
 
 - Рекомендуем Doubao-Seed-2.0-Code, DeepSeek v3.2 и Kimi 2.5 для запуска DeerFlow
 - [Подробнее](https://www.byteplus.com/en/activity/codingplan?utm_campaign=deer_flow&utm_content=deer_flow&utm_medium=devrel&utm_source=OWO&utm_term=deer_flow)
@@ -256,6 +252,7 @@ DeerFlow принимает задачи прямо из мессенджеро�
 | Telegram | Bot API (long-polling) | Просто |
 | Slack | Socket Mode | Средне |
 | Feishu / Lark | WebSocket | Средне |
+| DingTalk | Stream Push (WebSocket) | Средне |
 
 **Конфигурация в `config.yaml`:**
 
@@ -278,12 +275,26 @@ channels:
     enabled: true
     bot_token: $TELEGRAM_BOT_TOKEN
     allowed_users: []
+
+  dingtalk:
+    enabled: true
+    client_id: $DINGTALK_CLIENT_ID             # ClientId с DingTalk Open Platform
+    client_secret: $DINGTALK_CLIENT_SECRET     # ClientSecret с DingTalk Open Platform
+    allowed_users: []                          # пусто = разрешить всем
+    card_template_id: ""                       # Опционально: ID шаблона AI Card для потокового эффекта печатной машинки
 ```
 
 **Настройка Telegram**
 
 1. Напишите [@BotFather](https://t.me/BotFather), отправьте `/newbot` и скопируйте HTTP API-токен.
 2. Укажите `TELEGRAM_BOT_TOKEN` в `.env` и включите канал в `config.yaml`.
+
+**Настройка DingTalk**
+
+1. Создайте приложение на [DingTalk Open Platform](https://open.dingtalk.com/) и включите возможность **Робот**.
+2. На странице настроек робота установите режим приёма сообщений на **Stream**.
+3. Скопируйте `Client ID` и `Client Secret`. Укажите `DINGTALK_CLIENT_ID` и `DINGTALK_CLIENT_SECRET` в `.env` и включите канал в `config.yaml`.
+4. *(Опционально)* Для включения потоковых ответов AI Card (эффект печатной машинки) создайте шаблон **AI Card** на [платформе карточек DingTalk](https://open.dingtalk.com/document/dingstart/typewriter-effect-streaming-ai-card), затем укажите `card_template_id` в `config.yaml` с ID шаблона. Также необходимо запросить разрешения `Card.Streaming.Write` и `Card.Instance.Write`.
 
 **Доступные команды**
 
