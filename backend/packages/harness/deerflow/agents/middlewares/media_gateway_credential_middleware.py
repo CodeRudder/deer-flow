@@ -57,6 +57,20 @@ MEDIA_GATEWAY_ENV_CONTEXT_KEY = "media_gateway_env"
 # may still be lazily acquired inside the wrapped tool call).
 PENDING_MGW_ENV_CONTEXT_KEY = "__mgw_pending_sandbox_env"
 
+# Media Gateway env keys this middleware owns inside the sandbox session.
+# Business calls (skill scripts, in-sandbox python) must always authenticate as
+# the per-user token (design §5.2/§5.4); the admin token is provisioning-only
+# and must never leak into a session — so it is explicitly blanked, overriding
+# any value inherited from the backend process environment (e.g. sourced
+# ``.env``).
+MEDIA_GATEWAY_ADMIN_TOKEN_KEY = "MEDIA_GATEWAY_ADMIN_TOKEN"
+
+
+def _harden_env(env: dict[str, str]) -> dict[str, str]:
+    """Enforce per-user isolation on the injected Media Gateway env dict."""
+    env[MEDIA_GATEWAY_ADMIN_TOKEN_KEY] = ""
+    return env
+
 
 def apply_pending_mgw_env(runtime: Runtime | None, sandbox: Sandbox) -> None:
     """Apply the pending Media Gateway env to a freshly acquired ``sandbox``.
@@ -127,6 +141,7 @@ class MediaGatewayCredentialMiddleware(AgentMiddleware[MediaGatewayCredentialMid
         context = runtime.context
         if context is None:
             return
+        env = _harden_env(env)
         context[MEDIA_GATEWAY_ENV_CONTEXT_KEY] = env
         # Mark pending so ensure_sandbox_initialized* applies the env when the
         # sandbox is lazily acquired inside the wrapped tool call.

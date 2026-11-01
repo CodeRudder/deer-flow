@@ -150,7 +150,9 @@ async def test_injection_success_writes_sandbox_and_context(configured_settings,
     assert result == "tool-ok"
     assert sandbox.session_env["MEDIA_GATEWAY_TOKEN"] == "h3t_secret"
     assert sandbox.session_env["MEDIA_GATEWAY_BASE_URL"] == "http://mgw.internal"
-    assert runtime.context[MEDIA_GATEWAY_ENV_CONTEXT_KEY] == fake_env.result
+    # Admin token explicitly blanked in the sandbox session (per-user isolation).
+    assert sandbox.session_env["MEDIA_GATEWAY_ADMIN_TOKEN"] == ""
+    assert runtime.context[MEDIA_GATEWAY_ENV_CONTEXT_KEY]["MEDIA_GATEWAY_ADMIN_TOKEN"] == ""
     # Applied to an existing sandbox → pending marker cleared.
     assert PENDING_MGW_ENV_CONTEXT_KEY not in runtime.context
     assert fake_env.calls == ["user-1"]
@@ -329,6 +331,24 @@ async def test_runtime_env_not_provisioned_returns_empty_debug(configured_settin
 # ---------------------------------------------------------------------------
 # LocalSandbox session env
 # ---------------------------------------------------------------------------
+def test_local_sandbox_empty_session_value_overrides_inherited(tmp_path):
+    """An empty-string session env value must override a non-empty inherited value.
+
+    Regression: MEDIA_GATEWAY_ADMIN_TOKEN="" injected by the middleware must
+    blank an admin token leaked into the backend process environment.
+    """
+    sandbox = LocalSandbox("local:test:mgw3")
+    sentinel = "MGW_LOCAL_SENTINEL_admin"
+    os.environ[sentinel] = "leaked-admin-token"
+    try:
+        assert sandbox.execute_command(f"echo ${sentinel}").strip() == "leaked-admin-token"
+        sandbox.set_session_env({sentinel: ""})
+        output = sandbox.execute_command('echo "[$' + sentinel + ']"').strip()
+        assert output == "[]"
+    finally:
+        os.environ.pop(sentinel, None)
+
+
 def test_local_sandbox_session_env_overrides_inherited(tmp_path):
     sandbox = LocalSandbox("local:test:mgw")
     sentinel = "MGW_LOCAL_SENTINEL_9f2"
@@ -363,6 +383,23 @@ def test_apply_pending_mgw_env_is_idempotent():
     # Second application is a no-op.
     apply_pending_mgw_env(runtime, sandbox)
     assert sandbox.session_env["MEDIA_GATEWAY_TOKEN"] == "h3t_p"
+
+
+def test_injection_blanks_inherited_admin_token(configured_settings, fake_env, monkeypatch):
+    """End-to-end: admin token inherited from the process env is blanked in the sandbox."""
+    monkeypatch.setenv("MEDIA_GATEWAY_ADMIN_TOKEN", "h3t_leaked_admin")
+    sandbox = LocalSandbox("local:test:mgw-admin")
+    runtime = _runtime(sandbox=sandbox)
+    fake_env.result = {"MEDIA_GATEWAY_BASE_URL": "http://mgw.internal", "MEDIA_GATEWAY_TOKEN": "h3t_user"}
+    middleware = MediaGatewayCredentialMiddleware()
+    _install_provider(monkeypatch, sandbox)
+
+    async def handler(request):
+        return "tool-ok"
+
+    asyncio.run(middleware.awrap_tool_call(_request(runtime), handler))
+    output = sandbox.execute_command("echo \"[$MEDIA_GATEWAY_ADMIN_TOKEN][$MEDIA_GATEWAY_TOKEN]\"").strip()
+    assert output == "[][h3t_user]"
 
 
 def test_no_token_in_logs(configured_settings, fake_env, caplog):
