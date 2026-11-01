@@ -5,7 +5,9 @@
 # "构建应用镜像"方案（deer-flow-{frontend,gateway}:latest），**保留未删**，仍可
 # 使用；本脚本是新的生产路径——与 dev-vm.sh 同构的"标准系统镜像 + 持久容器 +
 # bind mount"方案，**零镜像构建**（仅 python:3.12-slim-bookworm / nginx:alpine
-# 两个官方基础镜像），仓库 bind mount 进容器，前端构建产物放在命名卷。
+# 两个官方基础镜像）。**代码不直接挂载仓库**——deploy 快照（rsync 排除
+# .git/依赖/构建产物/数据）复制到部署目录 app/ 后挂载，避免开发工作区的
+# 未提交改动、数据文件耦合进生产。前端构建产物放在命名卷。
 #
 # 容器拓扑（与 dev 的 2027 nginx 共存，生产对外端口 2026）：
 #   deer-flow-prod       python:3.12-slim-bookworm  -p 18000:8001（前端 3000 仅容器网络内可见）
@@ -14,19 +16,40 @@
 # 与 dev 的 3000/18001/2027 端口互不冲突，可同时运行）。
 #
 # 部署目录（缺省 ~/deer-flow-deploy，可用 DEER_FLOW_DEPLOY_DIR 覆盖）：
+#   app/                    仓库代码快照（deploy 命令 rsync 生成，容器挂载点）
 #   .env                    进程 env（up 时 source，不进容器 env）
 #   config.yaml             DEER_FLOW_CONFIG_PATH
 #   extensions_config.json  DEER_FLOW_EXTENSIONS_CONFIG_PATH
 #   nginx/nginx.conf        生产 nginx 配置（由 docker/nginx/nginx.conf 适配生成）
 #   data/deer-flow/         DEER_FLOW_HOME（全部运行数据）
 #
-# 用法：prod-vm.sh init|setup|build-fe|up|stop|restart|status|exec
+# 用法：prod-vm.sh deploy|init|setup|build-fe|up|stop|restart|status|exec
 set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAME=deer-flow-prod
 NGINX_NAME=deer-flow-nginx-prod
 IMAGE=python:3.12-slim-bookworm
 DEPLOY_DIR="${DEER_FLOW_DEPLOY_DIR:-$HOME/deer-flow-deploy}"
+DEPLOY_APP="$DEPLOY_DIR/app"
+
+# rsync 复制代码快照：只带运行所需源码/配置，排除版本库、依赖、构建产物、
+# 运行数据与开发残留。--delete 保证快照与仓库一致（被删文件同步移除）。
+RSYNC_EXCLUDES=(
+  --exclude .git --exclude .github --exclude .venv --exclude node_modules
+  --exclude .next --exclude .turbo --exclude __pycache__ --exclude '*.pyc'
+  --exclude .pytest_cache --exclude .ruff_cache --exclude .mypy_cache
+  --exclude /docs --exclude /tests --exclude backend/tests
+  --exclude /outputs --exclude /data --exclude '.env*' --exclude /backend/.deer-flow
+  --exclude /backend/ref*.jpg --exclude docker/dev --exclude scripts/dev-vm.sh
+)
+
+deploy_code() {  # 复制仓库代码快照到部署目录（生产只运行这份副本）
+  command -v rsync >/dev/null || { echo "需要 rsync"; exit 1; }
+  mkdir -p "$DEPLOY_APP"
+  # 先删标记文件避免 --delete 误删命名卷（卷不在快照树内，安全），再整体同步
+  rsync -a --delete "${RSYNC_EXCLUDES[@]}" "$REPO_ROOT"/ "$DEPLOY_APP"/
+  echo "代码快照已复制：$DEPLOY_APP（来源 $REPO_ROOT）"
+}
 
 stage_nginx_conf() {  # 由仓库生产 nginx 配置适配：监听 80，upstream 指向宿主映射端口
   mkdir -p "$DEPLOY_DIR/nginx"
@@ -70,6 +93,11 @@ stage_deploy_dir() {  # 每次刷新静态配置；data/ 与 .env 中已生成�
     echo "BETTER_AUTH_SECRET=$(cat "$DEPLOY_DIR/data/.better-auth-secret")"
     echo "BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://$host_ip:2026}"
     echo "DEER_FLOW_INTERNAL_AUTH_TOKEN=$(cat "$DEPLOY_DIR/data/.internal-auth-token")"
+    # 生产数据库连接串覆盖（data/.database-url 持久化，键后置生效）——避免仓库 .env
+    # 里面向 dev 的 DATABASE_URL 在重跑 setup 时覆盖生产值。
+    if [ -s "$DEPLOY_DIR/data/.database-url" ]; then
+      echo "DATABASE_URL=$(cat "$DEPLOY_DIR/data/.database-url")"
+    fi
   } > "$DEPLOY_DIR/.env"
   stage_nginx_conf
 }
@@ -81,7 +109,7 @@ init() {  # 一次性创建两个持久容器（幂等：已存在则跳过）
     docker run -d --name "$NAME" --restart unless-stopped \
       --network deer-flow-prod-net \
       -p 18000:8001 \
-      -v "$REPO_ROOT":/app \
+      -v "$DEPLOY_APP":/app \
       -v "$DEPLOY_DIR":/deploy \
       -v deer-flow-prod-tools:/opt/tools \
       -v deer-flow-prod-venv:/app/backend/.venv \
@@ -102,11 +130,18 @@ init() {  # 一次性创建两个持久容器（幂等：已存在则跳过）
   else
     echo "容器 $NGINX_NAME 已存在（跳过）。"
   fi
-  echo "下一步：prod-vm.sh setup（首次或依赖/代码变更后）"
+  echo "下一步：prod-vm.sh deploy && prod-vm.sh setup（首次或代码变更后）"
 }
 
 setup() {  # 一次性：apt 运行依赖 + 工具链 + uv sync + 前端生产构建 + 部署目录文件
   stage_deploy_dir
+  # 数据库 backend=postgres 时带上 postgres extra（asyncpg / psycopg /
+  # langgraph-checkpoint-postgres），与根 Makefile / serve.sh 的自动探测一致
+  local UV_EXTRA=""
+  if grep -Eq '^database:' "$DEPLOY_DIR/config.yaml" && \
+     sed -n '/^database:/,/^[^ ]/p' "$DEPLOY_DIR/config.yaml" | grep -q 'backend: postgres'; then
+    UV_EXTRA="--extra postgres"
+  fi
   docker exec "$NAME" bash -c '
     set -e
     sed -i "s|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true
@@ -116,7 +151,7 @@ setup() {  # 一次性：apt 运行依赖 + 工具链 + uv sync + 前端生产�
     export PATH=$TOOLS/node/bin:$PATH
     npm install -g pnpm@9 --prefix $TOOLS/pnpm >/dev/null 2>&1
     [ -x $TOOLS/uv-bin/uv ] || curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=$TOOLS/uv-bin sh >/dev/null
-    cd /app/backend && $TOOLS/uv-bin/uv sync --no-dev
+    cd /app/backend && $TOOLS/uv-bin/uv sync --no-dev '"$UV_EXTRA"'
     cd /app/frontend && PATH=$TOOLS/pnpm/bin:$PATH pnpm install
     PATH=$TOOLS/pnpm/bin:$PATH pnpm build
     grep -q /opt/tools /root/.bashrc 2>/dev/null || cat >> /root/.bashrc << EOF2
@@ -159,6 +194,7 @@ status() {
 }
 
 case "${1:-}" in
+  deploy) deploy_code ;;
   init) init ;; setup) setup ;; build-fe) build_fe ;; up) up ;; stop) stop ;;
   restart) stop; up ;;
   status) status ;;
