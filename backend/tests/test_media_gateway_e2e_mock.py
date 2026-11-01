@@ -12,12 +12,12 @@ through the real ``MediaGatewayGenerationProvider``. Only the gateway HTTP
 layer is replaced, by the in-process :class:`MockMediaGateway` from
 ``deerflow.media_gateway.mock_server``.
 
-The base mock implements the MGW job contract (``/v1/images/jobs/...``). The
-deer-flow provider adapter speaks the task/capability surface
-(``/v1/images/capabilities``, ``/v1/videos/...``, ``/v1/tasks/{id}``), so this
-module subclasses the mock to add exactly that surface translation — the
-documented extension point ("extend it rather than re-rolling ad-hoc
-handlers").
+The base mock implements the MGW job contract (``/v1/images/generations``,
+``/v1/images/jobs/{id}`` with ``data[]`` artifacts) — the exact surface the
+deer-flow provider adapter speaks. This module subclasses the mock only to add
+``GET /v1/images/modes`` (capability discovery, images.md §1), which the base
+mock does not implement — the documented extension point ("extend it rather
+than re-rolling ad-hoc handlers").
 """
 
 from __future__ import annotations
@@ -43,18 +43,24 @@ from deerflow.models.video_generation import registry as video_registry
 IMAGE_MODEL = "mgw-image-e2e"
 VIDEO_MODEL = "mgw-video-e2e"
 
-CAPABILITIES = {
-    "image": {"models": [{"name": IMAGE_MODEL, "ratios": ["1:1", "16:9"], "supported_params": ["prompt", "ratio"]}]},
-    "video": {"models": [{"name": VIDEO_MODEL, "duration_range": {"min": 4, "max": 15}, "supported_params": ["prompt", "duration"]}]},
+# GET /v1/images/modes body (images.md §1). Both media kinds discover through
+# this one endpoint; the submit-side ``output`` parameter picks the artifact.
+MODES = {
+    "default_mode": IMAGE_MODEL,
+    "baseline_modes": [],
+    "modes": [
+        {"name": IMAGE_MODEL, "available": True, "ratios": ["1:1", "16:9"], "supported_params": ["prompt", "ratio"]},
+        {"name": VIDEO_MODEL, "available": True, "duration_range": {"min": 4, "max": 15}, "supported_params": ["prompt", "duration"]},
+    ],
 }
 
 
 class E2EMockMediaGateway(MockMediaGateway):
-    """Base mock + the capability/task surface the provider adapter speaks.
+    """Base mock + the ``/v1/images/modes`` capability endpoint.
 
-    Adds only path translation onto the existing job machinery; every knob
-    (``fail_next`` / ``rate_limit_next`` / ``timeout_next`` / ``polls_per_stage`` …)
-    keeps working unchanged.
+    Everything else (submit / poll / artifacts) already speaks the real MGW
+    job contract, so every knob (``fail_next`` / ``rate_limit_next`` /
+    ``timeout_next`` / ``polls_per_stage`` …) keeps working unchanged.
     """
 
     def __init__(self, **kwargs) -> None:
@@ -67,46 +73,11 @@ class E2EMockMediaGateway(MockMediaGateway):
         self.http_requests.append(request)
         path = request.url.path
 
-        if request.method == "GET" and path in ("/v1/images/capabilities", "/v1/videos/capabilities"):
-            kind = "image" if "images" in path else "video"
-            return httpx.Response(200, json=CAPABILITIES[kind])
-
-        if request.method == "POST" and path == "/v1/videos/generations":
-            # Same job engine, flagged as a video output so the artifact URL
-            # comes back with kind=video.
-            body = self._json(request)
-            body["output"] = "video"
-            video_request = httpx.Request(
-                "POST",
-                "http://mock-mgw/v1/images/generations",
-                content=_dumps(body),
-                headers={"Authorization": request.headers.get("Authorization") or "", "Idempotency-Key": request.headers.get("Idempotency-Key") or ""},
-            )
-            return self._submit_generation(video_request, self._identify(video_request))
-
-        if request.method == "GET" and path.startswith("/v1/tasks/"):
-            task_id = path.removeprefix("/v1/tasks/")
-            job = self.jobs.get(task_id)
-            if job is None:
-                return httpx.Response(404, json={"error": {"code": "not_found", "message": "no such job", "retryable": False}})
-            if not self._can_access(job, self._identify(request)):
-                return httpx.Response(404, json={"error": {"code": "not_found", "message": "no such job", "retryable": False}})
-            body = self._job_body(job)
-            # Task-style artifact: the file path under a top-level "result" —
-            # exactly what MediaGatewayGenerationProvider.poll_once extracts.
-            body["result"] = {
-                "url": f"/v1/images/jobs/{task_id}/file?kind={'video' if job['output'] == 'video' else 'image'}",
-                "status": job["status"],
-            }
-            return httpx.Response(200, json=body)
+        if request.method == "GET" and path == "/v1/images/modes":
+            self.requests.append((request.method, path))
+            return httpx.Response(200, json=MODES)
 
         return super().handle(request)
-
-
-def _dumps(body: dict) -> bytes:
-    import json
-
-    return json.dumps(body).encode("utf-8")
 
 
 # ── fixtures ───────────────────────────────────────────────────────────────
@@ -313,7 +284,7 @@ class TestVideoFullChain:
 
         assert url.startswith(MEDIA_GATEWAY_FILE_PROXY_PREFIX + "/")
         assert "kind=video" in url  # artifact is the video rendition
-        submits = [r for r in stack.mock.http_requests if r.method == "POST" and r.url.path == "/v1/videos/generations"]
+        submits = [r for r in stack.mock.http_requests if r.method == "POST" and r.url.path == "/v1/images/generations"]
         assert len(submits) == 1 and submits[0].headers.get("Idempotency-Key") == "e2e-video-1"
 
     @pytest.mark.anyio
@@ -349,7 +320,7 @@ class TestUserIsolation:
         client_b = MediaGatewayClient(stack.base_url, bob.token, transport=stack.mock.transport)
         try:
             with pytest.raises(MediaGatewayError) as exc_info:
-                await client_b.get(f"/v1/tasks/{job_id}")
+                await client_b.get(f"/v1/images/jobs/{job_id}")
             assert exc_info.value.status == 404
         finally:
             await client_b.aclose()

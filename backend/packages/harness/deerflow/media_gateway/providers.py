@@ -40,12 +40,21 @@ from deerflow.media_gateway.client import MediaGatewayClient, MediaGatewayError
 # clients never need an Authorization header on media URLs.
 MEDIA_GATEWAY_FILE_PROXY_PREFIX = "/api/media-gateway/file"
 
-# MGW API paths (MGW repo docs/integration/api: images / media).
-IMAGE_CAPABILITIES_PATH = "/v1/images/capabilities"
-VIDEO_CAPABILITIES_PATH = "/v1/videos/capabilities"
-IMAGE_SUBMIT_PATH = "/v1/images/generations"
-VIDEO_SUBMIT_PATH = "/v1/videos/generations"
-TASK_PATH_TEMPLATE = "/v1/tasks/{task_id}"
+# MGW API paths (contract source of truth:
+# minimax-h3-gateway/docs/integration/api/images.md). Capability discovery is
+# ``GET /v1/images/modes`` for both media kinds (the ``output`` request
+# parameter selects image vs video on the same submit endpoint); polling reads
+# the full job body from ``GET /v1/images/jobs/{id}``.
+MODES_PATH = "/v1/images/modes"
+SUBMIT_PATH = "/v1/images/generations"
+JOB_PATH_TEMPLATE = "/v1/images/jobs/{job_id}"
+
+# Backwards-compatible aliases (pre-contract-fix names).
+IMAGE_CAPABILITIES_PATH = MODES_PATH
+VIDEO_CAPABILITIES_PATH = MODES_PATH
+IMAGE_SUBMIT_PATH = SUBMIT_PATH
+VIDEO_SUBMIT_PATH = SUBMIT_PATH
+TASK_PATH_TEMPLATE = JOB_PATH_TEMPLATE
 
 # Normalised job states, mirroring the skill-side provider contract.
 STATUS_PENDING = "pending"
@@ -127,9 +136,16 @@ def map_capabilities(body: dict, *, base_params: frozenset[str] = frozenset({"pr
     as ``{"data": [...]}``; per-model keys fall back defensively (``name`` or
     ``id``; ``ratios`` or ``aspect_ratios``).
     """
-    models = body.get("models") if isinstance(body, dict) else None
-    if not isinstance(models, list) and isinstance(body, dict) and isinstance(body.get("data"), list):
-        models = body["data"]
+    models = None
+    if isinstance(body, dict):
+        # Real MGW contract: ``GET /v1/images/modes`` returns
+        # ``{default_mode, baseline_modes, modes[]}`` (images.md §1). The
+        # legacy ``models`` / ``data`` container keys stay accepted for
+        # compatibility with older gateways.
+        for key in ("modes", "models", "data"):
+            if isinstance(body.get(key), list):
+                models = body[key]
+                break
     capabilities: dict[str, ModelCapability] = {}
     for entry in models or []:
         if not isinstance(entry, dict):
@@ -140,6 +156,9 @@ def map_capabilities(body: dict, *, base_params: frozenset[str] = frozenset({"pr
         params = set(base_params)
         params.update(_as_tuple(entry.get("supported_params")))
         params.update(_as_tuple(entry.get("params")))
+        # modes[] entries carry default parameters as a dict
+        # (``{steps, short_edge, duration_seconds}``, images.md §1).
+        mode_params = entry.get("params")
         if entry.get("supports_reference"):
             params.update({"image", "reference_images"})
         capabilities[name] = ModelCapability(
@@ -147,7 +166,14 @@ def map_capabilities(body: dict, *, base_params: frozenset[str] = frozenset({"pr
             display_name=str(entry["display_name"]) if isinstance(entry.get("display_name"), str) else None,
             ratios=_as_tuple(entry.get("ratios") or entry.get("aspect_ratios")),
             resolutions=_as_tuple(entry.get("resolutions") or entry.get("sizes")),
-            duration_range=_duration_range(entry.get("duration_range") or entry.get("durations")),
+            duration_range=(
+                _duration_range(entry.get("duration_range") or entry.get("durations"))
+                or (
+                    # Derive the range from the mode's default duration
+                    # (tiers 1/5/10/15 s, images.md §3.2): 1 s .. default.
+                    (1, int(mode_params["duration_seconds"])) if isinstance(mode_params, dict) and isinstance(mode_params.get("duration_seconds"), (int, float)) else None
+                )
+            ),
             supported_params=frozenset(params),
         )
     return capabilities
@@ -171,7 +197,19 @@ def normalize_status(raw: Any) -> str:
     return STATUS_PENDING
 
 
-def _extract_artifact_url(result: dict) -> str:
+def _extract_artifact_url(result: dict, *, kind: str | None = None) -> str:
+    # Real contract (images.md §4.2): a completed job body carries its
+    # artifacts in ``data[]`` — each item ``{b64_json, url, v, meta}`` with
+    # ``url`` shaped ``/v1/images/jobs/{id}/file?kind=image&variant=N&v=…``.
+    data = result.get("data")
+    if isinstance(data, list):
+        items = [item for item in data if isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"]]
+        if items:
+            if kind == "video":
+                for item in items:
+                    if "kind=video" in item["url"]:
+                        return item["url"]
+            return items[0]["url"]
     for key in ("url", "file_url", "video_url", "image_url"):
         value = result.get(key)
         if isinstance(value, str) and value:
@@ -219,11 +257,14 @@ class MediaGatewayGenerationProvider:
 
     @property
     def capabilities_path(self) -> str:
-        return IMAGE_CAPABILITIES_PATH if self.kind == "image" else VIDEO_CAPABILITIES_PATH
+        # Both media kinds share the modes endpoint (images.md §1).
+        return MODES_PATH
 
     @property
     def submit_path(self) -> str:
-        return IMAGE_SUBMIT_PATH if self.kind == "image" else VIDEO_SUBMIT_PATH
+        # Both media kinds submit to /v1/images/generations; kind only flips
+        # the ``output`` request parameter (images.md §2.1).
+        return SUBMIT_PATH
 
     async def _token(self) -> str | None:
         if self._token_provider is None:
@@ -244,21 +285,28 @@ class MediaGatewayGenerationProvider:
             raise UnsupportedParameterError(f"model={model} is not offered by media_gateway ({self.kind})")
         check_params_supported(capability, params)
 
-        payload: dict[str, Any] = {"model": model, "prompt": prompt, **{k: v for k, v in params.items() if v is not None}}
+        payload: dict[str, Any] = {"mode": model, "prompt": prompt, **{k: v for k, v in params.items() if v is not None}}
+        if self.kind == "video":
+            # images.md §2.1: output=video makes the clip mp4 the artifact.
+            payload.setdefault("output", "video")
         body = await self._client.post(
             self.submit_path,
             json=payload,
             token=await self._token(),
             idempotency_key=idempotency_key,
         )
-        task_id = body.get("task_id") or body.get("id") or (body.get("task") or {}).get("id")
+        # Submit semantics (images.md §2.3): wait=false → 202 + job brief,
+        # wait=true → 200 + full job body. Both carry the job ``id``.
+        task_id = body.get("id") or body.get("task_id") or (body.get("task") or {}).get("id")
         if not task_id:
-            raise MediaGatewayError(status=0, code="bad_response", message="media gateway submit response missing task id")
+            raise MediaGatewayError(status=0, code="bad_response", message="media gateway submit response missing job id")
         return str(task_id)
 
     async def poll_once(self, task_id: str) -> tuple[str, dict]:
         """Poll one job; returns ``(normalized_status, raw_result)``."""
-        body = await self._client.get(TASK_PATH_TEMPLATE.format(task_id=task_id), token=await self._token())
+        # images.md §4.2: the job body is the result — a completed body carries
+        # the artifacts in ``data[]``.
+        body = await self._client.get(JOB_PATH_TEMPLATE.format(job_id=task_id), token=await self._token())
         status = normalize_status(body.get("status"))
         result = body.get("result") if isinstance(body.get("result"), dict) else body
         return status, result
@@ -288,7 +336,7 @@ class MediaGatewayGenerationProvider:
         """Submit + poll; returns the deer-flow proxied artifact URL."""
         task_id = await self.submit(prompt, model=model, params=params, idempotency_key=idempotency_key)
         result = await self.wait_for_result(task_id, max_attempts=max_attempts)
-        artifact = _extract_artifact_url(result)
+        artifact = _extract_artifact_url(result, kind=self.kind)
         if not artifact:
             raise MediaGatewayError(status=0, code="bad_response", message=f"media gateway task {task_id} succeeded without an artifact URL")
         return proxy_media_url(artifact)

@@ -143,7 +143,6 @@ class TestEnsureUser:
         assert create_payload["role"] == "user"
         assert create_payload["password"]  # random password generated
         assert client.calls[1] == ("POST", "/v1/users/mgw-u1/tokens", {"label": "deerflow"})
-        assert client.calls[1] == ("POST", "/v1/users/mgw-u1/tokens", {"label": "deerflow"})
 
     @pytest.mark.anyio
     async def test_admin_role_is_forwarded(self, provisioner, client):

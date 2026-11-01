@@ -63,11 +63,14 @@ class FakeBackend:
         return self.requests[-1].headers.get(name)
 
 
+# Shape mirrors GET /v1/images/modes (images.md §1): {default_mode, modes[]}.
 CAPABILITIES_BODY = {
-    "models": [
+    "default_mode": "mgw-image-1",
+    "modes": [
         {
             "name": "mgw-image-1",
             "display_name": "MGW Image 1",
+            "available": True,
             "ratios": ["1:1", "16:9"],
             "resolutions": ["1024x1024"],
             "supported_params": ["prompt", "ratio"],
@@ -77,7 +80,7 @@ CAPABILITIES_BODY = {
             "supported_params": ["prompt"],
             "supports_reference": True,
         },
-    ]
+    ],
 }
 
 
@@ -156,8 +159,8 @@ class TestSubmit:
     async def test_submit_sends_idempotency_key_and_user_token(self):
         backend = FakeBackend(
             [
-                ("GET", "/v1/images/capabilities", httpx.Response(200, json=CAPABILITIES_BODY)),
-                ("POST", "/v1/images/generations", httpx.Response(200, json={"task_id": "t-1"})),
+                ("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY)),
+                ("POST", "/v1/images/generations", httpx.Response(202, json={"id": "t-1", "kind": "generate", "status": "queued"})),
             ]
         )
         provider = _provider(backend, token_provider=_fake_token)
@@ -168,11 +171,11 @@ class TestSubmit:
         submit = backend.requests[1]
         assert submit.headers.get("Idempotency-Key") == "idem-123"
         assert submit.headers.get("Authorization") == "Bearer user-h3t-token"
-        assert backend.last_json() == {"model": "mgw-image-1", "prompt": "a cat", "ratio": "1:1"}
+        assert backend.last_json() == {"mode": "mgw-image-1", "prompt": "a cat", "ratio": "1:1"}
 
     @pytest.mark.anyio
     async def test_submit_rejects_unsupported_param_without_http_call(self):
-        backend = FakeBackend([("GET", "/v1/images/capabilities", httpx.Response(200, json=CAPABILITIES_BODY))])
+        backend = FakeBackend([("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY))])
         provider = _provider(backend, token_provider=_fake_token)
 
         with pytest.raises(UnsupportedParameterError):
@@ -183,7 +186,7 @@ class TestSubmit:
 
     @pytest.mark.anyio
     async def test_submit_rejects_unknown_model(self):
-        backend = FakeBackend([("GET", "/v1/images/capabilities", httpx.Response(200, json=CAPABILITIES_BODY))])
+        backend = FakeBackend([("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY))])
         provider = _provider(backend, token_provider=_fake_token)
 
         with pytest.raises(UnsupportedParameterError):
@@ -228,8 +231,8 @@ class TestSubmit:
     async def test_video_kind_uses_video_paths(self):
         backend = FakeBackend(
             [
-                ("GET", "/v1/videos/capabilities", httpx.Response(200, json={"models": [{"name": "mgw-vid", "duration_range": {"min": 4, "max": 15}}]})),
-                ("POST", "/v1/videos/generations", httpx.Response(200, json={"id": "v-9"})),
+                ("GET", "/v1/images/modes", httpx.Response(200, json={"modes": [{"name": "mgw-vid", "duration_range": {"min": 4, "max": 15}}]})),
+                ("POST", "/v1/images/generations", httpx.Response(202, json={"id": "v-9", "kind": "generate", "status": "queued"})),
             ]
         )
         client = MediaGatewayClient("http://mgw", "admin-token", transport=backend.transport())
@@ -239,8 +242,11 @@ class TestSubmit:
         finally:
             await client.aclose()
         assert task_id == "v-9"
-        assert backend.requests[0].url.path == "/v1/videos/capabilities"
-        assert backend.requests[1].url.path == "/v1/videos/generations"
+        # Real contract: video shares the image endpoints; kind only flips the
+        # ``output`` parameter on submit.
+        assert backend.requests[0].url.path == "/v1/images/modes"
+        assert backend.requests[1].url.path == "/v1/images/generations"
+        assert backend.last_json()["output"] == "video"
 
 
 # --- polling state transitions ---------------------------------------------------
@@ -251,21 +257,21 @@ class TestPolling:
     async def test_poll_transitions_pending_to_succeeded(self):
         backend = FakeBackend(
             [
-                ("GET", "/v1/tasks/t-1", httpx.Response(200, json={"task_id": "t-1", "status": "queued"})),
-                ("GET", "/v1/tasks/t-1", httpx.Response(200, json={"task_id": "t-1", "status": "running"})),
-                ("GET", "/v1/tasks/t-1", httpx.Response(200, json={"task_id": "t-1", "status": "succeeded", "result": {"url": "http://mgw/files/a.png"}})),
+                ("GET", "/v1/images/jobs/t-1", httpx.Response(200, json={"id": "t-1", "status": "queued"})),
+                ("GET", "/v1/images/jobs/t-1", httpx.Response(200, json={"id": "t-1", "status": "running"})),
+                ("GET", "/v1/images/jobs/t-1", httpx.Response(200, json={"id": "t-1", "status": "completed", "data": [{"b64_json": None, "url": "/v1/images/jobs/t-1/file?kind=image&variant=0&v=1", "v": "1", "meta": {}}]})),
             ]
         )
         provider = _provider(backend, token_provider=_fake_token)
 
         result = await provider.wait_for_result("t-1")
 
-        assert result["url"].endswith("/files/a.png")
+        assert result["data"][0]["url"].startswith("/v1/images/jobs/t-1/file?kind=image")
         assert [r.method for r in backend.requests] == ["GET", "GET", "GET"]
 
     @pytest.mark.anyio
     async def test_poll_raises_on_failed_status(self):
-        backend = FakeBackend([("GET", "/v1/tasks/t-2", httpx.Response(200, json={"status": "failed", "error": "moderation"}))])
+        backend = FakeBackend([("GET", "/v1/images/jobs/t-2", httpx.Response(200, json={"status": "failed", "error": "moderation"}))])
         provider = _provider(backend, token_provider=_fake_token)
 
         from deerflow.media_gateway.client import MediaGatewayError
@@ -275,7 +281,7 @@ class TestPolling:
 
     @pytest.mark.anyio
     async def test_poll_times_out_after_max_attempts(self):
-        backend = FakeBackend([("GET", "/v1/tasks/t-3", httpx.Response(200, json={"status": "pending"}), True)])
+        backend = FakeBackend([("GET", "/v1/images/jobs/t-3", httpx.Response(200, json={"status": "pending"}), True)])
         provider = _provider(backend, token_provider=_fake_token)
 
         from deerflow.media_gateway.client import MediaGatewayError
@@ -312,16 +318,16 @@ class TestArtifactUrl:
     async def test_generate_returns_proxied_url(self):
         backend = FakeBackend(
             [
-                ("GET", "/v1/images/capabilities", httpx.Response(200, json=CAPABILITIES_BODY)),
-                ("POST", "/v1/images/generations", httpx.Response(200, json={"task_id": "t-9"})),
-                ("GET", "/v1/tasks/t-9", httpx.Response(200, json={"status": "succeeded", "file_url": "http://mgw:8000/v1/files/x.png"})),
+                ("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY)),
+                ("POST", "/v1/images/generations", httpx.Response(202, json={"id": "t-9", "kind": "generate", "status": "queued"})),
+                ("GET", "/v1/images/jobs/t-9", httpx.Response(200, json={"status": "completed", "data": [{"b64_json": None, "url": "/v1/images/jobs/t-9/file?kind=image&variant=0&v=1", "v": "1", "meta": {}}]})),
             ]
         )
         provider = _provider(backend, token_provider=_fake_token)
 
         url = await provider.generate("a cat", model="mgw-image-1", idempotency_key="idem-9")
 
-        assert url == "/api/media-gateway/file/v1/files/x.png"
+        assert url == "/api/media-gateway/file/v1/images/jobs/t-9/file?kind=image&variant=0&v=1"
 
 
 # --- registry wiring --------------------------------------------------------------
