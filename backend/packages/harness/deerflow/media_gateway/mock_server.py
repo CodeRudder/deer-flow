@@ -1375,3 +1375,92 @@ def _handle_images_with_t2i_series(self: MockMediaGateway, request: httpx.Reques
 
 MockMediaGateway._handle_images = _handle_images_with_t2i_series  # type: ignore[method-assign]
 # ═══ END INSERT-T2ISERIES ═══════════════════════════════════════════════
+
+
+# ═══ INSERT-SERIES ═══════════════════════════════════════════════════════
+# 内容创作矩阵（content-series / M2-11，design.md §8 最小建模）。矩阵（垂类
+# 定位 + 风格指南 + 选题清单 + 矩阵项状态）落 MGW 可查，deer-flow 不建内容
+# 领域表（§8.3）。生成侧全部复用既有端点（images / media / drama），本分区
+# 只补"矩阵账本"：
+#
+# - ``POST  /v1/series/plans``        → 201 ``{"id": "csplan_…", …}``
+#   （positioning/style_guide/topics 必填；items 带初始状态）
+# - ``GET   /v1/series/plans``        → 本用户矩阵列表
+# - ``GET   /v1/series/plans/{sid}``  → 矩阵详情
+# - ``PATCH /v1/series/plans/{sid}``  → 按 item id 合并更新状态（完成度回写）
+#
+# 归属与可见性沿用 jobs/series 模型：外来用户的矩阵读作 404。文本类输入
+# （现有文章）**不入库**——POST /v1/media 契约只收 images/video（media.md），
+# 文本随矩阵 source 字段携带，无需新增端点。实现以类外包装
+# :meth:`MockMediaGateway.handle` 追加路由，不改上方任何已有行；包装器把
+# 未命中的请求原样委托给原处理器（与并发追加的其它分区兼容）。
+
+
+def _series_plan_routes(mg: MockMediaGateway, request: httpx.Request, user_id: str) -> httpx.Response | None:
+    path = request.url.path
+    method = request.method
+
+    if path != "/v1/series/plans" and not path.startswith("/v1/series/plans/"):
+        return None
+
+    registry: dict[str, dict[str, Any]] = getattr(mg, "_series_plan_registry", None) or {}
+    mg._series_plan_registry = registry  # lazy store（不改 __init__）
+
+    if method == "POST" and path == "/v1/series/plans":
+        body = mg._json(request)
+        topics = [t for t in body.get("topics") or [] if isinstance(t, dict) and t.get("id")]
+        if not str(body.get("positioning") or "").strip():
+            return _error(400, "invalid_request", "positioning 不能为空")
+        if not topics:
+            return _error(400, "invalid_request", "topics 不能为空（每选题须带 id）")
+        sid = "csplan_" + secrets.token_hex(4)
+        registry[sid] = {
+            "id": sid,
+            "owner": user_id,
+            "created": int(time.time()),
+            "positioning": str(body.get("positioning")),
+            "style_guide": dict(body.get("style_guide") or {}),
+            "topics": topics,
+            "source": dict(body.get("source") or {}),
+            "items": [{"id": str(i.get("id")), "topic_id": i.get("topic_id"), "format": i.get("format"), "status": str(i.get("status") or "pending")} for i in body.get("items") or []],
+        }
+        return httpx.Response(201, json={k: registry[sid][k] for k in ("id", "positioning", "style_guide", "topics", "items")})
+
+    if method == "GET" and path == "/v1/series/plans":
+        items = [{k: s[k] for k in ("id", "positioning", "created")} for s in registry.values() if mg._can_access({"owner": s["owner"]}, user_id)]
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+    if path.startswith("/v1/series/plans/"):
+        sid = path.rstrip("/").rsplit("/", 1)[-1]
+        plan = registry.get(sid)
+        if plan is None or not mg._can_access({"owner": plan["owner"]}, user_id):
+            return _error(404, "not_found", "series plan 不存在")
+        if method == "GET":
+            return httpx.Response(200, json={k: plan[k] for k in ("id", "positioning", "style_guide", "topics", "source", "items", "created")})
+        if method == "PATCH":
+            body = mg._json(request)
+            statuses = {str(i.get("id")): str(i.get("status") or "") for i in body.get("items") or [] if i.get("id")}
+            for item in plan["items"]:
+                new_status = statuses.get(item["id"])
+                if new_status:
+                    item["status"] = new_status
+            if isinstance(body.get("style_guide"), dict):
+                plan["style_guide"] = body["style_guide"]
+            return httpx.Response(200, json={k: plan[k] for k in ("id", "positioning", "style_guide", "items")})
+
+    return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+
+_handle_before_series = MockMediaGateway.handle
+
+
+def _handle_with_series(self: MockMediaGateway, request: httpx.Request) -> httpx.Response:
+    user_id = self._identify(request)
+    routed = _series_plan_routes(self, request, user_id) if user_id is not None else None
+    if routed is not None:
+        return routed
+    return _handle_before_series(self, request)
+
+
+MockMediaGateway.handle = _handle_with_series  # type: ignore[method-assign]
+# ═══ END INSERT-SERIES ═══════════════════════════════════════════════════
