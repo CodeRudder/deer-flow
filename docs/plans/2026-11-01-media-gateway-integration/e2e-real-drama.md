@@ -65,6 +65,9 @@ skill/前端轮询预算应按 **30–40 min/笔** 上限设计。
 - **G1 h3-i2v（fl2va）全档不可用**：MGW 组包与 ComfyUI 自定义节点不匹配
   （`audio_vae` 参数），i2v 提交即 `engine_error`。drama 链路不受影响（走
   ref2va），但 provider 生视频的 i2v 档在真实网关当前不可下单。**网关侧修**。
+  ✅ **已修**（minimax-h3-gateway `b8140e8`，2026-11-02）：fl2va 的
+  `MiniMaxH3ImageToVideo` 节点无 `audio_vae` 槽，组包已按档位拆分（音频链仅
+  ref2va）；实测 h3-i2i-std 202 → completed（~10 min，合法 mp4）。
 - **G2 t2va 被管理员禁用**（本机引擎 :30020 不健康）：文生视频只能走
   wan/ltx 系（eta 300–900s）。部署事实，非 bug；skill 已按可用档引导。
 - **G3 ref2va 时长/进度**：`eta_s` 低估 5–12 倍；99% 长停顿无阶段反馈。
