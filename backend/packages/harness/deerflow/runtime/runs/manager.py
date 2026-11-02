@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from deerflow.utils.time import now_iso as _now_iso
 
+from .interjection import DEFAULT_MAX_PENDING, InterjectionApplier
 from .schemas import DisconnectMode, RunStatus
 
 if TYPE_CHECKING:
@@ -106,6 +107,17 @@ class RunRecord:
     message_count: int = 0
     last_ai_message: str | None = None
     first_human_message: str | None = None
+    # Interjection channel: per-run queue of user messages injected at step
+    # boundaries (plan-b). ``None`` until :meth:`ensure_interjections` is called
+    # (worker sets it up before streaming; the API side calls the same method
+    # lazily when enqueuing).
+    interjections: InterjectionApplier | None = field(default=None, repr=False)
+
+    def ensure_interjections(self, *, max_pending: int = DEFAULT_MAX_PENDING) -> InterjectionApplier:
+        """Create the per-run interjection applier if not present (idempotent)."""
+        if self.interjections is None:
+            self.interjections = InterjectionApplier(self.thread_id, self.run_id, max_pending=max_pending)
+        return self.interjections
 
 
 class RunManager:
@@ -718,6 +730,17 @@ class RunManager:
         """Return ``True`` if *thread_id* has a pending or running run."""
         async with self._lock:
             return any(r.status in (RunStatus.pending, RunStatus.running) for r in self._thread_records_locked(thread_id))
+
+    async def find_inflight(self, thread_id: str) -> RunRecord | None:
+        """Return the newest live in-flight record for *thread_id*, or ``None``.
+
+        Only records with a local worker task qualify — a store-only hydrated
+        row has no interjection consumer on this process, so new messages must
+        not be routed to it.
+        """
+        async with self._lock:
+            inflight = [r for r in self._thread_records_locked(thread_id) if r.status in (RunStatus.pending, RunStatus.running) and r.task is not None and not r.store_only]
+        return inflight[-1] if inflight else None
 
     async def cleanup(self, run_id: str, *, delay: float = 300) -> None:
         """Remove a run record after an optional delay."""

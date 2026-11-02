@@ -16,7 +16,7 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,15 @@ from app.gateway.deps import get_checkpointer, get_current_user, get_feedback_re
 from app.gateway.pagination import trim_run_message_page
 from app.gateway.response_sanitizer import sanitize_message_list, sanitize_value
 from app.gateway.services import sse_consumer, start_run, wait_for_run_completion
-from deerflow.runtime import RunRecord, RunStatus, serialize_channel_values_for_api
+from deerflow.config import get_app_config
+from deerflow.runtime import (
+    InterjectionAlreadyAppliedError,
+    InterjectionNotFoundError,
+    InterjectionQueueFullError,
+    RunRecord,
+    RunStatus,
+    serialize_channel_values_for_api,
+)
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text, message_to_text
 
 logger = logging.getLogger(__name__)
@@ -80,6 +88,7 @@ def compute_run_durations(runs) -> dict[str, int]:
 
 class RunCreateRequest(BaseModel):
     assistant_id: str | None = Field(default=None, description="Agent / assistant to use")
+    action: Literal["interject"] | None = Field(default=None, description="Explicit interject request — queue the input into the in-flight run instead of starting a new one")
     input: dict[str, Any] | None = Field(default=None, description="Graph input (e.g. {messages: [...]})")
     command: dict[str, Any] | None = Field(default=None, description="LangGraph Command")
     metadata: dict[str, Any] | None = Field(default=None, description="Run metadata")
@@ -99,6 +108,22 @@ class RunCreateRequest(BaseModel):
     after_seconds: float | None = Field(default=None, description="Delayed execution")
     if_not_exists: Literal["reject", "create"] = Field(default="create", description="Thread creation policy")
     feedback_keys: list[str] | None = Field(default=None, description="LangSmith feedback keys")
+
+
+class InterjectionCreateRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="User message text to inject into the in-flight run")
+    source: Literal["web", "im", "api"] = Field(default="api", description="Channel the interjection originates from")
+
+
+class InterjectionResponse(BaseModel):
+    id: str
+    thread_id: str
+    run_id: str
+    text: str
+    source: str = "api"
+    seq: int = 0
+    created_at: str = ""
+    applied: bool = False
 
 
 class RegeneratePrepareRequest(BaseModel):
@@ -161,6 +186,99 @@ class ThreadTokenUsageResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_interjection_text(body: Any) -> str:
+    """Extract the user-facing text payload from a run-create input.
+
+    Returns the concatenated text of the input's human messages (the shape the
+    web UI and IM channels both send: ``{"messages": [{"type": "human", ...}]}``).
+    Empty string when the input carries no human text.
+    """
+    input_payload = getattr(body, "input", None)
+    if not isinstance(input_payload, dict):
+        return ""
+    messages = input_payload.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    parts: list[str] = []
+    for message in messages:
+        message_type = message.get("type") if isinstance(message, dict) else getattr(message, "type", None)
+        if message_type not in ("human", "user"):
+            continue
+        text = message_to_text(message).strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
+async def _try_enqueue_interjection(body: Any, thread_id: str, request: Request) -> dict | None:
+    """Queue a new message into the thread's in-flight run (plan-b §3.2).
+
+    Returns a 202 payload when the message was enqueued as an interjection, or
+    ``None`` when the caller should proceed down the normal create-run path
+    (thread idle, feature disabled, resume command, or non-reject strategy).
+    Raises HTTP 429 when the per-run queue is full.
+    """
+    run_mgr = get_run_manager(request)
+    record = await run_mgr.find_inflight(thread_id)
+
+    interjection_config = get_app_config().interjection
+    enabled = bool(interjection_config.enabled) or getattr(body, "action", None) == "interject"
+
+    if record is None:
+        if getattr(body, "action", None) == "interject":
+            raise HTTPException(status_code=409, detail=f"Thread {thread_id} has no in-flight run to interject into")
+        return None
+    if not enabled:
+        # Feature off (or implicitly off for the auto path): keep the legacy
+        # 409 behaviour via the normal create_or_reject path.
+        if getattr(body, "action", None) == "interject":
+            raise HTTPException(status_code=409, detail="Thread interjection is disabled")
+        return None
+    # Explicit action=interject always queues; the implicit path (no action)
+    # keeps interrupt/rollback strategies on their existing cancel-and-recreate
+    # semantics and skips inputs that carry no human text (resume commands etc.).
+    if getattr(body, "action", None) != "interject":
+        if body.multitask_strategy != "reject":
+            return None
+        command = getattr(body, "command", None)
+        if command and command.get("resume") is not None:
+            return None
+        if not _extract_interjection_text(body):
+            return None
+
+    text = _extract_interjection_text(body)
+    if not text:
+        raise HTTPException(status_code=422, detail="Interjection input carries no human message text")
+    applier = record.ensure_interjections(max_pending=int(interjection_config.max_pending))
+    try:
+        item = await applier.enqueue(text, source="web")
+    except InterjectionQueueFullError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    payload = item.to_dict()
+    payload["run_id"] = record.run_id
+    return {
+        "status": "interject_queued",
+        "run_id": record.run_id,
+        "thread_id": thread_id,
+        "interjection": payload,
+    }
+
+
+def _interjection_response(record: RunRecord, item: Any) -> InterjectionResponse:
+    data = item.to_dict()
+    return InterjectionResponse(run_id=record.run_id, **data)
+
+
+async def _get_inflight_applier(thread_id: str, request: Request) -> RunRecord:
+    run_mgr = get_run_manager(request)
+    record = await run_mgr.find_inflight(thread_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} has no in-flight run accepting interjections")
+    # Idempotent: the worker also creates the applier when the feature is on.
+    record.ensure_interjections(max_pending=int(get_app_config().interjection.max_pending))
+    return record
 
 
 def _cancel_conflict_detail(run_id: str) -> str:
@@ -438,8 +556,15 @@ async def prepare_regenerate_run(
 
 @router.post("/{thread_id}/runs", response_model=RunResponse)
 @require_permission("runs", "create", owner_check=True, require_existing=True)
-async def create_run(thread_id: str, body: RunCreateRequest, request: Request) -> RunResponse:
-    """Create a background run (returns immediately)."""
+async def create_run(thread_id: str, body: RunCreateRequest, request: Request) -> Response:
+    """Create a background run (returns immediately).
+
+    When the thread already has an in-flight run and interjection is enabled,
+    the new message is queued into that run instead (202 + ``interject_queued``).
+    """
+    queued = await _try_enqueue_interjection(body, thread_id, request)
+    if queued is not None:
+        return JSONResponse(status_code=202, content=queued)
     record = await start_run(body, thread_id, request)
     return _record_to_response(record)
 
@@ -455,6 +580,9 @@ async def stream_run(thread_id: str, body: RunCreateRequest, request: Request) -
     """
     bridge = get_stream_bridge(request)
     run_mgr = get_run_manager(request)
+    queued = await _try_enqueue_interjection(body, thread_id, request)
+    if queued is not None:
+        return JSONResponse(status_code=202, content=queued)
     record = await start_run(body, thread_id, request)
 
     return StreamingResponse(
@@ -478,6 +606,9 @@ async def wait_run(thread_id: str, body: RunCreateRequest, request: Request) -> 
     """Create a run and block until it completes, returning the final state."""
     bridge = get_stream_bridge(request)
     run_mgr = get_run_manager(request)
+    queued = await _try_enqueue_interjection(body, thread_id, request)
+    if queued is not None:
+        return JSONResponse(status_code=202, content=queued)
     record = await start_run(body, thread_id, request)
 
     completed = True
@@ -560,6 +691,56 @@ async def cancel_run(
         return Response(status_code=204)
 
     return Response(status_code=202)
+
+
+@router.post("/{thread_id}/interjections", response_model=InterjectionResponse)
+@require_permission("runs", "create", owner_check=True, require_existing=True)
+async def create_interjection(thread_id: str, body: InterjectionCreateRequest, request: Request) -> InterjectionResponse:
+    """Queue a message into the thread's in-flight run (explicit interjection API).
+
+    Returns 202-style payload (the InterjectionResponse with ``applied=false``);
+    409 when no run is in flight or the feature is disabled; 429 when the
+    per-run queue is full.
+    """
+    interjection_config = get_app_config().interjection
+    if not interjection_config.enabled:
+        raise HTTPException(status_code=409, detail="Thread interjection is disabled")
+    record = await _get_inflight_applier(thread_id, request)
+    applier = record.ensure_interjections(max_pending=int(interjection_config.max_pending))
+    try:
+        item = await applier.enqueue(body.text.strip(), source=body.source)
+    except InterjectionQueueFullError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    return _interjection_response(record, item)
+
+
+@router.get("/{thread_id}/interjections", response_model=list[InterjectionResponse])
+@require_permission("runs", "read", owner_check=True)
+async def list_interjections(thread_id: str, request: Request) -> list[InterjectionResponse]:
+    """List still-pending (not yet applied) interjections for the in-flight run."""
+    run_mgr = get_run_manager(request)
+    record = await run_mgr.find_inflight(thread_id)
+    if record is None or record.interjections is None:
+        return []
+    return [InterjectionResponse(run_id=record.run_id, **item) for item in record.interjections.pending_snapshot()]
+
+
+@router.delete("/{thread_id}/interjections/{interjection_id}")
+@require_permission("runs", "create", owner_check=True, require_existing=True)
+async def cancel_interjection(thread_id: str, interjection_id: str, request: Request) -> Response:
+    """Cancel a still-pending interjection (204).
+
+    409 when it was already applied to the model context (irrevocable);
+    404 when unknown to the in-flight run.
+    """
+    record = await _get_inflight_applier(thread_id, request)
+    try:
+        record.interjections.cancel(interjection_id)
+    except InterjectionAlreadyAppliedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InterjectionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 @router.get("/{thread_id}/runs/{run_id}/join")

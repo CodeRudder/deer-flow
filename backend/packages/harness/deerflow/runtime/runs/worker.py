@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal, cast
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.checkpoint.base import empty_checkpoint
 
 from deerflow.config.app_config import AppConfig
@@ -34,6 +34,7 @@ from deerflow.runtime.stream_bridge import StreamBridge
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.tracing import inject_langfuse_metadata
 
+from .interjection import DEFAULT_MAX_PENDING, INTERJECTION_APPLIED_EVENT, INTERJECTION_AS_NODE, InterjectionApplier
 from .manager import RunManager, RunRecord
 from .naming import resolve_root_run_name
 from .schemas import RunStatus
@@ -42,6 +43,67 @@ logger = logging.getLogger(__name__)
 
 # Valid stream_mode values for LangGraph's graph.astream()
 _VALID_LG_MODES = {"values", "updates", "checkpoints", "tasks", "debug", "messages", "custom"}
+
+# How often the interjection consumer wakes up to poll the queue.
+_INTERJECTION_POLL_INTERVAL = 0.5
+
+
+def _interjection_max_pending(app_config: AppConfig | None) -> int:
+    if app_config is None:
+        return DEFAULT_MAX_PENDING
+    section = getattr(app_config, "interjection", None)
+    if section is None:
+        return DEFAULT_MAX_PENDING
+    return int(getattr(section, "max_pending", DEFAULT_MAX_PENDING))
+
+
+async def _consume_interjections(
+    *,
+    record: RunRecord,
+    agent: Any,
+    config: dict,
+    bridge: StreamBridge,
+    journal: Any | None,
+    applier: InterjectionApplier,
+    done: asyncio.Event,
+) -> None:
+    """Drain the run's interjection queue and inject batches into graph state.
+
+    Injection happens at step boundaries: ``agent.update_state`` writes the
+    queued HumanMessages into the checkpoint, and the next super-step of the
+    concurrent ``astream`` loop naturally reads them (see plan-b §2.1/§3.3).
+    """
+    run_id = record.run_id
+    while not done.is_set():
+        batch = await applier.drain_batch(first_wait_timeout=_INTERJECTION_POLL_INTERVAL)
+        if not batch:
+            continue
+        messages = [HumanMessage(content=item.text) for item in batch]
+        try:
+            await agent.update_state(config, {"messages": messages}, as_node=INTERJECTION_AS_NODE)
+        except Exception:
+            logger.warning("Run %s: failed to inject %d interjection(s); they stay pending", run_id, len(batch), exc_info=True)
+            continue
+        await applier.apply_batch(batch)
+        if journal is not None:
+            for item in batch:
+                try:
+                    journal.record_interjection(interjection_id=item.id, text=item.text, source=item.source, seq=item.seq)
+                except Exception:
+                    logger.warning("Run %s: failed to journal interjection %s", run_id, item.id, exc_info=True)
+        logger.info("Run %s: injected %d interjection(s) as_node=%s seq=%s", run_id, len(batch), INTERJECTION_AS_NODE, [i.seq for i in batch])
+        # Published under the "custom" SSE event so the LangGraph SDK's
+        # onCustomEvent receives it on every subscribed client.
+        await bridge.publish(
+            run_id,
+            "custom",
+            {
+                "type": INTERJECTION_APPLIED_EVENT,
+                "run_id": run_id,
+                "thread_id": record.thread_id,
+                "interjections": [item.to_dict() for item in batch],
+            },
+        )
 
 
 def _debug_thinking_enabled() -> bool:
@@ -289,6 +351,9 @@ async def run_agent(
 
     journal = None
     streamed_collector = _StreamedMessageCollector()
+    # Interjection consumer (started once the agent is built; see step 5b).
+    interjection_done: asyncio.Event | None = None
+    interjection_consumer: asyncio.Task | None = None
 
     # Track whether "events" was requested but skipped
     if "events" in requested_modes:
@@ -419,6 +484,30 @@ async def run_agent(
         if interrupt_after:
             agent.interrupt_after_nodes = interrupt_after
 
+        # 5b. Start the interjection consumer (plan-b §3.3): drains the run's
+        # input queue and injects queued user messages at step boundaries via
+        # ``agent.update_state(as_node="model")``. Only mounted when the
+        # feature is enabled for this run (the API side creates the applier on
+        # enqueue, so a mounted consumer also covers explicit enqueue calls).
+        interjection_enabled = False
+        if ctx.app_config is not None:
+            section = getattr(ctx.app_config, "interjection", None)
+            interjection_enabled = bool(getattr(section, "enabled", False))
+        if interjection_enabled or record.interjections is not None:
+            applier = record.ensure_interjections(max_pending=_interjection_max_pending(ctx.app_config))
+            interjection_done = asyncio.Event()
+            interjection_consumer = asyncio.create_task(
+                _consume_interjections(
+                    record=record,
+                    agent=agent,
+                    config=runnable_config,
+                    bridge=bridge,
+                    journal=journal,
+                    applier=applier,
+                    done=interjection_done,
+                )
+            )
+
         # 6. Build LangGraph stream_mode list
         #    "events" is NOT a valid astream mode — skip it
         #    "messages-tuple" maps to LangGraph's "messages" mode
@@ -545,6 +634,25 @@ async def run_agent(
         )
 
     finally:
+        # Stop the interjection consumer and discard still-queued messages.
+        # Plan-b supplement: leftover (never-applied) interjections are dropped
+        # at run end — users can see them via the pending UI and re-send; they
+        # do NOT auto-start a new run.
+        if interjection_done is not None and interjection_consumer is not None:
+            interjection_done.set()
+            try:
+                await asyncio.wait_for(asyncio.shield(interjection_consumer), timeout=5)
+            except (TimeoutError, asyncio.TimeoutError):
+                interjection_consumer.cancel()
+                logger.warning("Run %s: interjection consumer did not stop within 5s; cancelled", run_id)
+            except asyncio.CancelledError:
+                pass
+            applier = record.interjections
+            if applier is not None:
+                leftover = await applier.drain_batch(first_wait_timeout=0)
+                if leftover:
+                    logger.warning("Run %s: discarded %d never-applied interjection(s) at run end", run_id, len(leftover))
+
         # Flush any buffered journal events and persist completion data
         if journal is not None:
             try:

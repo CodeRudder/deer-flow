@@ -648,6 +648,23 @@ class RunJournal(BaseCallbackHandler):
         """
         self._record_tool_message(message)
 
+    def record_interjection(self, *, interjection_id: str, text: str, source: str, seq: int) -> None:
+        """Record an applied thread interjection (audit trail).
+
+        Interjected messages enter graph state via ``update_state`` and bypass
+        the on_chat_model callback path for their *arrival*, so this explicit
+        trace record keeps replay/audit complete. The injected HumanMessage is
+        journaled as displayable ``llm.human.input`` by the normal callback
+        path once the next model step consumes it — hence this record is
+        ``category="trace"`` to avoid double-rendering in message lists.
+        """
+        self._put(
+            event_type="interjection.applied",
+            category="trace",
+            content={"interjection_id": interjection_id, "text": text, "source": source, "seq": seq},
+            metadata={"as_node": "model"},
+        )
+
     async def flush(self) -> None:
         """Force flush remaining buffer. Called in worker's finally block."""
         if self._pending_flush_tasks:
