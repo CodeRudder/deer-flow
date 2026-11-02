@@ -74,7 +74,10 @@ wait_healthy() {  # up 后从宿主侧轮询映射端口直至就绪（~60s）�
 up() {  # 启动 deerflow 进程（env 从 .env 注入进程，不进容器）
   docker exec -d "$NAME" bash -c 'set -a; . /app/.env; set +a
     export PATH=/opt/tools/node/bin:/opt/tools/pnpm/bin:/opt/tools/uv-bin:$PATH
-    setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload > /tmp/backend.log 2>&1" < /dev/null &
+    # --reload-exclude 必须带：否则沙箱工作区（.deer-flow）任何写文件都触发
+    # 网关 reload，SSE 长连接卡死旧进程→端口冲突→网关死亡、run 孤儿化
+    # （注意本行位于外层 docker exec 的单引号串内，glob 用 \* 转义而非引号）
+    setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload --reload-exclude .deer-flow/\* --reload-exclude outputs/\* --reload-exclude \*.log > /tmp/backend.log 2>&1" < /dev/null &
     setsid bash -c "cd /app/frontend && pnpm dev --port 3000 --hostname 0.0.0.0 > /tmp/frontend.log 2>&1" < /dev/null &
     exit 0'
   wait_healthy
