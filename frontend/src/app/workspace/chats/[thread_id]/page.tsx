@@ -27,6 +27,8 @@ export default function ChatPage() {
   // shared hook so the mobile chat page can reuse them verbatim — only the
   // layout below is desktop-specific. See `use-chat-page.ts`.
   const {
+    pendingInterjections,
+    handleUndoInterjection,
     threadId,
     isMock,
     isNewThread,
@@ -108,6 +110,8 @@ export default function ChatPage() {
                 tokenUsageInlineMode={tokenUsageInlineMode}
                 canRegenerate={canRegenerate}
                 onRegenerateMessage={handleRegenerate}
+                pendingInterjections={pendingInterjections}
+                onUndoInterjection={handleUndoInterjection}
                 onSubmitHumanInput={
                   isMock || isDemoMode ? undefined : handleSubmitHumanInput
                 }

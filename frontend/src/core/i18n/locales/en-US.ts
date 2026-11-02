@@ -465,6 +465,13 @@ export const enUS: Translations = {
     uploadingFiles: "Uploading files, please wait...",
   },
 
+  interjection: {
+    undoTooltip: "Undo and edit",
+    queuedHint: "Queued — will take effect after the current step finishes",
+    alreadyApplied:
+      "This message was already applied to the model context and cannot be undone",
+  },
+
   subtasks: {
     subtask: "Subtask",
     executing: (count: number) =>

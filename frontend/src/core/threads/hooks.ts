@@ -29,6 +29,12 @@ import { promptInputFilePartToFile, uploadFiles } from "../uploads";
 
 import { fetchThreadTokenUsage } from "./api";
 import {
+  cancelInterjection,
+  createInterjection,
+  InterjectionNoActiveRunError,
+  type PendingInterjection,
+} from "./interjection";
+import {
   buildThreadsSearchQueryOptions,
   DEFAULT_THREAD_SEARCH_PARAMS,
   type ThreadSearchParams,
@@ -1018,6 +1024,24 @@ function isThreadMissingError(error: unknown): boolean {
   return status === 403 || status === 404;
 }
 
+/** Plain-text projection of a (possibly block-list) message content. */
+function interjectionMessageText(message: Message): string {
+  const content = message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        typeof block === "string"
+          ? block
+          : ((block as { text?: string }).text ?? ""),
+      )
+      .join("");
+  }
+  return "";
+}
+
 export function useThreadStream({
   threadId,
   displayThreadId,
@@ -1045,6 +1069,11 @@ export function useThreadStream({
   >(() => new Set());
   const [pendingSupersededMessageIds, setPendingSupersededMessageIds] =
     useState<ReadonlySet<string>>(() => new Set());
+  // Thread interjections (plan-b): messages queued into the in-flight run.
+  // Rendered as queued user bubbles until applied (or cancelled).
+  const [pendingInterjections, setPendingInterjections] = useState<
+    PendingInterjection[]
+  >([]);
   const [isUploading, setIsUploading] = useState(false);
   // Track the thread ID that is currently streaming to handle thread changes during streaming
   const [onStreamThreadId, setOnStreamThreadId] = useState(() => threadId);
@@ -1089,6 +1118,9 @@ export function useThreadStream({
       setOnStreamThreadId(normalizedThreadId);
     }
     threadIdRef.current = normalizedThreadId;
+    // Interjections are per-run in-memory state on the gateway; switching
+    // threads invalidates the local pending list.
+    setPendingInterjections([]);
   }, [threadId]);
 
   const handleStreamStart = useCallback((_threadId: string, _runId: string) => {
@@ -1272,6 +1304,29 @@ export function useThreadStream({
         typeof event === "object" &&
         event !== null &&
         "type" in event &&
+        event.type === "interjection_applied"
+      ) {
+        const e = event as {
+          type: string;
+          interjections?: { id: string }[];
+        };
+        const appliedIds = new Set(
+          (e.interjections ?? []).map((item) => item.id),
+        );
+        if (appliedIds.size > 0) {
+          setPendingInterjections((current) =>
+            current.map((item) =>
+              appliedIds.has(item.id) ? { ...item, applied: true } : item,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
         typeof event.type === "string" &&
         TASK_STATUS_EVENT_TYPES.has(event.type)
       ) {
@@ -1310,6 +1365,9 @@ export function useThreadStream({
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
       setLiveMessagesThreadId(null);
+      // Queued-but-never-applied interjections die with the failed run (the
+      // worker discards them); applied ones stay visible as normal bubbles.
+      setPendingInterjections((current) => current.filter((i) => i.applied));
       setPendingSupersededRunIds(new Set());
       setPendingSupersededMessageIds(new Set());
       toast.error(getStreamErrorMessage(error));
@@ -1562,6 +1620,60 @@ export function useThreadStream({
     }
   }, [hasHumanOptimistic, optimisticMessageCount, renderHumanMessageCount]);
 
+  // Prune applied interjections once the injected HumanMessage lands in the
+  // thread transcript (matched by text) so the queued bubble doesn't duplicate
+  // the state's copy of the message.
+  useEffect(() => {
+    if (pendingInterjections.length === 0) return;
+    const appliedIds = new Set(
+      pendingInterjections.filter((item) => item.applied).map((i) => i.id),
+    );
+    if (appliedIds.size === 0) return;
+    const humanTexts = new Set<string>();
+    for (const message of thread.messages) {
+      if (message.type !== "human") continue;
+      const text = interjectionMessageText(message);
+      if (text) humanTexts.add(text);
+    }
+    const remaining = pendingInterjections.filter(
+      (item) => !(appliedIds.has(item.id) && humanTexts.has(item.text)),
+    );
+    if (remaining.length !== pendingInterjections.length) {
+      setPendingInterjections(remaining);
+    }
+  }, [pendingInterjections, thread.messages]);
+
+  const cancelPendingInterjection = useCallback(
+    async (
+      threadId: string,
+      interjectionId: string,
+    ): Promise<PendingInterjection | null> => {
+      const entry = pendingInterjections.find(
+        (item) => item.id === interjectionId,
+      );
+      if (!entry || entry.applied) {
+        return null;
+      }
+      const result = await cancelInterjection(threadId, interjectionId);
+      if (result === "already_applied") {
+        toast(t.interjection.alreadyApplied);
+        setPendingInterjections((current) =>
+          current.map((item) =>
+            item.id === interjectionId ? { ...item, applied: true } : item,
+          ),
+        );
+        return null;
+      }
+      // "cancelled" and "not_found" (e.g. the run already ended and the worker
+      // discarded the queue) both remove the bubble locally.
+      setPendingInterjections((current) =>
+        current.filter((item) => item.id !== interjectionId),
+      );
+      return entry;
+    },
+    [pendingInterjections, t.interjection.alreadyApplied],
+  );
+
   const sendMessage = useCallback(
     async (
       threadId: string,
@@ -1628,6 +1740,44 @@ export function useThreadStream({
       let uploadedFileInfo: UploadedFileInfo[] = [];
 
       try {
+        // Thread interjection (plan-b): when a run is already streaming on
+        // this thread, queue the new text into the running agent instead of
+        // starting a second run (which the gateway would 409-reject).
+        // Text-only, visible sends only — clarification answers and file
+        // uploads keep the normal path.
+        if (
+          thread.isLoading &&
+          !hideFromUI &&
+          text &&
+          (!message.files || message.files.length === 0)
+        ) {
+          try {
+            const created = await createInterjection(threadId, text);
+            setPendingInterjections((current) => [...current, created]);
+            // The queued bubble renders from pendingInterjections; drop the
+            // transient optimistic copy.
+            setOptimisticMessages([]);
+            setOptimisticThreadId(null);
+            setLiveMessagesThreadId(null);
+            return;
+          } catch (error) {
+            if (error instanceof InterjectionNoActiveRunError) {
+              // The run just finished between our isLoading check and the
+              // request — fall through to the normal submit path.
+            } else {
+              setOptimisticMessages([]);
+              setOptimisticThreadId(null);
+              setLiveMessagesThreadId(null);
+              toast.error(
+                error instanceof Error
+                  ? error.message
+                  : "Failed to queue the message.",
+              );
+              return;
+            }
+          }
+        }
+
         // Upload files first if any
         if (message.files && message.files.length > 0) {
           setIsUploading(true);
@@ -1945,6 +2095,8 @@ export function useThreadStream({
   return {
     thread: mergedThread,
     pendingUsageMessages,
+    pendingInterjections,
+    cancelPendingInterjection,
     sendMessage,
     regenerateMessage,
     isUploading,

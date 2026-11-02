@@ -423,6 +423,13 @@ export interface Translations {
     uploadingFiles: string;
   };
 
+  // Thread interjection
+  interjection: {
+    undoTooltip: string;
+    queuedHint: string;
+    alreadyApplied: string;
+  };
+
   // Subtasks
   subtasks: {
     subtask: string;

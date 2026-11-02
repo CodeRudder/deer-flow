@@ -1,6 +1,11 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { ChevronUpIcon, Loader2Icon, RefreshCcwIcon } from "lucide-react";
+import {
+  ChevronUpIcon,
+  Loader2Icon,
+  RefreshCcwIcon,
+  Undo2Icon,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -57,6 +62,7 @@ import {
   parseSubtaskResult,
 } from "@/core/tasks/subtask-result";
 import type { AgentThreadState } from "@/core/threads";
+import type { PendingInterjection } from "@/core/threads/interjection";
 import { cn } from "@/lib/utils";
 
 import { ArtifactFileList } from "../artifacts/artifact-file-list";
@@ -262,6 +268,8 @@ export function MessageList({
   canRegenerate = false,
   onSubmitHumanInput,
   collapsedSteps = false,
+  pendingInterjections,
+  onUndoInterjection,
 }: {
   className?: string;
   threadId: string;
@@ -287,6 +295,13 @@ export function MessageList({
     request: HumanInputRequest,
     response: HumanInputResponse,
   ) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
+  /**
+   * Thread interjections queued into the in-flight run (plan-b). Rendered as
+   * queued user bubbles with an undo action until the backend applies them.
+   */
+  pendingInterjections?: PendingInterjection[];
+  /** Undo (cancel) a still-queued interjection; text returns to the composer. */
+  onUndoInterjection?: (item: PendingInterjection) => void;
 }) {
   const { t } = useI18n();
   const getThinkingMessage = useGetThinkingMessage();
@@ -909,6 +924,37 @@ export function MessageList({
             </div>
           );
         })}
+        {(pendingInterjections ?? []).map((item) => (
+          <div
+            key={`interjection-${item.id}`}
+            className={cn(
+              "flex w-full flex-col items-end gap-1",
+              item.applied && "opacity-90",
+            )}
+          >
+            <div className="group bg-muted relative max-w-[70%] rounded-3xl px-4 py-2 text-sm">
+              <span className="break-words whitespace-pre-wrap">
+                {item.text}
+              </span>
+              {!item.applied && onUndoInterjection && (
+                <button
+                  type="button"
+                  title={t.interjection.undoTooltip}
+                  aria-label={t.interjection.undoTooltip}
+                  className="text-muted-foreground hover:text-foreground absolute top-1/2 left-3 -translate-x-full -translate-y-1/2 rounded-full p-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={() => onUndoInterjection(item)}
+                >
+                  <Undo2Icon className="size-4" />
+                </button>
+              )}
+            </div>
+            {!item.applied && (
+              <span className="text-muted-foreground text-xs">
+                {t.interjection.queuedHint}
+              </span>
+            )}
+          </div>
+        ))}
         {(thread.isLoading || pendingHumanInputRequestIds.size > 0) &&
           !hasActiveAssistantText && (
             <div className="w-full">

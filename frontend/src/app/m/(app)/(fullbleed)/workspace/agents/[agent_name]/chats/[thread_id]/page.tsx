@@ -145,6 +145,8 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
   const { agent } = useAgent(agentName);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const {
+    pendingInterjections,
+    handleUndoInterjection,
     threadId,
     isMock,
     isNewThread,
@@ -223,6 +225,8 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
             // default, so it is untouched.
             collapsedSteps
             onRegenerateMessage={handleRegenerate}
+            pendingInterjections={pendingInterjections}
+            onUndoInterjection={handleUndoInterjection}
             onSubmitHumanInput={
               isMock || isDemoMode ? undefined : handleSubmitHumanInput
             }
