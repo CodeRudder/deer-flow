@@ -71,7 +71,7 @@ def _build_runtime() -> MediaGatewayRuntime:
     session_factory = get_session_factory()
     client = MediaGatewayClient(settings.base_url, settings.admin_token)
     provisioner = MediaGatewayProvisioner(client, session_factory, MediaGatewayCipher.from_key(encryption_key))
-    file_client = httpx.AsyncClient(base_url=settings.base_url, timeout=_STREAM_TIMEOUT)
+    file_client = httpx.AsyncClient(base_url=settings.primary_base_url(), timeout=_STREAM_TIMEOUT)
     return MediaGatewayRuntime(client=client, file_client=file_client, provisioner=provisioner)
 
 

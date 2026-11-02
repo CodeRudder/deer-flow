@@ -9,7 +9,9 @@
 
 凭证全部来自环境变量（由平台注入当前用户凭证，per-user 隔离）：
 
-- ``MEDIA_GATEWAY_BASE_URL``  MGW API 基址（必填）
+- ``MEDIA_GATEWAY_BASE_URL``  MGW API 基址（必填；支持逗号分隔多候选地址，
+  如 ``http://172.17.0.1:8000,http://192.168.1.10:8000``，启动时 /health 探测
+  按序取第一个可用者，全挂则报错列出候选清单）
 - ``MEDIA_GATEWAY_TOKEN``     当前用户 Bearer 令牌（必填，勿打日志、勿外传）
 
 用法（SKILL.md 的「执行方法」小节）::
@@ -58,6 +60,30 @@ def slugify(text: str, fallback: str = "tryon") -> str:
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def resolve_base_url(raw: str) -> str:
+    """解析 MEDIA_GATEWAY_BASE_URL（支持逗号分隔多候选），/health 探测取第一个可用。
+
+    单地址也探测一次（timeout 2s）；全部不可达时报错退出并列出候选清单。
+    """
+    candidates: list[str] = []
+    for part in raw.split(","):
+        url = part.strip().rstrip("/")
+        if url and url not in candidates:
+            candidates.append(url)
+    if not candidates:
+        return ""
+    for url in candidates:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{url}/health", method="GET"), timeout=2.0) as resp:
+                if resp.status < 400:
+                    log(f"MGW 地址探测：选定 {url}（候选 {len(candidates)} 个）")
+                    return url
+        except Exception as exc:  # noqa: BLE001 - 探测失败换下一个候选
+            log(f"MGW 地址不可达：{url}（{exc}）")
+    log(f"错误：MGW 候选地址全部不可达（{len(candidates)} 个）：{', '.join(candidates)}")
+    raise SystemExit(1)
 
 
 class Gateway:
@@ -240,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", default=None, help="产物目录（缺省 /mnt/user-data/outputs/dressup/<时间戳>）")
     args = parser.parse_args(argv)
 
-    base_url = os.environ.get("MEDIA_GATEWAY_BASE_URL", "")
+    base_url = resolve_base_url(os.environ.get("MEDIA_GATEWAY_BASE_URL", ""))
     token = os.environ.get("MEDIA_GATEWAY_TOKEN", "")
     if not base_url or not token:
         log("错误：环境变量 MEDIA_GATEWAY_BASE_URL / MEDIA_GATEWAY_TOKEN 未设置（应由平台注入当前用户凭证）")

@@ -18,7 +18,9 @@ python /mnt/skills/public/t2i-series/scripts/generate_series.py \
 
 - 凭证由平台注入沙箱 env（`MEDIA_GATEWAY_BASE_URL` / `MEDIA_GATEWAY_TOKEN` /
   `MEDIA_GATEWAY_IMAGE_MODEL`），脚本自动使用当前用户凭证——**禁止**自行置备
-  账号或读取/复用其他用户的令牌。
+  账号或读取/复用其他用户的令牌。`MEDIA_GATEWAY_BASE_URL` 支持逗号分隔多候选
+  地址（如 `http://172.17.0.1:8000,http://192.168.1.10:8000`），自动选用第一个
+  可用者；具体地址以 env 注入为准，不要手写 IP:端口直连。
 - 常用参数：`--count`（1–8，缺省 4）、`--style`（统一风格段）、`--mode`
   （缺省 `$MEDIA_GATEWAY_IMAGE_MODEL`）、`--aspect-ratio`（缺省 16:9）、
   `--max-attempts`（每张重试上限，缺省 3）、`--timeout`（每张轮询总超时，

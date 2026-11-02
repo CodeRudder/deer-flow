@@ -20,6 +20,8 @@ from types import TracebackType
 
 import httpx
 
+from deerflow.media_gateway.settings import parse_candidate_base_urls
+
 logger = logging.getLogger(__name__)
 
 # connect / read / write / pool
@@ -55,7 +57,16 @@ class MediaGatewayError(Exception):
 
 
 class MediaGatewayClient:
-    """Async HTTP client for MGW. Zero business logic."""
+    """Async HTTP client for MGW. Zero business logic.
+
+    ``base_url`` may be a comma-separated list of candidate URLs (mirrors
+    ``MEDIA_GATEWAY_BASE_URL`` multi-address support). On connection-class
+    failures (connect error / connect timeout / DNS — not HTTP 4xx/5xx) the
+    client transparently fails over to the next candidate and remembers the
+    first base URL that works, so subsequent requests skip probing entirely.
+    When every candidate fails, one :class:`MediaGatewayError` is raised whose
+    message lists all attempted URLs.
+    """
 
     def __init__(
         self,
@@ -65,16 +76,63 @@ class MediaGatewayClient:
         timeout: httpx.Timeout = DEFAULT_TIMEOUT,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._candidates = parse_candidate_base_urls(base_url)
+        if not self._candidates:
+            raise ValueError(f"invalid media gateway base_url: {base_url!r}")
         self._admin_token = admin_token
-        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout, transport=transport)
+        self._timeout = timeout
+        self._transport = transport
+        self._clients: dict[str, httpx.AsyncClient] = {}
+        # First candidate that answered; once set, requests go straight to it.
+        self._active: str | None = None
 
     @property
     def base_url(self) -> str:
-        return self._base_url
+        """Currently selected (or first candidate) base URL."""
+        return self._active or self._candidates[0]
+
+    @property
+    def candidates(self) -> list[str]:
+        return list(self._candidates)
+
+    def _client_for(self, base_url: str) -> httpx.AsyncClient:
+        client = self._clients.get(base_url)
+        if client is None:
+            client = httpx.AsyncClient(base_url=base_url, timeout=self._timeout, transport=self._transport)
+            self._clients[base_url] = client
+        return client
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        for client in self._clients.values():
+            await client.aclose()
+        self._clients.clear()
+
+    async def _send_with_failover(self, send) -> httpx.Response:
+        """Run ``send(client)`` against the active/first working candidate.
+
+        Connection-class failures move to the next candidate; other transport
+        errors and any HTTP response (including 4xx/5xx) do not fail over.
+        """
+        ordered = ([self._active] if self._active else []) + [c for c in self._candidates if c != self._active]
+        failures: list[str] = []
+        for base_url in ordered:
+            try:
+                response = await send(self._client_for(base_url))
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                failures.append(f"{base_url}: {exc}")
+                logger.warning("media gateway candidate unreachable (%s): %s", base_url, exc)
+                continue
+            except httpx.HTTPError as exc:
+                raise MediaGatewayError(status=0, code="transport_error", message=str(exc), retryable=True) from exc
+            self._active = base_url
+            return response
+        attempted = ", ".join(ordered)
+        raise MediaGatewayError(
+            status=0,
+            code="transport_error",
+            message=f"all media gateway base URLs failed ({attempted}): " + " | ".join(failures),
+            retryable=True,
+        )
 
     async def __aenter__(self) -> MediaGatewayClient:
         return self
@@ -111,7 +169,7 @@ class MediaGatewayClient:
             headers["Idempotency-Key"] = idempotency_key
 
         try:
-            response = await self._client.request(method, path, json=json, params=params, headers=headers)
+            response = await self._send_with_failover(lambda client: client.request(method, path, json=json, params=params, headers=headers))
         except httpx.HTTPError as exc:
             raise MediaGatewayError(status=0, code="transport_error", message=str(exc), retryable=True) from exc
 
@@ -143,7 +201,7 @@ class MediaGatewayClient:
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         try:
-            response = await self._client.post(path, data=fields, files=files, headers=headers)
+            response = await self._send_with_failover(lambda client: client.post(path, data=fields, files=files, headers=headers))
         except httpx.HTTPError as exc:
             raise MediaGatewayError(status=0, code="transport_error", message=str(exc), retryable=True) from exc
         return self._handle_response(response)

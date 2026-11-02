@@ -22,7 +22,9 @@ python /mnt/skills/public/dressup-tryon/scripts/tryon.py \
   （**先查台账再上传**——重复模特不重建，定妆照一次约 50s，复用是主要提速手段）。
 - 凭证由平台注入沙箱 env（`MEDIA_GATEWAY_BASE_URL` / `MEDIA_GATEWAY_TOKEN`），
   脚本自动使用当前用户凭证——**禁止**自行置备账号或读取/复用其他用户的令牌，
-  **严禁** admin 令牌。
+  **严禁** admin 令牌。`MEDIA_GATEWAY_BASE_URL` 支持逗号分隔多候选地址（如
+  `http://172.17.0.1:8000,http://192.168.1.10:8000`），自动选用第一个可用者；
+  具体地址以 env 注入为准，不要手写 IP:端口直连。
 - 常用参数：`--poses`（预设 `front/side/back/stool/walking/bag`，缺省
   `front side back` = 单模特×单服装×3 姿势电商上身图）、`--pose-text`（白名单外
   的自定义姿势描述，可与 `--poses` 混用）、`--model-name/--model-desc`

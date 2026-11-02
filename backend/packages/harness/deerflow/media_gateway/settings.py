@@ -35,12 +35,28 @@ def _load_additional_env(raw: str | None) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
+def parse_candidate_base_urls(raw: str | None) -> list[str]:
+    """Split a (possibly comma-separated) ``MEDIA_GATEWAY_BASE_URL`` into candidates.
+
+    Rules: split on ``,``, trim whitespace, strip trailing ``/``, drop empty
+    segments, deduplicate keeping first occurrence. A single-URL value yields
+    exactly that URL — behaviour is unchanged for existing single-address
+    deployments. Example: ``http://172.17.0.1:8000,http://192.168.1.10:8000``.
+    """
+    candidates: list[str] = []
+    for part in (raw or "").split(","):
+        url = part.strip().rstrip("/")
+        if url and url not in candidates:
+            candidates.append(url)
+    return candidates
+
+
 class MediaGatewaySettings(BaseModel):
     """Media Gateway connection settings (see docs/plans/2026-11-01-media-gateway-integration)."""
 
     base_url: str | None = Field(
         default=None,
-        description="MGW API base URL; /v1/... paths are appended to this",
+        description=("MGW API base URL; /v1/... paths are appended to this. May be a comma-separated list of candidate URLs — the first reachable one wins"),
     )
     admin_token: str | None = Field(
         default=None,
@@ -81,6 +97,15 @@ class MediaGatewaySettings(BaseModel):
         default=True,
         description="Provision an MGW account on first credential resolution for users without a mapping (design §5.1)",
     )
+
+    def candidate_base_urls(self) -> list[str]:
+        """Ordered, deduplicated candidate base URLs (comma-separated support)."""
+        return parse_candidate_base_urls(self.base_url)
+
+    def primary_base_url(self) -> str | None:
+        """First candidate base URL, or ``None`` when unset."""
+        candidates = self.candidate_base_urls()
+        return candidates[0] if candidates else None
 
 
 _media_gateway_settings: MediaGatewaySettings | None = None

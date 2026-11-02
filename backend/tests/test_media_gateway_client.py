@@ -242,3 +242,129 @@ class TestMisc:
             await client.aclose()
         assert seen["body"] == {"username": "alice", "password": "pw", "role": "user"}
         assert body == {"id": "u1"}
+
+
+class TestMultiCandidateFailover:
+    @pytest.mark.anyio
+    async def test_first_candidate_connect_failure_falls_over_to_second(self):
+        hits: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits.append(str(request.url))
+            if request.url.host == "down":
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(200, json={"ok": True})
+
+        client = MediaGatewayClient("http://down:8000,http://up:8000", "t", transport=_transport(handler))
+        try:
+            body = await client.get("/v1/ping")
+        finally:
+            await client.aclose()
+        assert body == {"ok": True}
+        assert hits == ["http://down:8000/v1/ping", "http://up:8000/v1/ping"]
+        assert client.base_url == "http://up:8000"
+
+    @pytest.mark.anyio
+    async def test_active_candidate_is_remembered_without_probing(self):
+        hits: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits.append(str(request.url))
+            if request.url.host == "down":
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(200, json={})
+
+        client = MediaGatewayClient("http://down:8000,http://up:8000", "t", transport=_transport(handler))
+        try:
+            await client.get("/v1/a")
+            assert len(hits) == 2  # down attempt + successful failover
+            await client.get("/v1/b")
+            await client.get("/v1/c")
+        finally:
+            await client.aclose()
+        # Subsequent requests go straight to the remembered candidate.
+        assert hits == [
+            "http://down:8000/v1/a",
+            "http://up:8000/v1/a",
+            "http://up:8000/v1/b",
+            "http://up:8000/v1/c",
+        ]
+
+    @pytest.mark.anyio
+    async def test_http_error_does_not_trigger_failover(self):
+        hits: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits.append(str(request.url))
+            return httpx.Response(500, json={"error": {"code": "boom", "message": "nope"}})
+
+        client = MediaGatewayClient("http://a:8000,http://b:8000", "t", transport=_transport(handler))
+        try:
+            with pytest.raises(MediaGatewayError) as exc_info:
+                await client.get("/v1/ping")
+        finally:
+            await client.aclose()
+        assert exc_info.value.status == 500
+        assert hits == ["http://a:8000/v1/ping"]
+        assert client.base_url == "http://a:8000"
+
+    @pytest.mark.anyio
+    async def test_all_candidates_failed_error_lists_urls(self):
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url.host))
+            raise httpx.ConnectTimeout("timed out", request=request)
+
+        client = MediaGatewayClient("http://a:8000,http://b:8000", "t", transport=_transport(handler))
+        try:
+            with pytest.raises(MediaGatewayError) as exc_info:
+                await client.get("/v1/ping")
+        finally:
+            await client.aclose()
+        message = str(exc_info.value)
+        assert "http://a:8000" in message and "http://b:8000" in message
+        assert calls == ["a", "b"]
+
+    @pytest.mark.anyio
+    async def test_read_timeout_does_not_fail_over(self):
+        hits: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits.append(str(request.url))
+            raise httpx.ReadTimeout("read timed out", request=request)
+
+        client = MediaGatewayClient("http://a:8000,http://b:8000", "t", transport=_transport(handler))
+        try:
+            with pytest.raises(MediaGatewayError):
+                await client.get("/v1/ping")
+        finally:
+            await client.aclose()
+        assert hits == ["http://a:8000/v1/ping"]
+
+    @pytest.mark.anyio
+    async def test_multipart_post_fails_over(self):
+        hits: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits.append(str(request.url))
+            if request.url.host == "down":
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(201, json={"id": "med_1"})
+
+        client = MediaGatewayClient("http://down:8000,http://up:8000", "t", transport=_transport(handler))
+        try:
+            body = await client.post_multipart("/v1/media", files=[("file", ("a.png", b"x", "image/png"))])
+        finally:
+            await client.aclose()
+        assert body == {"id": "med_1"}
+        assert hits == ["http://down:8000/v1/media", "http://up:8000/v1/media"]
+
+    def test_single_address_behaviour_unchanged(self):
+        client = MediaGatewayClient("http://mgw:8000/", "t")
+        assert client.base_url == "http://mgw:8000"
+        assert client.candidates == ["http://mgw:8000"]
+
+    def test_empty_base_url_rejected(self):
+        with pytest.raises(ValueError):
+            MediaGatewayClient(", ,", "t")
