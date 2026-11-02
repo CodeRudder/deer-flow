@@ -120,7 +120,13 @@ async def _require_mgw_user(request: Request) -> tuple[object, MediaGatewayRunti
 
 @router.get("/file/{file_path:path}")
 async def proxy_media_file(file_path: str, request: Request) -> Response:
-    """Stream ``GET MGW /file/{path}`` on behalf of the current user.
+    """Stream an MGW media file on behalf of the current user.
+
+    ``file_path`` is the MGW-side artifact path verbatim (e.g.
+    ``v1/media/<id>/file``, ``v1/images/jobs/<id>/file`` or
+    ``v1/drama/<did>/chapters/<ch>/clips/<cl>/media``), including its query
+    string. The legacy ``/file/``-prefixed form (older MGW builds) is kept as
+    a 404-fallback.
 
     The caller's identity is *always* the session user — any attempt to pass a
     user/token parameter is ignored by design; the route signature accepts no
@@ -128,12 +134,26 @@ async def proxy_media_file(file_path: str, request: Request) -> Response:
     """
     _, runtime, token = await _require_mgw_user(request)
 
-    upstream_path = f"/file/{file_path}"
+    query = request.url.query
+    candidates = [f"/{file_path}"]
+    if not file_path.startswith(("v1/", "files/")):
+        # Already-rooted artifact path form.
+        candidates.insert(0, f"/file/{file_path}")
+    candidates.append(f"/file/{file_path}")
+    # De-duplicate while preserving order.
+    candidates = list(dict.fromkeys(candidates))
+
+    upstream = None
+    upstream_path = candidates[0] + (f"?{query}" if query else "")
     try:
-        upstream = await runtime.file_client.get(
-            upstream_path,
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        for candidate in candidates:
+            upstream_path = candidate + (f"?{query}" if query else "")
+            upstream = await runtime.file_client.get(
+                upstream_path,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if upstream.status_code != 404:
+                break
     except httpx.HTTPError as exc:
         logger.warning("media gateway file proxy: transport error for %s: %s", upstream_path, exc)
         raise HTTPException(status_code=503, detail="媒体网关不可达，请稍后重试") from exc

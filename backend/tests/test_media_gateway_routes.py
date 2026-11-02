@@ -131,6 +131,43 @@ class TestFileProxy:
         # The Authorization seen upstream must be the session user's own token.
         assert seen["auth"] == "Bearer tok-A"
 
+    def test_forwards_v1_artifact_path_verbatim_with_query(self, user_a):
+        """Real-MGW contract (E2E-real R4): artifact paths like
+        ``v1/media/<id>/file?k=v`` or ``v1/drama/.../media`` must be forwarded
+        verbatim, not prefixed with ``/file/``."""
+        provisioner = _provisioner(user_a)
+
+        def handler(request: httpx.Request, s: dict) -> httpx.Response:
+            s["path"] = request.url.path
+            s["query"] = request.url.query.decode()
+            return httpx.Response(200, content=b"mp4bytes", headers={"Content-Type": "video/mp4"})
+
+        seen = _install_runtime(provisioner, handler)
+        with TestClient(_app(user_a)) as client:
+            response = client.get("/api/media-gateway/file/v1/media/med_1/file?kind=video&variant=0&v=abc")
+        assert response.status_code == 200
+        assert seen["path"] == "/v1/media/med_1/file"
+        assert seen["query"] == "kind=video&variant=0&v=abc"
+
+    def test_falls_back_to_legacy_file_prefix_on_404(self, user_a):
+        """Legacy MGW builds served artifacts under ``/file/<path>``; the proxy
+        keeps that as a fallback when the verbatim path 404s."""
+        provisioner = _provisioner(user_a)
+        seen: list[str] = []
+
+        def handler(request: httpx.Request, s: dict) -> httpx.Response:
+            seen.append(request.url.path)
+            if request.url.path == "/v1/old/asset":
+                return httpx.Response(404, json={"detail": "not found"})
+            return httpx.Response(200, content=b"legacy")
+
+        _install_runtime(provisioner, handler)
+        with TestClient(_app(user_a)) as client:
+            response = client.get("/api/media-gateway/file/v1/old/asset")
+        assert response.status_code == 200
+        assert response.content == b"legacy"
+        assert seen == ["/v1/old/asset", "/file/v1/old/asset"]
+
     def test_404_passthrough(self, user_a):
         def handler(request: httpx.Request, seen: dict) -> httpx.Response:
             return httpx.Response(404, json={"error": {"code": "not_found", "message": "no such file"}})

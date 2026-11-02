@@ -35,6 +35,10 @@ MGW 契约真源：`minimax-h3-gateway/docs/integration/api/drama.md`——所�
   未过设计门的 clip 永远不进生成。
 - 网关不可达 / 429 / 401 的降级语义与 `video-generation` 相同（透传
   `Retry-After`、不本地重试风暴），见 design.md「失败与降级」。
+- **步数与轮询预算**（E2E-real 实测）：单 run 建议 `recursion_limit ≥ 400`；
+  等待生成一律用**单个 bash 循环脚本**（循环内 sleep+curl，一次工具调用等到
+  终态），不要每轮 poll 占一个 agent 步。ref2va 单笔实测 15–31 分钟（网关
+  `eta_s` 低估 5–12 倍，99% 处长停顿属正常），轮询上限按 40 min/笔留足。
 
 ## 模式（对话开始时确认一次）
 
@@ -50,7 +54,23 @@ MGW 契约真源：`minimax-h3-gateway/docs/integration/api/drama.md`——所�
 
 1. **LLM 起草**（在会话内完成，先给用户看，checkpoint 模式确认后再落库）：
    主线 → 分集大纲 → 章 → 情节 → 片段/镜头清单（含台词初稿）。
-2. **结构落库**（逐层调 MGW，契约 drama.md §3–§10）：
+2. **结构落库**（逐层调 MGW，契约 drama.md §3–§10）。**必填字段速查**
+   （E2E-real 实测：缺一个就 400，逐字段试错会烧掉整个会话步数预算——
+   一次带齐）：
+
+   | 端点 | 必填 body 字段 |
+   |---|---|
+   | `POST /v1/drama` | `title` |
+   | `POST …/chapters` | `title` + `idx`（int，剧内唯一） |
+   | `POST …/storylines` | `name` + `order`（int，章内唯一） |
+   | `POST …/plots` | `storyline_id` + `name` + `order` |
+   | `POST …/clips` | `plot_id` + `order` + `budget_tier`（∈ {1,5,10,15}） |
+   | `POST …/shots` | `clip_id` + `order` + `duration_s`（`prompt_en`/`prompt_zh`/`dialogue` 建议同时给） |
+   | `POST …/characters` | `name` + `subject_id`（引擎一致性绑定号） |
+   | `POST …/clips/{cl}/archive` | `version` + `reason` |
+   | `POST …/clips/{cl}/generate` | **无 body**（服务端自动组包：`mode=h3-ref-std`/ref2va、`duration_seconds=budget_tier`、幂等键 `drama-<clip_id>-v<version>`） |
+
+   逐层落库链：
    `POST /v1/drama` → `POST …/chapters` → `POST …/chapters/{ch}/storylines`
    → `POST …/plots` → `POST …/clips`（`budget_tier ∈ {1,5,10,15}`，即一次
    生成的镜头组）→ `POST …/shots`（每镜 `prompt_en` 必填、`prompt_zh` 是
@@ -59,7 +79,9 @@ MGW 契约真源：`minimax-h3-gateway/docs/integration/api/drama.md`——所�
    `clip_over_budget`，结构化错误信封为 `{"detail":{"error":{…}}}`）。
 3. **资产抽取 → 托盘登记**：从剧本抽角色/场景/道具 →
    `POST /v1/drama/{did}/characters`（`subject_id` 为引擎一致性绑定号）等
-   资产端点 → 参考图注册媒体后，经 `PATCH …/clips/{cl}` **全量回传**
+   资产端点（**资产图片上传 `POST …/assets/{kind}/{name}/images` 的 `kind`
+   用复数：`characters|scenes|props`，单数 404；multipart 字段名 `files`，
+   可配 `notes` 按序对应**）→ 参考图注册媒体后，经 `PATCH …/clips/{cl}` **全量回传**
    `ref_tray`（数组位置即 `<Picture N>` 编号；增/删/换图都回传整组，只回
    增量会被当成"删掉其余条目"）。
 4. **角色卡 = 一致性基线**：同一角色跨所有镜头的分镜设计一律引用同一角色

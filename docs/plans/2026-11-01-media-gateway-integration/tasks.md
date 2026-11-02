@@ -152,7 +152,7 @@ M1 ─► M2 ──────────────────┘
 | R1 | provider 真实网关联调（E2E-real 第一关） | ✅ 7 步全过（2026-11-01） | 真实生图 qwen-image-std 40s / 生视频 wan-t2v-std 50s / 幂等 / 隔离 404；发现并修复 provisioner `username→name` 契约 bug（9c7022ff）|
 | R2 | 网关其它生图/视频 API 对接 | ✅ 1dcf8975（35 用例+194 回归绿） | compare/取消/评估→QC/全量档位/形状锁 |
 | R3 | 生产环境部署 | ✅ 改为 prod-vm.sh 零镜像构建方案并已上线（2026 端口三层健康；00f06e9a） | 旧 deploy.sh 镜像方案退役保留 |
-| R4 | E2E-real 逐功能验收 | ⏳ R1 后按上线节奏逐个 | provider → console-link → drama → video-clips → t2i/image-post → content-series |
+| R4 | E2E-real 逐功能验收 | 🔄 provider ✅（R1）→ **drama ✅（2026-11-02，见 [e2e-real-drama.md](e2e-real-drama.md)：冒烟 + skill E2E 全链路 + QC 归因通过；修复代理路由 404 bug 与 SKILL 必填字段缺口；遗留 i2v 网关侧 audio_vae bug、QC 失败→修正案例待补）**；console-link / video-clips / t2i/image-post / content-series ⏳ |
 | R5 | E2E 报告 e2e-report.md | ⏳ R4 完成后 | 含 MGW 版本/env 指纹/用例结果 |
 | R6 | deer-flow 验收 | 🔄 大头已完成（2026-11-01 晚） | 自动化：移动端对话生图 E2E-real **闭环通过**（五轮迭代修复后：登录→会话→qwen 真实生成→自动交付渲染全链路，断言 a/b/c 全过；经历 修复：langgraph rewrite、MGW 容器内可达、凭证中间件+JIT、CJK 字体、nginx 超时、自动交付保底）。人工：100.108.144.120:2027 持续 | 人工：100.108.144.120:2027（GLM/沙箱）；自动化：无头浏览器移动端 E2E（千问深圳月历 亮/暗）子代理执行中 |
 | R7 | MGW 更新部署 | ✅ 已完成 | feat/auth-ticket 已合并回 feat/ref2va-multiref 并按原方案重新部署 |
