@@ -72,6 +72,7 @@
 |---|---|---|---|
 | 批次4 / M2-9 | skill `t2i-series`（文生组图：LLM 组图设计→MGW 组图生成→QC 闭环） | skill + 单测 | A2c |
 | 批次4 / M2-10 | skill `image-text-post`（图文帖子：组图+文案+版式组装+VLM 抽检） | skill + 单测 | A2c |
+| 批次4 / M2-12 | skill `dressup-tryon`（换装试穿 P0 试点：素材上传→台账复用（定妆照不重建）→建试穿→异步生成轮询→VLM 质检闭环（FAIL 自动 retry ≤3，网关超限 409 转人工）→产物落盘；单模特×单服装×3 姿势缺省） | skill + scripts/tryon.py + 编排层 `media_gateway/dressup.py` + mock dressup 路由 + 单测 15 例 | A2c（✅ 2026-11-02：mock 全绿 + 真实网关冒烟全链路通过，见 dressup-and-remaining-apis.md §5） |
 
 ### 批次5（最复杂）
 

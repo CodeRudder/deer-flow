@@ -1477,3 +1477,300 @@ def _handle_with_series(self: MockMediaGateway, request: httpx.Request) -> httpx
 
 MockMediaGateway.handle = _handle_with_series  # type: ignore[method-assign]
 # ═══ END INSERT-SERIES ═══════════════════════════════════════════════════
+
+
+# ═══ INSERT-DRESSUP ══════════════════════════════════════════════════════
+# 换装试穿（dressup-tryon / M2-12，契约：minimax-h3-gateway
+# docs/integration/api/dressup.md + gateway/h3img/api.py dressup 段）。台账
+# （models/garments/scenes）CRUD 同步；生成/定妆照异步（复用上面的 jobs 状态
+# 机，产物 URL 指向 /v1/images/jobs/{id}/file）；qc 同步（VLM）。
+#
+# - ``POST /v1/dressup/models``            → 201 ``{id:"dm_…", portrait_status:"queued"}``
+#   （自动起定妆照作业，GET 回填 ``portrait_status=done`` + ``portrait_url``）
+# - ``GET  /v1/dressup/models`` / ``GET …/models/{id}``
+# - ``POST /v1/dressup/garments``（含 ``/from_media``：自动 VLM 属性分析模拟）
+#   / ``GET /v1/dressup/garments``
+# - ``POST /v1/dressup/tryons`` ``{model_id, garment_id[, scene_id]}`` → 201 纯台账
+# - ``POST …/tryons/{id}/generate`` ``{output:image, pose|pose_text}`` → job_id +
+#   组装提示词（pose 白名单 front/side/back/stool/walking/bag，白名单外须带
+#   pose_text，否则 400）
+# - ``GET  …/tryons/{id}``                 → 幂等回填 ``status/outputs``（最新作业）
+# - ``POST …/tryons/{id}/qc``              → 同步 VLM 质检（script_dressup_qc 可脚本化；
+#   队列空默认 ``{pass:true}``）；结果落 tryon（``qc``/``qc_suggest``）
+# - ``POST …/tryons/{id}/retry``           → 按建议重出（retry_count ≤3，超限 400）
+#
+# 归属与可见性沿用 jobs/media 模型：外来用户的条目读作 404。实现以类外包装
+# :meth:`MockMediaGateway.handle` 追加路由，不改上方任何已有行；包装器把未命中
+# 的请求原样委托给原处理器（与并发追加的其它分区兼容）。
+
+DRESSUP_POSES = ("front", "side", "back", "stool", "walking", "bag")
+DRESSUP_MAX_RETRIES = 3
+
+
+def _dressup_registry(mg: MockMediaGateway) -> dict[str, dict[str, dict[str, Any]]]:
+    registry: dict[str, dict[str, dict[str, Any]]] | None = getattr(mg, "_dressup_registry", None)
+    if registry is None:
+        registry = {"models": {}, "garments": {}, "tryons": {}}
+        mg._dressup_registry = registry  # lazy store（不改 __init__）
+    return registry
+
+
+def _dressup_qc_default() -> dict[str, Any]:
+    return {"pass": True, "answers": {}, "missing": [], "suggest": ""}
+
+
+def _dressup_start_portrait(mg: MockMediaGateway, model: dict[str, Any], user_id: str) -> None:
+    """定妆照作业：复用 jobs 状态机；GET model 时回填 portrait_url。"""
+    job_id = "img_" + secrets.token_hex(6)
+    mg.jobs[job_id] = {
+        "id": job_id,
+        "kind": "generate",
+        "owner": user_id,
+        "request": {"prompt": f"定妆照三视图拼图：{model['name']}", "mode": "portrait", "output": "image"},
+        "output": "image",
+        "status": "queued",
+        "polls_in_stage": mg.polls_per_stage,
+        "fail": None,
+        "created": int(time.time()),
+    }
+    model["portrait_job_id"] = job_id
+    model["portrait_status"] = "queued"
+
+
+def _dressup_model_body(mg: MockMediaGateway, model: dict[str, Any]) -> dict[str, Any]:
+    job = mg.jobs.get(model.get("portrait_job_id") or "")
+    if job is not None:
+        mg._advance(job)  # 定妆照作业随 model 详情轮询推进（同 jobs 状态机）
+    if job is not None and job["status"] == "completed" and model["portrait_status"] != "done":
+        model["portrait_status"] = "done"
+        model["portrait_url"] = f"/v1/images/jobs/{job['id']}/file?kind=image"
+    if job is not None and job["status"] == "failed":
+        model["portrait_status"] = "failed"
+    return {k: v for k, v in model.items() if k != "portrait_job_id"}
+
+
+def _dressup_tryon_body(mg: MockMediaGateway, tryon: dict[str, Any]) -> dict[str, Any]:
+    """幂等回填：最新生成作业的状态/产物写进 tryon 详情。"""
+    job = mg.jobs.get(tryon.get("job_id") or "")
+    if job is not None:
+        mg._advance(job)  # 生成作业随 tryon 详情轮询推进
+        tryon["job_status"] = job["status"]
+        if job["status"] == "completed" and not tryon["outputs"]:
+            tryon["status"] = "completed"
+            tryon["outputs"] = [{"url": f"/v1/images/jobs/{job['id']}/file?kind=image", "kind": "image"}]
+        elif job["status"] == "failed":
+            tryon["status"] = "failed"
+            tryon["error"] = job.get("error")
+    return tryon
+
+
+def _dressup_routes(mg: MockMediaGateway, request: httpx.Request, user_id: str) -> httpx.Response | None:
+    path = request.url.path
+    method = request.method
+
+    if path != "/v1/dressup" and not path.startswith("/v1/dressup/"):
+        return None
+
+    registry = _dressup_registry(mg)
+    parts = path.strip("/").split("/")  # ["v1","dressup", ...]
+    body = mg._json(request)
+
+    def _owned(kind: str, item_id: str) -> dict[str, Any] | None:
+        item = registry[kind].get(item_id)
+        if item is None or not mg._can_access({"owner": item["owner"]}, user_id):
+            return None
+        return item
+
+    # ── DELETE /v1/dressup/{kind}/{item_id}（dressup.md 删条目）────────
+    if method == "DELETE" and len(parts) == 4 and parts[2] in ("models", "garments", "tryons", "scenes"):
+        item = _owned(parts[2], parts[3])
+        if item is None:
+            return _error(404, "not_found", f"{parts[2][:-1]} 不存在")
+        del registry[parts[2]][parts[3]]
+        return httpx.Response(200, json={"deleted": True, "id": parts[3]})
+
+    # ── models ────────────────────────────────────────────────────────
+    if parts[2] == "models":
+        if method == "POST" and len(parts) == 3:
+            name = str(body.get("name") or "").strip()
+            source = str(body.get("source_media_id") or "")
+            media = mg.media.get(source)
+            if not name or media is None or not mg._can_access({"owner": media["owner"]}, user_id):
+                return _error(400, "invalid_request", "name 与 source_media_id 必填（素材须已上传且属于本人）")
+            # 台账复用：同 source_media_id 已有模特 → 直接返回既有条目（不重建定妆照）。
+            for existing in registry["models"].values():
+                if source and existing["source_media_id"] == source:
+                    return httpx.Response(200, json=_dressup_model_body(mg, existing))
+            model = {
+                "id": mg._new_id("dm_"),
+                "owner": user_id,
+                "created": int(time.time()),
+                "name": name,
+                "desc": str(body.get("desc") or ""),
+                "source_media_id": source,
+                "portrait_status": "pending",
+                "portrait_url": None,
+            }
+            registry["models"][model["id"]] = model
+            _dressup_start_portrait(mg, model, user_id)
+            return httpx.Response(201, json=_dressup_model_body(mg, model))
+        if method == "GET" and len(parts) == 3:
+            items = [_dressup_model_body(mg, m) for m in registry["models"].values() if mg._can_access({"owner": m["owner"]}, user_id)]
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        if method == "GET" and len(parts) == 4:
+            model = _owned("models", parts[3])
+            if model is None:
+                return _error(404, "not_found", "model 不存在")
+            return httpx.Response(200, json=_dressup_model_body(mg, model))
+        return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+    # ── garments ──────────────────────────────────────────────────────
+    if parts[2] == "garments":
+        if method == "POST" and len(parts) == 4 and parts[3] == "from_media":
+            # 一键导入：自动 VLM 属性分析（mock 直接给关键词），走同一建档路径。
+            media = mg.media.get(str(body.get("media_id") or ""))
+            if media is None or not mg._can_access({"owner": media["owner"]}, user_id):
+                return _error(404, "not_found", "media 不存在")
+            body = {**body, "name": str(body.get("name") or f"服装-{media['id'][:8]}"), "keywords": str(body.get("keywords") or "自动属性分析（mock）"), "_auto_attrs": True}
+            return _dressup_routes(mg, httpx.Request("POST", "/v1/dressup/garments", json=body), user_id)
+        if method == "POST" and len(parts) == 3:
+            media_id = str(body.get("media_id") or "")
+            name = str(body.get("name") or "").strip()
+            media = mg.media.get(media_id)
+            if not name or media is None or not mg._can_access({"owner": media["owner"]}, user_id):
+                return _error(400, "invalid_request", "name 与 media_id 必填（素材须已上传且属于本人）")
+            # 台账复用：同 media_id 已有服装 → 直接返回既有条目。
+            for existing in registry["garments"].values():
+                if existing["media_id"] == media_id:
+                    return httpx.Response(200, json=existing)
+            raw_keywords = body.get("keywords")
+            keywords = " ".join(raw_keywords) if isinstance(raw_keywords, list) else str(raw_keywords or "")
+            garment = {
+                "id": mg._new_id("dg_"),
+                "owner": user_id,
+                "created": int(time.time()),
+                "name": name,
+                "gtype": str(body.get("gtype") or "onmodel"),
+                "media_id": media_id,
+                "keywords": keywords,
+                "attrs_analyzed": bool(body.get("_auto_attrs")),
+            }
+            registry["garments"][garment["id"]] = garment
+            return httpx.Response(201, json=garment)
+        if method == "GET" and len(parts) == 3:
+            items = [g for g in registry["garments"].values() if mg._can_access({"owner": g["owner"]}, user_id)]
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+    # ── tryons ────────────────────────────────────────────────────────
+    if parts[2] == "tryons":
+        if method == "POST" and len(parts) == 3:
+            model = _owned("models", str(body.get("model_id") or ""))
+            garment = _owned("garments", str(body.get("garment_id") or ""))
+            if model is None or garment is None:
+                return _error(404, "not_found", "model/garment 不存在")
+            tryon = {
+                "id": mg._new_id("dt_"),
+                "owner": user_id,
+                "created": int(time.time()),
+                "model_id": model["id"],
+                "garment_id": garment["id"],
+                "scene_id": body.get("scene_id"),
+                "status": "created",
+                "job_id": None,
+                "job_status": None,
+                "outputs": [],
+                "qc": None,
+                "qc_suggest": None,
+                "retry_count": 0,
+            }
+            registry["tryons"][tryon["id"]] = tryon
+            return httpx.Response(201, json=tryon)
+        if method == "GET" and len(parts) == 3:
+            items = [_dressup_tryon_body(mg, t) for t in registry["tryons"].values() if mg._can_access({"owner": t["owner"]}, user_id)]
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+
+        if len(parts) < 4:
+            return _error(404, "not_found", f"mock has no route for {method} {path}")
+        tryon = _owned("tryons", parts[3])
+        if tryon is None:
+            return _error(404, "not_found", "tryon 不存在")
+
+        if method == "GET" and len(parts) == 4:
+            return httpx.Response(200, json=_dressup_tryon_body(mg, tryon))
+
+        if len(parts) == 5 and method == "POST":
+            sub = parts[4]
+            if sub == "generate":
+                pose = str(body.get("pose") or "")
+                pose_text = str(body.get("pose_text") or "")
+                if not pose and not pose_text:
+                    return _error(400, "invalid_request", "pose 或 pose_text 必填")
+                if pose and pose not in DRESSUP_POSES:
+                    return _error(400, "invalid_request", f"pose 白名单外：{pose}（{DRESSUP_POSES}）；自定义姿势请用 pose_text")
+                garment = registry["garments"].get(tryon["garment_id"]) or {}
+                model = registry["models"].get(tryon["model_id"]) or {}
+                prompt_kw = garment.get("keywords") or ""
+                prompt_kw = "、".join(prompt_kw) if isinstance(prompt_kw, list) else str(prompt_kw)
+                prompt = f"{model.get('desc') or model.get('name')}，穿着{garment.get('name')}（{prompt_kw}），影棚场景，姿势：{pose or pose_text}"
+                job_id = "img_" + secrets.token_hex(6)
+                mg.jobs[job_id] = {
+                    "id": job_id,
+                    "kind": "generate",
+                    "owner": user_id,
+                    "request": {"prompt": prompt, "mode": "tryon", "output": str(body.get("output") or "image")},
+                    "output": str(body.get("output") or "image"),
+                    "status": "queued",
+                    "polls_in_stage": mg.polls_per_stage,
+                    "fail": None,
+                    "created": int(time.time()),
+                }
+                tryon["job_id"] = job_id
+                tryon["job_status"] = "queued"
+                tryon["status"] = "generating"
+                tryon["outputs"] = []
+                tryon["last_generate_body"] = {"output": str(body.get("output") or "image"), **({"pose": pose} if pose else {"pose_text": pose_text})}
+                return httpx.Response(202, json={"job_id": job_id, "tryon_id": tryon["id"], "status": "generating", "prompt": prompt})
+            if sub == "qc":
+                queue = getattr(mg, "_dressup_qc_script", {}).get(tryon["id"]) or []
+                result = queue.pop(0) if queue else _dressup_qc_default()
+                tryon["qc"] = result
+                tryon["qc_suggest"] = result.get("suggest") if not result.get("pass") else None
+                return httpx.Response(200, json={"tryon_id": tryon["id"], **result})
+            if sub == "retry":
+                if tryon["retry_count"] >= DRESSUP_MAX_RETRIES:
+                    # 真实网关语义：重试超限是 409 conflict（不可重试），非 400。
+                    return _error(409, "conflict", "已自动重出 3 次仍不合格——请人工调整服装关键词/参考图（或换姿势、场景）后再试")
+                tryon["retry_count"] += 1
+                last_body = dict(tryon.get("last_generate_body") or {})
+                retry_request = httpx.Request("POST", f"/v1/dressup/tryons/{tryon['id']}/generate", json=last_body)
+                return _dressup_routes(mg, retry_request, user_id)
+        return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+    return _error(404, "not_found", f"mock has no route for {method} {path}")
+
+
+def script_dressup_qc(self: MockMediaGateway, tryon_id: str, results: list[dict[str, Any]]) -> None:
+    """Queue QC bodies for ``tryon_id``: the n-th ``POST …/qc`` returns the n-th
+    entry; when the queue is empty a clean ``{pass: true}`` verdict is served."""
+    script = getattr(self, "_dressup_qc_script", None)
+    if script is None:
+        script = self._dressup_qc_script = {}
+    script[tryon_id] = list(results)
+
+
+_dressup_handle_before = MockMediaGateway.handle
+
+
+def _handle_with_dressup(self: MockMediaGateway, request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/v1/dressup" or request.url.path.startswith("/v1/dressup/"):
+        user_id = self._identify(request)
+        if user_id is None:
+            return _error(401, "unauthorized", "missing or invalid bearer token")
+        return _dressup_routes(self, request, user_id)
+    return _dressup_handle_before(self, request)
+
+
+MockMediaGateway.handle = _handle_with_dressup  # type: ignore[method-assign]
+MockMediaGateway.script_dressup_qc = script_dressup_qc  # type: ignore[attr-defined]
+# ═══ END INSERT-DRESSUP ══════════════════════════════════════════════════

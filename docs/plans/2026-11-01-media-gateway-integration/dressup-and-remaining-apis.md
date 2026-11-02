@@ -196,3 +196,24 @@ M；优先级 P3。
   `img_44fda8db9e84`（admin owner `u_c3d3a325`，可清理）。
 - 注：deer-flow `backend/ref2..5.jpg` 为城市风光图，不适合换装样例；人物图取自网关仓库
   research 素材，服装图取自 `/tmp/tclothes_t05.0.jpg`。
+
+### 5.1 skill 落地后的冒烟复验（2026-11-02，dressup-tryon 上线验证）
+
+以 `skills/public/dressup-tryon/scripts/tryon.py` 对真实网关
+（http://172.17.0.1:8000，per-user `h3t_` 令牌 = deer-flow admin@dream.com 映射的
+MGW 用户 `u_644a5b0f`，非 admin 令牌）跑通全链路：
+
+1. 素材上传 `POST /v1/media`（multipart `file` 单数）→ 人物图 + 服装图入库；
+2. 建模特 → 定妆照异步回填 `done`（约 50s）；建服装（手填 keywords 字符串）；
+3. 建试穿 → `generate`（pose=front）→ 轮询 `completed`（约 1 分钟）；
+4. VLM 质检：FAIL（suggest「补进提示词的属性：上装、纯棉」）→ 自动 retry ×3 →
+   第 4 次 retry 被网关 **409 conflict** 拒绝（「已自动重出 3 次仍不合格」）——
+   与契约 §2.1 一致（retry ≤3，超限转人工）；脚本/编排层均按终态优雅收敛并交付
+   产物 + `suggest` 说明（该图 FAIL 属合理判定：平铺服装图与模特上身细节对不上）；
+5. 产物 URL `GET /v1/images/jobs/img_…/file?kind=image&variant=0&fmt=jpg` 带
+   per-user 令牌 200（7851 字节 JPEG）可取。
+- 契约修正（相对 §2.1 初稿）：`POST /v1/dressup/garments` 的 `keywords` 是**单个
+  字符串**（≤4000，类目/颜色/材质词），不是数组；retry 超限错误码是 **409
+  conflict**（非 400）。mock 与编排层已按此对齐。
+- 测试条目已清理（DELETE models/garments/tryons/media 共 13 条 + 临时令牌吊销）；
+  残留：试穿/定妆照的终态 `img_*` 作业记录（jobs 历史无权限批量清理，仅元数据，无产物悬挂）。

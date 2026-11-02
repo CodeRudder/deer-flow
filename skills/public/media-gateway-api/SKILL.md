@@ -91,6 +91,41 @@ curl -s "$MEDIA_GATEWAY_BASE_URL/v1/jobs?scope=gateway&owner=me&limit=50" -H "$A
 URL 会 401。前端走 deer-flow 代理 `/api/media-gateway/file/...`（服务端带用户
 令牌转发），或用 `fetch` + Bearer 头转 objectURL。
 
+## 3b. 换装（dressup）端点速查
+
+换装试穿的完整流程编排见 `dressup-tryon` skill（脚本一条命令封装）；这里只列
+端点，供直调/排障用。台账 CRUD 同步；生成/定妆照异步（作业轮询同 §3 的
+`/v1/images/jobs` 语义）；qc 同步（VLM）；owner 隔离（跨 owner 一律 404）。
+
+```bash
+# 建模特（201 即回；自动起定妆照作业，portrait_status 异步回填 done + portrait_url）
+curl -s -X POST "$MEDIA_GATEWAY_BASE_URL/v1/dressup/models" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"模特A","desc":"22岁·高挑·鹅蛋脸·黑长直","source_media_id":"med_…"}'
+# 台账查重（复用优先——定妆照一次约 50s，重复模特不要重建）
+curl -s "$MEDIA_GATEWAY_BASE_URL/v1/dressup/models" -H "$AUTH"
+
+# 建服装（或 /garments/from_media 一键导入，自动 VLM 属性分析出 keywords）
+curl -s -X POST "$MEDIA_GATEWAY_BASE_URL/v1/dressup/garments" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"碎花裙","gtype":"onmodel","media_id":"med_…","keywords":["白底碎花","吊带长裙"]}'
+
+# 建试穿（同步台账）→ 提交生成（异步 job_id）→ 轮询 tryon 详情回填 status/outputs
+curl -s -X POST "$MEDIA_GATEWAY_BASE_URL/v1/dressup/tryons" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"model_id":"dm_…","garment_id":"dg_…"}'
+curl -s -X POST "$MEDIA_GATEWAY_BASE_URL/v1/dressup/tryons/dt_…/generate" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"output":"image","pose":"front","aspect_ratio":"3:4"}'
+curl -s "$MEDIA_GATEWAY_BASE_URL/v1/dressup/tryons/dt_…" -H "$AUTH"
+#   · pose 预设：front/side/back/stool/walking/bag（认中文别名）；白名单外必须给 "pose_text"
+#   · scene_id 与 "scene_source":"garment" 互斥；garment_frames 可手选服装参考图 1–3 张
+
+# VLM 衣着保真质检（同步）；FAIL 给 qc.suggest → 按建议词自动重出（retry ≤3 次，超限 400）
+curl -s -X POST "$MEDIA_GATEWAY_BASE_URL/v1/dressup/tryons/dt_…/qc" -H "$AUTH"
+curl -s -X POST "$MEDIA_GATEWAY_BASE_URL/v1/dressup/tryons/dt_…/retry" -H "$AUTH"
+```
+
+注意：建档 body `extra=forbid`（多余字段 400）；VLM×渲染互斥走 `resource_gate`，
+冲突返回 503 + `Retry-After`（按 §5 语义等待重试）；产物 URL 指向
+`/v1/images/jobs/{id}/file`，浏览器渲染走 §3 的 `/api/media-gateway/file/...` 代理。
+
 ## 4. 推荐用法
 
 - **组图（多张系列图）**：优先用封装脚本

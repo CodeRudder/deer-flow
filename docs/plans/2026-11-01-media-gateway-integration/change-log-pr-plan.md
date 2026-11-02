@@ -32,6 +32,14 @@
 - `97685690` + `e2eb4a0d` + `143b7e7f` 沙箱 per-user 凭证注入链 + 修复
 - `184998ff` ArtifactAutoPresentMiddleware（run 结束自动产物登记）
 - `9c7022ff` provisioner 按真实契约用 name 字段
+- P0 追加（2026-11-02）：skill `dressup-tryon`（换装试穿）——SKILL.md + 沙箱脚本
+  `scripts/tryon.py`（上传→台账复用（定妆照不重建）→试穿→异步生成→VLM 质检
+  闭环 FAIL 自动 retry ≤3/网关 409 超限转人工→产物落盘，缺省单模特×单服装×3
+  姿势）；编排层 `media_gateway/dressup.py`；mock 加 dressup 路由分区
+  （models/garments(+from_media)/tryons/generate/qc/retry/DELETE，含台账复用、
+  pose 白名单、retry 409、owner 隔离）；`media-gateway-api` skill 增补换装端点
+  速查；单测 15 例全绿；真实网关冒烟全链路通过（见 dressup-and-remaining-apis.md
+  §5.1，含契约修正：garments keywords 为字符串、retry 超限 409）
 - 验证：MGW 相关 306 用例 + E2E-mock 全绿；E2E-real 生图链路 5 轮闭环通过
 
 ## PR-3 模型注册表与归并（依赖 PR-2）
