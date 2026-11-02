@@ -32,13 +32,9 @@ import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Tooltip } from "@/components/workspace/tooltip";
-import {
-  useWorkspaceFilesPanelOpen,
-  WorkspaceFilePanel,
-  WorkspaceFilesToggle,
-} from "@/components/workspace/workspace-file-panel";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
+import { isProcessTimelineEnabled } from "@/core/messages/timeline";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings, useThreadSettings } from "@/core/settings";
@@ -224,8 +220,6 @@ export default function AgentChatPage() {
     extraContext: { agent_name },
     enabled: !isMock && env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true",
   });
-  const [workspaceFilesOpen, toggleWorkspaceFiles] =
-    useWorkspaceFilesPanelOpen();
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -286,10 +280,6 @@ export default function AgentChatPage() {
               {!isMock && <QuotaIndicator isThreadBusy={thread.isLoading} />}
               <ExportTrigger threadId={threadId} />
               <ArtifactTrigger />
-              <WorkspaceFilesToggle
-                open={workspaceFilesOpen}
-                onToggle={toggleWorkspaceFiles}
-              />
             </div>
           </header>
 
@@ -299,6 +289,7 @@ export default function AgentChatPage() {
                 className={cn("size-full", !isWelcomeMode && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                processTimeline={isProcessTimelineEnabled()}
                 paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
                 hasMoreHistory={hasMoreHistory}
                 loadMoreHistory={loadMoreHistory}
@@ -418,11 +409,6 @@ export default function AgentChatPage() {
               </div>
             </div>
           </main>
-          <WorkspaceFilePanel
-            threadId={threadId}
-            open={workspaceFilesOpen}
-            onClose={toggleWorkspaceFiles}
-          />
         </div>
       </ChatBox>
     </ThreadContext.Provider>

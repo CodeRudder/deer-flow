@@ -17,7 +17,7 @@ import {
 rs.mock("@/core/i18n/hooks", () => ({
   useI18n: () => ({
     t: {
-      common: { close: "Close", retry: "Retry" },
+      common: { close: "Close", retry: "Retry", download: "Download" },
       workspaceFiles: {
         title: "Files",
         toggle: "Toggle workspace files panel",
@@ -32,6 +32,7 @@ rs.mock("@/core/i18n/hooks", () => ({
         loadError: "Failed to load files.",
         truncated: "List truncated.",
         manualRefreshHint: "Files refresh manually.",
+        tooLargeToPreview: "Too large to preview inline.",
       },
     },
   }),
@@ -41,6 +42,30 @@ rs.mock("@/core/config", () => ({ getBackendBaseURL: () => "http://gw" }));
 
 const fetchMock = rs.hoisted(() => rs.fn());
 rs.mock("@/core/api/fetcher", () => ({ fetch: fetchMock }));
+
+// Preview dialog collaborators: the artifacts preview machinery is mocked at
+// its seams (context hook + renderer) so the click-path routing is what is
+// under test, not Streamdown / CodeMirror internals.
+rs.mock("@/components/workspace/messages/context", () => ({
+  useThread: () => ({ thread: {}, isMock: false }),
+}));
+
+const useArtifactContent = rs.hoisted(() => rs.fn());
+rs.mock("@/core/artifacts/hooks", () => ({ useArtifactContent }));
+
+rs.mock("@/components/workspace/artifacts", () => ({
+  ArtifactFilePreview: (props: { content: string; language: string }) => (
+    <div data-testid="artifact-file-preview" data-language={props.language}>
+      {props.content}
+    </div>
+  ),
+}));
+
+rs.mock("@/components/workspace/code-editor", () => ({
+  CodeEditor: (props: { value: string }) => (
+    <div data-testid="code-editor">{props.value}</div>
+  ),
+}));
 
 function jsonResponse(body: unknown, status = 200) {
   return {
@@ -67,6 +92,34 @@ const ROOT_LISTING = {
       path: "/mnt/user-data/report.pdf",
       type: "file",
       size: 2048,
+      modified_at: "2026-11-01T12:00:00",
+    },
+    {
+      name: "notes.md",
+      path: "/mnt/user-data/notes.md",
+      type: "file",
+      size: 128,
+      modified_at: "2026-11-01T12:00:00",
+    },
+    {
+      name: "script.py",
+      path: "/mnt/user-data/script.py",
+      type: "file",
+      size: 256,
+      modified_at: "2026-11-01T12:00:00",
+    },
+    {
+      name: "huge.csv",
+      path: "/mnt/user-data/huge.csv",
+      type: "file",
+      size: 4 * 1024 * 1024,
+      modified_at: "2026-11-01T12:00:00",
+    },
+    {
+      name: "demo.mp4",
+      path: "/mnt/user-data/demo.mp4",
+      type: "file",
+      size: 4096,
       modified_at: "2026-11-01T12:00:00",
     },
   ],
@@ -116,6 +169,12 @@ function urlCalls() {
 beforeEach(() => {
   fetchMock.mockClear();
   fetchMock.mockImplementation((url: string) => Promise.resolve(listing(url)));
+  useArtifactContent.mockReset().mockReturnValue({
+    content: "# Hello workspace",
+    url: "http://gw/api/threads/t1/artifacts/mnt/user-data/notes.md",
+    isLoading: false,
+    error: null,
+  });
   window.localStorage.clear();
 });
 
@@ -296,6 +355,126 @@ describe("WorkspaceFilePanel", () => {
     });
     expect(window.localStorage.getItem(WORKSPACE_FILES_PANEL_OPEN_KEY)).toBe(
       "0",
+    );
+  });
+
+  it("previews a text file inline via the artifact preview machinery", async () => {
+    const { container } = render(
+      <WorkspaceFilePanel threadId="t1" open={true} />,
+    );
+    await waitFor(() => {
+      expect(byTestId(container, "workspace-files-list").textContent).toContain(
+        "notes.md",
+      );
+    });
+    fireEvent.click(getAllByText(container, "notes.md")[0]!);
+    const dialog = await waitFor(() =>
+      byTestId(container, "workspace-files-preview"),
+    );
+    // Markdown goes through the shared ArtifactFilePreview component.
+    const preview = dialog.querySelector(
+      '[data-testid="artifact-file-preview"]',
+    );
+    expect(preview).toBeTruthy();
+    expect(preview?.getAttribute("data-language")).toBe("markdown");
+    expect(preview?.textContent).toContain("Hello workspace");
+    // A download affordance is present, pointing at the artifact endpoint.
+    const downloadLink = dialog.querySelector('a[href*="download=true"]');
+    expect(downloadLink).toBeTruthy();
+  });
+
+  it("renders code files with the readonly editor and media through the iframe branch", async () => {
+    const { container } = render(
+      <WorkspaceFilePanel threadId="t1" open={true} />,
+    );
+    await waitFor(() => {
+      expect(byTestId(container, "workspace-files-list").textContent).toContain(
+        "script.py",
+      );
+    });
+    fireEvent.click(getAllByText(container, "script.py")[0]!);
+    await waitFor(() => {
+      expect(
+        byTestId(container, "workspace-files-preview").querySelector(
+          '[data-testid="code-editor"]',
+        ),
+      ).toBeTruthy();
+    });
+
+    cleanup();
+    const media = render(<WorkspaceFilePanel threadId="t1" open={true} />);
+    await waitFor(() => {
+      expect(
+        byTestId(media.container, "workspace-files-list").textContent,
+      ).toContain("demo.mp4");
+    });
+    fireEvent.click(getAllByText(media.container, "demo.mp4")[0]!);
+    await waitFor(() => {
+      const iframe = byTestId(
+        media.container,
+        "workspace-files-preview",
+      ).querySelector("iframe");
+      expect(iframe).toBeTruthy();
+      expect(iframe?.getAttribute("src")).toContain(
+        "/api/threads/t1/artifacts/mnt/user-data/demo.mp4",
+      );
+      expect(iframe?.getAttribute("src")).not.toContain("download=true");
+    });
+  });
+
+  it("falls back to download-only with a hint for oversized text and opens downloads for binaries", async () => {
+    const openSpy = rs.fn();
+    const originalOpen = window.open;
+    window.open = openSpy as unknown as typeof window.open;
+    try {
+      const { container } = render(
+        <WorkspaceFilePanel threadId="t1" open={true} />,
+      );
+      await waitFor(() => {
+        expect(
+          byTestId(container, "workspace-files-list").textContent,
+        ).toContain("huge.csv");
+      });
+
+      // Oversized text: dialog with the too-large hint, no inline content.
+      fireEvent.click(getAllByText(container, "huge.csv")[0]!);
+      const dialog = await waitFor(() =>
+        byTestId(container, "workspace-files-preview"),
+      );
+      expect(
+        dialog.querySelector('[data-testid="workspace-files-too-large"]'),
+      ).toBeTruthy();
+      expect(dialog.querySelector('a[href*="download=true"]')).toBeTruthy();
+      expect(
+        dialog.querySelector('[data-testid="artifact-file-preview"]'),
+      ).toBeNull();
+      expect(useArtifactContent.mock.calls.at(-1)?.[0]?.enabled).toBe(false);
+
+      // Binary: no dialog at all, straight to a download window.open.
+      fireEvent.click(byTestId(container, "workspace-files-preview-close"));
+      await waitFor(() => {
+        expect(queryByTestId(container, "workspace-files-preview")).toBeNull();
+      });
+      fireEvent.click(getAllByText(container, "report.pdf")[0]!);
+      expect(queryByTestId(container, "workspace-files-preview")).toBeNull();
+      expect(openSpy).toHaveBeenCalledTimes(1);
+      expect(String(openSpy.mock.calls[0]?.[0])).toContain(
+        "/api/threads/t1/artifacts/mnt/user-data/report.pdf?download=true",
+      );
+    } finally {
+      window.open = originalOpen;
+    }
+  });
+
+  it("embedded variant renders regardless of `open` and fills its parent", async () => {
+    const { container } = render(
+      <WorkspaceFilePanel threadId="t1" open={false} variant="embedded" />,
+    );
+    await waitFor(() => {
+      expect(queryByTestId(container, "workspace-files-list")).toBeTruthy();
+    });
+    expect(urlCalls()[0]).toBe(
+      "http://gw/api/threads/t1/workspace/files?path=%2Fmnt%2Fuser-data",
     );
   });
 });

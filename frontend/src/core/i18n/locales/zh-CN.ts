@@ -338,6 +338,7 @@ export const zhCN: Translations = {
     loadError: "文件加载失败。",
     truncated: "列表已截断 —— 请缩小路径或搜索范围。",
     manualRefreshHint: "文件列表需通过刷新按钮手动更新。",
+    tooLargeToPreview: "文件过大，无法在线预览 —— 请下载后查看。",
   },
 
   // Conversation

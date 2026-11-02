@@ -2,6 +2,7 @@
 
 import {
   ChevronLeftIcon,
+  DownloadIcon,
   FileArchiveIcon,
   FileIcon,
   FolderIcon,
@@ -15,11 +16,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ArtifactFilePreview } from "@/components/workspace/artifacts";
+import { CodeEditor } from "@/components/workspace/code-editor";
+import { useThread } from "@/components/workspace/messages/context";
 import { Tooltip } from "@/components/workspace/tooltip";
-import { resolveArtifactURL } from "@/core/artifacts/utils";
+import { useArtifactContent } from "@/core/artifacts/hooks";
+import { resolveArtifactURL, urlOfArtifact } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import { formatTimeAgo } from "@/core/utils/datetime";
-import { isImageFile } from "@/core/utils/files";
+import { checkCodeFile, isImageFile, isVideoFile } from "@/core/utils/files";
 import { cn } from "@/lib/utils";
 
 import {
@@ -69,6 +74,41 @@ export function formatEntryModifiedAt(modifiedAt: string | null): string {
   return formatTimeAgo(date);
 }
 
+/** Files larger than this are download-only (no inline text preview). */
+const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
+
+const AUDIO_EXTENSIONS = new Set([
+  "mp3",
+  "wav",
+  "ogg",
+  "aac",
+  "m4a",
+  "flac",
+  "wma",
+  "aiff",
+]);
+
+/**
+ * How a workspace file click is handled: `image` / `text` / `media` preview
+ * inline, `tooLarge` shows a download-only hint, `null` downloads directly
+ * (binaries). Mirrors the artifacts panel's preview branches.
+ */
+export function previewKindFor(
+  entry: WorkspaceEntry,
+): "image" | "text" | "media" | "tooLarge" | null {
+  if (isImageFile(entry.name)) return "image";
+  if (checkCodeFile(entry.name).isCodeFile) {
+    return entry.size !== null && entry.size > TEXT_PREVIEW_MAX_BYTES
+      ? "tooLarge"
+      : "text";
+  }
+  const extension = entry.name.split(".").pop()?.toLowerCase() ?? "";
+  if (isVideoFile(entry.name) || AUDIO_EXTENSIONS.has(extension)) {
+    return "media";
+  }
+  return null;
+}
+
 function FileIconForEntry({ entry }: { entry: WorkspaceEntry }) {
   if (entry.type === "directory") {
     return <FolderIcon className="text-muted-foreground size-4 shrink-0" />;
@@ -87,24 +127,174 @@ function FileIconForEntry({ entry }: { entry: WorkspaceEntry }) {
   return <FileIcon className="text-muted-foreground size-4 shrink-0" />;
 }
 
+/**
+ * Full-screen overlay preview for a workspace file, reusing the artifacts
+ * preview machinery: text renders through `ArtifactFilePreview` (markdown /
+ * sandboxed html) or the shared readonly `CodeEditor`, media through the same
+ * iframe branch `ArtifactFileDetail` uses for browser-previewable files,
+ * images through the 720p artifact variant. Works identically in the embedded
+ * desktop panel and the mobile drawer — it portals nothing and relies only on
+ * `ThreadContext` (via `useArtifactContent`/`useThread`), which both chat
+ * pages provide.
+ */
+function WorkspaceFilePreviewDialog({
+  entry,
+  threadId,
+  kind,
+  onClose,
+}: {
+  entry: WorkspaceEntry;
+  threadId: string;
+  kind: "image" | "text" | "media" | "tooLarge";
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const { isMock } = useThread();
+  const { content, url, isLoading } = useArtifactContent({
+    filepath: entry.path,
+    threadId,
+    enabled: kind === "text",
+  });
+  const downloadUrl = `${urlOfArtifact({
+    filepath: entry.path,
+    threadId,
+    download: true,
+    isMock,
+  })}`;
+
+  const language = checkCodeFile(entry.name).language ?? "text";
+
+  const body = (() => {
+    if (kind === "image") {
+      return (
+        <img
+          src={`${resolveArtifactURL(entry.path, threadId)}?w=720&fmt=jpg`}
+          alt={entry.name}
+          className="max-h-full max-w-full object-contain"
+        />
+      );
+    }
+    if (kind === "media") {
+      // Same branch as the artifacts panel's canPreviewInBrowser: the
+      // browser's native media player inside a plain iframe.
+      return (
+        <iframe
+          className="size-full"
+          src={resolveArtifactURL(entry.path, threadId)}
+          title={entry.name}
+        />
+      );
+    }
+    if (kind === "tooLarge") {
+      return (
+        <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm">
+          <span data-testid="workspace-files-too-large">
+            {t.workspaceFiles.tooLargeToPreview}
+          </span>
+          <Button asChild variant="outline">
+            <a href={downloadUrl} target="_blank" rel="noopener noreferrer">
+              <DownloadIcon className="size-4" />
+              {t.common.download}
+            </a>
+          </Button>
+        </div>
+      );
+    }
+    if (isLoading) {
+      return (
+        <div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 p-4 text-sm">
+          <LoaderIcon className="size-4 animate-spin" />
+          {t.workspaceFiles.loading}
+        </div>
+      );
+    }
+    if (language === "markdown" || language === "html") {
+      return (
+        <ArtifactFilePreview
+          content={content ?? ""}
+          language={language}
+          scrollKey={entry.path}
+          url={url}
+        />
+      );
+    }
+    return (
+      <CodeEditor
+        className="size-full resize-none rounded-none border-none"
+        value={content ?? ""}
+        readonly
+      />
+    );
+  })();
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col"
+      data-testid="workspace-files-preview"
+    >
+      <div
+        className="bg-background/95 absolute inset-0 backdrop-blur"
+        onClick={onClose}
+      />
+      <div className="bg-background relative m-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border shadow-lg">
+        <div className="flex items-center gap-2 border-b px-3 py-2">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {entry.name}
+          </span>
+          {kind !== "tooLarge" && (
+            <Button asChild variant="outline" size="sm">
+              <a href={downloadUrl} target="_blank" rel="noopener noreferrer">
+                <DownloadIcon className="size-4" />
+                {t.common.download}
+              </a>
+            </Button>
+          )}
+          <Tooltip content={t.common.close}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={onClose}
+              data-testid="workspace-files-preview-close"
+            >
+              <XIcon className="size-4" />
+            </Button>
+          </Tooltip>
+        </div>
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          {body}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface WorkspaceFilePanelProps {
   threadId: string;
   open: boolean;
   onClose?: () => void;
+  /**
+   * `drawer` (default): free-standing right overlay drawer (mobile chat
+   * pages). `embedded`: fills the parent container — used as the "files"
+   * tab inside the shared desktop artifacts panel.
+   */
+  variant?: "drawer" | "embedded";
 }
 
 /**
- * Right-side collapsible sidebar browsing the thread workspace files.
+ * Workspace file browser.
  *
- * Desktop (≥md) it renders as a third flex column; below md it renders as a
- * fixed overlay drawer with a backdrop. Closed → renders nothing. Listing is
- * manual-only: it loads when opened / navigated and refreshes only via the
- * explicit refresh button (no realtime polling).
+ * `variant="drawer"` renders a fixed overlay drawer with a backdrop below md
+ * (closed → renders nothing); `variant="embedded"` renders the same
+ * header/list/footer filling the parent, with no positioning of its own.
+ * Listing is manual-only: it loads when opened / navigated and refreshes only
+ * via the explicit refresh button (no realtime polling).
  */
 export function WorkspaceFilePanel({
   threadId,
   open,
   onClose,
+  variant = "drawer",
 }: WorkspaceFilePanelProps) {
   const { t } = useI18n();
   const [path, setPath] = useState(WORKSPACE_ROOT_PATH);
@@ -158,10 +348,11 @@ export function WorkspaceFilePanel({
   );
 
   // (Re)load on open, navigation, debounced search or explicit refresh.
+  // The embedded variant (shared panel tab) is always "open".
   useEffect(() => {
-    if (!open) return;
+    if (!open && variant !== "embedded") return;
     void load(path, debouncedSearch);
-  }, [open, path, debouncedSearch, refreshTick, load]);
+  }, [open, variant, path, debouncedSearch, refreshTick, load]);
 
   const handleClose = useCallback(() => {
     onClose?.();
@@ -175,7 +366,7 @@ export function WorkspaceFilePanel({
         setPath(entry.path);
         return;
       }
-      if (isImageFile(entry.name)) {
+      if (previewKindFor(entry) !== null) {
         setPreviewEntry(entry);
         return;
       }
@@ -385,55 +576,47 @@ export function WorkspaceFilePanel({
     </div>
   );
 
-  if (!open) return null;
-
-  return (
-    <>
-      {/* Desktop: third flex column next to the message area. */}
-      <aside
+  if (variant === "embedded") {
+    return (
+      <div
         data-testid="workspace-files-panel"
-        className="bg-background hidden w-80 shrink-0 flex-col border-l md:flex"
+        className="flex size-full min-h-0 flex-col"
       >
         {header}
         {body}
         {footer}
-      </aside>
-      {/* Mobile: overlay drawer with a backdrop. */}
-      <div className="fixed inset-0 z-50 md:hidden">
+      </div>
+    );
+  }
+
+  if (!open) return null;
+
+  return (
+    <>
+      {/* Overlay drawer (mobile chat pages): right sheet with a backdrop. */}
+      <div className="fixed inset-0 z-50">
         <div
           className="absolute inset-0 bg-black/40"
           onClick={handleClose}
           data-testid="workspace-files-backdrop"
         />
-        <div className="bg-background absolute top-0 right-0 flex h-full w-80 max-w-full flex-col border-l shadow-lg">
+        <div
+          data-testid="workspace-files-panel"
+          className="bg-background absolute top-0 right-0 flex h-full w-80 max-w-full flex-col border-l shadow-lg"
+        >
           {header}
           {body}
           {footer}
         </div>
       </div>
-      {/* Simple image preview dialog. */}
-      {previewEntry && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          data-testid="workspace-files-image-preview"
-          onClick={() => setPreviewEntry(null)}
-        >
-          <div className="absolute inset-0 bg-black/60" />
-          <img
-            src={`${resolveArtifactURL(previewEntry.path, threadId)}?w=720&fmt=jpg`}
-            alt={previewEntry.name}
-            className="relative max-h-full max-w-full rounded-lg shadow-lg"
-            onClick={(event) => event.stopPropagation()}
-          />
-          <Button
-            variant="secondary"
-            size="icon"
-            className="absolute top-4 right-4"
-            onClick={() => setPreviewEntry(null)}
-          >
-            <XIcon className="size-4" />
-          </Button>
-        </div>
+      {/* Full preview dialog (image / text / media / too-large fallback). */}
+      {previewEntry && previewKindFor(previewEntry) !== null && (
+        <WorkspaceFilePreviewDialog
+          entry={previewEntry}
+          threadId={threadId}
+          kind={previewKindFor(previewEntry)!}
+          onClose={() => setPreviewEntry(null)}
+        />
       )}
     </>
   );

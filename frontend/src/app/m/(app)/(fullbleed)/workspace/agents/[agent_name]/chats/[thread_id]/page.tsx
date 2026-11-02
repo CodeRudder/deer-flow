@@ -21,8 +21,13 @@ import { MobileChatHeader } from "@/components/workspace/mobile/chat-header";
 import { MobileComposer } from "@/components/workspace/mobile/composer";
 import { useScrollToBottom } from "@/components/workspace/mobile/use-scroll-to-bottom";
 import { TodoList } from "@/components/workspace/todo-list";
+import {
+  useWorkspaceFilesPanelOpen,
+  WorkspaceFilePanel,
+} from "@/components/workspace/workspace-file-panel";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
+import { isProcessTimelineEnabled } from "@/core/messages/timeline";
 import { SubtasksProvider } from "@/core/tasks/context";
 
 import "@/components/workspace/mobile/chat-surface.css";
@@ -176,6 +181,9 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
     surfaceRef,
     threadId,
   );
+  // Workspace file browser drawer (persisted open state, default collapsed).
+  const [workspaceFilesOpen, toggleWorkspaceFiles, closeWorkspaceFiles] =
+    useWorkspaceFilesPanelOpen();
 
   const agentTitle = agent?.name ?? agentName;
 
@@ -205,6 +213,7 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
           onTokenUsagePreferencesChange={(preferences) =>
             setLocalSettings("tokenUsage", preferences)
           }
+          onOpenWorkspaceFiles={toggleWorkspaceFiles}
         />
 
         {/* The transcript owns the remaining height and scrolls internally;
@@ -214,6 +223,7 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
             className="size-full"
             threadId={threadId}
             thread={thread}
+            processTimeline={isProcessTimelineEnabled()}
             paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
             hasMoreHistory={hasMoreHistory}
             loadMoreHistory={loadMoreHistory}
@@ -261,6 +271,14 @@ function MobileAgentChatScreen({ agentName }: { agentName: string }) {
             />
           </div>
         )}
+
+        {/* Workspace file browser: overlay drawer above the chat surface. */}
+        <WorkspaceFilePanel
+          threadId={threadId}
+          open={workspaceFilesOpen}
+          onClose={closeWorkspaceFiles}
+          variant="drawer"
+        />
 
         <MobileComposer
           status={

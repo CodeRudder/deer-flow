@@ -357,6 +357,8 @@ export const enUS: Translations = {
     loadError: "Failed to load files.",
     truncated: "List truncated — refine the path or search.",
     manualRefreshHint: "Files refresh manually via the refresh button.",
+    tooLargeToPreview:
+      "This file is too large to preview inline — download it instead.",
   },
 
   // Conversation

@@ -2,12 +2,43 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useState,
   type ReactNode,
 } from "react";
 
 import { useSidebar } from "@/components/ui/sidebar";
 import { env } from "@/env";
+
+/**
+ * Which view the right-side workspace panel shows.
+ *
+ * The panel is shared between the conversation artifacts and the thread
+ * workspace file browser; the active tab persists across sessions.
+ */
+export type WorkspacePanelTab = "artifacts" | "files";
+
+export const WORKSPACE_PANEL_TAB_KEY = "deer-flow.workspace-panel-tab";
+
+function readPersistedPanelTab(): WorkspacePanelTab {
+  if (typeof window === "undefined") return "artifacts";
+  try {
+    return window.localStorage.getItem(WORKSPACE_PANEL_TAB_KEY) === "files"
+      ? "files"
+      : "artifacts";
+  } catch {
+    return "artifacts";
+  }
+}
+
+function persistPanelTab(tab: WorkspacePanelTab): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(WORKSPACE_PANEL_TAB_KEY, tab);
+  } catch {
+    // Storage unavailable (private mode etc.) — persistence is best-effort.
+  }
+}
 
 export interface ArtifactsContextType {
   artifacts: string[];
@@ -21,6 +52,10 @@ export interface ArtifactsContextType {
   open: boolean;
   autoOpen: boolean;
   setOpen: (open: boolean) => void;
+
+  /** Active view of the shared right-side panel (persists in localStorage). */
+  panelTab: WorkspacePanelTab;
+  setPanelTab: (tab: WorkspacePanelTab) => void;
 }
 
 const ArtifactsContext = createContext<ArtifactsContextType | undefined>(
@@ -60,11 +95,26 @@ export function ArtifactsProvider({
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
   );
   const [autoOpen, setAutoOpen] = useState(false);
+  // Lazy so SSR renders the default and the persisted value only replaces it
+  // on the client (no hydration mismatch).
+  const [panelTab, setPanelTabState] = useState<WorkspacePanelTab>(
+    () => "artifacts",
+  );
+  // Read the persisted tab once on the client after mount.
+  const [panelTabHydrated, setPanelTabHydrated] = useState(false);
   const { setOpen: setSidebarOpen } = useSidebar();
+
+  const setPanelTab = useCallback((tab: WorkspacePanelTab) => {
+    setPanelTabState(tab);
+    persistPanelTab(tab);
+  }, []);
 
   const select = useCallback(
     (artifact: string, autoSelect = false) => {
       setSelectedArtifact(artifact);
+      // An artifact selection is an artifacts-view action: make sure the
+      // shared panel shows that tab even if the user last browsed files.
+      setPanelTab("artifacts");
       if (env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true") {
         setSidebarOpen(false);
       }
@@ -73,8 +123,16 @@ export function ArtifactsProvider({
       }
       onSelect?.(artifact);
     },
-    [onSelect, setSidebarOpen, setSelectedArtifact, setAutoSelect],
+    [onSelect, setPanelTab, setSidebarOpen, setSelectedArtifact, setAutoSelect],
   );
+
+  // Hydrate the persisted tab client-side after mount (SSR renders the
+  // default, so there is no hydration mismatch).
+  useEffect(() => {
+    if (panelTabHydrated) return;
+    setPanelTabHydrated(true);
+    setPanelTabState(readPersistedPanelTab());
+  }, [panelTabHydrated]);
 
   const deselect = useCallback(() => {
     setSelectedArtifact(null);
@@ -110,6 +168,9 @@ export function ArtifactsProvider({
     selectedArtifact,
     select,
     deselect,
+
+    panelTab,
+    setPanelTab,
   };
 
   return (

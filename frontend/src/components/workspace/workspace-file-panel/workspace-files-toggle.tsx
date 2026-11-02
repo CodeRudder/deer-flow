@@ -61,7 +61,11 @@ export function writeWorkspaceFilesPanelOpen(open: boolean): void {
  * Defaults to collapsed and only reads localStorage after mount (hydration
  * guard), so SSR and the first client render always agree.
  */
-export function useWorkspaceFilesPanelOpen(): [boolean, () => void] {
+export function useWorkspaceFilesPanelOpen(): [
+  boolean,
+  () => void,
+  () => void,
+] {
   const [open, setOpen] = useState(false);
   const mountedRef = useRef(false);
 
@@ -78,5 +82,12 @@ export function useWorkspaceFilesPanelOpen(): [boolean, () => void] {
     });
   }, []);
 
-  return [open, toggle];
+  const close = useCallback(() => {
+    setOpen((previous) => {
+      if (previous && mountedRef.current) writeWorkspaceFilesPanelOpen(false);
+      return false;
+    });
+  }, []);
+
+  return [open, toggle, close];
 }

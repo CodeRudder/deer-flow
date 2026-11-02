@@ -310,6 +310,8 @@ export interface Translations {
     truncated: string;
     /** Reminder that listings refresh only via the refresh button. */
     manualRefreshHint: string;
+    /** File exceeds the inline text-preview size cap. */
+    tooLargeToPreview: string;
   };
 
   // Conversation
