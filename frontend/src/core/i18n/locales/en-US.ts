@@ -103,6 +103,8 @@ export const enUS: Translations = {
     createSkillPrompt:
       "We're going to build a new skill step by step with `skill-creator`. To start, what do you want this skill to do?",
     addAttachments: "Add attachments",
+    attachmentsDuringRunUnsupported:
+      "Attachments can't be sent while a run is streaming — please send them after this turn finishes.",
     mode: "Mode",
     flashMode: "Flash",
     flashModeDescription: "Fast and efficient, but may not be accurate",

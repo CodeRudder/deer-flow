@@ -101,6 +101,7 @@ export interface Translations {
     placeholder: string;
     createSkillPrompt: string;
     addAttachments: string;
+    attachmentsDuringRunUnsupported: string;
     mode: string;
     flashMode: string;
     flashModeDescription: string;
