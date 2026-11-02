@@ -89,9 +89,20 @@ fi
 
 # ── Hand off to uvicorn ─────────────────────────────────────────────────────
 
+# Reload watcher scope: watch ONLY the source trees. Bare `--reload` (watch
+# CWD = /app/backend) also watches `.deer-flow` runtime data, and the
+# absolute `--reload-exclude` globs do NOT match the relative paths watchfiles
+# reports — an agent writing its thread workspace (e.g. `python -m venv` +
+# `pip install` under /mnt/user-data/workspace) restarted the gateway
+# mid-run and killed in-flight runs (2026-11-02, thread 47a3774b). Watching
+# `app`/`packages` only removes runtime data from the watch set entirely;
+# config.yaml hot-reload does not need the watcher (AppConfig re-reads on
+# content-signature change).
 PYTHONPATH=. exec uv run uvicorn app.gateway.app:app \
     --host 0.0.0.0 --port 8001 \
     --reload \
+    --reload-dir app \
+    --reload-dir packages \
     --reload-include='*.yaml' \
     --reload-include='.env' \
     --reload-exclude=/app/backend/sandbox \
