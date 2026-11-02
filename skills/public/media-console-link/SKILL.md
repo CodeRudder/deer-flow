@@ -1,6 +1,6 @@
 ---
 name: media-console-link
-description: Use this skill when the user wants to open the media console (媒体控制台) — e.g. says 打开媒体控制台 / 去做换装 / 短剧制作 / 素材库管理 / 种子匹配 / VLM 打标, or asks for a link to the Media Gateway web UI. Returns a jump-link card pointing at the user's own media console session.
+description: Use this skill when the user wants to open the media console (媒体控制台) — e.g. says 打开媒体控制台 / 去做换装 / 短剧制作 / 素材库管理 / 种子匹配 / VLM 打标, or asks for a link to the Media Gateway web UI. Also use it for 视频抽帧 / 帧提取 / extract frames — it returns a jump-link that opens the console's frame-extraction page directly on the right video. Does NOT extract frames itself.
 ---
 
 # 媒体控制台跳转（media-console-link）
@@ -75,3 +75,42 @@ Content-Type: application/json
 **例 3（未配置）**
 > 用户：帮我打开素材库
 > 助手：（API 返回 400）→ "当前部署未配置媒体控制台地址，请联系管理员设置 `MEDIA_GATEWAY_CONSOLE_URL` 后再试。"
+
+## 动作：视频抽帧引导（抽帧 / 帧提取 / extract frames）
+
+**不做抽帧本身**——抽帧（扫描切分→选帧→存组图）在控制台的「视频抽帧」页完成，
+本动作只负责生成直达链接并引导用户操作。
+
+### 流程
+
+1. **拿到控制台链接**：同上，调用 `POST /api/media-gateway/console-link` 拿 `url`。
+2. **确定视频 media_id**：
+   - 用户给了已入库视频的 media_id → 直接用。
+   - 用户给的是**视频链接**（URL）→ 告知用户需先在控制台「链接抓取」页抓取入库拿到
+     media_id，再回来要直达链接；或者直接给 `#vidframes` 基础页链接（见下方降级）。
+   - 用户给的是**本地视频文件**→ 告知用户在控制台「素材 → 视频管理」上传入库拿到
+     media_id； DeerFlow 侧没有视频上传 API，不要尝试替用户上传。
+3. **拼直达 URL**：在 `url` 后面追加 hash：
+   `<url>#vidframes?media=<media_id>`
+   （例：`https://mgw.example/ui?ticket=abc#vidframes?media=med_v01`）。
+   打开后控制台会落到「视频抽帧」页、**自动选中该视频并开始扫描**。
+4. **输出链接卡片**（见下）。
+
+### URL 能力说明
+
+- `#vidframes` — 打开「视频抽帧」页（视频列表需手动选择）。
+- `#vidframes?media=<id>` — 打开并自动选中该视频、自动开始扫描（列表里找不到该 id
+  时静默回落到手动选择，不报错）。
+- 参数在地址栏保留：刷新页面会重新定位到同一视频（不会重复自动扫描）。
+
+### 返回格式（抽帧引导卡片）
+
+🎬 **视频抽帧已就绪**
+
+[点击打开视频抽帧页（已定位到你的视频）](<url#vidframes?media=...>)
+
+- 打开后自动选中视频并开始扫描（长视频约 1-2 分钟），扫完点图勾选帧
+- 选好后点「保存所选为组图」，组图可直接进组图生视频 / 换装素材
+
+若视频尚未入库，先给 `#vidframes` 基础页链接，并在卡片里附一句：
+"打开后在顶部下拉选择你的视频（或先在「链接抓取」/「视频管理」把视频入库）。"
