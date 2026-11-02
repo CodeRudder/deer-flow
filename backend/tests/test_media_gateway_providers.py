@@ -151,6 +151,63 @@ class TestCapabilityMapping:
         check_params_supported(cap, {"ratio": None})
 
 
+# --- short_edge / aspect_ratio local validation + passthrough --------------------
+
+
+class TestShortEdgeValidation:
+    def _cap(self) -> ModelCapability:
+        # Merged-tier shape: only ``prompt`` is declared, yet short_edge /
+        # aspect_ratio are accepted (validated locally) — the gateway canvas
+        # takes any positive short_edge in range.
+        return ModelCapability(name="m", supported_params=frozenset({"prompt"}))
+
+    @pytest.mark.parametrize("value", [512, 256, 2048, 512.0, 720])
+    def test_valid_short_edge_passes(self, value):
+        check_params_supported(self._cap(), {"short_edge": value})
+
+    @pytest.mark.parametrize("value", [255, 2049, -512, 0])
+    def test_out_of_range_short_edge_rejected(self, value):
+        with pytest.raises(UnsupportedParameterError, match=r"between 256 and 2048"):
+            check_params_supported(self._cap(), {"short_edge": value})
+
+    @pytest.mark.parametrize("value", ["512", "abc", None])
+    def test_non_number_short_edge_rejected(self, value):
+        if value is None:
+            # ``None`` means "not supplied" — never validated, never rejected.
+            check_params_supported(self._cap(), {"short_edge": None})
+            return
+        with pytest.raises(UnsupportedParameterError, match="short_edge must be a number"):
+            check_params_supported(self._cap(), {"short_edge": value})
+
+    @pytest.mark.parametrize("value", [512.5, 0.5])
+    def test_fractional_short_edge_rejected(self, value):
+        with pytest.raises(UnsupportedParameterError, match="short_edge must be an integer"):
+            check_params_supported(self._cap(), {"short_edge": value})
+
+    def test_bool_short_edge_rejected(self):
+        with pytest.raises(UnsupportedParameterError, match="short_edge must be a number"):
+            check_params_supported(self._cap(), {"short_edge": True})
+
+    def test_error_message_carries_model_and_range(self):
+        with pytest.raises(UnsupportedParameterError, match="model=m on media_gateway"):
+            check_params_supported(self._cap(), {"short_edge": 99999})
+
+
+class TestAspectRatioParam:
+    def test_aspect_ratio_allowed_without_declaration(self):
+        check_params_supported(ModelCapability(name="m", supported_params=frozenset({"prompt"})), {"aspect_ratio": "16:9"})
+
+    def test_aspect_ratio_checked_against_ratios_when_declared(self):
+        cap = ModelCapability(name="m", supported_params=frozenset({"prompt"}), ratios=("1:1", "16:9"))
+        check_params_supported(cap, {"aspect_ratio": "16:9"})
+        with pytest.raises(UnsupportedParameterError, match="aspect_ratio='9:16'"):
+            check_params_supported(cap, {"aspect_ratio": "9:16"})
+
+    def test_other_unknown_params_still_rejected(self):
+        with pytest.raises(UnsupportedParameterError, match="does not support parameter\\(s\\): duration"):
+            check_params_supported(ModelCapability(name="m", supported_params=frozenset({"prompt"})), {"duration": 5})
+
+
 # --- submission (Idempotency-Key + user token) ----------------------------------
 
 
@@ -183,6 +240,45 @@ class TestSubmit:
 
         # Only the capability request happened; the submit never left.
         assert [r.method for r in backend.requests] == ["GET"]
+
+    @pytest.mark.anyio
+    async def test_submit_forwards_short_edge_and_aspect_ratio(self):
+        # short_edge / aspect_ratio pass the merged-tier param check and are
+        # forwarded verbatim into the gateway payload.
+        backend = FakeBackend(
+            [
+                ("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY)),
+                ("POST", "/v1/images/generations", httpx.Response(202, json={"id": "t-2"})),
+                ("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY)),
+                ("POST", "/v1/images/generations", httpx.Response(202, json={"id": "t-3"})),
+            ]
+        )
+        provider = _provider(backend, token_provider=_fake_token)
+
+        await provider.submit("a cat", model="mgw-image-1", params={"short_edge": 512, "aspect_ratio": "16:9"})
+        assert backend.last_json() == {"mode": "mgw-image-1", "prompt": "a cat", "short_edge": 512, "aspect_ratio": "16:9"}
+
+        # invalid short_edge is rejected before any submit HTTP call
+        backend.requests.clear()
+        with pytest.raises(UnsupportedParameterError):
+            await provider.submit("a cat", model="mgw-image-1", params={"short_edge": 4096})
+        assert [r.method for r in backend.requests] == ["GET"]
+
+    @pytest.mark.anyio
+    async def test_submit_without_short_edge_unchanged(self):
+        # No short_edge → payload identical to the pre-short_edge behaviour
+        # (tier defaults decide the canvas).
+        backend = FakeBackend(
+            [
+                ("GET", "/v1/images/modes", httpx.Response(200, json=CAPABILITIES_BODY)),
+                ("POST", "/v1/images/generations", httpx.Response(202, json={"id": "t-4"})),
+            ]
+        )
+        provider = _provider(backend, token_provider=_fake_token)
+
+        await provider.submit("a cat", model="mgw-image-1", params={"ratio": "1:1"})
+        assert backend.last_json() == {"mode": "mgw-image-1", "prompt": "a cat", "ratio": "1:1"}
+        assert "short_edge" not in backend.last_json()
 
     @pytest.mark.anyio
     async def test_submit_rejects_unknown_model(self):
@@ -740,3 +836,42 @@ class TestFamilyMergingAndAliases:
         provider = MediaGatewayGenerationProvider(client, kind="image")
         await provider.submit("p", model="h3-t2v", params={"quality": "garbage"})
         assert client.posts[-1]["json"]["mode"] == "h3-clip-std"
+
+    async def test_submit_quality_and_short_edge_coexist(self, monkeypatch, _mgw_enum_env):
+        # quality picks the rung (steps/duration tier); short_edge only
+        # overrides the canvas short edge and rides along in the payload.
+        _skills_enabled(monkeypatch)
+        body = _full_modes_body()
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(body))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        client = _StubClient(body)
+        provider = MediaGatewayGenerationProvider(client, kind="video")
+        await provider.submit("p", model="h3-t2v", params={"quality": "2k", "short_edge": 512})
+        sent = client.posts[-1]["json"]
+        assert sent["mode"] == "h3-clip-2k"
+        assert sent["short_edge"] == 512
+        assert "quality" not in sent
+
+        # invalid short_edge rejected even with a valid quality rung
+        with pytest.raises(UnsupportedParameterError):
+            await provider.submit("p", model="h3-t2v", params={"quality": "2k", "short_edge": 100})
+
+    async def test_submit_forwards_aspect_ratio_on_merged_model(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        body = _full_modes_body()
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(body))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        client = _StubClient(body)
+        provider = MediaGatewayGenerationProvider(client, kind="video")
+        await provider.submit("p", model="h3-t2v", params={"aspect_ratio": "9:16"})
+        assert client.posts[-1]["json"]["aspect_ratio"] == "9:16"
+
+    async def test_merged_description_mentions_short_edge(self, monkeypatch, _mgw_enum_env):
+        _skills_enabled(monkeypatch)
+        monkeypatch.setattr(mgw_providers, "_fetch_modes_body", _FakeFetch(_full_modes_body()))
+        await mgw_providers.refresh_media_gateway_models(force=True)
+
+        models = {m.name: m for m in {p.name: p for p in image_registry.get_image_generation_providers().providers}["media_gateway"].models}
+        assert "可用 short_edge 自定义短边（256–2048，如 512），不传用档位默认" in models["h3-t2v"].description

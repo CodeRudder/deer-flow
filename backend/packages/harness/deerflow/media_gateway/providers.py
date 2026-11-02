@@ -214,6 +214,27 @@ def map_capabilities(body: dict, *, base_params: frozenset[str] = frozenset({"pr
     return capabilities
 
 
+#: Parameters the merged-tier capability list does not declare but the
+#: gateway accepts anyway; they pass the "unsupported" check and are instead
+#: validated locally (see :func:`check_params_supported`).
+_LOCALLY_VALIDATED_PARAMS = frozenset({"short_edge", "aspect_ratio"})
+#: short_edge bounds (canvas short edge in px; 512 etc. are valid).
+_SHORT_EDGE_MIN = 256
+_SHORT_EDGE_MAX = 2048
+
+
+def _validate_short_edge(model_name: str, value: Any) -> int:
+    """Validate a caller-supplied ``short_edge``; return it as ``int``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise UnsupportedParameterError(f"model={model_name} on media_gateway: short_edge must be a number, got {value!r}")
+    if isinstance(value, float) and not value.is_integer():
+        raise UnsupportedParameterError(f"model={model_name} on media_gateway: short_edge must be an integer, got {value!r}")
+    short_edge = int(value)
+    if not (_SHORT_EDGE_MIN <= short_edge <= _SHORT_EDGE_MAX):
+        raise UnsupportedParameterError(f"model={model_name} on media_gateway: short_edge must be an integer between {_SHORT_EDGE_MIN} and {_SHORT_EDGE_MAX}, got {short_edge}")
+    return short_edge
+
+
 def check_params_supported(capability: ModelCapability, params: dict[str, Any]) -> None:
     """Reject parameters outside the model's capability before any HTTP call."""
     # R2-4: needs_reference tiers (i2i / ref2va, images.md §1) hard-require a
@@ -221,11 +242,18 @@ def check_params_supported(capability: ModelCapability, params: dict[str, Any]) 
     # no-reference submission instead of round-tripping a 400.
     if capability.needs_reference and not any(params.get(key) for key in ("reference_images", "reference_image", "image")):
         raise UnsupportedParameterError(f"model={capability.name} on media_gateway requires a reference image (parameter domain reference_images is mandatory for needs_reference tiers)")
-    unsupported = sorted(k for k, v in params.items() if v is not None and k not in capability.supported_params)
+    unsupported = sorted(k for k, v in params.items() if v is not None and k not in capability.supported_params and k not in _LOCALLY_VALIDATED_PARAMS)
     if unsupported:
         raise UnsupportedParameterError(f"model={capability.name} on media_gateway does not support parameter(s): {', '.join(unsupported)}")
     if capability.ratios and isinstance(params.get("ratio"), str) and params["ratio"] not in capability.ratios:
         raise UnsupportedParameterError(f"model={capability.name} on media_gateway does not support ratio={params['ratio']!r} (supported: {', '.join(capability.ratios)})")
+    # short_edge / aspect_ratio: always accepted (the merged-tier capability
+    # list only carries ``prompt``), validated locally before any HTTP call.
+    if params.get("short_edge") is not None:
+        _validate_short_edge(capability.name, params["short_edge"])
+    aspect_ratio = params.get("aspect_ratio")
+    if aspect_ratio is not None and capability.ratios and aspect_ratio not in capability.ratios:
+        raise UnsupportedParameterError(f"model={capability.name} on media_gateway does not support aspect_ratio={aspect_ratio!r} (supported: {', '.join(capability.ratios)})")
 
 
 def normalize_status(raw: Any) -> str:
@@ -740,6 +768,7 @@ def merge_same_family_tiers(entries: list[dict]) -> tuple[list[dict], dict[str, 
         rung_bits = "、".join(f"{rung}={_entry_rung_rank(entry)[0]}p" for rung, entry in rungs.items() if rung != "std") or None
         if rung_bits:
             bits.append(f"quality 档：std（默认）、{rung_bits}，提交时用 quality 参数选档")
+        bits.append(f"可用 short_edge 自定义短边（{_SHORT_EDGE_MIN}–{_SHORT_EDGE_MAX}，如 512），不传用档位默认")
         # Reference requirement of the family (from the std representative).
         if std_entry.get("needs_reference"):
             bits.append("必须提供参考图")
