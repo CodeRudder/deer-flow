@@ -446,6 +446,7 @@ export const zhCN: Translations = {
     undoTooltip: "撤回并编辑",
     queuedHint: "已插入——将在当前步骤结束后生效",
     alreadyApplied: "该消息已注入模型上下文，无法撤回",
+    runEndedQueuedDropped: "上一条回复在排队消息注入前已结束——请重新发送",
   },
 
   subtasks: {

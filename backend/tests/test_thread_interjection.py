@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import HumanMessage
 
 from app.gateway.routers.thread_runs import (
     InterjectionCreateRequest,
@@ -160,24 +161,19 @@ async def test_find_inflight_none_without_task_or_for_terminal():
 # ---------------------------------------------------------------------------
 
 
-class _InterjectableAgent:
-    """Fake agent: yields one chunk, waits for the interjection, yields again."""
+class _RecordingAgent:
+    """Fake agent: streams two chunks and records finalize-time aupdate_state."""
 
-    def __init__(self, applied_event: asyncio.Event):
-        self.applied_event = applied_event
+    def __init__(self):
         self.update_calls: list[tuple[dict, str | None]] = []
-        self.stream_closed = asyncio.Event()
 
-    async def update_state(self, config, values, as_node=None):
+    async def aupdate_state(self, config, values, as_node=None):
         self.update_calls.append((values, as_node))
-        self.applied_event.set()
         return None
 
     async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
         yield {"messages": []}
-        await self.applied_event.wait()
         yield {"messages": []}
-        self.stream_closed.set()
 
 
 def _factory(agent):
@@ -187,14 +183,114 @@ def _factory(agent):
     return factory
 
 
+class _FakeContext:
+    def __init__(self, values: dict):
+        self.context = values
+
+
+class _FakeRequest:
+    def __init__(self, context: dict, messages: list):
+        self.runtime = _FakeContext(context)
+        self.messages = messages
+
+    def override(self, *, messages):
+        return _FakeRequest(self.runtime.context, messages)
+
+
+class _FakeJournal:
+    def __init__(self):
+        self.interjections: list[dict] = []
+        self.messages: list = []
+
+    def record_interjection(self, **kwargs):
+        self.interjections.append(kwargs)
+
+    def record_interjection_message(self, message, **kwargs):
+        self.messages.append((message, kwargs))
+
+
+async def _make_applier_with_items(texts: list[str]) -> InterjectionApplier:
+    """Applier with items still queued (not yet drained/applied)."""
+    applier = InterjectionApplier("t1", "r1", max_pending=8)
+    for text in texts:
+        await applier.enqueue(text, source="web")
+    return applier
+
+
+# ---------------------------------------------------------------------------
+# InterjectionMiddleware (model-call boundary injection)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_worker_injects_interjection_at_step_boundary():
-    applied_event = asyncio.Event()
-    agent = _InterjectableAgent(applied_event)
+async def test_middleware_appends_interjections_to_model_call():
+    from deerflow.agents.middlewares.interjection_middleware import InterjectionMiddleware
+
+    applier = await _make_applier_with_items(["first", "second"])
+    journal = _FakeJournal()
+    bridge = _make_bridge()
+    context = {
+        "__run_interjections": applier,
+        "__run_journal": journal,
+        "__run_bridge": bridge,
+    }
+    request = _FakeRequest(context, [HumanMessage(content="original question")])
+    seen: list[list] = []
+
+    async def handler(req):
+        seen.append(list(req.messages))
+        return "response"
+
+    result = await InterjectionMiddleware().awrap_model_call(request, handler)
+    assert result == "response"
+    assert len(seen) == 1
+    contents = [m.content for m in seen[0]]
+    assert contents == ["original question", "first", "second"]
+    # Applied + announced + journalled (trace + displayable message).
+    assert all(item.applied for item in applier.applied_items)
+    applied = [data for (event, data) in _published_events(bridge) if event == "custom" and data.get("type") == INTERJECTION_APPLIED_EVENT]
+    assert len(applied) == 1
+    assert len(applied[0]["interjections"]) == 2
+    assert len(journal.interjections) == 2
+    assert len(journal.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_middleware_noop_without_applier_or_queue():
+    from deerflow.agents.middlewares.interjection_middleware import InterjectionMiddleware
+
+    request = _FakeRequest({}, [HumanMessage(content="q")])
+    seen: list[list] = []
+
+    async def handler(req):
+        seen.append(list(req.messages))
+        return "ok"
+
+    assert await InterjectionMiddleware().awrap_model_call(request, handler) == "ok"
+    assert [m.content for m in seen[0]] == ["q"]
+
+    applier = InterjectionApplier("t1", "r1")
+    context = {"__run_interjections": applier}
+    request2 = _FakeRequest(context, [HumanMessage(content="q2")])
+    assert await InterjectionMiddleware().awrap_model_call(request2, handler) == "ok"
+    assert len(seen) == 2
+
+
+# ---------------------------------------------------------------------------
+# Worker finalize: applied -> final checkpoint, leftover -> discarded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_applied_interjections_into_final_checkpoint():
+    agent = _RecordingAgent()
     bridge = _make_bridge()
     mgr = RunManager()
     record = await mgr.create("t1")
     record.ensure_interjections(max_pending=4)
+    item = await record.interjections.enqueue("remember this", source="web")
+    batch = await record.interjections.drain_batch(first_wait_timeout=0)
+    await record.interjections.apply_batch(batch)
     task = asyncio.create_task(
         run_agent(
             bridge,
@@ -208,31 +304,19 @@ async def test_worker_injects_interjection_at_step_boundary():
         )
     )
     record.task = task
-
-    item = await record.interjections.enqueue("remember this", source="web")
-    await asyncio.wait_for(applied_event.wait(), timeout=5)
+    await asyncio.wait_for(task, timeout=5)
 
     assert len(agent.update_calls) == 1
     values, as_node = agent.update_calls[0]
     assert as_node == INTERJECTION_AS_NODE
     assert [m.content for m in values["messages"]] == ["remember this"]
+    assert values["messages"][0].additional_kwargs.get("interjection") is True
     assert item.applied is True
-
-    # SSE/custom event announces the applied interjections.
-    events = _published_events(bridge)
-    applied = [data for (event, data) in events if event == "custom" and data.get("type") == INTERJECTION_APPLIED_EVENT]
-    assert len(applied) == 1
-    assert applied[0]["interjections"][0]["id"] == item.id
-
-    await asyncio.wait_for(task, timeout=5)
 
 
 @pytest.mark.asyncio
 async def test_worker_discards_unapplied_interjections_at_run_end():
-    applied_event = asyncio.Event()
-    agent = _InterjectableAgent(applied_event)
-    # Agent never waits: run finishes before the consumer drains.
-    agent.applied_event.set()
+    agent = _RecordingAgent()
     bridge = _make_bridge()
     mgr = RunManager()
     record = await mgr.create("t1")
@@ -255,6 +339,7 @@ async def test_worker_discards_unapplied_interjections_at_run_end():
     await asyncio.sleep(0.05)
     events = _published_events(bridge)
     assert not [data for (event, data) in events if event == "custom" and data.get("type") == INTERJECTION_APPLIED_EVENT]
+    assert agent.update_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -417,3 +502,109 @@ def test_list_interjections_route_returns_empty_when_idle():
         resp = client.get("/api/threads/t-none/interjections")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Journal: interjection trace + displayable message records
+# ---------------------------------------------------------------------------
+
+
+async def _flush(journal):
+    await journal.flush()
+
+
+@pytest.mark.asyncio
+async def test_journal_records_interjection_trace_and_message():
+    from deerflow.runtime.events.store.memory import MemoryRunEventStore
+    from deerflow.runtime.journal import RunJournal
+
+    store = MemoryRunEventStore()
+    journal = RunJournal("r1", "t1", store, flush_threshold=100)
+    journal.record_interjection(interjection_id="int-1", text="hello", source="web", seq=1)
+    message = HumanMessage(id="m-1", content="hello", additional_kwargs={"interjection": True})
+    journal.record_interjection_message(message, interjection_id="int-1", seq=1, source="web")
+    # Deduped by message id on repeat calls.
+    journal.record_interjection_message(message, interjection_id="int-1", seq=1, source="web")
+    await journal.flush()
+
+    rows = list(store._events.get("t1", []))
+    trace = [r for r in rows if r["event_type"] == "interjection.applied"]
+    display = [r for r in rows if r["event_type"] == "llm.human.input"]
+    assert len(trace) == 1
+    assert trace[0]["category"] == "trace"
+    assert trace[0]["content"]["interjection_id"] == "int-1"
+    assert len(display) == 1
+    assert display[0]["category"] == "message"
+    assert display[0]["metadata"]["interjection_id"] == "int-1"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end run wiring: enqueue mid-run -> middleware applies -> finalize persists
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_wiring_enqueue_midrun_applied_and_persisted():
+    """Full worker path: the middleware sees the applier through the runtime
+    context installed by the worker; a mid-run enqueue is applied at the
+    (simulated) next model call and persisted into the final checkpoint."""
+    from deerflow.agents.middlewares.interjection_middleware import (
+        RUN_BRIDGE_CONTEXT_KEY,
+        RUN_INTERJECTIONS_CONTEXT_KEY,
+        InterjectionMiddleware,
+    )
+
+    class _WiredAgent(_RecordingAgent):
+        """Simulates one model call, a gap (enqueue window), a second call."""
+
+        async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+            runtime = (config or {}).get("configurable", {}).get("__pregel_runtime")
+            context = getattr(runtime, "context", {}) or {}
+            middleware = InterjectionMiddleware()
+            request = _FakeRequest(context, [HumanMessage(content="turn question")])
+
+            async def handler(req):
+                return "call-1"
+
+            await middleware.awrap_model_call(request, handler)
+            yield {"messages": []}
+            await asyncio.sleep(0.2)  # window for the API-side enqueue
+            await middleware.awrap_model_call(request, handler)
+            yield {"messages": []}
+
+    agent = _WiredAgent()
+    bridge = _make_bridge()
+    mgr = RunManager()
+    record = await mgr.create("t1")
+    record.ensure_interjections(max_pending=4)
+    task = asyncio.create_task(
+        run_agent(
+            bridge,
+            mgr,
+            record,
+            ctx=RunContext(checkpointer=None, app_config=_app_config()),
+            agent_factory=_factory(agent),
+            graph_input={"messages": []},
+            config={},
+            stream_modes=["values"],
+        )
+    )
+    record.task = task
+    await asyncio.sleep(0.05)
+    item = await record.interjections.enqueue("mid-run input", source="web")
+    await asyncio.wait_for(item.applied_event.wait(), timeout=5)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert item.applied is True
+    assert [item.text for item in record.interjections.applied_items] == ["mid-run input"]
+    # Finalize persisted the applied interjection into the checkpoint.
+    assert len(agent.update_calls) == 1
+    values, as_node = agent.update_calls[0]
+    assert as_node == INTERJECTION_AS_NODE
+    assert [m.content for m in values["messages"]] == ["mid-run input"]
+    # Applied event published on the run's bridge.
+    applied = [data for (event, data) in _published_events(bridge) if event == "custom" and data.get("type") == INTERJECTION_APPLIED_EVENT]
+    assert len(applied) == 1
+    assert applied[0]["interjections"][0]["id"] == item.id
+    # Context keys were installed by the worker.
+    assert RUN_INTERJECTIONS_CONTEXT_KEY and RUN_BRIDGE_CONTEXT_KEY

@@ -89,6 +89,9 @@ class InterjectionApplier:
         self._queue: asyncio.Queue[Interjection] = asyncio.Queue()
         self._pending: dict[str, Interjection] = {}
         self._applied_ids: set[str] = set()
+        # Items already injected into a model call; the worker persists them
+        # into the final checkpoint at run end so the *next* turn sees them.
+        self.applied_items: list[Interjection] = []
         self._seq = itertools.count(1)
 
     # -- API side -----------------------------------------------------------
@@ -141,7 +144,7 @@ class InterjectionApplier:
                     return [item for item in batch if item.id in self._pending]
         try:
             first = await asyncio.wait_for(self._queue.get(), timeout=first_wait_timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             return []
         batch = [first]
         while True:
@@ -153,11 +156,33 @@ class InterjectionApplier:
         return [item for item in batch if item.id in self._pending]
 
     async def apply_batch(self, batch: list[Interjection]) -> list[Interjection]:
-        """Mark a drained batch as applied (called after ``update_state`` succeeded)."""
+        """Mark a drained batch as applied (called once the messages entered a
+        model call's context)."""
         for item in batch:
             item.applied = True
             self._pending.pop(item.id, None)
             self._applied_ids.add(item.id)
+            self.applied_items.append(item)
+            item.applied_event.set()
+        return batch
+
+    def drain_batch_sync(self) -> list[Interjection]:
+        """Non-blocking sync drain for the synchronous ``wrap_model_call`` path."""
+        batch: list[Interjection] = []
+        while True:
+            try:
+                batch.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return [item for item in batch if item.id in self._pending]
+
+    def apply_batch_sync(self, batch: list[Interjection]) -> list[Interjection]:
+        """Sync counterpart of :meth:`apply_batch`."""
+        for item in batch:
+            item.applied = True
+            self._pending.pop(item.id, None)
+            self._applied_ids.add(item.id)
+            self.applied_items.append(item)
             item.applied_event.set()
         return batch
 

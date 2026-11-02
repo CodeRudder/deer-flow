@@ -263,3 +263,21 @@ API：排队消息创建即分配 `interjection_id`（与 run_id 解耦）；
   2. 气泡从队列区消失，消息文本**回填输入框**（光标定位末尾，可直接编辑重发）
   3. 回填后输入框若已有内容则追加为新区段（不覆盖用户正在输入的文字）
   （可选快捷键支持另行评估，非本定稿范围。）
+
+---
+
+## 11. 实现修正记录（2026-11-02，feature/thread-interjection 分支）
+
+### 11.1 `update_state` 注入不可行 → 改为模型调用边界中间件
+
+§2.1/§3.3 的核心假设"astream 循环在下一 super-step 会从 checkpoint 重读 state"**在 langgraph 1.x 不成立**：pregel 循环在整个 `astream` 调用期间把 channel state 保持在内存，从不重读 checkpoint；外部 `update_state` 写入对运行中的循环不可见，且会被循环自己的 checkpoint put 覆盖（E2E 实测：注入的 HumanMessage 最终从 checkpoint 消失）。另外 `AsyncPostgresSaver` 的同步包装器在运行中的 event loop 上直接抛 `InvalidStateError`。
+
+**落地方式改为**：`InterjectionMiddleware.awrap_model_call`（+ 同步 `wrap_model_call`，供 `DeerFlowClient.stream` 同步路径使用）在**下一个模型调用边界**排空队列，把插话 `HumanMessage` 追加进本次 model call 的 request payload；journal 写 `interjection.applied`（trace）+ `llm.human.input`（可展示消息）两条记录；worker 在 run 收尾后把已应用消息 `aupdate_state` 追加进最终 checkpoint——后续轮次的模型在历史中可见。
+
+### 11.2 其他与原设计的差异
+
+- applied 判定时机 = 中间件消费（下一个模型调用），不是 `update_state` 提交。
+- "已注入不可撤回"的边界相应前移到模型调用消费点。
+- run 收尾残留消息按补充稿**丢弃**（不自动转新 run）；前端收尾时移除排队气泡并提示"上一条回复在排队消息注入前已结束——请重新发送"。
+- SSE 事件经 `custom` 通道下发（`{type: "interjection_applied", ...}`），使 LangGraph SDK 的 `onCustomEvent` 能收到；显式 REST 端点 `POST/GET/DELETE /api/threads/{id}/interjections` 为前端主路径，`/runs{,/stream,/wait}` 的运行中请求自动转 202 `interject_queued`（开关关闭时保持 409 现行为）。
+- IM 渠道（B2）未在本分支实现；`interjection.im_channels` 仅为预留开关。

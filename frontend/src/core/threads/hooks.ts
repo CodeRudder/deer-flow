@@ -1643,6 +1643,27 @@ export function useThreadStream({
     }
   }, [pendingInterjections, thread.messages]);
 
+  // The run ended before another model call consumed some queued
+  // interjections: the worker discards them (plan-b supplement), so the local
+  // queued bubbles must go too, with a hint that they were not injected.
+  useEffect(() => {
+    if (thread.isLoading) {
+      return;
+    }
+    const queued = pendingInterjections.filter((item) => !item.applied);
+    if (queued.length === 0) {
+      return;
+    }
+    toast(t.interjection.runEndedQueuedDropped);
+    setPendingInterjections((current) =>
+      current.filter((item) => item.applied),
+    );
+  }, [
+    thread.isLoading,
+    pendingInterjections,
+    t.interjection.runEndedQueuedDropped,
+  ]);
+
   const cancelPendingInterjection = useCallback(
     async (
       threadId: string,

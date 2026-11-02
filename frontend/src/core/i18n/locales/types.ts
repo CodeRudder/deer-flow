@@ -428,6 +428,7 @@ export interface Translations {
     undoTooltip: string;
     queuedHint: string;
     alreadyApplied: string;
+    runEndedQueuedDropped: string;
   };
 
   // Subtasks
