@@ -177,13 +177,43 @@ up() {  # 启动 deerflow 进程（env 从 /deploy/.env 注入进程，不进容
     export DEER_FLOW_CONFIG_PATH=/deploy/config.yaml
     export DEER_FLOW_HOME=/deploy/data/deer-flow
     export DEER_FLOW_EXTENSIONS_CONFIG_PATH=/deploy/extensions_config.json
-    setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --workers ${GATEWAY_WORKERS:-2} > /tmp/backend.log 2>&1"
-    setsid bash -c "cd /app/frontend && PORT=3000 HOSTNAME=0.0.0.0 pnpm start > /tmp/frontend.log 2>&1"'
-  sleep 12
-  status
+    setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --workers ${GATEWAY_WORKERS:-2} > /tmp/backend.log 2>&1" < /dev/null &
+    setsid bash -c "cd /app/frontend && exec env PORT=3000 HOSTNAME=0.0.0.0 node server.gzip.mjs > /tmp/frontend.log 2>&1" < /dev/null &
+    exit 0"'
+  wait_healthy
 }
 
-stop() { docker exec "$NAME" bash -c 'pkill -f "[u]vicorn app.gateway" || true; pkill -f "[s]erver.gzip" || true'; echo 进程已停; }
+# 轮询三个端点直至全通或超时（~60s）；失败时 tail 日志尾部辅助定位
+wait_healthy() {
+  local i ok
+  printf '等待服务就绪'
+  for i in $(seq 1 60); do
+    ok=1
+    curl -s -o /dev/null --max-time 3 http://localhost:2026 || ok=0
+    docker exec "$NGINX_NAME" curl -s -o /dev/null --max-time 3 http://"$NAME":3000 2>/dev/null || ok=0
+    curl -s -o /dev/null --max-time 3 http://localhost:18000/health || ok=0
+    [ "$ok" = 1 ] && { echo " 就绪（${i}0s 内）"; status; return 0; }
+    printf '.'; sleep 1
+  done
+  echo
+  echo "错误：服务在 60s 内未全部就绪，最近日志："
+  docker exec "$NAME" bash -c 'tail -n 30 /tmp/backend.log /tmp/frontend.log 2>/dev/null' || true
+  return 1
+}
+
+stop() {
+  # pkill 后轮询 pgrep 确认进程真正退出（避免 stop→up 时序竞争），超时 kill -9 兜底
+  docker exec "$NAME" bash -c '
+    pkill -f "[u]vicorn app.gateway" 2>/dev/null || true
+    pkill -f "[s]erver.gzip" 2>/dev/null || true
+    for i in $(seq 1 20); do
+      pgrep -f "[u]vicorn app.gateway|[s]erver.gzip" >/dev/null 2>&1 || exit 0
+      sleep 0.5
+    done
+    pkill -9 -f "[u]vicorn app.gateway|[s]erver.gzip" 2>/dev/null || true
+    sleep 1'
+  echo 进程已停
+}
 
 status() {
   curl -s -o /dev/null -w 'nginx    :2026  → %{http_code}\n' --max-time 3 http://localhost:2026 || echo 'nginx    未响应'
