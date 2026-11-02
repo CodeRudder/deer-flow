@@ -24,10 +24,12 @@ from deerflow.config.app_config import AppConfig
 from deerflow.runtime.runs.interjection import (
     INTERJECTION_APPLIED_EVENT,
     INTERJECTION_AS_NODE,
+    INTERJECTION_AUTO_RUN_EVENT,
     InterjectionAlreadyAppliedError,
     InterjectionApplier,
     InterjectionNotFoundError,
     InterjectionQueueFullError,
+    merge_interjection_texts,
 )
 from deerflow.runtime.runs.manager import RunManager
 from deerflow.runtime.runs.worker import RunContext, run_agent
@@ -340,6 +342,119 @@ async def test_worker_discards_unapplied_interjections_at_run_end():
     events = _published_events(bridge)
     assert not [data for (event, data) in events if event == "custom" and data.get("type") == INTERJECTION_APPLIED_EVENT]
     assert agent.update_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Worker finalize: leftover -> merged follow-up run (auto-run)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_interjection_texts_joins_in_order():
+    applier = await _make_applier_with_items(["first", "second", "third"])
+    items = await applier.take_pending_for_auto_run()
+    assert merge_interjection_texts(items) == "first\n\nsecond\n\nthird"
+    assert merge_interjection_texts(items, separator=" | ") == "first | second | third"
+
+
+@pytest.mark.asyncio
+async def test_take_pending_for_auto_run_is_idempotent_and_unregisters():
+    applier = await _make_applier_with_items(["only"])
+    item = applier.pending_snapshot()[0]
+    first = await applier.take_pending_for_auto_run()
+    assert [i.text for i in first] == ["only"]
+    # Second take: nothing left — the batch can never spawn two follow-ups.
+    assert await applier.take_pending_for_auto_run() == []
+    # Removed from the pending registry: snapshot and cancel both forget it.
+    assert applier.pending_snapshot() == []
+    with pytest.raises(InterjectionNotFoundError):
+        applier.cancel(item["id"])
+
+
+@pytest.mark.asyncio
+async def test_worker_auto_starts_followup_run_for_leftover_interjections():
+    agent = _RecordingAgent()
+    bridge = _make_bridge()
+    mgr = RunManager()
+    record = await mgr.create("t1")
+    record.ensure_interjections(max_pending=4)
+    spawned: list[str] = []
+
+    async def followup_runner(merged_text: str):
+        spawned.append(merged_text)
+        return SimpleNamespace(run_id="r-followup")
+
+    task = asyncio.create_task(
+        run_agent(
+            bridge,
+            mgr,
+            record,
+            ctx=RunContext(checkpointer=None, app_config=_app_config()),
+            agent_factory=_factory(agent),
+            graph_input={"messages": []},
+            config={},
+            stream_modes=["values"],
+            followup_runner=followup_runner,
+        )
+    )
+    record.task = task
+    first = await record.interjections.enqueue("first ask", source="web")
+    second = await record.interjections.enqueue("second ask", source="web")
+    await asyncio.wait_for(task, timeout=5)
+    await asyncio.sleep(0.05)
+
+    # Merged into ONE follow-up run with one user message.
+    assert spawned == ["first ask\n\nsecond ask"]
+    events = _published_events(bridge)
+    auto_events = [data for (event, data) in events if event == "custom" and data.get("type") == INTERJECTION_AUTO_RUN_EVENT]
+    assert len(auto_events) == 1
+    payload = auto_events[0]
+    assert payload["new_run_id"] == "r-followup"
+    assert payload["thread_id"] == "t1"
+    assert payload["input"] == "first ask\n\nsecond ask"
+    assert [item["id"] for item in payload["interjections"]] == [first.id, second.id]
+    # Applied-checkpoint persistence untouched: leftovers were never injected.
+    assert agent.update_calls == []
+    # Queue fully consumed — no double execution.
+    assert record.interjections.pending_snapshot() == []
+    assert await record.interjections.take_pending_for_auto_run() == []
+
+
+@pytest.mark.asyncio
+async def test_worker_followup_failure_falls_back_to_discard():
+    agent = _RecordingAgent()
+    bridge = _make_bridge()
+    mgr = RunManager()
+    record = await mgr.create("t1")
+    record.ensure_interjections(max_pending=4)
+
+    async def failing_runner(merged_text: str):
+        raise RuntimeError("thread deleted / concurrency limit")
+
+    task = asyncio.create_task(
+        run_agent(
+            bridge,
+            mgr,
+            record,
+            ctx=RunContext(checkpointer=None, app_config=_app_config()),
+            agent_factory=_factory(agent),
+            graph_input={"messages": []},
+            config={},
+            stream_modes=["values"],
+            followup_runner=failing_runner,
+        )
+    )
+    record.task = task
+    await record.interjections.enqueue("too late", source="web")
+    await asyncio.wait_for(task, timeout=5)
+    await asyncio.sleep(0.05)
+
+    # Run finished normally despite the spawner failing; nothing announced.
+    assert record.status.value in {"success", "error"}
+    events = _published_events(bridge)
+    assert not [data for (event, data) in events if event == "custom" and data.get("type") == INTERJECTION_AUTO_RUN_EVENT]
+    # Queue consumed exactly once (no retry loop, no duplicate run).
+    assert record.interjections.pending_snapshot() == []
 
 
 # ---------------------------------------------------------------------------

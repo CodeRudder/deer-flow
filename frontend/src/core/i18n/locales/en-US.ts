@@ -474,6 +474,7 @@ export const enUS: Translations = {
       "This message was already applied to the model context and cannot be undone",
     runEndedQueuedDropped:
       "The previous reply finished before your queued message could be inserted — please send it again",
+    queuedAutoRun: "Your queued message was turned into a new task and is now running",
   },
 
   subtasks: {

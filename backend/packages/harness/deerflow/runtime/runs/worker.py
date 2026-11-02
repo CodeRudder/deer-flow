@@ -35,7 +35,7 @@ from deerflow.runtime.stream_bridge import StreamBridge
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.tracing import inject_langfuse_metadata
 
-from .interjection import DEFAULT_MAX_PENDING, INTERJECTION_AS_NODE, InterjectionApplier
+from .interjection import DEFAULT_MAX_PENDING, INTERJECTION_AS_NODE, INTERJECTION_AUTO_RUN_EVENT, InterjectionApplier, merge_interjection_texts
 from .manager import RunManager, RunRecord
 from .naming import resolve_root_run_name
 from .schemas import RunStatus
@@ -299,8 +299,16 @@ async def run_agent(
     stream_subgraphs: bool = False,
     interrupt_before: list[str] | Literal["*"] | None = None,
     interrupt_after: list[str] | Literal["*"] | None = None,
+    followup_runner: Any | None = None,
 ) -> None:
-    """Execute an agent in the background, publishing events to *bridge*."""
+    """Execute an agent in the background, publishing events to *bridge*.
+
+    ``followup_runner`` — optional async callable ``(merged_text) -> RunRecord``
+    provided by the gateway layer. When the run ends with still-queued
+    interjections, they are merged into one user message and a follow-up run
+    is started automatically instead of being discarded; failure falls back to
+    the legacy discard behaviour and never affects the finished run's delivery.
+    """
 
     # Unpack infrastructure dependencies from RunContext.
     checkpointer = ctx.checkpointer
@@ -597,22 +605,16 @@ async def run_agent(
 
     finally:
         # Interjection finalize (plan-b): persist applied messages into the
-        # final checkpoint so the next turn sees them; discard still-queued
-        # (never-applied) ones — the run ended before another model call, and
-        # they do NOT auto-start a new run (plan-b supplement).
+        # final checkpoint so the next turn sees them. The run's own delivery
+        # semantics are untouched here — leftover handling happens below as an
+        # independent post-completion step.
         if interjection_applier is not None:
             try:
                 await _persist_applied_interjections(agent, runnable_config, interjection_applier, run_id)
             except Exception:
                 logger.warning("Run %s: interjection finalize failed", run_id, exc_info=True)
-            leftover = await interjection_applier.drain_batch(first_wait_timeout=0)
-            if leftover:
-                logger.warning(
-                    "Run %s: discarded %d never-applied interjection(s) at run end (seq=%s)",
-                    run_id,
-                    len(leftover),
-                    [item.seq for item in leftover],
-                )
+
+        followup_spawned = False
 
         # Flush any buffered journal events and persist completion data
         if journal is not None:
@@ -628,6 +630,59 @@ async def run_agent(
             except Exception:
                 logger.warning("Failed to persist run completion for %s (non-fatal)", run_id, exc_info=True)
 
+        # Interjection run-end follow-up: the run ended before another model
+        # call consumed some queued messages. Instead of dropping them, take
+        # them out of the queue (atomically — the take is idempotent, so a
+        # leftover batch can never spawn two follow-up runs), merge them into
+        # one user message, and start a follow-up run through the gateway's
+        # spawner. Fully failure-isolated: any error falls back to the legacy
+        # discard behaviour and never touches the finished run's delivery.
+        if interjection_applier is not None:
+            try:
+                leftover = await interjection_applier.take_pending_for_auto_run()
+            except Exception:
+                leftover = []
+                logger.warning("Run %s: failed to drain leftover interjections", run_id, exc_info=True)
+            if leftover:
+                if followup_runner is None:
+                    logger.warning(
+                        "Run %s: discarded %d never-applied interjection(s) at run end (no follow-up runner; seq=%s)",
+                        run_id,
+                        len(leftover),
+                        [item.seq for item in leftover],
+                    )
+                else:
+                    try:
+                        merged_text = merge_interjection_texts(leftover)
+                        new_record = await followup_runner(merged_text)
+                        followup_spawned = True
+                        logger.info(
+                            "Run %s: auto-started follow-up run %s with %d merged interjection(s)",
+                            run_id,
+                            getattr(new_record, "run_id", "?"),
+                            len(leftover),
+                        )
+                        await bridge.publish(
+                            run_id,
+                            "custom",
+                            {
+                                "type": INTERJECTION_AUTO_RUN_EVENT,
+                                "run_id": run_id,
+                                "thread_id": thread_id,
+                                "new_run_id": getattr(new_record, "run_id", None),
+                                "input": merged_text,
+                                "interjections": [item.to_dict() for item in leftover],
+                            },
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Run %s: follow-up run for %d interjection(s) failed — falling back to discard (seq=%s)",
+                            run_id,
+                            len(leftover),
+                            [item.seq for item in leftover],
+                            exc_info=True,
+                        )
+
         # Sync title from checkpoint to threads_meta.display_name
         if checkpointer is not None and thread_store is not None:
             try:
@@ -641,8 +696,10 @@ async def run_agent(
             except Exception:
                 logger.debug("Failed to sync title for thread %s (non-fatal)", thread_id)
 
-        # Update threads_meta status based on run outcome
-        if thread_store is not None:
+        # Update threads_meta status based on run outcome. When a follow-up
+        # run was already started for leftover interjections it marked the
+        # thread "running"; don't clobber that with this run's terminal state.
+        if thread_store is not None and not followup_spawned:
             try:
                 final_status = "idle" if record.status == RunStatus.success else record.status.value
                 await thread_store.update_status(thread_id, final_status)

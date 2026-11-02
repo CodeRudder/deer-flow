@@ -254,7 +254,7 @@ interjection:
 |---|---|---|
 | Pending（排队未注入） | ✅ | 从 per-run 队列移除；前端气泡转"已撤回"或"撤回到输入框"（↑ 语义：文本回填输入框可编辑重发） |
 | 已注入（step 边界已 update_state） | ❌ | 已进 LLM 上下文，不可撤回 |
-| Run 收尾残留（未消费） | ✅ | 丢弃，不转新 run |
+| Run 收尾残留（未消费） | ✅（收尾瞬间起） | **不丢弃**：run 结束后由独立的收尾步骤取出，按序合并为一条用户消息，自动创建同 thread 的新 run 执行（见 §11.3）；取消窗口仅到收尾取出为止 |
 
 API：排队消息创建即分配 `interjection_id`（与 run_id 解耦）；
 `DELETE /api/threads/{id}/interjections/{interjection_id}` → 204；已消费 → 409（对齐 run cancel 幂等口径）。
@@ -278,6 +278,16 @@ API：排队消息创建即分配 `interjection_id`（与 run_id 解耦）；
 
 - applied 判定时机 = 中间件消费（下一个模型调用），不是 `update_state` 提交。
 - "已注入不可撤回"的边界相应前移到模型调用消费点。
-- run 收尾残留消息按补充稿**丢弃**（不自动转新 run）；前端收尾时移除排队气泡并提示"上一条回复在排队消息注入前已结束——请重新发送"。
+- run 收尾残留消息的处置见 §11.3（自动转新 run；上面的补充稿表格已同步更新）。
 - SSE 事件经 `custom` 通道下发（`{type: "interjection_applied", ...}`），使 LangGraph SDK 的 `onCustomEvent` 能收到；显式 REST 端点 `POST/GET/DELETE /api/threads/{id}/interjections` 为前端主路径，`/runs{,/stream,/wait}` 的运行中请求自动转 202 `interject_queued`（开关关闭时保持 409 现行为）。
 - IM 渠道（B2）未在本分支实现；`interjection.im_channels` 仅为预留开关。
+
+### 11.3 run 收尾残留 → 自动合并为新 run 执行（2026-11-02 修订，取代补充稿"丢弃"行为）
+
+用户决策：run 先结束时未消费的排队插话**不丢弃**，直接作为新 run 执行，无需用户重发。
+
+- **解耦形态**：原 run 自身收尾语义（applied 消息 checkpoint 持久化、journal flush、completion 持久化）保持不变；收尾 `finally` 中新增一个**独立的后置步骤**，失败完全隔离（`try/except` 全包，异常即回退丢弃，绝不影响原 run 的状态与产物交付）。多插话按序合并为**一条**用户消息（`"\n\n"` 连接），只创建**一个**新 run（对话语义：一次新任务，不是逐条多次 run）。
+- **取出即删除（幂等）**：`InterjectionApplier.take_pending_for_auto_run()` 从队列与 pending 注册表中原子移除残留项——同一批残留只会被取出一次，不会重复执行；新 run 自身也带同样的 follow-up 通道，连发多条插话+连续多次 run 结束自然链式工作。
+- **触发链路**：`services.start_run` 给 `run_agent` 注入 `followup_runner` 闭包（克隆原请求 body、替换 input 为合并消息、metadata 打 `auto_interjection_followup_of=<原 run_id>`）；worker 收尾取出残留 → 调 spawner 创建新 run → 通过原 run 的 bridge 在 `end` 事件前发布 `custom` 事件 `{type: "interjection_auto_run", new_run_id, input, interjections}`（必须先于 end，SSE consumer 收到 end 即关闭）。失败兜底：新 run 创建失败（线程被删、并发 409 等）→ 记 warning、不发布事件，前端保留"请重新发送"提示（旧行为）。
+- **前端**：`hooks.ts` 收到 `interjection_auto_run` → 气泡标记 `auto_run_run_id`（不再触发丢弃 toast），toast「排队消息已转为新任务并开始执行」，并通过 SDK `joinStream(new_run_id)` 挂到新 run 流（另有 adopt-active-run 轮询兜底）；合并文本出现在转录后气泡自动收敛为真实用户消息（`pruneLandedInterjections` 按 `auto_run_input` 匹配）。收尾未收到事件的失败场景仍走原"请重新发送"toast。
+- 测试：`backend/tests/test_thread_interjection.py`（取出幂等、合并文本、followup 成功/失败）、`backend/tests/test_gateway_services.py::test_start_run_wires_followup_runner_merging_leftover_interjections`、`frontend/tests/unit/core/threads/interjection.test.ts`（状态转换）。

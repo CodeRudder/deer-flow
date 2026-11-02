@@ -529,6 +529,26 @@ async def start_run(
 
         stream_modes = normalize_stream_modes(body.stream_mode)
 
+        async def _spawn_interjection_followup(merged_text: str) -> RunRecord:
+            """Start a follow-up run carrying merged leftover interjections.
+
+            Invoked by the worker after this run ends with unconsumed queued
+            interjections. Clones the original request body so the follow-up
+            inherits assistant/model/config context, but replaces the input
+            with a single user message (the merged texts) and tags the run
+            metadata for observability. The worker treats any exception as
+            "follow-up unavailable" and falls back to discarding the queue.
+            """
+            followup_body = body.model_copy(
+                update={
+                    "input": {"messages": [{"role": "user", "content": merged_text}]},
+                    "command": None,
+                    "action": None,
+                    "metadata": {**(body.metadata or {}), "auto_interjection_followup_of": record.run_id},
+                }
+            )
+            return await start_run(followup_body, thread_id, request)
+
         task = asyncio.create_task(
             run_agent(
                 bridge,
@@ -542,6 +562,7 @@ async def start_run(
                 stream_subgraphs=body.stream_subgraphs,
                 interrupt_before=body.interrupt_before,
                 interrupt_after=body.interrupt_after,
+                followup_runner=_spawn_interjection_followup,
             )
         )
         record.task = task

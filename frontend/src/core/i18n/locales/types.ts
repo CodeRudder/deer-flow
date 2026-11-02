@@ -430,6 +430,7 @@ export interface Translations {
     queuedHint: string;
     alreadyApplied: string;
     runEndedQueuedDropped: string;
+    queuedAutoRun: string;
   };
 
   // Subtasks

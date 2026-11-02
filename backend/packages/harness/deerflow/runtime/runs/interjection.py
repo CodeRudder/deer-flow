@@ -33,7 +33,27 @@ INTERJECTION_AS_NODE = "model"
 # SSE event published once queued interjections have been applied to state.
 INTERJECTION_APPLIED_EVENT = "interjection_applied"
 
+# SSE event published when the run ended before queued interjections could be
+# injected and they were merged into a single follow-up run instead of being
+# discarded. Carries ``new_run_id`` so clients can link the bubbles to the
+# run that is now executing them.
+INTERJECTION_AUTO_RUN_EVENT = "interjection_auto_run"
+
+# Separator used when merging several queued interjections into the
+# follow-up run's single user message.
+INTERJECTION_MERGE_SEPARATOR = "\n\n"
+
 DEFAULT_MAX_PENDING = 8
+
+
+def merge_interjection_texts(items: list[Interjection], *, separator: str = INTERJECTION_MERGE_SEPARATOR) -> str:
+    """Merge queued interjections (in queue order) into one user message text.
+
+    The run-end follow-up converts every still-queued item into a single new
+    run whose user input is the sequential concatenation of the original
+    texts — one conversational turn instead of one run per item.
+    """
+    return separator.join(item.text for item in items)
 
 
 @dataclass
@@ -184,6 +204,29 @@ class InterjectionApplier:
             self._applied_ids.add(item.id)
             self.applied_items.append(item)
             item.applied_event.set()
+        return batch
+
+    async def take_pending_for_auto_run(self) -> list[Interjection]:
+        """Remove and return all still-queued interjections (run-end follow-up).
+
+        Called once by the worker after the run finished: the returned items are
+        atomically removed from the queue *and* from the pending registry, so a
+        second call (or a concurrent cancel / pending-snapshot read) can never
+        see them again — this is the idempotency boundary that guarantees a
+        leftover batch is converted into a follow-up run at most once.
+        Cancelled items sitting in the queue are dropped, mirroring
+        :meth:`drain_batch`.
+        """
+        batch = await self.drain_batch(first_wait_timeout=0)
+        for item in batch:
+            self._pending.pop(item.id, None)
+        if batch:
+            logger.info(
+                "Interjections taken for auto-run: run_id=%s thread_id=%s ids=%s",
+                self.run_id,
+                self.thread_id,
+                [item.id for item in batch],
+            )
         return batch
 
     def pending_snapshot(self) -> list[dict[str, Any]]:

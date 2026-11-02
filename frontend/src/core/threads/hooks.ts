@@ -29,10 +29,13 @@ import { promptInputFilePartToFile, uploadFiles } from "../uploads";
 
 import { fetchThreadTokenUsage } from "./api";
 import {
+  applyAutoRunEvent,
   cancelInterjection,
   createInterjection,
+  hasUnclaimedQueuedInterjections,
   InterjectionNoActiveRunError,
   type PendingInterjection,
+  pruneLandedInterjections,
 } from "./interjection";
 import {
   buildThreadsSearchQueryOptions,
@@ -1327,6 +1330,36 @@ export function useThreadStream({
         typeof event === "object" &&
         event !== null &&
         "type" in event &&
+        event.type === "interjection_auto_run"
+      ) {
+        // The run ended before these queued messages could be injected; the
+        // worker merged them into one follow-up run. Mark the bubbles so the
+        // drop toast doesn't fire, announce it, and attach to the new run's
+        // stream so the UI keeps following the conversation.
+        const e = event as {
+          type: string;
+          new_run_id?: string | null;
+          input?: string;
+          interjections?: { id: string }[];
+        };
+        const hasAutoItems = (e.interjections ?? []).length > 0;
+        if (hasAutoItems) {
+          setPendingInterjections((current) => applyAutoRunEvent(current, e));
+          toast(t.interjection.queuedAutoRun);
+        }
+        if (e.new_run_id) {
+          // Deferred: `thread` isn't assigned yet inside its own callbacks.
+          setTimeout(() => {
+            void joinStreamRef.current(e.new_run_id!);
+          }, 0);
+        }
+        return;
+      }
+
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
         typeof event.type === "string" &&
         TASK_STATUS_EVENT_TYPES.has(event.type)
       ) {
@@ -1366,8 +1399,11 @@ export function useThreadStream({
       setOptimisticThreadId(null);
       setLiveMessagesThreadId(null);
       // Queued-but-never-applied interjections die with the failed run (the
-      // worker discards them); applied ones stay visible as normal bubbles.
-      setPendingInterjections((current) => current.filter((i) => i.applied));
+      // worker discards them); applied ones and those merged into a follow-up
+      // run stay visible (the follow-up run still owns them).
+      setPendingInterjections((current) =>
+        current.filter((i) => i.applied || i.auto_run_run_id),
+      );
       setPendingSupersededRunIds(new Set());
       setPendingSupersededMessageIds(new Set());
       toast.error(getStreamErrorMessage(error));
@@ -1620,24 +1656,18 @@ export function useThreadStream({
     }
   }, [hasHumanOptimistic, optimisticMessageCount, renderHumanMessageCount]);
 
-  // Prune applied interjections once the injected HumanMessage lands in the
-  // thread transcript (matched by text) so the queued bubble doesn't duplicate
-  // the state's copy of the message.
+  // Prune interjections once their text lands in the thread transcript as a
+  // real HumanMessage so the queued bubble doesn't duplicate it. Applied items
+  // match their own text; auto-run items match the merged follow-up input.
   useEffect(() => {
     if (pendingInterjections.length === 0) return;
-    const appliedIds = new Set(
-      pendingInterjections.filter((item) => item.applied).map((i) => i.id),
-    );
-    if (appliedIds.size === 0) return;
     const humanTexts = new Set<string>();
     for (const message of thread.messages) {
       if (message.type !== "human") continue;
       const text = interjectionMessageText(message);
       if (text) humanTexts.add(text);
     }
-    const remaining = pendingInterjections.filter(
-      (item) => !(appliedIds.has(item.id) && humanTexts.has(item.text)),
-    );
+    const remaining = pruneLandedInterjections(pendingInterjections, humanTexts);
     if (remaining.length !== pendingInterjections.length) {
       setPendingInterjections(remaining);
     }
@@ -1650,8 +1680,7 @@ export function useThreadStream({
     if (thread.isLoading) {
       return;
     }
-    const queued = pendingInterjections.filter((item) => !item.applied);
-    if (queued.length === 0) {
+    if (!hasUnclaimedQueuedInterjections(pendingInterjections)) {
       return;
     }
     toast(t.interjection.runEndedQueuedDropped);
