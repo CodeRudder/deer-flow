@@ -24,9 +24,10 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal, cast
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.checkpoint.base import empty_checkpoint
 
+from deerflow.agents.middlewares.interjection_middleware import RUN_BRIDGE_CONTEXT_KEY, RUN_INTERJECTIONS_CONTEXT_KEY
 from deerflow.config.app_config import AppConfig
 from deerflow.runtime.run_outcome import RUN_OUTCOME_CONTEXT_KEY, RunOutcomeTracker
 from deerflow.runtime.serialization import serialize
@@ -34,6 +35,7 @@ from deerflow.runtime.stream_bridge import StreamBridge
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.tracing import inject_langfuse_metadata
 
+from .interjection import DEFAULT_MAX_PENDING, INTERJECTION_AS_NODE, InterjectionApplier
 from .manager import RunManager, RunRecord
 from .naming import resolve_root_run_name
 from .schemas import RunStatus
@@ -42,6 +44,34 @@ logger = logging.getLogger(__name__)
 
 # Valid stream_mode values for LangGraph's graph.astream()
 _VALID_LG_MODES = {"values", "updates", "checkpoints", "tasks", "debug", "messages", "custom"}
+
+
+def _interjection_max_pending(app_config: AppConfig | None) -> int:
+    if app_config is None:
+        return DEFAULT_MAX_PENDING
+    section = getattr(app_config, "interjection", None)
+    if section is None:
+        return DEFAULT_MAX_PENDING
+    return int(getattr(section, "max_pending", DEFAULT_MAX_PENDING))
+
+
+async def _persist_applied_interjections(agent: Any, config: dict, applier: InterjectionApplier, run_id: str) -> None:
+    """Commit applied interjections into the final checkpoint (run end).
+
+    The InterjectionMiddleware injected them into model-call payloads only;
+    langgraph's in-memory pregel loop never saw them as channel state, so the
+    checkpoint needs this explicit append for subsequent turns to see them.
+    Runs after the astream loop has finished, so ``aupdate_state`` cannot
+    collide with the loop's checkpoint writes.
+    """
+    if not applier.applied_items:
+        return
+    messages = [HumanMessage(content=item.text, additional_kwargs={"interjection": True}) for item in applier.applied_items]
+    try:
+        await agent.aupdate_state(config, {"messages": messages}, as_node=INTERJECTION_AS_NODE)
+        logger.info("Run %s: persisted %d applied interjection(s) into final checkpoint", run_id, len(messages))
+    except Exception:
+        logger.warning("Run %s: failed to persist applied interjections into final checkpoint", run_id, exc_info=True)
 
 
 def _debug_thinking_enabled() -> bool:
@@ -289,6 +319,9 @@ async def run_agent(
 
     journal = None
     streamed_collector = _StreamedMessageCollector()
+    # Interjection channel (plan-b): the applier is exposed to the agent via
+    # runtime context (step 5b); applied messages are persisted at run end.
+    interjection_applier: InterjectionApplier | None = None
 
     # Track whether "events" was requested but skipped
     if "events" in requested_modes:
@@ -419,6 +452,24 @@ async def run_agent(
         if interrupt_after:
             agent.interrupt_after_nodes = interrupt_after
 
+        # 5b. Expose the interjection applier + bridge to the agent runtime so
+        # InterjectionMiddleware can drain queued user messages at the next
+        # model-call boundary (plan-b). Only mounted when the feature is
+        # enabled for this run (the API side creates the applier on enqueue,
+        # so an installed channel also covers explicit enqueue calls).
+        interjection_enabled = False
+        if ctx.app_config is not None:
+            section = getattr(ctx.app_config, "interjection", None)
+            interjection_enabled = bool(getattr(section, "enabled", False))
+        interjection_applier = None
+        if interjection_enabled or record.interjections is not None:
+            interjection_applier = record.ensure_interjections(max_pending=_interjection_max_pending(ctx.app_config))
+            runtime_ctx[RUN_INTERJECTIONS_CONTEXT_KEY] = interjection_applier
+            runtime_ctx[RUN_BRIDGE_CONTEXT_KEY] = bridge
+            # runtime_ctx was already installed into config/__pregel_runtime
+            # above; the dict is shared by reference, so the keys are visible
+            # to the graph runtime without reinstalling.
+
         # 6. Build LangGraph stream_mode list
         #    "events" is NOT a valid astream mode — skip it
         #    "messages-tuple" maps to LangGraph's "messages" mode
@@ -545,6 +596,24 @@ async def run_agent(
         )
 
     finally:
+        # Interjection finalize (plan-b): persist applied messages into the
+        # final checkpoint so the next turn sees them; discard still-queued
+        # (never-applied) ones — the run ended before another model call, and
+        # they do NOT auto-start a new run (plan-b supplement).
+        if interjection_applier is not None:
+            try:
+                await _persist_applied_interjections(agent, runnable_config, interjection_applier, run_id)
+            except Exception:
+                logger.warning("Run %s: interjection finalize failed", run_id, exc_info=True)
+            leftover = await interjection_applier.drain_batch(first_wait_timeout=0)
+            if leftover:
+                logger.warning(
+                    "Run %s: discarded %d never-applied interjection(s) at run end (seq=%s)",
+                    run_id,
+                    len(leftover),
+                    [item.seq for item in leftover],
+                )
+
         # Flush any buffered journal events and persist completion data
         if journal is not None:
             try:

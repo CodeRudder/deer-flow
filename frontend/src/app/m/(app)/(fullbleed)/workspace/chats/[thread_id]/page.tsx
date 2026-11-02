@@ -148,6 +148,8 @@ function MobileChatScreen() {
   const { t } = useI18n();
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const {
+    pendingInterjections,
+    handleUndoInterjection,
     threadId,
     isMock,
     isNewThread,
@@ -225,6 +227,8 @@ function MobileChatScreen() {
             // default, so it is untouched.
             collapsedSteps
             onRegenerateMessage={handleRegenerate}
+            pendingInterjections={pendingInterjections}
+            onUndoInterjection={handleUndoInterjection}
             onSubmitHumanInput={
               isMock || isDemoMode ? undefined : handleSubmitHumanInput
             }

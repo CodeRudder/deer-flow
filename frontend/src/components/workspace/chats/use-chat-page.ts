@@ -32,6 +32,7 @@ import {
   useThreadStream,
   useThreadTokenUsage,
 } from "@/core/threads/hooks";
+import type { PendingInterjection } from "@/core/threads/interjection";
 import { threadTokenUsageToTokenUsage } from "@/core/threads/token-usage";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
@@ -196,6 +197,8 @@ export function useChatPage({
   const {
     thread,
     pendingUsageMessages,
+    pendingInterjections,
+    cancelPendingInterjection,
     sendMessage,
     regenerateMessage,
     isUploading,
@@ -312,6 +315,24 @@ export function useChatPage({
     input.setInput(text);
   }, [threadError]);
 
+  // Thread interjection undo (plan-b): cancel the queued message on the
+  // backend and put its text back into the composer (appended as a new
+  // segment when the user already typed something).
+  const handleUndoInterjection = useCallback(
+    async (item: PendingInterjection) => {
+      const entry = await cancelPendingInterjection(threadId, item.id);
+      if (!entry) {
+        return;
+      }
+      const input = promptTextInputRef.current;
+      const current = input.value;
+      input.setInput(
+        current.trim() ? `${current}\n\n${entry.text}` : entry.text,
+      );
+    },
+    [cancelPendingInterjection, threadId],
+  );
+
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
@@ -348,6 +369,8 @@ export function useChatPage({
     title: thread.values.title,
     isBusy: thread.isLoading,
     pendingUsageMessages,
+    pendingInterjections,
+    handleUndoInterjection,
     backendTokenUsage,
     tokenUsageEnabled,
     tokenUsageInlineMode,
@@ -398,6 +421,10 @@ export type ChatPageController = {
   isBusy: boolean;
   /** Messages sent this turn, used by the header token-usage indicator. */
   pendingUsageMessages: Message[];
+  /** Interjections queued into the in-flight run (plan-b). */
+  pendingInterjections: PendingInterjection[];
+  /** Undo a queued interjection; text returns to the composer. */
+  handleUndoInterjection: (item: PendingInterjection) => Promise<void>;
   /** Server-reported token usage mapped to the display shape. */
   backendTokenUsage: ReturnType<typeof threadTokenUsageToTokenUsage>;
   /** Whether the backend reports token usage at all. */

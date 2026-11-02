@@ -18,6 +18,7 @@ from deerflow.config.checkpointer_config import CheckpointerConfig, load_checkpo
 from deerflow.config.database_config import DatabaseConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
+from deerflow.config.interjection_config import InterjectionConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.media_config import MediaConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
@@ -154,6 +155,7 @@ class AppConfig(BaseModel):
         ),
     )
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig, description="Loop detection middleware configuration")
+    interjection: InterjectionConfig = Field(default_factory=InterjectionConfig, description="Thread interjection (inject user messages into an in-flight run) configuration")
     media: MediaConfig = Field(default_factory=MediaConfig, description="Media delivery configuration (artifact auto-present safety net)")
     safety_finish_reason: SafetyFinishReasonConfig = Field(default_factory=SafetyFinishReasonConfig, description="Provider safety-filter finish_reason interception middleware configuration")
     platform_auth: PlatformAuthConfig = Field(default_factory=PlatformAuthConfig, description="Company gateway JWT authentication configuration")
