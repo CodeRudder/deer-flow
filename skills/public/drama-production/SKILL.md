@@ -148,8 +148,22 @@ fix_fn 由会话实现：接收"改什么"的决策，对 MGW 做 `PATCH shots` 
    `/api/media-gateway/file/<mgw 原样路径>`（
    `deerflow.media_gateway.providers.proxy_media_url` 同款约定），浏览器
    `<img>/<video>` 无需 Authorization 头。
-3. 向用户汇报：每集时长 / clip 清单 / 逐镜产物代理 URL / QC 结论与迭代
-   轮数摘要。
+3. **视频必须落盘交付（强制）**：每个完成的 clip/集，用沙箱内 MGW 凭据把
+   媒体字节下载进 outputs（curl
+   `$MEDIA_GATEWAY_BASE_URL/v1/drama/{dr}/chapters/{ch}/clips/{cl}/media`
+   带 `$MEDIA_GATEWAY_TOKEN`），存为
+   `/mnt/user-data/outputs/<剧名>/ep{NN}-cl{clip 短 id}.mp4`
+   （未分集时 `cl{clip 短 id}.mp4`），然后调用 `present_files` 交付——
+   **只给文本 URL 不算交付**，前端视频卡片与产物收集都依赖 outputs 落盘。
+4. 向用户汇报（缺一不可）：每集时长 / clip 清单 / 每个作业的
+   `job_id` + 产物代理 URL（写成 Markdown 链接，不要放代码块里）/ QC 结论
+   与迭代轮数摘要。链接写相对代理路径 `[ep01.mp4](/api/media-gateway/file/…)`
+   ——用户浏览器与 deer-flow 同源，带会话 cookie 即可直接播放；
+   **不要**用 `$MEDIA_GATEWAY_CONSOLE_URL` 拼产物链接：那是 MGW 控制台
+   外部地址（后端 `settings.display_console_url()`），MGW 不提供
+   `/api/media-gateway/file` 代理路由（实测 404），只用于 `media-console-link`
+   跳转。作业未到终态或失败时必须原样报出 `job_id` + 状态 + 错误，
+   不得只写"已完成"。
 
 ## 断点续作（中断 / 换会话）
 

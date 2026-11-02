@@ -71,8 +71,22 @@ sidecar（见文末"中断续作"）。
 
 ### ⑥ 生成层 QC 与交付
 
-- 每镜产物经 deer-flow 代理 URL 交付（`/api/media-gateway/file/…`，免令牌
-  直下），逐镜列出：镜号 / 时长 / 产物链接 / 状态。
+- **每镜产物必须落盘交付（强制）**：作业到 `completed` 后，用沙箱内 MGW
+  凭据把视频字节下载进 outputs（curl
+  `$MEDIA_GATEWAY_BASE_URL/v1/images/jobs/{job_id}/file?kind=video&variant=N`
+  带 `$MEDIA_GATEWAY_TOKEN`），存为
+  `/mnt/user-data/outputs/<素材名>/shot{镜号}-cand{候选}.mp4`，然后调用
+  `present_files` 交付——**只给文本 URL 不算交付**，前端视频卡片与产物
+  收集都依赖 outputs 落盘。
+- 每镜产物同时经 deer-flow 代理 URL 交付（`/api/media-gateway/file/…`，
+  免令牌直下），逐镜以 Markdown 链接列出（不要放代码块里）：镜号 / 时长 /
+  `job_id` / 产物链接 / 状态。链接写相对代理路径
+  `[shot1.mp4](/api/media-gateway/file/…)`——用户浏览器与 deer-flow 同源，
+  带会话 cookie 即可直接播放；**不要**用 `$MEDIA_GATEWAY_CONSOLE_URL` 拼
+  产物链接：那是 MGW 控制台外部地址（后端 `settings.display_console_url()`），
+  MGW 不提供 `/api/media-gateway/file` 代理路由（实测 404），只用于
+  `media-console-link` 跳转。作业未到终态或失败必须原样报出
+  `job_id` + 状态 + 错误，不得只写"已完成"。
 - 失败镜：先归因（提示词缺陷 → 回 ② 改设计；参考图错 → 改 refs；模型能力
   边界 → 降级时长档或换 seed 重抽），修正后只对失败镜重新提交（`shots` 子集），
   每镜自动迭代 ≤3 轮；仍失败则 checkpoint 模式回交用户，auto 模式标记后
