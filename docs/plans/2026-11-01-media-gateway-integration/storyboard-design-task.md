@@ -50,4 +50,4 @@
 ## 七、验收状态
 
 - [x] 完成（提交 `529681f9`，2026-11-02）：SKILL.md+CLI+9 例单测全绿；羽毛球 3 分镜示例 `--example --blockout` 实跑产出 JSON/md/3 张白模 PNG（VLM 目检场地/朝向/轨迹/运镜线齐全）→ `--validate` 通过；运镜 10 类枚举+三态同步时机；白模 `--blockout/--blockout-key-only`；落库映射表（三态→prompt_zh、运镜→camera 等，未改后端）
-- [ ] 会话触发词路由验证（分镜设计命中本 skill）——待 dev 会话实测
+- [x] 会话触发词路由验证（2026-11-02）：「分镜设计」命中 storyboard-design（agent 实际进入沙箱执行 design_storyboard.py）；「生成一段视频」仍路由生成类 skill；无修复需要，探测会话已清理
