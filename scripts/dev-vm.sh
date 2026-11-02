@@ -80,7 +80,7 @@ up() {  # 启动 deerflow 进程（env 从 .env 注入进程，不进容器）
     # 走 AppConfig 内容签名机制，不依赖 watcher。
     # （注意本行位于外层 docker exec 的单引号串内，路径无需再加引号）
     setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload-dir app --reload-dir packages > /tmp/backend.log 2>&1" < /dev/null &
-    setsid bash -c "cd /app/frontend && pnpm dev --port 3000 --hostname 0.0.0.0 > /tmp/frontend.log 2>&1" < /dev/null &
+    setsid bash -c "cd /app/frontend && NEXT_PUBLIC_PROCESS_TIMELINE=true pnpm dev --port 3000 --hostname 0.0.0.0 > /tmp/frontend.log 2>&1" < /dev/null &
     exit 0'
   wait_healthy
 }
