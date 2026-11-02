@@ -74,6 +74,24 @@ skill/前端轮询预算应按 **30–40 min/笔** 上限设计。
 - **G5 admin 跨 owner 读不一致**：`GET /v1/drama/{id}` admin 可跨查，
   但 `GET …/clips/{cl}/qc` 以 admin 令牌返回 404 `drama not found`——
   drama.md 说「admin 跨查放行」，子资源未放行。网关侧统一。
+- **G6 重出幂等键不去重版本（网关侧，补验实测）**：archive 后 `POST …/generate`
+  **不递增 clip.version**（version 只在 recover +1，drama service.py 仅 recover 处
+  赋值），幂等键 `drama-<clip_id>-v<version>` 不变 → 底层 /v1/images 同键同体
+  **重放旧已完成作业**（不重生成），并把租约重建在该作业上；poller 因
+  `_done_jobs` 跳过 → clip state **永久卡 `generating`**。若 fix 后请求体真的变了，
+  同键异体则是 409 `conflict`。即：文档承诺的「archive → generate 重出（version+1
+  自然换键）」实际不成立，QC 闭环的"修正后重新生成"在真实网关当前走不通，
+  只能绕 `recover`（version+1 + 写回元数据）或手工 gwjob 通路。另：
+  `generate/cancel` 文档写无 body，实测必须带 JSON body（`{}`）否则 400
+  `body: Field required`。**网关侧修**（deer-flow 的 `DramaQCClosedLoop` 按文档
+  契约实现，无本仓库改动空间）。
+- **G7 drama QC 参考相似度盲区（网关侧设计边界）**：drama QC 的 `identity`
+  分测产物内部一致性，不测「产物 vs 托盘参考图」——坏参考（80×80 占位图标）
+  生成的完全陌生面孔照样 identity=1.0 / qc_pass。参考相似度评估只在
+  `GET /v1/images/jobs/{id}/assessment`（seedmatch-serve 相似度实测），且生图档
+  作业（qwen-image）**无保留片段 → assessment 404**（`no kept clip`）。建议：
+  drama QC 机械/语义层接 assessment 的 `similarity.identity` 作为参考一致性维度，
+  并为生图档保留可评估产物。**网关侧**。
 
 ## 四、验收对照（acceptance.md A2b）
 
@@ -83,10 +101,70 @@ skill/前端轮询预算应按 **30–40 min/笔** 上限设计。
 - [x] per-user `h3t_` 令牌全程（owner=admin-dream.com；admin 令牌查子资源 404 佐证隔离）；
 - [x] 中断续作（跨 run SKIP 游标恢复，未重建未重复生成）；
 - [x] auto 模式完整交付 2 镜小剧（checkpoint 模式未在本轮覆盖）；
-- [ ] QC「失败→修正→通过」案例（本轮 QC 一次通过；归因/跳过路径已验证，修正重生成路径待后续补）；
-- [ ] 角色一致性跨镜角色卡（本轮无人物角色，纯场景剧；待有人物样本补验）；
+- [x] QC「失败→修正→通过」案例（2026-11-02 补验，见下 §五：真实网关 qc_ml FAIL 检出 → 归因 → 归档 → 修正 → 恢复登记 → **qc_pass** 终态闭环；预算控制（≤3 轮 / needs_human 超限）由 mock 层 33 个单测锁定全绿）；
+- [x] 角色一致性跨镜角色卡（2026-11-02 补验，见下 §五：2 clip 共引同一角色卡 media_id，prompt_preview 双向 token_manifest_match=true，两镜产物 VLM 目检一致性通过）；
 - [ ] 分镜板 t2g 目检（本轮直接场景参考图目检替代）。
+
+## 五、A2b 补验（2026-11-02 第二轮）
+
+> 账号：MGW users 模式新建 `a2bverify`（admin 代建）；作业预算执行：生图 4 笔 +
+> 生视频 1 笔（h3-ref-std，≤2 约束内），总作业 5 ≤ 6。
+
+### 5.1 QC「失败→修正→通过」（真实网关 + mock 层）
+
+构造：drama `dr_4a1b9bd0`（1 clip 5s，《黄昏街头》），**故意用坏角色参考**
+（80×80「无图像」占位图标 ref4.jpg 上传为角色定妆照并注册 media，ref_tray 单条引用）。
+
+| 步骤 | 结果 |
+|---|---|
+| 设计门 | `prompt_preview valid=true`（坏参考在数据层完全合法——设计层不校验图像内容） |
+| `POST …/generate` | 202（h3-ref-std，约 12 min completed） |
+| FAIL 检出 | `GET …/qc` → **`qc_ml`**：scores 全 1.0，唯一 issue `M 机械层不通过：时长非正（duration_s=None）`（即 G4 元数据回填缺口——真实网关上可稳定复现的 FAIL 终态） |
+| 归因（`qc.attribute_qc` 跑真实 QC body） | 未命中 citation/seed 特征 → **prompt 兜底**，reasons 原文记录 |
+| 修正策略（`qc.remediation_plan(attempt=1, max=3)`） | `revise_prompt`（改五要素、先归档再重出） |
+| 归档 | `POST …/archive {version:1}` 200（审计 `clip.archive`，解锁重出） |
+| fix_fn | `PATCH shots {duration_s:5}` 200（修正元数据） |
+| 重出 | `POST …/generate` 202 —— **但见问题 G6**：version 未自增，幂等键同键，网关把租约重新指向**旧已完成作业**，poller 因 `_done_jobs` 跳过 → state 卡 `generating`（`cancel` 需带 body `{}` 才接受） |
+| 恢复登记（绕开 G6 的合法通路） | `POST …/recover {engine_media_path, duration_s:5.0}` 202 → **version 2、state=qc_pending**（recover 写 clip.duration_s，正是修正内容的落库点） |
+| PASS 终态 | `POST …/qc {force:true}` → **`qc_pass`，scores 全 1.0，issues 空**——「失败检出 → 归因 → 修正 → 重登记 → 通过」闭环在真实网关成立 |
+| 产物交付 | `GET …/clips/{cl}/media`（owner 令牌）200 video/mp4 1.5MB |
+
+**预算控制**（重试上限 / 超时）：mock 层锁定——`tests/test_media_gateway_qc.py`
+33 passed（dev 容器内跑），含 `失败→归因→修正→通过` 全环、reseed 亦归档、
+`max_iterations` 耗尽 → `needs_human`（history 逐轮 QC+归因可追溯）、超时
+`task_timeout`（poll 上限耗尽抛错）。真实网关侧单轮 FAIL 的归因/归档/重出契约
+与 mock 一致（除 G6）。
+
+**QC 失败注入的现实边界**：坏参考图**不会**触发 identity 低分——真实网关 drama
+QC 的 `identity` 维度测的是产物内部/时序一致性，**不测「产物 vs 参考图」相似度**
+（VLM 对坏参考生成的陌生面孔照样打 1.0）。drama QC 的 FAIL 只能从机械层
+（G4 类）或 must_fix_storyboard 触发；参考相似度评估在 `/v1/images/jobs/{id}/assessment`
+（seedmatch-serve），且**生图档作业无保留片段，assessment 404**——QC 环节的
+参考相似度盲区见问题 G7。
+
+### 5.2 跨镜角色卡一致性（纯生图档）
+
+构造：drama `dr_0e66f1c3`（《双镜》），1 章 1 情节 **2 clip**（各 1 镜 5s：
+黄昏天台 / 夜晚便利店），角色卡 `林晚儿`（subject_id=7）。
+
+| 环节 | 结果 |
+|---|---|
+| 角色卡生成 | qwen-image-std 文生图定妆照（1024×1344；特征：黑发+银簪左位+右眼下痣+青色鹤纹汉服） |
+| 资产落库 | `POST …/characters {name,subject_id}` 201；定妆照经 `POST …/assets/characters/{name}/images`（multipart）201 + `POST /v1/media` 注册 → `med_b1dc43ced93d` |
+| 跨镜引用 | 两个 clip 均 `PATCH ref_tray=[{media_id: med_b1dc43ced93d, kind: character}]` 200；**数据层同一 media_id 双 clip 共引**成立 |
+| 设计门 | 两 clip `prompt_preview` 均 `valid=true`、`pictures[0]` 同源 `tray[0]`、`token_manifest_match=true`；两镜正文 `<Picture 1>` 引用齐备 |
+| 两镜产物 | qwen-image-std + `reference_images=[定妆照]` 各一笔（1792×1024） |
+| 像素一致性目检（VLM，see.py） | 卡 vs 镜1：**consistent**（发/簪位/眼色/痣/服五特征全对齐，仅背景光照不同）；镜1 vs 镜2：发型/银簪位置/鹤纹位置/痣位/眼色逐项一致，**跨镜一致性通过**（主观报告，非强制达标项） |
+
+注：qc.attribute_qc 的 assessment 叠加通路（R2-3）在本机无法用生图档验证
+（assessment 依赖保留片段，见 G7），其归因逻辑由 mock 单测覆盖。
 
 **结论：drama-production R4 联调通过（有条件）**——条件为网关侧 G1（i2v）
 不影响 drama 主链路，代理路由修复已落地；「失败→修正→通过」与角色卡一致性
-两项留待补充验证（不阻塞 drama 上线判定）。
+两项已于 2026-11-02 第二轮补验通过（§五），唯「修正后同键重生成」受网关侧
+G6 阻断（以 recover 通路闭环）。
+
+**补验结论（2026-11-02）**：A2b 两项遗留均闭环——QC 失败→修正→通过在真实
+网关走通（终态 qc_pass），角色卡跨镜引用（数据层）与像素一致性（目检）通过。
+新增网关侧待办 G6（重出幂等键版本不递增）、G7（QC 参考相似度盲区）；
+deer-flow 侧无代码改动。
