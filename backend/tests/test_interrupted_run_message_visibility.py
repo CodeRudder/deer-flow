@@ -218,3 +218,51 @@ async def test_run_agent_success_does_not_add_pending_messages():
     latest = await checkpointer.aget_tuple({"configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}})
     message_writes = [w for w in (latest.pending_writes or []) if w[1] == "messages"]
     assert message_writes == []
+
+
+@pytest.mark.anyio
+async def test_run_agent_error_persists_streamed_message_as_pending_write():
+    """A run that fails mid-generation keeps the partial streamed reply.
+
+    Regression: the generic exception path used to skip the collector, so an
+    LLM error after partial tokens were streamed discarded the text the user
+    had already seen; refresh lost the last reply just like the abort bug.
+    """
+    checkpointer = InMemorySaver()
+    await _seed_committed_checkpoint(checkpointer, THREAD_ID)
+
+    run_manager = RunManager()
+    record = await run_manager.create(THREAD_ID)
+
+    class DummyAgent:
+        async def astream(self, graph_input, config=None, stream_mode=None, subgraphs=False):
+            yield ("messages", (AIMessageChunk(content="出错前的部分", id="ai-error-streamed"), {"langgraph_step": 1}))
+            raise RuntimeError("provider exploded mid-generation")
+
+    def factory(*, config):
+        return DummyAgent()
+
+    bridge = SimpleNamespace(publish=AsyncMock(), publish_end=AsyncMock(), cleanup=AsyncMock())
+    await run_agent(
+        bridge,
+        run_manager,
+        record,
+        ctx=RunContext(checkpointer=checkpointer),
+        agent_factory=factory,
+        graph_input={},
+        stream_modes=["values", "messages"],
+        config={},
+    )
+    await asyncio.sleep(0)
+
+    fetched = await run_manager.get(record.run_id)
+    assert fetched is not None and fetched.status == RunStatus.error
+
+    app = _build_thread_app(checkpointer)
+    with TestClient(app) as client:
+        body = client.post(f"/api/threads/{THREAD_ID}/history", json={"limit": 10}).json()
+
+    ids = [m["id"] for m in body[0]["values"]["messages"]]
+    assert "ai-error-streamed" in ids
+    merged = next(m for m in body[0]["values"]["messages"] if m["id"] == "ai-error-streamed")
+    assert merged["content"] == "出错前的部分"

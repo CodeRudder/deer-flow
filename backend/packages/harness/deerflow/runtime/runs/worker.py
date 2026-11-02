@@ -593,6 +593,10 @@ async def run_agent(
     except Exception as exc:
         error_msg = f"{exc}"
         logger.exception("Run %s failed: %s", run_id, error_msg)
+        # Same contract as the abort/cancel paths: keep whatever the user
+        # already watched stream in before the failure (e.g. an LLM error
+        # mid-generation) so a refresh does not lose the partial reply.
+        await streamed_collector.persist_interrupted(checkpointer, thread_id, run_id)
         await run_manager.set_status(run_id, RunStatus.error, error=error_msg)
         await bridge.publish(
             run_id,
