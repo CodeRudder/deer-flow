@@ -74,8 +74,18 @@ skill/前端轮询预算应按 **30–40 min/笔** 上限设计。
   引擎不需要启用；t2va 族会话内仍以抽帧（生图档）形式可用。
 - **G3 ref2va 时长/进度**：`eta_s` 低估 5–12 倍；99% 长停顿无阶段反馈。
   建议网关把编码阶段计入 progress（对应 R8-② 生成中实时预览）。
+  **【2026-11-02 已修复（MGW feat/ref2va-multiref）】**：网关新增
+  `h3img/etacal.py`——按引擎任务类型记「实际耗时/档位 eta」滚动均值
+  （窗口 8 笔，只记成功终态），`queue.submit` 展示值与 `_refresh_positions`
+  排队累加都过校准；无历史时走保守默认表（ref2va=8.0、fl2va=2.0，其余 1.0）。
+  编码停顿计入进度：`h3_frame._on_poll` 同 pct 每停 30 s 网关进度 +1（封顶 54，
+  55+ 留给引擎真 100%/取回）。skill 侧轮询预算仍按 30–40 min/笔 上限设计。
 - **G4 段级 `duration_s=None`**：QC 机械层元数据回填缺口（本次 QC 靠归因
   正确跳过；若网关修掉，QC 可全绿）。
+  **【2026-11-02 已修复（同上）】**：drama `service.py` 生成完成
+  （`poll_inflight` completed 分支）回填 `duration_s`（缺省取档位
+  `budget_tier` 秒数，与 payload 的 `duration` 同源；已有真值不动），
+  且 `run_qc` 入口对历史 None 记录惰性回填——QC 机械层不再吃该误报。
 - **G5 admin 跨 owner 读不一致**：`GET /v1/drama/{id}` admin 可跨查，
   但 `GET …/clips/{cl}/qc` 以 admin 令牌返回 404 `drama not found`——
   drama.md 说「admin 跨查放行」，子资源未放行。网关侧统一。
