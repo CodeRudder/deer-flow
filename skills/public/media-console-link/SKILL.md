@@ -35,8 +35,12 @@ Content-Type: application/json
 - **身份永远来自当前登录用户**。API 不接受、也不要尝试传任何"指定用户/令牌"参数（无此参数）。
 - 后端会用该用户在媒体网关的令牌换取一次性 ticket（约 60 秒有效、核销一次即失效），
   并拼成 `控制台地址?ticket=...`，用户点击后免登直达。
-- 若后端返回 `400`，说明部署未配置 `MEDIA_GATEWAY_CONSOLE_URL`：告知用户"当前部署未配置媒体控制台地址，
-  请联系管理员设置 `MEDIA_GATEWAY_CONSOLE_URL`"，**不要**自行拼 URL。
+- 若后端返回 `400`，说明部署未配置控制台地址：告知用户"当前部署未配置媒体控制台地址，
+  请联系管理员设置 `MEDIA_GATEWAY_EXTERNAL_BASE_URL`（外部 base url，推荐）或 `MEDIA_GATEWAY_CONSOLE_URL`"，
+  **不要**自行拼 URL。
+- 链接地址由后端决定：优先使用外部 base url（`MEDIA_GATEWAY_EXTERNAL_BASE_URL` + `/ui`，
+  或 `MEDIA_GATEWAY_EXTERNAL_CONSOLE_URL` 完整覆盖），未配置外部地址时回落到内部
+  `MEDIA_GATEWAY_CONSOLE_URL`。不要在前端/会话中自己拼地址。
 - 若后端返回 `404` 且提示"未置备"：说明该用户尚未开通媒体网关账号，引导用户先发起一次
   生图/生视频（会自动开通），之后重试本 skill。
 
@@ -74,7 +78,7 @@ Content-Type: application/json
 
 **例 3（未配置）**
 > 用户：帮我打开素材库
-> 助手：（API 返回 400）→ "当前部署未配置媒体控制台地址，请联系管理员设置 `MEDIA_GATEWAY_CONSOLE_URL` 后再试。"
+> 助手：（API 返回 400）→ "当前部署未配置媒体控制台地址，请联系管理员设置 `MEDIA_GATEWAY_EXTERNAL_BASE_URL` 后再试。"
 
 ## 动作：视频抽帧引导（抽帧 / 帧提取 / extract frames）
 

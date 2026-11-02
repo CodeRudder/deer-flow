@@ -66,6 +66,18 @@ class MediaGatewaySettings(BaseModel):
         default=None,
         description="MGW console page URL used to build user-facing links",
     )
+    # External (user-reachable) addresses. The server-side ``base_url`` /
+    # ``console_url`` may be internal-only (e.g. http://172.17.0.1:8000) while
+    # session-facing links must resolve from the user's browser. Unset → the
+    # internal addresses are used as before (full backward compatibility).
+    external_base_url: str | None = Field(
+        default=None,
+        description="External (user-reachable) MGW base address, e.g. https://mgw.example.com or http://100.108.144.120:8000; console links default to external_base_url + /ui",
+    )
+    external_console_url: str | None = Field(
+        default=None,
+        description="External MGW console page URL; overrides external_base_url + /ui when set",
+    )
     image_model: str | None = Field(
         default=None,
         description="Optional default MGW image model name",
@@ -98,6 +110,19 @@ class MediaGatewaySettings(BaseModel):
         description="Provision an MGW account on first credential resolution for users without a mapping (design §5.1)",
     )
 
+    def display_console_url(self) -> str | None:
+        """Console URL shown to end users, preferring external addresses.
+
+        Priority: ``external_console_url`` → ``external_base_url`` + ``/ui`` →
+        ``console_url`` (internal; legacy behaviour). ``None`` when nothing is
+        configured.
+        """
+        if self.external_console_url and self.external_console_url.strip():
+            return self.external_console_url.strip().rstrip("/")
+        if self.external_base_url and self.external_base_url.strip():
+            return self.external_base_url.strip().rstrip("/") + "/ui"
+        return self.console_url
+
     def candidate_base_urls(self) -> list[str]:
         """Ordered, deduplicated candidate base URLs (comma-separated support)."""
         return parse_candidate_base_urls(self.base_url)
@@ -122,6 +147,8 @@ def get_media_gateway_settings() -> MediaGatewaySettings:
             base_url=os.getenv("MEDIA_GATEWAY_BASE_URL") or None,
             admin_token=os.getenv("MEDIA_GATEWAY_ADMIN_TOKEN") or None,
             console_url=os.getenv("MEDIA_GATEWAY_CONSOLE_URL") or None,
+            external_base_url=os.getenv("MEDIA_GATEWAY_EXTERNAL_BASE_URL") or None,
+            external_console_url=os.getenv("MEDIA_GATEWAY_EXTERNAL_CONSOLE_URL") or None,
             image_model=os.getenv("MEDIA_GATEWAY_IMAGE_MODEL") or None,
             video_model=os.getenv("MEDIA_GATEWAY_VIDEO_MODEL") or None,
             encryption_key=os.getenv("MEDIA_GATEWAY_ENCRYPTION_KEY") or None,

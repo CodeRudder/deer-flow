@@ -60,3 +60,34 @@ class TestSettingsCandidates:
         monkeypatch.setenv("MEDIA_GATEWAY_BASE_URL", "http://a:8000, http://b:8000/")
         settings = get_media_gateway_settings()
         assert settings.candidate_base_urls() == ["http://a:8000", "http://b:8000"]
+
+
+class TestDisplayConsoleUrl:
+    """Console URL priority: external_console_url > external_base_url + /ui > console_url."""
+
+    def test_unset_everything_is_none(self):
+        assert MediaGatewaySettings().display_console_url() is None
+
+    def test_internal_console_url_only_keeps_legacy_behaviour(self):
+        settings = MediaGatewaySettings(console_url="http://127.0.0.1:8000/ui")
+        assert settings.display_console_url() == "http://127.0.0.1:8000/ui"
+
+    def test_external_base_url_builds_console_link(self):
+        settings = MediaGatewaySettings(external_base_url="http://100.108.144.120:8000", console_url="http://127.0.0.1:8000/ui")
+        assert settings.display_console_url() == "http://100.108.144.120:8000/ui"
+
+    def test_external_base_url_trailing_slash_stripped(self):
+        settings = MediaGatewaySettings(external_base_url="https://mgw.example.com/")
+        assert settings.display_console_url() == "https://mgw.example.com/ui"
+
+    def test_external_console_url_wins_over_external_base_url(self):
+        settings = MediaGatewaySettings(external_base_url="http://100.108.144.120:8000", external_console_url="https://mgw.example.com/console")
+        assert settings.display_console_url() == "https://mgw.example.com/console"
+
+    def test_get_media_gateway_settings_reads_external_env(self, monkeypatch):
+        monkeypatch.setenv("MEDIA_GATEWAY_EXTERNAL_BASE_URL", "http://100.108.144.120:8000")
+        monkeypatch.setenv("MEDIA_GATEWAY_EXTERNAL_CONSOLE_URL", "https://mgw.example.com/console")
+        settings = get_media_gateway_settings()
+        assert settings.external_base_url == "http://100.108.144.120:8000"
+        assert settings.external_console_url == "https://mgw.example.com/console"
+        assert settings.display_console_url() == "https://mgw.example.com/console"

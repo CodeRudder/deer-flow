@@ -293,3 +293,53 @@ class TestConsoleLink:
             response = client.post("/api/media-gateway/console-link")
 
         assert response.status_code == 401
+
+    def test_external_base_url_builds_external_console_link(self, user_a, monkeypatch):
+        """Session-facing links use the external base URL + /ui, not the internal address."""
+        from deerflow.media_gateway.settings import MediaGatewaySettings, set_media_gateway_settings
+
+        set_media_gateway_settings(
+            MediaGatewaySettings(
+                base_url=MGW_BASE,
+                admin_token="adm",
+                console_url="http://127.0.0.1:8000/ui",
+                external_base_url="http://100.108.144.120:8000",
+            )
+        )
+
+        def handler(request: httpx.Request, seen: dict) -> httpx.Response:
+            if request.url.path == "/v1/auth/ticket":
+                return httpx.Response(200, json={"ticket": "t-ext"})
+            raise AssertionError(f"unexpected upstream path {request.url.path}")
+
+        _install_runtime(_provisioner(user_a), handler)
+        with TestClient(_app(user_a)) as client:
+            response = client.post("/api/media-gateway/console-link")
+
+        assert response.status_code == 200
+        assert response.json() == {"url": "http://100.108.144.120:8000/ui?ticket=t-ext"}
+
+    def test_external_console_url_wins_priority_chain(self, user_a, monkeypatch):
+        from deerflow.media_gateway.settings import MediaGatewaySettings, set_media_gateway_settings
+
+        set_media_gateway_settings(
+            MediaGatewaySettings(
+                base_url=MGW_BASE,
+                admin_token="adm",
+                console_url="http://127.0.0.1:8000/ui",
+                external_base_url="http://100.108.144.120:8000",
+                external_console_url="https://mgw.example.com/console",
+            )
+        )
+
+        def handler(request: httpx.Request, seen: dict) -> httpx.Response:
+            if request.url.path == "/v1/auth/ticket":
+                return httpx.Response(200, json={"ticket": "t-ovr"})
+            raise AssertionError(f"unexpected upstream path {request.url.path}")
+
+        _install_runtime(_provisioner(user_a), handler)
+        with TestClient(_app(user_a)) as client:
+            response = client.post("/api/media-gateway/console-link")
+
+        assert response.status_code == 200
+        assert response.json() == {"url": "https://mgw.example.com/console?ticket=t-ovr"}

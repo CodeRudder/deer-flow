@@ -190,9 +190,11 @@ async def console_link(request: Request) -> dict[str, str]:
     _, runtime, token = await _require_mgw_user(request)
 
     settings = get_media_gateway_settings()
-    console_url = settings.console_url
+    # Prefer the external (user-reachable) console address; fall back to the
+    # internal console_url when no external address is configured.
+    console_url = settings.display_console_url()
     if not console_url:
-        raise HTTPException(status_code=400, detail="媒体控制台未配置（缺少 MEDIA_GATEWAY_CONSOLE_URL），无法生成跳转链接")
+        raise HTTPException(status_code=400, detail="媒体控制台未配置（缺少 MEDIA_GATEWAY_CONSOLE_URL 或 MEDIA_GATEWAY_EXTERNAL_BASE_URL），无法生成跳转链接")
 
     url = console_url
     try:

@@ -163,8 +163,9 @@ async def get_runtime_mgw_env(user_id: str | None) -> dict[str, str]:
         env["MEDIA_GATEWAY_IMAGE_MODEL"] = settings.image_model
     if settings.video_model:
         env["MEDIA_GATEWAY_VIDEO_MODEL"] = settings.video_model
-    if settings.console_url:
-        env["MEDIA_GATEWAY_CONSOLE_URL"] = settings.console_url
+    display_console_url = settings.display_console_url()
+    if display_console_url:
+        env["MEDIA_GATEWAY_CONSOLE_URL"] = display_console_url
     if settings.additional_env:
         env.update(settings.additional_env)
     return env
