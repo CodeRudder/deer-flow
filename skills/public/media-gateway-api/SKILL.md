@@ -5,6 +5,11 @@ description: Use this skill when the agent needs to 直调媒体网关 / media g
 
 # 媒体网关（Media Gateway / MGW）API 直调
 
+> **契约权威来源**：端点契约以本目录 `openapi.json` 快照为准（网关 `/openapi.json`
+> 实时版可能更新，跑 `scripts/sync_mgw_openapi.py` 刷新快照与
+> `endpoints-summary.md`；`--diff` 可一键核对部署后有无变更）。本文件为语义速查，
+> 字段/路径与快照冲突时以快照为准。
+
 ## 1. 与原厂 API 的关系（先读这个）
 
 **原厂直连 provider 完全不受影响。** `openai_image` / `qwen_image` / `minimax` /
