@@ -291,6 +291,27 @@ export interface Translations {
     gatewayUnavailableRetrying: string;
   };
 
+  // Workspace file browser sidebar (thread workspace files)
+  workspaceFiles: {
+    /** Sidebar toggle tooltip / label. */
+    title: string;
+    toggle: string;
+    /** Breadcrumb label of the virtual root (/mnt/user-data). */
+    rootName: string;
+    up: string;
+    refresh: string;
+    searchPlaceholder: string;
+    loading: string;
+    empty: string;
+    noResults: string;
+    /** 404 — the directory does not exist. */
+    notFound: string;
+    loadError: string;
+    truncated: string;
+    /** Reminder that listings refresh only via the refresh button. */
+    manualRefreshHint: string;
+  };
+
   // Conversation
   conversation: {
     noMessages: string;

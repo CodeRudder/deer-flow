@@ -342,6 +342,23 @@ export const enUS: Translations = {
     gatewayUnavailableRetrying: "Retrying in the background…",
   },
 
+  // Workspace file browser sidebar
+  workspaceFiles: {
+    title: "Files",
+    toggle: "Toggle workspace files panel",
+    rootName: "workspace",
+    up: "Up one level",
+    refresh: "Refresh",
+    searchPlaceholder: "Search files…",
+    loading: "Loading…",
+    empty: "No files in this directory.",
+    noResults: "No matching files.",
+    notFound: "This directory does not exist.",
+    loadError: "Failed to load files.",
+    truncated: "List truncated — refine the path or search.",
+    manualRefreshHint: "Files refresh manually via the refresh button.",
+  },
+
   // Conversation
   conversation: {
     noMessages: "No messages yet",

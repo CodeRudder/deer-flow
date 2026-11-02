@@ -32,6 +32,7 @@ from app.gateway.routers import (
     thread_runs,
     threads,
     uploads,
+    workspace_files,
 )
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level, unify_uvicorn_logging
@@ -469,6 +470,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)
+
+    # Workspace file browsing API is mounted at /api/threads/{thread_id}/workspace/files
+    app.include_router(workspace_files.router)
 
     # Uploads API is mounted at /api/threads/{thread_id}/uploads
     app.include_router(uploads.router)

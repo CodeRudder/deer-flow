@@ -323,6 +323,23 @@ export const zhCN: Translations = {
     gatewayUnavailableRetrying: "正在后台重试…",
   },
 
+  // 工作区文件浏览侧栏
+  workspaceFiles: {
+    title: "文件",
+    toggle: "切换工作区文件面板",
+    rootName: "workspace",
+    up: "上一级目录",
+    refresh: "刷新",
+    searchPlaceholder: "搜索文件…",
+    loading: "加载中…",
+    empty: "此目录下没有文件。",
+    noResults: "没有匹配的文件。",
+    notFound: "该目录不存在。",
+    loadError: "文件加载失败。",
+    truncated: "列表已截断 —— 请缩小路径或搜索范围。",
+    manualRefreshHint: "文件列表需通过刷新按钮手动更新。",
+  },
+
   // Conversation
   conversation: {
     noMessages: "还没有消息",
