@@ -38,49 +38,10 @@ EOF2
     echo SETUP-OK'
 }
 
-port_pids() {  # 容器内：按端口找占用进程 pid（经 /proc/net/tcp inode → /proc/*/fd，不依赖 ss/netstat）
-  docker exec "$NAME" bash -c '
-    port=$1
-    hexport=$(printf "%04X" "$port")
-    inodes=$(awk -v hex="$hexport" "\$4 == \"0A\" && substr(\$2, length(\$2)-3) == hex {print \$10}" /proc/net/tcp /proc/net/tcp6 2>/dev/null)
-    [ -z "$inodes" ] && exit 0
-    for pid in $(ls /proc | grep -E "^[0-9]+$"); do
-      for ino in $inodes; do
-        if ls -l /proc/$pid/fd 2>/dev/null | grep -q "socket:\[$ino\]"; then
-          echo "$pid"
-          break
-        fi
-      done
-    done' _ "$1"
-}
-
-precheck_ports() {  # 启动前预检 8001/3000：被占用则清理，清不掉报错退出（避免残留进程导致 Address already in use）
-  local port pids label
-  for port in 8001 3000; do
-    [ "$port" = 8001 ] && label=backend || label=frontend
-    pids=$(port_pids "$port")
-    [ -z "$pids" ] && continue
-    echo "端口 $port 被 pid($pids) 占用，尝试清理…"
-    docker exec "$NAME" bash -c 'kill '"$pids"' 2>/dev/null || true'
-    sleep 2
-    pids=$(port_pids "$port")
-    if [ -n "$pids" ]; then
-      docker exec "$NAME" bash -c 'kill -9 '"$pids"' 2>/dev/null || true'
-      sleep 1
-      pids=$(port_pids "$port")
-    fi
-    if [ -n "$pids" ]; then
-      echo "错误：端口 $port 仍被 pid($pids) 占用，无法启动 $label。请进容器排查：dev-vm.sh exec"
-      exit 1
-    fi
-    echo "端口 $port 已清理"
-  done
-}
-
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null || true; }
 
-wait_healthy() {  # 轮询 gateway(:18001)/frontend(:3000) 直至就绪（~60s）；失败 tail 日志诊断
-  local i gw fe
+wait_healthy() {  # up 后从宿主侧轮询映射端口直至就绪（~60s）；失败输出占用进程与日志诊断
+  local i gw fe port pid
   printf '等待服务就绪'
   for i in $(seq 1 60); do
     gw=$(http_code http://localhost:18001/health)
@@ -92,13 +53,25 @@ wait_healthy() {  # 轮询 gateway(:18001)/frontend(:3000) 直至就绪（~60s�
     printf '.'; sleep 1
   done
   echo
-  echo "错误：服务在 60s 内未全部就绪，最近日志："
+  echo "错误：启动失败 — 服务在 60s 内未全部就绪（gateway=$gw frontend=$fe）。"
+  for port in 18001 3000; do
+    if ss -ltn "sport = :$port" 2>/dev/null | grep -q LISTEN; then
+      pid=$(ss -ltnp "sport = :$port" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ')
+      if [ -n "$pid" ]; then
+        echo "宿主端口 $port 被占用，pid: $pid ($(ps -o comm= -p "${pid%% *}" 2>/dev/null)) — 宿主进程不自动杀，请手动处理"
+      else
+        echo "宿主端口 $port 被占用（pid 不可见，需 root：sudo ss -ltnp sport = :$port）"
+      fi
+    else
+      echo "宿主端口 $port 无监听（容器内服务未就绪，见下方日志）"
+    fi
+  done
+  echo "容器内最近日志："
   docker exec "$NAME" bash -c 'tail -n 30 /tmp/backend.log /tmp/frontend.log 2>/dev/null' || true
   return 1
 }
 
 up() {  # 启动 deerflow 进程（env 从 .env 注入进程，不进容器）
-  precheck_ports
   docker exec -d "$NAME" bash -c 'set -a; . /app/.env; set +a
     export PATH=/opt/tools/node/bin:/opt/tools/pnpm/bin:/opt/tools/uv-bin:$PATH
     setsid bash -c "cd /app/backend && PYTHONPATH=.:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload > /tmp/backend.log 2>&1" < /dev/null &
@@ -108,46 +81,27 @@ up() {  # 启动 deerflow 进程（env 从 .env 注入进程，不进容器）
 }
 
 stop() {
-  # 1) pkill 后轮询 pgrep 确认退出；2) 按端口(8001/3000)兜底清理残留占用
-  #    （uvicorn --reload 的 worker 进程名是 "python -c ... spawn_main"，pkill 模式
-  #    匹配不到，孤儿 worker 会占住端口导致下次启动 Address already in use）
+  # pkill 覆盖完整启动链（uv run 包装 / uvicorn / --reload worker(spawn_main) / next），
+  # 模式加 [] 防自匹配；轮询确认退出（10s），超时 kill -9 兜底
   docker exec "$NAME" bash -c '
-    port_pids() {
-      local port=$1 hex inodes ino pid
-      hex=$(printf "%04X" "$port")
-      inodes=$(awk -v hex="$hex" "\$4 == \"0A\" && substr(\$2, length(\$2)-3) == hex {print \$10}" /proc/net/tcp /proc/net/tcp6 2>/dev/null)
-      [ -z "$inodes" ] && return 0
-      for pid in $(ls /proc | grep -E "^[0-9]+$"); do
-        for ino in $inodes; do
-          if ls -l /proc/$pid/fd 2>/dev/null | grep -q "socket:\[$ino\]"; then
-            echo "$pid"; break
-          fi
-        done
-      done
-    }
-    kill_patterns() {
-      pkill -f "[u]vicorn app.gateway" 2>/dev/null || true
-      pkill -f "[n]ext dev" 2>/dev/null || true
-      pkill -f "[n]ext-server" 2>/dev/null || true
-      pkill -f "[s]pawn_main" 2>/dev/null || true
-    }
-    kill_patterns
+    # 注意：容器内脚本不得出现明文进程关键字（本 bash 的 cmdline 会被外部
+    # pkill -f 扫到误杀），一律用 [x] 括号形式
+    pat="[u]vicorn|[s]pawn_main|[n]ext dev|[n]ext-server"
+    pkill -f "[u]vicorn app.gateway" 2>/dev/null || true
+    pkill -f "[s]pawn_main"          2>/dev/null || true
+    pkill -f "[n]ext dev"            2>/dev/null || true
+    pkill -f "[n]ext-server"         2>/dev/null || true
     for i in $(seq 1 20); do
-      pgrep -f "[u]vicorn app.gateway|[n]ext|[s]pawn_main" >/dev/null 2>&1 || break
+      live=0
+      for p in $(pgrep -f "$pat"); do
+        # 跳过僵尸（容器 PID1 不回收，僵尸 cmdline 为空但 comm 仍会被 pgrep 匹配）
+        if [ "$(awk "{print \$3}" /proc/$p/stat 2>/dev/null)" != Z ]; then live=1; fi
+      done
+      if [ "$live" = 0 ]; then exit 0; fi
       sleep 0.5
     done
-    pkill -9 -f "[u]vicorn app.gateway|[n]ext|[s]pawn_main" 2>/dev/null || true
-    # 端口兜底：确保 8001/3000 真正释放，避免 stop→up 时序竞争
-    for port in 8001 3000; do
-      for i in $(seq 1 10); do
-        pids=$(port_pids "$port")
-        [ -z "$pids" ] && break
-        kill $pids 2>/dev/null; sleep 1
-        pids=$(port_pids "$port")
-        [ -n "$pids" ] && kill -9 $pids 2>/dev/null
-        sleep 0.3
-      done
-    done'
+    pkill -9 -f "$pat" 2>/dev/null || true
+    sleep 1'
   echo 进程已停
 }
 
