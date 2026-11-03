@@ -1,6 +1,6 @@
 ---
 name: video-clips
-description: Use this skill when the user wants 组图生视频 / 分镜片段视频 — e.g. gives a set of reference images (素材/组图/分镜图) and asks to 生成分镜视频 / 让图片动起来 / 组图转视频, or gives a reference video and asks to 照这个片子的节奏/运镜生成 (参考视频模式: MGW plan 制作包 → 分镜骨架 → 按主题改写). Orchestrates the Media Gateway groupvid pipeline — 素材入库 → 分镜方案（plan/design，每镜五要素）→ 设计图目检 → 逐镜提交生成 → QC → 逐镜产物交付.
+description: "Use this skill when the user wants 组图生视频 / 分镜片段视频 — e.g. gives a set of reference images (素材/组图/分镜图) and asks to 生成分镜视频 / 让图片动起来 / 组图转视频, or gives a reference video and asks to 照这个片子的节奏/运镜生成 (参考视频模式: MGW plan 制作包 → 分镜骨架 → 按主题改写). Orchestrates the Media Gateway groupvid pipeline — 素材入库 → 分镜方案（plan/design，每镜五要素）→ 设计图目检 → 逐镜提交生成 → QC → 逐镜产物交付."
 ---
 
 # 组图生视频 / 分镜片段（video-clips）
