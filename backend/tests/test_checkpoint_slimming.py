@@ -261,3 +261,20 @@ class TestCollectorAndMergeCompat:
         merged = _merge_pending_messages(checkpoint_tuple, channel_values)
         assert [m.id for m in merged] == ["viewctx-1", "reply-1"]
         assert _data_url_count(merged) == 0
+
+
+class TestVersioningForwarding:
+    def test_get_next_version_delegates_to_postgres_style_versions(self):
+        """Existing-thread continuation on Postgres uses string versions; the
+        wrapper must forward versioning to the delegate (the base class
+        default raises NotImplementedError for non-integer versions)."""
+
+        class DelegateSaver(InMemorySaver):
+            def get_next_version(self, current, channel):
+                return f"0000{int(current or 0) + 1:04d}"
+
+        wrapped = SlimmingCheckpointer(DelegateSaver())
+        assert wrapped.get_next_version("00000001", None) == "00000002"
+        # None (fresh thread) goes through the delegate too
+        plain = wrap_with_slimming(InMemorySaver(), enabled=True)
+        assert plain.get_next_version(None, None) is not None

@@ -2,7 +2,7 @@
 
 - 日期：2026-11-03
 - 分支：feat/gateway-media-api
-- 状态：P1 已实施（SlimmingCheckpointer 写入侧替换，提交见 git log；P2/P3 待派发）。实测量化见 §1.3；live 验证：真实 7.6MB messages blob 经 Postgres 写入路径替换后落库 67KB（113x）。
+- 状态：P1/P2/P3 全部实施（P1 写入侧替换 + get_next_version 转发修复；P2 cleaner Postgres 后端；P3 存量清洗脚本 slim_checkpoints_postgres.py）。实测量化见 §1.3；live 验证：真实 7.6MB messages blob 替换后落库 67KB（113x）。dev 全量执行 2026-11-03：活数据回收 119MB，VACUUM FULL 后数据库 4.1GB → 86MB；71bafe95 打开/续聊（模型正确引用已归档图片颜色）/产物渲染回归通过。生产执行窗口待用户排期（脚本与 SOP 就绪）。
 - 验收基准会话：`71bafe95-d0cb-4e65-90b2-2e912bd7fc9c`、`befa8ea8-*`、`47a3774b-*`
 
 ## 1. 背景与问题定位

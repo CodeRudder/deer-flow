@@ -358,6 +358,12 @@ class SlimmingCheckpointer(BaseCheckpointSaver):
     def list(self, config: RunnableConfig, **kwargs):  # noqa: ANN201, ANN003
         return self._delegate.list(config, **kwargs)
 
+    def get_next_version(self, current: Any, channel: Any) -> Any:
+        # Versioning must follow the delegate's scheme (e.g. Postgres string
+        # versions) — the base class default raises NotImplementedError for
+        # non-integer versions.
+        return self._delegate.get_next_version(current, channel)
+
     def delete_thread(self, thread_id: str) -> None:
         self._delegate.delete_thread(thread_id)
 
