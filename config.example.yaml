@@ -1913,3 +1913,15 @@ auth:
 #         # Security features (enabled by default):
 #         pkce_enabled: true               # PKCE (S256) for authorization code flow
 #         nonce_enabled: true              # Nonce validation in ID tokens
+
+# ---------------------------------------------------------------------------
+# Checkpoint slimming (P1 of docs/plans/2026-11-03-session-data-slimming.md)
+# ---------------------------------------------------------------------------
+# Replaces inline base64 image payloads (injected by ViewImageMiddleware into
+# view_image_context messages) with /mnt/user-data file references in every
+# checkpoint the checkpointer persists (aput / aput_writes, all backends).
+# The in-memory state the model sees on the injecting turn is untouched; old
+# images stay viewable via the view_image tool. Failure-safe: if replacement
+# throws, the original payload is written unchanged.
+checkpoint_slimming:
+  enabled: true

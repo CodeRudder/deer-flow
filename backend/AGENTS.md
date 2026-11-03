@@ -493,6 +493,10 @@ The cached value is reused for both the blocking (`runs.wait`) and streaming (`_
 - See `backend/docs/IM_CHANNEL_CONNECTIONS.md` for provider setup and operational notes.
 
 
+### Checkpoint Slimming (`packages/harness/deerflow/runtime/checkpointer/slimming.py`)
+
+`SlimmingCheckpointer` wraps the configured checkpointer (all backends) in `make_checkpointer` / `get_checkpointer` / `checkpointer_context` and rewrites inline base64 image payloads to `/mnt/user-data` file references **before persistence** (`aput` / `aput_writes` / sync `put` / `put_writes`). This keeps LangGraph's full-history checkpoint copies from carrying multi-megabyte `view_image_context` image parts (see `docs/plans/2026-11-03-session-data-slimming.md`; measured 97.7% of a 1.24 GB thread and a 113x size reduction on a real 7.6 MB blob). The in-memory state the model sees on the injecting turn is untouched; old images stay re-readable via `view_image`. Failure-safe: a replacement error writes the original payload unchanged. Config: `checkpoint_slimming.enabled` (default on, config.yaml extras). Read paths delegate transparently, so checkpoint time travel, pending writes and the interrupted-run collector behave identically. Tests: `tests/test_checkpoint_slimming.py` (assertions elsewhere that touch checkpointer identity unwrap via `.delegate`).
+
 ### Memory System (`packages/harness/deerflow/agents/memory/`)
 
 **Components**:

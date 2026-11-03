@@ -2,7 +2,7 @@
 
 - 日期：2026-11-03
 - 分支：feat/gateway-media-api
-- 状态：方案（仅设计，不含业务代码实施）
+- 状态：P1 已实施（SlimmingCheckpointer 写入侧替换，提交见 git log；P2/P3 待派发）。实测量化见 §1.3；live 验证：真实 7.6MB messages blob 经 Postgres 写入路径替换后落库 67KB（113x）。
 - 验收基准会话：`71bafe95-d0cb-4e65-90b2-2e912bd7fc9c`、`befa8ea8-*`、`47a3774b-*`
 
 ## 1. 背景与问题定位
