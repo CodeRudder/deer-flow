@@ -67,6 +67,12 @@ export type TimelineEntry =
       kind: "interjection";
       id: string;
       item: PendingInterjection;
+      /** Resolved text: the item's text, or the merged auto-run input. */
+      text: string;
+      /** True once the backend applied (injected) the interjection. */
+      applied: boolean;
+      /** The landed HumanMessage this event replaces at its injection spot. */
+      landedMessage?: Message;
       autoRunDivider?: boolean;
     }
   | { kind: "step"; id: string; step: TimelineStep; roundIndex: number }
@@ -119,6 +125,19 @@ export function buildTimelineEntries(
     }
   }
 
+  // Applied interjections are matched to their landed HumanMessage by text so
+  // the event renders once, at the injection position, and the plain human
+  // bubble is not duplicated beside it.
+  const appliedByText = new Map<string, PendingInterjection>();
+  for (const item of interjections) {
+    if (item.applied && item.text) {
+      appliedByText.set(item.text, item);
+    }
+    if (item.auto_run_run_id && item.auto_run_input) {
+      appliedByText.set(item.auto_run_input, item);
+    }
+  }
+
   const humanTexts = new Set<string>();
   let roundCounter = 0;
   let currentTurnStartIndex = -1;
@@ -138,12 +157,27 @@ export function buildTimelineEntries(
     if (message.type === "human") {
       const text = extractContentFromMessage(message);
       humanTexts.add(text);
-      entries.push({
-        kind: "human",
-        id: message.id ?? `human-${messageIndex}`,
-        message,
-        autoRunDivider: autoRunInputTexts.has(text),
-      });
+      const matched = appliedByText.get(text);
+      if (matched) {
+        // Merge: the interjection event takes over this transcript slot (the
+        // injection position); no separate human bubble is painted.
+        entries.push({
+          kind: "interjection",
+          id: `interjection-${matched.id}`,
+          item: matched,
+          text: matched.applied && matched.text ? matched.text : text,
+          applied: true,
+          landedMessage: message,
+          autoRunDivider: autoRunInputTexts.has(text),
+        });
+      } else {
+        entries.push({
+          kind: "human",
+          id: message.id ?? `human-${messageIndex}`,
+          message,
+          autoRunDivider: autoRunInputTexts.has(text),
+        });
+      }
       roundCounter = 0;
       continue;
     }
@@ -351,6 +385,11 @@ export function buildTimelineEntries(
       kind: "interjection",
       id: `interjection-${item.id}`,
       item,
+      text:
+        item.auto_run_run_id && item.auto_run_input
+          ? item.auto_run_input
+          : item.text,
+      applied: Boolean(item.applied),
       autoRunDivider: Boolean(item.auto_run_run_id),
     });
   }

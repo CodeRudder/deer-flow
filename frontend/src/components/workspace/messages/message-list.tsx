@@ -2,6 +2,7 @@ import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
 import {
   ChevronUpIcon,
+  CornerDownRightIcon,
   Loader2Icon,
   RefreshCcwIcon,
   Undo2Icon,
@@ -969,9 +970,46 @@ export function MessageList({
   // Process timeline path: non-step entries reuse the exact legacy rendering —
   // bubbles, cards and file lists stay byte-identical; only the process panel
   // is replaced by single-line step rows.
+  // Timeline interjection event: always visible, styled distinctly from a
+  // normal user bubble. Applied (injected) events carry an "injected" marker;
+  // queued ones keep the undo affordance and hint at the timeline tail.
+  const renderInterjectionEvent = (
+    entry: Extract<TimelineEntry, { kind: "interjection" }>,
+  ) => {
+    const { item, text, applied } = entry;
+    return (
+      <div
+        key={entry.id}
+        className={cn(
+          "group bg-muted/50 relative flex w-full max-w-[70%] flex-col gap-0.5 rounded-lg px-3 py-2",
+          applied ? "opacity-90" : "border-border/60 border border-dashed",
+        )}
+        data-testid="timeline-interjection-event"
+        data-applied={applied ? "true" : "false"}
+      >
+        <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <CornerDownRightIcon className="size-3.5 shrink-0" />
+          {applied ? t.interjection.injectedHint : t.interjection.queuedHint}
+        </span>
+        <span className="text-sm break-words whitespace-pre-wrap">{text}</span>
+        {!applied && onUndoInterjection && (
+          <button
+            type="button"
+            title={t.interjection.undoTooltip}
+            aria-label={t.interjection.undoTooltip}
+            className="text-muted-foreground hover:text-foreground absolute top-1/2 left-3 -translate-x-full -translate-y-1/2 rounded-full p-1.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100"
+            onClick={() => onUndoInterjection(item)}
+          >
+            <Undo2Icon className="size-4" />
+          </button>
+        )}
+      </div>
+    );
+  };
+
   const renderTimelineEntry = (entry: TimelineEntry): React.ReactNode => {
     if (entry.kind === "interjection") {
-      return renderInterjectionBubble(entry.item);
+      return renderInterjectionEvent(entry);
     }
     if (entry.kind === "step") {
       // Rendered by TimelineView itself; never delegated here.

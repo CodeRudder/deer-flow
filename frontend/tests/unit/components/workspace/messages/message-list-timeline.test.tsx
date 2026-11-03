@@ -233,5 +233,10 @@ describe("MessageList — process timeline flag on", () => {
       `BODY: ${bodyText.slice(0, 600)}`,
     ).toBe(true);
     expect(getByText("queued")).toBeTruthy();
+    // rendered as a distinct timeline event (not a plain user bubble)
+    const event = document.querySelector(
+      '[data-testid="timeline-interjection-event"]',
+    );
+    expect(event?.getAttribute("data-applied")).toBe("false");
   });
 });

@@ -495,6 +495,7 @@ export const enUS: Translations = {
       "The previous reply finished before your queued message could be inserted — please send it again",
     queuedAutoRun:
       "Your queued message was turned into a new task and is now running",
+    injectedHint: "Interjected into the running task",
   },
   processTimeline: {
     narrationLabel: "Note",

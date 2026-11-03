@@ -258,20 +258,23 @@ describe("buildTimelineEntries", () => {
 });
 
 describe("interjection placement", () => {
-  test("queued interjection renders at the timeline tail", () => {
+  test("queued interjection renders at the timeline tail (applied=false, undoable)", () => {
     const messages: Message[] = [human("h1", "go"), ai("a1", "working…")];
     const entries = buildTimelineEntries(messages, {
       isLoading: true,
       interjections: [interjection()],
     });
     expect(kinds(entries)).toEqual(["human", "answer", "interjection"]);
-    expect(
-      (entries[2] as Extract<TimelineEntry, { kind: "interjection" }>).item
-        .text,
-    ).toBe("also check the tests");
+    const queuedEvent = entries[2] as Extract<
+      TimelineEntry,
+      { kind: "interjection" }
+    >;
+    expect(queuedEvent.applied).toBe(false);
+    expect(queuedEvent.text).toBe("also check the tests");
+    expect(queuedEvent.landedMessage).toBeUndefined();
   });
 
-  test("race — an applied interjection whose text already landed is suppressed in favour of the real HumanMessage (no double bubble)", () => {
+  test("applied interjections always render as an event — once landed they merge with the HumanMessage at the injection position (no double bubble)", () => {
     const messages: Message[] = [
       human("h1", "go"),
       ai("a1", "", {
@@ -284,13 +287,21 @@ describe("interjection placement", () => {
       isLoading: true,
       interjections: [interjection({ applied: true })],
     });
-    expect(kinds(entries)).toEqual(["human", "step", "human", "answer"]);
+    // The interjection event takes over the landed HumanMessage's slot: one
+    // event, no separate human bubble, position = injection timing.
+    expect(kinds(entries)).toEqual(["human", "step", "interjection", "answer"]);
+    const event = entries[2] as Extract<TimelineEntry, { kind: "interjection" }>;
+    expect(event.applied).toBe(true);
+    expect(event.text).toBe("also check the tests");
+    expect(event.landedMessage?.id).toBe("h2");
     expect(
-      entries.filter((entry) => entry.kind === "interjection"),
+      entries.filter(
+        (entry) => entry.kind === "human" && entry.message.id === "h2",
+      ),
     ).toHaveLength(0);
   });
 
-  test("applied but not yet landed — the bubble still renders (at the tail) until the HumanMessage arrives", () => {
+  test("applied but not yet landed — the event still renders (at the tail, its injection point) and never disappears", () => {
     const messages: Message[] = [
       human("h1", "go"),
       ai("a1", "step in progress"),
@@ -300,9 +311,12 @@ describe("interjection placement", () => {
       interjections: [interjection({ applied: true })],
     });
     expect(kinds(entries)).toEqual(["human", "answer", "interjection"]);
+    const event = entries[2] as Extract<TimelineEntry, { kind: "interjection" }>;
+    expect(event.applied).toBe(true);
+    expect(event.landedMessage).toBeUndefined();
   });
 
-  test("D4 — auto-run: merged input HumanMessage gets a divider, landed bubble is pruned", () => {
+  test("D4 — auto-run: the merged input renders as one interjection event (divider, no separate human bubble)", () => {
     const messages: Message[] = [
       human("h1", "first task"),
       ai("a1", "done"),
@@ -319,11 +333,20 @@ describe("interjection placement", () => {
         }),
       ],
     });
-    expect(kinds(entries)).toEqual(["human", "answer", "human", "answer"]);
-    const landedHuman = entries[2] as Extract<TimelineEntry, { kind: "human" }>;
-    expect(landedHuman.autoRunDivider).toBe(true);
+    expect(kinds(entries)).toEqual([
+      "human",
+      "answer",
+      "interjection",
+      "answer",
+    ]);
+    const event = entries[2] as Extract<TimelineEntry, { kind: "interjection" }>;
+    expect(event.autoRunDivider).toBe(true);
+    expect(event.text).toBe("merged follow-up text");
+    expect(event.landedMessage?.id).toBe("h2");
     expect(
-      entries.filter((entry) => entry.kind === "interjection"),
+      entries.filter(
+        (entry) => entry.kind === "human" && entry.message.id === "h2",
+      ),
     ).toHaveLength(0);
   });
 

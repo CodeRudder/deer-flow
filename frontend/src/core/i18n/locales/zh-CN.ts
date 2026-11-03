@@ -468,6 +468,7 @@ export const zhCN: Translations = {
     alreadyApplied: "该消息已注入模型上下文，无法撤回",
     runEndedQueuedDropped: "上一条回复在排队消息注入前已结束——请重新发送",
     queuedAutoRun: "排队消息已转为新任务并开始执行",
+    injectedHint: "已插入当前执行",
   },
   processTimeline: {
     narrationLabel: "说明",

@@ -454,6 +454,7 @@ export interface Translations {
     alreadyApplied: string;
     runEndedQueuedDropped: string;
     queuedAutoRun: string;
+    injectedHint: string;
   };
   processTimeline: {
     narrationLabel: string;
