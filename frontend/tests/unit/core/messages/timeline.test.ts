@@ -1,10 +1,14 @@
 import type { Message } from "@langchain/langgraph-sdk";
-import { describe, expect, test } from "@rstest/core";
+import { describe, expect, rs, test } from "@rstest/core";
 
 import {
   buildTimelineEntries,
+  isProcessTimelineEnabled,
   type TimelineEntry,
 } from "@/core/messages/timeline";
+rs.mock("@/env", () => ({
+  env: { NEXT_PUBLIC_PROCESS_TIMELINE: undefined, NODE_ENV: undefined },
+}));
 import type { PendingInterjection } from "@/core/threads/interjection";
 
 function human(id: string, content: string): Message {
@@ -290,7 +294,10 @@ describe("interjection placement", () => {
     // The interjection event takes over the landed HumanMessage's slot: one
     // event, no separate human bubble, position = injection timing.
     expect(kinds(entries)).toEqual(["human", "step", "interjection", "answer"]);
-    const event = entries[2] as Extract<TimelineEntry, { kind: "interjection" }>;
+    const event = entries[2] as Extract<
+      TimelineEntry,
+      { kind: "interjection" }
+    >;
     expect(event.applied).toBe(true);
     expect(event.text).toBe("also check the tests");
     expect(event.landedMessage?.id).toBe("h2");
@@ -311,7 +318,10 @@ describe("interjection placement", () => {
       interjections: [interjection({ applied: true })],
     });
     expect(kinds(entries)).toEqual(["human", "answer", "interjection"]);
-    const event = entries[2] as Extract<TimelineEntry, { kind: "interjection" }>;
+    const event = entries[2] as Extract<
+      TimelineEntry,
+      { kind: "interjection" }
+    >;
     expect(event.applied).toBe(true);
     expect(event.landedMessage).toBeUndefined();
   });
@@ -339,7 +349,10 @@ describe("interjection placement", () => {
       "interjection",
       "answer",
     ]);
-    const event = entries[2] as Extract<TimelineEntry, { kind: "interjection" }>;
+    const event = entries[2] as Extract<
+      TimelineEntry,
+      { kind: "interjection" }
+    >;
     expect(event.autoRunDivider).toBe(true);
     expect(event.text).toBe("merged follow-up text");
     expect(event.landedMessage?.id).toBe("h2");
@@ -384,5 +397,28 @@ describe("interjection placement", () => {
       )
       .map((entry) => entry.item.text);
     expect(texts).toEqual(["first", "second"]);
+  });
+});
+
+describe("isProcessTimelineEnabled", () => {
+  test("explicit true/false always wins", () => {
+    expect(
+      isProcessTimelineEnabled({
+        NEXT_PUBLIC_PROCESS_TIMELINE: "true",
+        NODE_ENV: "production",
+      }),
+    ).toBe(true);
+    expect(
+      isProcessTimelineEnabled({
+        NEXT_PUBLIC_PROCESS_TIMELINE: "false",
+        NODE_ENV: "development",
+      }),
+    ).toBe(false);
+  });
+
+  test("defaults on in development, off in production — dev restarts keep the timeline", () => {
+    expect(isProcessTimelineEnabled({ NODE_ENV: "development" })).toBe(true);
+    expect(isProcessTimelineEnabled({ NODE_ENV: "production" })).toBe(false);
+    expect(isProcessTimelineEnabled({ NODE_ENV: "test" })).toBe(false);
   });
 });

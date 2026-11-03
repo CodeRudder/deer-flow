@@ -26,10 +26,31 @@ import {
  * placed at their injection point instead of the list tail.
  */
 
-export function isProcessTimelineEnabled() {
-  // Feature flag (D9): the legacy `MessageGroup` panel path stays in place for
-  // one rollout cycle; this flag flips the transcript to the timeline renderer.
-  return env.NEXT_PUBLIC_PROCESS_TIMELINE === "true";
+export function isProcessTimelineEnabled(envOverride?: {
+  NEXT_PUBLIC_PROCESS_TIMELINE?: string | undefined;
+  NODE_ENV?: string | undefined;
+}) {
+  // Feature flag (D9): the legacy `MessageGroup` panel path stays in place
+  // until the timeline renderer fully rolls out.
+  // - Explicit "true"/"false" always wins (production opts in with "true").
+  // - Otherwise the timeline defaults ON in development: dev frontends get
+  //   restarted by several entry points (make dev, pnpm dev, dev-vm.sh) and
+  //   most of them do not carry the env var — defaulting on keeps every
+  //   restart on the same renderer, while production builds stay on the
+  //   legacy panel unless explicitly enabled.
+  const flag =
+    envOverride?.NEXT_PUBLIC_PROCESS_TIMELINE ??
+    env.NEXT_PUBLIC_PROCESS_TIMELINE;
+  if (flag === "true") {
+    return true;
+  }
+  if (flag === "false") {
+    return false;
+  }
+  // `process.env.NODE_ENV` (not env.js — it is a server-side entry there and
+  // throws when read on the client); Next inlines it per bundle.
+  const nodeEnv = envOverride?.NODE_ENV ?? process.env.NODE_ENV;
+  return nodeEnv === "development";
 }
 
 export type TimelineStepStatus = "running" | "done" | "failed";

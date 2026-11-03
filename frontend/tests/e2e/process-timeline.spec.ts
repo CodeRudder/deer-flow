@@ -1,4 +1,3 @@
-import type { Route } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
 import { mockLangGraphAPI } from "./utils/mock-api";
@@ -73,7 +72,10 @@ const THREAD_MESSAGES = [
 ];
 
 test.describe("process timeline interactions", () => {
-  test("row click toggles; detail clamps to 10 lines with view-more; artifact row no longer jumps", async ({
+  // Historical threads must render through the same timeline path as live
+  // sessions: this spec loads a settled checkpoint-style thread fixture (no
+  // streaming) and asserts the step rows, never the legacy panel.
+  test("historical thread renders the timeline; row click toggles; detail clamps to 10 lines with view-more; artifact row no longer jumps", async ({
     page,
   }) => {
     mockLangGraphAPI(page, {
