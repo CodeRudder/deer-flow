@@ -89,6 +89,15 @@ skill/前端轮询预算应按 **30–40 min/笔** 上限设计。
 - **G5 admin 跨 owner 读不一致**：`GET /v1/drama/{id}` admin 可跨查，
   但 `GET …/clips/{cl}/qc` 以 admin 令牌返回 404 `drama not found`——
   drama.md 说「admin 跨查放行」，子资源未放行。网关侧统一。
+  **【2026-11-03 已修复（MGW feat/ref2va-multiref，0c9d636）】**：网关统一
+  口径——admin（管理员角色）跨 owner **读**所有资源放行（drama/chapter/
+  clip/media/jobs/换装，含 clip 子资源 /qc）；**写**维持 owner 隔离（admin
+  改他人资源与普通用户同 404，legacy 内置管理员除外）。口径集中
+  `h3img.users.can_read/can_write` + drama store `require(..., write=)`。
+  已部署 h3img-gateway 并真实验证：admin 令牌跨 owner 读 clip /qc 200、
+  非 owner 404、admin 跨 owner 写 404。注：当时 G5 观察到的 /qc 404 有两种
+  成因——跨 owner 隔离，以及「片段从未质检过」的同应答 404（契约 §5.4
+  未质检与不存在同 404）；后者是设计行为，不是权限问题。
 - **G6 重出幂等键不去重版本（网关侧，补验实测）**：archive 后 `POST …/generate`
   **不递增 clip.version**（version 只在 recover +1，drama service.py 仅 recover 处
   赋值），幂等键 `drama-<clip_id>-v<version>` 不变 → 底层 /v1/images 同键同体
