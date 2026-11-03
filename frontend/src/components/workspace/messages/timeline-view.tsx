@@ -58,6 +58,33 @@ export function TimelineView({
     setAutoExpandedIds(next);
   }, [latestReasoningStepId]);
 
+  // Only the last in-progress step scrolls its collapsed preview with the
+  // stream: the newest reasoning/narration text wins (that is where visible
+  // content grows); a running tool call (no streaming text) is the fallback.
+  // Every settled row keeps its head-lines preview fixed.
+  const streamingTailStepId = useMemo(() => {
+    if (!isLoading) {
+      return null;
+    }
+    let runningToolCallId: string | null = null;
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index];
+      if (entry?.kind !== "step") {
+        continue;
+      }
+      if (
+        entry.step.variant === "reasoning" ||
+        entry.step.variant === "narration"
+      ) {
+        return entry.step.id;
+      }
+      if (runningToolCallId === null && entry.step.status === "running") {
+        runningToolCallId = entry.step.id;
+      }
+    }
+    return runningToolCallId;
+  }, [entries, isLoading]);
+
   return (
     <div className={cn("flex w-full flex-col gap-0.5", className)}>
       {entries.map((entry, index) => {
@@ -82,6 +109,7 @@ export function TimelineView({
                 autoExpandedIds.has(entry.step.id)
               }
               failed={entry.step.status === "failed"}
+              streamingTail={entry.step.id === streamingTailStepId}
             />
           </div>
         );

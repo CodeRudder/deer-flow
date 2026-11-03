@@ -171,10 +171,10 @@ export function MessageListItem({
             isHuman
               ? "absolute right-0 -bottom-9 left-0 justify-end"
               : "absolute right-0 bottom-0 left-0",
-            "z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
+            "pointer-events-none z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:pointer-events-auto group-hover/conversation-message:opacity-100",
           )}
         >
-          <div className="pointer-events-auto flex gap-1">
+          <div className="pointer-events-none flex gap-1 group-hover/conversation-message:pointer-events-auto">
             <CopyButton clipboardData={copyData} />
             {feedback !== undefined && runId && threadId && (
               <FeedbackButtons

@@ -17,7 +17,12 @@ rs.mock("@/env", () => ({
 rs.mock("@/core/i18n/hooks", () => ({
   useI18n: () => ({
     t: {
-      common: { thinking: "thinking", loadMore: "more", loading: "loading", regenerate: "regenerate" },
+      common: {
+        thinking: "thinking",
+        loadMore: "more",
+        loading: "loading",
+        regenerate: "regenerate",
+      },
       interjection: { queuedHint: "queued", undoTooltip: "undo" },
       humanInput: {},
       pages: { newChat: "New Chat" },
@@ -34,6 +39,8 @@ rs.mock("@/core/i18n/hooks", () => ({
         writeFile: "write file",
         executeCommand: "execute command",
         writeTodos: "write todos",
+        durationMinutes: () => "0m",
+        durationSeconds: () => "0s",
         useTool: (name: string) => `use ${name}`,
         lessSteps: "less",
         moreSteps: (n: number) => `${n} more`,
@@ -41,7 +48,19 @@ rs.mock("@/core/i18n/hooks", () => ({
         toolsUsed: (n: number) => `${n} tools`,
       },
       tokenUsage: { label: "tokens", unavailableShort: "n/a" },
-      clipboard: { copyToClipboard: "copy", failedToCopyToClipboard: "copy failed", copied: "copied" },
+      clipboard: {
+        copyToClipboard: "copy",
+        failedToCopyToClipboard: "copy failed",
+        copied: "copied",
+      },
+      processTimeline: {
+        narrationLabel: "Note",
+        viewMore: (count: number) => `View more (${count})`,
+        viewLess: "Collapse",
+        openArtifact: "Open artifact",
+      },
+
+      thinking: {},
       messages: {},
     },
   }),
@@ -120,7 +139,11 @@ afterEach(() => cleanup());
 describe("MessageList — process timeline flag on", () => {
   it("renders single-line step rows instead of the processing panel", () => {
     const { queryByTestId, getByText } = render(
-      <MessageList threadId="t" thread={fakeThread(MULTI_STEP)} processTimeline={true} />,
+      <MessageList
+        threadId="t"
+        thread={fakeThread(MULTI_STEP)}
+        processTimeline={true}
+      />,
     );
 
     // reasoning + toolCall steps; the settled content-only message is an answer
@@ -137,14 +160,52 @@ describe("MessageList — process timeline flag on", () => {
 
   it("expands a step on click showing the left-ruled detail", () => {
     render(
-      <MessageList threadId="t" thread={fakeThread(MULTI_STEP)} processTimeline={true} />,
+      <MessageList
+        threadId="t"
+        thread={fakeThread(MULTI_STEP)}
+        processTimeline={true}
+      />,
     );
-    expect(document.querySelectorAll('[data-testid="process-step-detail"]')).toHaveLength(0);
-    const toggles = document.querySelectorAll('[data-testid="process-step-toggle"]');
+    expect(
+      document.querySelectorAll('[data-testid="process-step-detail"]'),
+    ).toHaveLength(0);
+    const toggles = document.querySelectorAll(
+      '[data-testid="process-step-toggle"]',
+    );
     fireEvent.click(toggles[1]!);
     expect(
       document.querySelectorAll('[data-testid="process-step-detail"]'),
     ).toHaveLength(1);
+  });
+
+  it("req 4 — only the last in-progress row's collapsed preview scrolls with the stream (tail lines)", () => {
+    const reasoning = Array.from(
+      { length: 8 },
+      (_, i) => `thought-${i + 1}`,
+    ).join("\n");
+    const streamingMessages: Message[] = [
+      { id: "h1", type: "human", content: "go" } as Message,
+      {
+        id: "a1",
+        type: "ai",
+        content: reasoning,
+        tool_calls: [{ id: "tc1", name: "ls", args: {} }],
+      } as unknown as Message,
+    ];
+    const thread = {
+      ...fakeThread(streamingMessages),
+      isLoading: true,
+      isThreadLoading: false,
+    };
+    render(<MessageList threadId="t" thread={thread} processTimeline={true} />);
+    const preview = document.querySelector(
+      '[data-testid="process-step-preview"]',
+    );
+    // narration preview = last 2 lines while streaming (req 4)
+    expect(preview?.textContent).toContain("thought-8");
+    expect(preview?.textContent).toContain("thought-7");
+    // tail, not head
+    expect(preview?.textContent).not.toContain("thought-1");
   });
 
   it("renders queued interjections after the answer entries", () => {
@@ -167,7 +228,10 @@ describe("MessageList — process timeline flag on", () => {
       />,
     );
     const bodyText = document.body.textContent;
-    expect(bodyText.includes("queued addition"), `BODY: ${bodyText.slice(0, 600)}`).toBe(true);
+    expect(
+      bodyText.includes("queued addition"),
+      `BODY: ${bodyText.slice(0, 600)}`,
+    ).toBe(true);
     expect(getByText("queued")).toBeTruthy();
   });
 });

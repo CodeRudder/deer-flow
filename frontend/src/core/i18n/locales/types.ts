@@ -455,6 +455,12 @@ export interface Translations {
     runEndedQueuedDropped: string;
     queuedAutoRun: string;
   };
+  processTimeline: {
+    narrationLabel: string;
+    viewMore: (count: number) => string;
+    viewLess: string;
+    openArtifact: string;
+  };
 
   // Subtasks
   subtasks: {

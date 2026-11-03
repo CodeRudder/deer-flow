@@ -101,7 +101,8 @@ export const zhCN: Translations = {
     createSkillPrompt:
       "我们一起用 skill-creator 技能来创建一个技能吧。先问问我希望这个技能能做什么。",
     addAttachments: "添加附件",
-    attachmentsDuringRunUnsupported: "任务运行中暂不支持发送附件，请等本轮结束后再发送",
+    attachmentsDuringRunUnsupported:
+      "任务运行中暂不支持发送附件，请等本轮结束后再发送",
     mode: "模式",
     flashMode: "闪速",
     flashModeDescription: "快速且高效的完成任务，但可能不够精准",
@@ -467,6 +468,12 @@ export const zhCN: Translations = {
     alreadyApplied: "该消息已注入模型上下文，无法撤回",
     runEndedQueuedDropped: "上一条回复在排队消息注入前已结束——请重新发送",
     queuedAutoRun: "排队消息已转为新任务并开始执行",
+  },
+  processTimeline: {
+    narrationLabel: "说明",
+    viewMore: (count: number) => `查看更多（剩余 ${count} 字）`,
+    viewLess: "收起",
+    openArtifact: "打开产物",
   },
 
   subtasks: {

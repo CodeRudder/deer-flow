@@ -1,32 +1,30 @@
+import type { Route } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
 import { mockLangGraphAPI } from "./utils/mock-api";
 
 /**
- * Process timeline MVP (docs/plans/2026-11-03-process-timeline-design.md),
- * behind NEXT_PUBLIC_PROCESS_TIMELINE (build-time flag: the spec must run
- * against a build made with the flag on).
+ * Process timeline (docs/plans/2026-11-03-process-timeline-design.md +
+ * user-reviewed interaction refinements), behind NEXT_PUBLIC_PROCESS_TIMELINE
+ * (build-time flag: specs must run against a build made with the flag on).
  *
- * These specs load a settled multi-step thread fixture — reasoning + tool
- * rounds + narration + answer + present-files — and assert the transcript
- * renders as single-line step rows instead of the legacy ChainOfThought panel.
- * Streaming-specific transitions (running ▶, #4304 answer→step degrade) are
- * covered by the normalizer/row unit tests.
+ * Covers the interaction matrix on a settled multi-step thread:
+ * 1/2/6 — every row (tool call, reasoning, artifact) toggles on row click;
+ *   expanded row click collapses back; the whole row area is the hit zone.
+ * 5 — expanded detail clamps long content to 10 lines with a
+ *   "View more (N characters left)" toggle.
+ * (4 — streaming tail preview — is covered by unit tests; see the streaming
+ * note in the PR.)
  */
 
 const THREAD_ID = "00000000-0000-0000-0000-000000005001";
 
+const longReasoning = Array.from(
+  { length: 14 },
+  (_, i) => `thought-${i + 1}`,
+).join("\n");
+
 const THREAD_MESSAGES = [
-  {
-    type: "human",
-    id: "h0",
-    content: [{ type: "text", text: "earlier question" }],
-  },
-  {
-    type: "ai",
-    id: "a0",
-    content: [{ type: "text", text: "earlier answer" }],
-  },
   {
     type: "human",
     id: "h1",
@@ -36,7 +34,7 @@ const THREAD_MESSAGES = [
     type: "ai",
     id: "a1",
     content: "",
-    additional_kwargs: { reasoning_content: "searching first" },
+    additional_kwargs: { reasoning_content: longReasoning },
     tool_calls: [
       { id: "tc1", name: "web_search", args: { query: "deer flow" } },
     ],
@@ -52,7 +50,6 @@ const THREAD_MESSAGES = [
     type: "ai",
     id: "a2",
     content: "mid-run status update",
-    additional_kwargs: { reasoning_content: "now drafting" },
     tool_calls: [
       {
         id: "tc2",
@@ -73,18 +70,10 @@ const THREAD_MESSAGES = [
     id: "a3",
     content: [{ type: "text", text: "All done — here is the draft." }],
   },
-  {
-    type: "ai",
-    id: "a4",
-    content: "",
-    tool_calls: [
-      { id: "tc3", name: "present_files", args: { filepaths: ["draft.md"] } },
-    ],
-  },
 ];
 
-test.describe("process timeline", () => {
-  test("renders a multi-step run as single-line step rows", async ({
+test.describe("process timeline interactions", () => {
+  test("row click toggles; detail clamps to 10 lines with view-more; artifact row no longer jumps", async ({
     page,
   }) => {
     mockLangGraphAPI(page, {
@@ -98,44 +87,59 @@ test.describe("process timeline", () => {
     });
 
     await page.goto(`/workspace/chats/${THREAD_ID}`);
-    await expect(
-      page.getByText("All done — here is the draft."),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("All done — here is the draft.")).toBeVisible({
+      timeout: 15_000,
+    });
 
-    // Four step rows: reasoning + web_search + reasoning + narration + write.
     const rows = page.locator('[data-testid="process-step-row"]');
-    await expect(rows).toHaveCount(5);
-    await expect(
-      page.locator('[data-testid="process-step-row"][data-step-status="done"]'),
-    ).toHaveCount(5);
-    await expect(
-      page.locator('[data-testid="process-step-row"][data-step-variant="narration"]'),
-    ).toHaveCount(1);
-    await expect(rows.first()).toContainText("searching first");
-    await expect(page.locator('[data-testid="process-step-row"]').nth(1)).toContainText(
-      "deer flow",
-    );
+    // reasoning + web_search + narration + write_file
+    await expect(rows).toHaveCount(4);
 
-    // The answer bubble and the present-files artifact entry render at their
-    // timeline positions (after the steps).
+    // Collapsed preview shows the head lines of the long reasoning.
+    const firstPreview = rows
+      .first()
+      .locator('[data-testid="process-step-preview"]');
+    await expect(firstPreview).toContainText("thought-1");
+
+    // 1/2/6 — clicking the first row (whole-row hit zone, via the preview
+    // area inside the row button) expands the reasoning detail.
+    await firstPreview.click();
+    const detail = page.locator('[data-testid="process-step-detail"]').first();
+    await expect(detail).toBeVisible();
+
+    // 5 — the detail is clamped to 10 lines with a view-more toggle.
+    await expect(detail).toContainText("thought-10");
+    await expect(detail).not.toContainText("thought-11");
+    await expect(
+      page.locator('[data-testid="process-step-clamp-more"]'),
+    ).toContainText(/View more \(\d+ characters? left\)/);
+    await page.locator('[data-testid="process-step-clamp-more"]').click();
+    await expect(detail).toContainText("thought-14");
+    // clicking again re-collapses the block to the 10-line view
+    await page.locator('[data-testid="process-step-clamp-less"]').click();
+    await expect(detail).not.toContainText("thought-14");
+
+    // 6 — clicking the expanded row collapses it back to the compact state.
+    await page.locator('[data-testid="process-step-toggle"]').first().click();
     await expect(
       page.locator('[data-testid="process-step-detail"]'),
     ).toHaveCount(0);
 
-    // Step rows expand on click into the left-ruled detail region.
-    // The hover toolbar of the "earlier answer" bubble absolutely overlaps the
-    // first row; use a row further down the timeline.
-    await page
-      .locator('[data-testid="process-step-toggle"]')
-      .nth(2)
-      .click();
+    // 1 — the write_file row toggles instead of jumping to the artifact panel.
+    const artifactRow = page
+      .locator('[data-testid="process-step-row"][data-step-variant="toolCall"]')
+      .nth(1); // web_search first, write_file second
+    await artifactRow.locator('[data-testid="process-step-toggle"]').click();
+    const artifactDetail = page
+      .locator('[data-testid="process-step-detail"]')
+      .first();
+    await expect(artifactDetail).toBeVisible();
+    // the artifact action now lives inside the expanded detail
     await expect(
-      page.locator('[data-testid="process-step-detail"]').first(),
-    ).toBeVisible();
-
-    // No legacy big-card panel under the timeline.
-    await expect(
-      page.locator('[data-testid="mobile-collapsed-steps"]'),
-    ).toHaveCount(0);
+      page.locator('[data-testid="process-step-open-artifact"]'),
+    ).toContainText("draft.md");
+    // detail-internal clicks never collapse the row
+    await page.locator('[data-testid="process-step-open-artifact"]').click();
+    await expect(artifactDetail).toBeVisible();
   });
 });
