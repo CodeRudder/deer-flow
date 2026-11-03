@@ -44,6 +44,8 @@ services:
 
   # ── Frontend: Next.js Production ───────────────────────────────────────────
   frontend:
+    # 显式镜像名：deploy.sh 的独立部署目录用 docker-compose.prod.yaml 按名引用
+    image: deer-flow-frontend:latest
     build:
       context: ../
       dockerfile: frontend/Dockerfile
@@ -63,6 +65,7 @@ services:
 
   # ── Gateway API ────────────────────────────────────────────────────────────
   gateway:
+    image: deer-flow-gateway:latest
     build:
       context: ../
       dockerfile: backend/Dockerfile
@@ -123,6 +126,7 @@ services:
 
   # ── Sandbox Provisioner (optional, Kubernetes mode) ────────────────────────
   provisioner:
+    image: deer-flow-provisioner:latest
     build:
       context: ./provisioner
       dockerfile: Dockerfile

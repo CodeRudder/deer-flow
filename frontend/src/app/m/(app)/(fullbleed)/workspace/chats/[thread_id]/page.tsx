@@ -21,7 +21,12 @@ import { MobileChatHeader } from "@/components/workspace/mobile/chat-header";
 import { MobileComposer } from "@/components/workspace/mobile/composer";
 import { useScrollToBottom } from "@/components/workspace/mobile/use-scroll-to-bottom";
 import { TodoList } from "@/components/workspace/todo-list";
+import {
+  useWorkspaceFilesPanelOpen,
+  WorkspaceFilePanel,
+} from "@/components/workspace/workspace-file-panel";
 import { useI18n } from "@/core/i18n/hooks";
+import { isProcessTimelineEnabled } from "@/core/messages/timeline";
 import { SubtasksProvider } from "@/core/tasks/context";
 
 import "@/components/workspace/mobile/chat-surface.css";
@@ -148,6 +153,8 @@ function MobileChatScreen() {
   const { t } = useI18n();
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const {
+    pendingInterjections,
+    handleUndoInterjection,
     threadId,
     isMock,
     isNewThread,
@@ -178,6 +185,9 @@ function MobileChatScreen() {
     surfaceRef,
     threadId,
   );
+  // Workspace file browser drawer (persisted open state, default collapsed).
+  const [workspaceFilesOpen, toggleWorkspaceFiles, closeWorkspaceFiles] =
+    useWorkspaceFilesPanelOpen();
 
   // `ThreadTitle` owns this on the desktop, but it renders nothing until the
   // backend reports a title — which would leave the mobile header empty for a
@@ -205,6 +215,7 @@ function MobileChatScreen() {
           onTokenUsagePreferencesChange={(preferences) =>
             setLocalSettings("tokenUsage", preferences)
           }
+          onOpenWorkspaceFiles={toggleWorkspaceFiles}
         />
 
         {/* The transcript owns the remaining height and scrolls internally;
@@ -214,6 +225,7 @@ function MobileChatScreen() {
             className="size-full"
             threadId={threadId}
             thread={thread}
+            processTimeline={isProcessTimelineEnabled()}
             paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
             hasMoreHistory={hasMoreHistory}
             loadMoreHistory={loadMoreHistory}
@@ -225,6 +237,8 @@ function MobileChatScreen() {
             // default, so it is untouched.
             collapsedSteps
             onRegenerateMessage={handleRegenerate}
+            pendingInterjections={pendingInterjections}
+            onUndoInterjection={handleUndoInterjection}
             onSubmitHumanInput={
               isMock || isDemoMode ? undefined : handleSubmitHumanInput
             }
@@ -284,6 +298,14 @@ function MobileChatScreen() {
             />
           </div>
         )}
+
+        {/* Workspace file browser: overlay drawer above the chat surface. */}
+        <WorkspaceFilePanel
+          threadId={threadId}
+          open={workspaceFilesOpen}
+          onClose={closeWorkspaceFiles}
+          variant="drawer"
+        />
 
         {/* Rendered directly rather than behind `mountedRef` (the desktop's
             hydration gate): the composer has no client-only first paint, and

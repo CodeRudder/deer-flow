@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from app.gateway.admin import media_gateway_lifecycle
 from app.gateway.auth.approval_email import send_approval_email
 from app.gateway.auth.email_domain import enforce_email_domain_allowed
 from app.gateway.auth.models import AccountStatus, ApprovalEmailStatus, User
@@ -88,6 +89,9 @@ class UserManagementService:
         self._reject_admin_status_change(user)
         if not result.changed and user.account_status != AccountStatus.DISABLED:
             self._raise_invalid_transition(user, "disable")
+        if result.changed:
+            # Best-effort outward sync — never affects the local disable above.
+            await media_gateway_lifecycle.on_user_disabled(user_id)
         return self.user_item(user)
 
     async def enable(self, user_id: str) -> dict[str, Any]:

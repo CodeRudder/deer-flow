@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 26
+config_version: 27
 
 # ============================================================================
 # Logging
@@ -918,6 +918,30 @@ loop_detection:
   #   bash:
   #     warn: 150
   #     hard_limit: 300
+
+# ============================================================================
+# Media Delivery Configuration
+# ============================================================================
+# Artifact auto-present safety net: when an agent run writes new files into the
+# thread outputs directory (/mnt/user-data/outputs) but finishes without
+# calling present_files, the platform registers them into thread artifacts at
+# run end so the client can render them. Idempotent — files already presented
+# are never duplicated. present_files itself remains the primary delivery path.
+media:
+  auto_present_outputs: true
+
+# ============================================================================
+# Thread Interjection Configuration
+# ============================================================================
+# Allow user messages sent while a run is in-flight to be queued and injected
+# into the running agent at the next step boundary (instead of the legacy 409
+# Conflict). When enabled=false the previous behaviour is preserved exactly.
+interjection:
+  enabled: false
+  # Per-run queue limit for messages waiting to be injected; excess sends get 429.
+  max_pending: 8
+  # IM-channel rollout switch (reserved; IM channels are not wired yet).
+  im_channels: false
 
 # ============================================================================
 # Provider Safety Termination Configuration

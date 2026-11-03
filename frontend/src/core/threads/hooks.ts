@@ -29,6 +29,15 @@ import { promptInputFilePartToFile, uploadFiles } from "../uploads";
 
 import { fetchThreadTokenUsage } from "./api";
 import {
+  applyAutoRunEvent,
+  cancelInterjection,
+  createInterjection,
+  hasUnclaimedQueuedInterjections,
+  InterjectionNoActiveRunError,
+  type PendingInterjection,
+  pruneLandedInterjections,
+} from "./interjection";
+import {
   buildThreadsSearchQueryOptions,
   DEFAULT_THREAD_SEARCH_PARAMS,
   type ThreadSearchParams,
@@ -100,6 +109,9 @@ const TASK_STATUS_EVENT_TYPES = new Set([
 ]);
 
 const THREAD_MESSAGES_PAGE_SIZE = 50;
+// Messages fetched per history page. Opening a thread only loads the most
+// recent page; older pages stream in through the scroll-triggered loadMore.
+const RUN_MESSAGES_PAGE_SIZE = 30;
 const THREAD_HISTORY_V2_ENABLED =
   env.NEXT_PUBLIC_THREAD_HISTORY_V2_ENABLED === "true";
 
@@ -380,6 +392,7 @@ export function buildRunMessagesUrl(
   threadId: string,
   runId: string,
   beforeSeq?: number,
+  limit?: number,
 ) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
   const path = `/api/threads/${encodeURIComponent(threadId)}/runs/${encodeURIComponent(runId)}/messages`;
@@ -387,6 +400,9 @@ export function buildRunMessagesUrl(
     `${normalizedBaseUrl}${path}`,
     typeof window !== "undefined" ? window.location.origin : "http://localhost",
   );
+  if (limit !== undefined) {
+    url.searchParams.set("limit", String(limit));
+  }
   if (beforeSeq !== undefined) {
     url.searchParams.set("before_seq", String(beforeSeq));
   }
@@ -1011,6 +1027,24 @@ function isThreadMissingError(error: unknown): boolean {
   return status === 403 || status === 404;
 }
 
+/** Plain-text projection of a (possibly block-list) message content. */
+function interjectionMessageText(message: Message): string {
+  const content = message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        typeof block === "string"
+          ? block
+          : ((block as { text?: string }).text ?? ""),
+      )
+      .join("");
+  }
+  return "";
+}
+
 export function useThreadStream({
   threadId,
   displayThreadId,
@@ -1038,6 +1072,11 @@ export function useThreadStream({
   >(() => new Set());
   const [pendingSupersededMessageIds, setPendingSupersededMessageIds] =
     useState<ReadonlySet<string>>(() => new Set());
+  // Thread interjections (plan-b): messages queued into the in-flight run.
+  // Rendered as queued user bubbles until applied (or cancelled).
+  const [pendingInterjections, setPendingInterjections] = useState<
+    PendingInterjection[]
+  >([]);
   const [isUploading, setIsUploading] = useState(false);
   // Track the thread ID that is currently streaming to handle thread changes during streaming
   const [onStreamThreadId, setOnStreamThreadId] = useState(() => threadId);
@@ -1082,6 +1121,9 @@ export function useThreadStream({
       setOnStreamThreadId(normalizedThreadId);
     }
     threadIdRef.current = normalizedThreadId;
+    // Interjections are per-run in-memory state on the gateway; switching
+    // threads invalidates the local pending list.
+    setPendingInterjections([]);
   }, [threadId]);
 
   const handleStreamStart = useCallback((_threadId: string, _runId: string) => {
@@ -1265,6 +1307,59 @@ export function useThreadStream({
         typeof event === "object" &&
         event !== null &&
         "type" in event &&
+        event.type === "interjection_applied"
+      ) {
+        const e = event as {
+          type: string;
+          interjections?: { id: string }[];
+        };
+        const appliedIds = new Set(
+          (e.interjections ?? []).map((item) => item.id),
+        );
+        if (appliedIds.size > 0) {
+          setPendingInterjections((current) =>
+            current.map((item) =>
+              appliedIds.has(item.id) ? { ...item, applied: true } : item,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
+        event.type === "interjection_auto_run"
+      ) {
+        // The run ended before these queued messages could be injected; the
+        // worker merged them into one follow-up run. Mark the bubbles so the
+        // drop toast doesn't fire, announce it, and attach to the new run's
+        // stream so the UI keeps following the conversation.
+        const e = event as {
+          type: string;
+          new_run_id?: string | null;
+          input?: string;
+          interjections?: { id: string }[];
+        };
+        const hasAutoItems = (e.interjections ?? []).length > 0;
+        if (hasAutoItems) {
+          setPendingInterjections((current) => applyAutoRunEvent(current, e));
+          toast(t.interjection.queuedAutoRun);
+        }
+        if (e.new_run_id) {
+          // Deferred: `thread` isn't assigned yet inside its own callbacks.
+          setTimeout(() => {
+            void joinStreamRef.current(e.new_run_id!);
+          }, 0);
+        }
+        return;
+      }
+
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
         typeof event.type === "string" &&
         TASK_STATUS_EVENT_TYPES.has(event.type)
       ) {
@@ -1303,6 +1398,12 @@ export function useThreadStream({
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
       setLiveMessagesThreadId(null);
+      // Queued-but-never-applied interjections die with the failed run (the
+      // worker discards them); applied ones and those merged into a follow-up
+      // run stay visible (the follow-up run still owns them).
+      setPendingInterjections((current) =>
+        current.filter((i) => i.applied || i.auto_run_run_id),
+      );
       setPendingSupersededRunIds(new Set());
       setPendingSupersededMessageIds(new Set());
       toast.error(getStreamErrorMessage(error));
@@ -1555,6 +1656,74 @@ export function useThreadStream({
     }
   }, [hasHumanOptimistic, optimisticMessageCount, renderHumanMessageCount]);
 
+  // Prune interjections once their text lands in the thread transcript as a
+  // real HumanMessage so the queued bubble doesn't duplicate it. Applied items
+  // match their own text; auto-run items match the merged follow-up input.
+  useEffect(() => {
+    if (pendingInterjections.length === 0) return;
+    const humanTexts = new Set<string>();
+    for (const message of thread.messages) {
+      if (message.type !== "human") continue;
+      const text = interjectionMessageText(message);
+      if (text) humanTexts.add(text);
+    }
+    const remaining = pruneLandedInterjections(pendingInterjections, humanTexts);
+    if (remaining.length !== pendingInterjections.length) {
+      setPendingInterjections(remaining);
+    }
+  }, [pendingInterjections, thread.messages]);
+
+  // The run ended before another model call consumed some queued
+  // interjections: the worker discards them (plan-b supplement), so the local
+  // queued bubbles must go too, with a hint that they were not injected.
+  useEffect(() => {
+    if (thread.isLoading) {
+      return;
+    }
+    if (!hasUnclaimedQueuedInterjections(pendingInterjections)) {
+      return;
+    }
+    toast(t.interjection.runEndedQueuedDropped);
+    setPendingInterjections((current) =>
+      current.filter((item) => item.applied),
+    );
+  }, [
+    thread.isLoading,
+    pendingInterjections,
+    t.interjection.runEndedQueuedDropped,
+  ]);
+
+  const cancelPendingInterjection = useCallback(
+    async (
+      threadId: string,
+      interjectionId: string,
+    ): Promise<PendingInterjection | null> => {
+      const entry = pendingInterjections.find(
+        (item) => item.id === interjectionId,
+      );
+      if (!entry || entry.applied) {
+        return null;
+      }
+      const result = await cancelInterjection(threadId, interjectionId);
+      if (result === "already_applied") {
+        toast(t.interjection.alreadyApplied);
+        setPendingInterjections((current) =>
+          current.map((item) =>
+            item.id === interjectionId ? { ...item, applied: true } : item,
+          ),
+        );
+        return null;
+      }
+      // "cancelled" and "not_found" (e.g. the run already ended and the worker
+      // discarded the queue) both remove the bubble locally.
+      setPendingInterjections((current) =>
+        current.filter((item) => item.id !== interjectionId),
+      );
+      return entry;
+    },
+    [pendingInterjections, t.interjection.alreadyApplied],
+  );
+
   const sendMessage = useCallback(
     async (
       threadId: string,
@@ -1621,6 +1790,44 @@ export function useThreadStream({
       let uploadedFileInfo: UploadedFileInfo[] = [];
 
       try {
+        // Thread interjection (plan-b): when a run is already streaming on
+        // this thread, queue the new text into the running agent instead of
+        // starting a second run (which the gateway would 409-reject).
+        // Text-only, visible sends only — clarification answers and file
+        // uploads keep the normal path.
+        if (
+          thread.isLoading &&
+          !hideFromUI &&
+          text &&
+          (!message.files || message.files.length === 0)
+        ) {
+          try {
+            const created = await createInterjection(threadId, text);
+            setPendingInterjections((current) => [...current, created]);
+            // The queued bubble renders from pendingInterjections; drop the
+            // transient optimistic copy.
+            setOptimisticMessages([]);
+            setOptimisticThreadId(null);
+            setLiveMessagesThreadId(null);
+            return;
+          } catch (error) {
+            if (error instanceof InterjectionNoActiveRunError) {
+              // The run just finished between our isLoading check and the
+              // request — fall through to the normal submit path.
+            } else {
+              setOptimisticMessages([]);
+              setOptimisticThreadId(null);
+              setLiveMessagesThreadId(null);
+              toast.error(
+                error instanceof Error
+                  ? error.message
+                  : "Failed to queue the message.",
+              );
+              return;
+            }
+          }
+        }
+
         // Upload files first if any
         if (message.files && message.files.length > 0) {
           setIsUploading(true);
@@ -1938,6 +2145,8 @@ export function useThreadStream({
   return {
     thread: mergedThread,
     pendingUsageMessages,
+    pendingInterjections,
+    cancelPendingInterjection,
     sendMessage,
     regenerateMessage,
     isUploading,
@@ -1956,6 +2165,11 @@ function useThreadHistoryLegacy(
   threadId: string,
   { enabled = true, pendingSupersededRunIds }: ThreadHistoryOptions = {},
 ) {
+  // One `loadMessages` call fetches at most one page (RUN_MESSAGES_PAGE_SIZE
+  // messages) of the most recent unloaded run, skipping over runs with no
+  // visible messages. Older pages are loaded lazily: the message list triggers
+  // `loadMore` when the user scrolls to the top, which resumes from the stored
+  // `before_seq` cursor and walks backward run by run.
   const runs = useThreadRuns(threadId, { enabled });
   const threadIdRef = useRef(threadId);
   const runsRef = useRef(runs.data ?? []);
@@ -2030,6 +2244,7 @@ function useThreadHistoryLegacy(
           requestThreadId,
           run.run_id,
           beforeSeq,
+          RUN_MESSAGES_PAGE_SIZE,
         );
         const result: RunMessagesPageResponse = await fetch(url, {
           method: "GET",
@@ -2055,7 +2270,9 @@ function useThreadHistoryLegacy(
         const nextBeforeSeq = getNextRunMessagesBeforeSeq(result);
         if (typeof nextBeforeSeq === "number") {
           runBeforeSeqRef.current.set(run.run_id, nextBeforeSeq);
-          pendingLoadRef.current = true;
+          // Lazy pagination: stop the eager loop after this page. The cursor
+          // stored above is resumed by the scroll-triggered loadMore, so
+          // opening a thread only fetches the most recent page.
         } else if (nextBeforeSeq === undefined) {
           console.warn(
             `Run ${run.run_id} returned has_more without message seq values; leaving it pending for retry.`,
@@ -2194,7 +2411,7 @@ function useThreadHistoryV2(
         beforeSeq,
         THREAD_MESSAGES_PAGE_SIZE,
       );
-      const result: RunMessage[] = await fetch(url, {
+      const result: RunMessagesPageResponse = await fetch(url, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -2209,19 +2426,20 @@ function useThreadHistoryV2(
       }
 
       initializedRef.current = true;
-      if (result.length === 0) {
+      const fetchedRows = Array.isArray(result) ? result : result.data;
+      if (fetchedRows.length === 0) {
         hasMoreRef.current = false;
         setHasMore(false);
         return;
       }
 
       setRows((prev) => {
-        const merged = mergeRunMessageRows(prev, result);
+        const merged = mergeRunMessageRows(prev, fetchedRows);
         oldestSeqRef.current = getOldestRunMessageSeq(merged);
         return merged;
       });
 
-      const nextHasMore = result.length >= THREAD_MESSAGES_PAGE_SIZE;
+      const nextHasMore = runMessagesPageHasMore(result);
       hasMoreRef.current = nextHasMore;
       setHasMore(nextHasMore);
     } catch (err) {

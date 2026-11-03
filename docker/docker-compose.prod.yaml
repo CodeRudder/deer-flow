@@ -1,0 +1,127 @@
+# DeerFlow 正式运行 compose（独立部署目录专用）
+#
+# 这个文件由 scripts/deploy.sh 暂存到 $DEER_FLOW_DEPLOY_DIR/ 并从那里运行
+# （--project-directory = 部署目录）。**所有路径都是部署目录内的相对路径**，
+# 不引用仓库——仓库只负责构建镜像（docker/docker-compose.yaml，image 名对齐），
+# 运行环境完全独立存活：
+#
+#   <deploy-dir>/
+#   ├── docker-compose.yaml      # 即本文件（staged）
+#   ├── deploy.sh  repo.env
+#   ├── nginx/nginx.conf         # staged
+#   ├── skills/                  # staged（每次部署刷新）
+#   ├── config.yaml  extensions_config.json
+#   └── data/deer-flow/          # DEER_FLOW_HOME（bind mount，全部运行数据）
+#
+# 镜像：deploy.sh build 先在仓库侧（docker/docker-compose.yaml）构建
+# deer-flow-{frontend,gateway,provisioner}:latest；这里只按名引用，不含 build 段。
+#
+# 唯一路径例外：provisioner 的 KUBE_CONFIG_PATH 缺省 ~/.kube/config 在部署目录外
+# ——这是宿主机 kube 凭据（k8s 沙箱模式鉴权所需），不属于运行数据，故不迁入部署目录。
+
+services:
+  # ── Reverse Proxy ──────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: deer-flow-nginx
+    ports:
+      - "${PORT:-2026}:2026"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf.template:ro
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        cp /etc/nginx/nginx.conf.template /etc/nginx/nginx.conf
+        test -e /proc/net/if_inet6 || sed -i '/^[[:space:]]*listen[[:space:]]\+\[::\]:2026;/d' /etc/nginx/nginx.conf
+        exec nginx -g 'daemon off;'
+    depends_on:
+      - frontend
+      - gateway
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  # ── Frontend: Next.js Production ───────────────────────────────────────────
+  frontend:
+    image: ${FRONTEND_IMAGE:-deer-flow-frontend:latest}
+    container_name: deer-flow-frontend
+    working_dir: /app
+    environment:
+      - NODE_ENV=production
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
+      - DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=http://gateway:8001
+    env_file:
+      - ./frontend.env
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  # ── Gateway API ────────────────────────────────────────────────────────────
+  gateway:
+    image: ${GATEWAY_IMAGE:-deer-flow-gateway:latest}
+    container_name: deer-flow-gateway
+    command: sh -c "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --workers ${GATEWAY_WORKERS:-1}"
+    volumes:
+      - ./config.yaml:/app/backend/config.yaml:ro
+      - ./extensions_config.json:/app/backend/extensions_config.json:ro
+      - ./skills:/app/skills:ro
+      # 运行数据全部落在部署目录 data/ 下（宿主 bind mount）
+      - ${DEER_FLOW_HOME:-./data/deer-flow}:/app/backend/.deer-flow
+    working_dir: /app
+    environment:
+      - CI=true
+      - DEER_FLOW_PROJECT_ROOT=/app
+      - DEER_FLOW_HOME=/app/backend/.deer-flow
+      - DEER_FLOW_CONFIG_PATH=/app/backend/config.yaml
+      - DEER_FLOW_EXTENSIONS_CONFIG_PATH=/app/backend/extensions_config.json
+      - DEER_FLOW_CHANNELS_LANGGRAPH_URL=${DEER_FLOW_CHANNELS_LANGGRAPH_URL:-http://gateway:8001/api}
+      - DEER_FLOW_CHANNELS_GATEWAY_URL=${DEER_FLOW_CHANNELS_GATEWAY_URL:-http://gateway:8001}
+      - DEER_FLOW_INTERNAL_AUTH_TOKEN=${DEER_FLOW_INTERNAL_AUTH_TOKEN:-}
+      # DooD path/network translation（宿主路径在部署目录内，由 deploy.sh 导出）
+      - DEER_FLOW_HOST_BASE_DIR=${DEER_FLOW_HOME:-./data/deer-flow}
+      - DEER_FLOW_HOST_SKILLS_PATH=${DEER_FLOW_HOST_SKILLS_PATH:-./skills}
+      - DEER_FLOW_SANDBOX_HOST=host.docker.internal
+      - NO_PROXY=${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,host.docker.internal
+      - no_proxy=${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,host.docker.internal
+    env_file:
+      - ./runtime.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  # ── Sandbox Provisioner（仅 provisioner 沙箱模式由 deploy.sh 追加启动）──────
+  # 注意：~/.kube/config 是唯一允许在部署目录之外的路径（宿主机 kube 凭据）。
+  provisioner:
+    image: ${PROVISIONER_IMAGE:-deer-flow-provisioner:latest}
+    container_name: deer-flow-provisioner
+    volumes:
+      - ${KUBE_CONFIG_PATH:-~/.kube/config}:/root/.kube/config:ro
+      - ${DEER_FLOW_HOME:-./data/deer-flow}/threads:/threads
+    environment:
+      - K8S_NAMESPACE=deer-flow
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest}
+      - SKILLS_HOST_PATH=${DEER_FLOW_HOST_SKILLS_PATH:-./skills}
+      - THREADS_HOST_PATH=${DEER_FLOW_HOME:-./data/deer-flow}/threads
+      - KUBECONFIG_PATH=/root/.kube/config
+      - NODE_HOST=host.docker.internal
+      - K8S_API_SERVER=https://host.docker.internal:26443
+    env_file:
+      - ./runtime.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - deer-flow
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+networks:
+  deer-flow:
+    driver: bridge

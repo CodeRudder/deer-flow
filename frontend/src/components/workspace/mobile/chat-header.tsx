@@ -2,7 +2,7 @@
 
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { ArrowLeftIcon, FilesIcon } from "lucide-react";
+import { ArrowLeftIcon, FolderIcon, FilesIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -59,6 +59,8 @@ type MobileChatHeaderProps = {
   tokenUsageEnabled: boolean;
   tokenUsagePreferences: TokenUsagePreferences;
   onTokenUsagePreferencesChange: (preferences: TokenUsagePreferences) => void;
+  /** Opens the workspace file drawer; absent → the entry point is hidden. */
+  onOpenWorkspaceFiles?: () => void;
 };
 
 /**
@@ -85,6 +87,7 @@ export function MobileChatHeader({
   tokenUsageEnabled,
   tokenUsagePreferences,
   onTokenUsagePreferencesChange,
+  onOpenWorkspaceFiles,
 }: MobileChatHeaderProps) {
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -150,6 +153,22 @@ export function MobileChatHeader({
         >
           <FilesIcon className="size-5" />
         </Link>
+      )}
+
+      {/* 文件目录: workspace file browser drawer. Unlike the artifacts link
+          above, the browser works on any thread, so the entry point renders
+          unconditionally. */}
+      {onOpenWorkspaceFiles && (
+        <Button
+          type="button"
+          variant="ghost"
+          aria-label={t.workspaceFiles.toggle}
+          data-testid="mobile-chat-workspace-files"
+          className="text-muted-foreground size-11 shrink-0 rounded-full p-0"
+          onClick={onOpenWorkspaceFiles}
+        >
+          <FolderIcon className="size-5" />
+        </Button>
       )}
 
       <Sheet open={menuOpen} onOpenChange={setMenuOpen}>

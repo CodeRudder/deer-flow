@@ -101,6 +101,8 @@ export const zhCN: Translations = {
     createSkillPrompt:
       "我们一起用 skill-creator 技能来创建一个技能吧。先问问我希望这个技能能做什么。",
     addAttachments: "添加附件",
+    attachmentsDuringRunUnsupported:
+      "任务运行中暂不支持发送附件，请等本轮结束后再发送",
     mode: "模式",
     flashMode: "闪速",
     flashModeDescription: "快速且高效的完成任务，但可能不够精准",
@@ -322,6 +324,24 @@ export const zhCN: Translations = {
     gatewayUnavailableRetrying: "正在后台重试…",
   },
 
+  // 工作区文件浏览侧栏
+  workspaceFiles: {
+    title: "文件",
+    toggle: "切换工作区文件面板",
+    rootName: "workspace",
+    up: "上一级目录",
+    refresh: "刷新",
+    searchPlaceholder: "搜索文件…",
+    loading: "加载中…",
+    empty: "此目录下没有文件。",
+    noResults: "没有匹配的文件。",
+    notFound: "该目录不存在。",
+    loadError: "文件加载失败。",
+    truncated: "列表已截断 —— 请缩小路径或搜索范围。",
+    manualRefreshHint: "文件列表需通过刷新按钮手动更新。",
+    tooLargeToPreview: "文件过大，无法在线预览 —— 请下载后查看。",
+  },
+
   // Conversation
   conversation: {
     noMessages: "还没有消息",
@@ -440,6 +460,21 @@ export const zhCN: Translations = {
   uploads: {
     uploading: "上传中...",
     uploadingFiles: "文件上传中，请稍候...",
+  },
+
+  interjection: {
+    undoTooltip: "撤回并编辑",
+    queuedHint: "已插入——将在当前步骤结束后生效",
+    alreadyApplied: "该消息已注入模型上下文，无法撤回",
+    runEndedQueuedDropped: "上一条回复在排队消息注入前已结束——请重新发送",
+    queuedAutoRun: "排队消息已转为新任务并开始执行",
+    injectedHint: "已插入当前执行",
+  },
+  processTimeline: {
+    narrationLabel: "说明",
+    viewMore: (count: number) => `查看更多（剩余 ${count} 字）`,
+    viewLess: "收起",
+    openArtifact: "打开产物",
   },
 
   subtasks: {

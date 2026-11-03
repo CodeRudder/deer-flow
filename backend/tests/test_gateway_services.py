@@ -737,6 +737,66 @@ def test_start_run_uses_normalized_input_without_command(_stub_app_config):
     assert graph_input["messages"][0].content == "hi"
 
 
+def test_start_run_wires_followup_runner_merging_leftover_interjections(_stub_app_config):
+    """Run-end leftover interjections must reach the worker as a spawner that
+    creates ONE follow-up run whose input is a single merged user message."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.store.memory import InMemoryStore
+
+    from app.gateway.routers.thread_runs import RunCreateRequest
+    from app.gateway.services import start_run
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+    from deerflow.runtime import RunManager
+    from deerflow.runtime.runs.store.memory import MemoryRunStore
+
+    run_manager = RunManager(store=MemoryRunStore())
+    state = SimpleNamespace(
+        stream_bridge=SimpleNamespace(),
+        run_manager=run_manager,
+        checkpointer=InMemorySaver(),
+        store=InMemoryStore(),
+        run_event_store=SimpleNamespace(),
+        run_events_config=None,
+        thread_store=MemoryThreadMetaStore(InMemoryStore()),
+    )
+    request = SimpleNamespace(headers={}, state=SimpleNamespace(), app=SimpleNamespace(state=state))
+    captured: dict[str, object] = {}
+
+    async def fake_run_agent(*args, **kwargs):
+        captured["followup_runner"] = kwargs["followup_runner"]
+
+    async def scenario():
+        with (
+            patch("app.gateway.services.resolve_agent_factory", return_value=object()),
+            patch("app.gateway.services.run_agent", side_effect=fake_run_agent),
+        ):
+            body = RunCreateRequest(
+                input={"messages": [{"role": "human", "content": "original"}]},
+                metadata={"origin": "web"},
+            )
+            record = await start_run(body, "thread-followup-test", request)
+            await record.task
+
+            # Mirror the real flow: the original run reaches a terminal
+            # status before the worker's finally block spawns the follow-up.
+            from deerflow.runtime.runs.schemas import RunStatus
+
+            await run_manager.set_status(record.run_id, RunStatus.success)
+            followup_runner = captured["followup_runner"]
+            followup_record = await followup_runner("part one\n\npart two")
+            assert followup_record.run_id != record.run_id
+            assert followup_record.metadata.get("auto_interjection_followup_of") == record.run_id
+            msg = followup_record.kwargs["input"]["messages"][0]
+            assert msg["role"] == "user" and msg["content"] == "part one\n\npart two"
+            await followup_record.task
+
+    asyncio.run(scenario())
+
+
 def test_start_run_uses_internal_owner_header_for_persistence(_stub_app_config):
     import asyncio
     from types import SimpleNamespace

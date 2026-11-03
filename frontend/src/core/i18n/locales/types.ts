@@ -101,6 +101,7 @@ export interface Translations {
     placeholder: string;
     createSkillPrompt: string;
     addAttachments: string;
+    attachmentsDuringRunUnsupported: string;
     mode: string;
     flashMode: string;
     flashModeDescription: string;
@@ -290,6 +291,29 @@ export interface Translations {
     gatewayUnavailableRetrying: string;
   };
 
+  // Workspace file browser sidebar (thread workspace files)
+  workspaceFiles: {
+    /** Sidebar toggle tooltip / label. */
+    title: string;
+    toggle: string;
+    /** Breadcrumb label of the virtual root (/mnt/user-data). */
+    rootName: string;
+    up: string;
+    refresh: string;
+    searchPlaceholder: string;
+    loading: string;
+    empty: string;
+    noResults: string;
+    /** 404 — the directory does not exist. */
+    notFound: string;
+    loadError: string;
+    truncated: string;
+    /** Reminder that listings refresh only via the refresh button. */
+    manualRefreshHint: string;
+    /** File exceeds the inline text-preview size cap. */
+    tooLargeToPreview: string;
+  };
+
   // Conversation
   conversation: {
     noMessages: string;
@@ -421,6 +445,22 @@ export interface Translations {
   uploads: {
     uploading: string;
     uploadingFiles: string;
+  };
+
+  // Thread interjection
+  interjection: {
+    undoTooltip: string;
+    queuedHint: string;
+    alreadyApplied: string;
+    runEndedQueuedDropped: string;
+    queuedAutoRun: string;
+    injectedHint: string;
+  };
+  processTimeline: {
+    narrationLabel: string;
+    viewMore: (count: number) => string;
+    viewLess: string;
+    openArtifact: string;
   };
 
   // Subtasks

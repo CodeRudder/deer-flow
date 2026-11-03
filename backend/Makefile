@@ -5,8 +5,13 @@ UVICORN_LOOP := $(shell uname -s 2>/dev/null | grep -qiE '^(MINGW|MSYS|CYGWIN)' 
 install:
 	uv sync
 
+# Watch only source dirs: bare --reload watches CWD (backend/), which includes
+# the .deer-flow runtime data — an agent writing its thread workspace (e.g.
+# pip install into /mnt/user-data/workspace) would restart the gateway
+# mid-run and kill in-flight runs. Absolute --reload-exclude globs do NOT
+# match the relative paths watchfiles reports, so dir-scoping is the fix.
 dev:
-	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload $(UVICORN_LOOP)
+	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --reload --reload-dir app --reload-dir packages $(UVICORN_LOOP)
 
 gateway:
 	PYTHONPATH=. PYTHONIOENCODING=utf-8 PYTHONUTF8=1 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $(UVICORN_LOOP)

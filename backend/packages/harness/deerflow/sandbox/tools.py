@@ -33,6 +33,14 @@ from deerflow.sandbox.search import GrepMatch
 from deerflow.sandbox.security import LOCAL_HOST_BASH_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.tools.types import Runtime
 
+
+def _apply_pending_mgw_env(runtime, sandbox) -> None:
+    """Apply pending Media Gateway env to ``sandbox`` (lazy import avoids an
+    agents ↔ sandbox import cycle at module load time)."""
+    from deerflow.agents.middlewares.media_gateway_credential_middleware import apply_pending_mgw_env
+
+    apply_pending_mgw_env(runtime, sandbox)
+
 _ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![:\w])(?<!:/)/(?:[^\s\"'`;&|<>()]+)")
 # A ``{...}`` block holding a single identifier-like placeholder (e.g. ``{id}``
 # in a REST template or ``{port}`` in an f-string). Bash brace expansion such as
@@ -1196,6 +1204,7 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
             if sandbox is not None:
                 if runtime.context is not None:
                     runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
+                _apply_pending_mgw_env(runtime, sandbox)
                 return sandbox
             # Sandbox was released, fall through to acquire new one
 
@@ -1219,6 +1228,7 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
 
     if runtime.context is not None:
         runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
+    _apply_pending_mgw_env(runtime, sandbox)
     return sandbox
 
 

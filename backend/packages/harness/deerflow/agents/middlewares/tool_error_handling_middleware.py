@@ -190,6 +190,14 @@ def _build_runtime_middlewares(
         thread_hooks.append(UploadsMiddleware())
     thread_hooks.append(SandboxMiddleware(lazy_init=lazy_init))
 
+    # Per-user Media Gateway credential injection (bash/python/skill scripts
+    # read MEDIA_GATEWAY_* from the sandbox env). Registered right after the
+    # sandbox middleware so the sandbox lifecycle stays outermost; zero-cost
+    # passthrough when MGW is not configured.
+    from deerflow.agents.middlewares.media_gateway_credential_middleware import MediaGatewayCredentialMiddleware
+
+    thread_hooks.append(MediaGatewayCredentialMiddleware())
+
     # Layer 3 — post-processing append-only middlewares.
     tail: list[AgentMiddleware] = []
     if include_dangling_tool_call_patch:
@@ -225,6 +233,14 @@ def _build_runtime_middlewares(
 
     tail.append(SandboxAuditMiddleware())
     tail.append(ToolErrorHandlingMiddleware())
+
+    # Artifact auto-present safety net: register outputs files the agent wrote
+    # but never presented via present_files. Shared-base tail, before
+    # ClarificationMiddleware (which both composition roots append after this).
+    if app_config.media.auto_present_outputs:
+        from deerflow.agents.middlewares.artifact_auto_present_middleware import ArtifactAutoPresentMiddleware
+
+        tail.append(ArtifactAutoPresentMiddleware(media_config=app_config.media))
 
     return [*outer_wrappers, *thread_hooks, *tail]
 

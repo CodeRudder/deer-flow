@@ -19,6 +19,7 @@ import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
+import { isProcessTimelineEnabled } from "@/core/messages/timeline";
 import { cn } from "@/lib/utils";
 
 export default function ChatPage() {
@@ -27,6 +28,8 @@ export default function ChatPage() {
   // shared hook so the mobile chat page can reuse them verbatim — only the
   // layout below is desktop-specific. See `use-chat-page.ts`.
   const {
+    pendingInterjections,
+    handleUndoInterjection,
     threadId,
     isMock,
     isNewThread,
@@ -101,6 +104,7 @@ export default function ChatPage() {
                 className={cn("size-full", !isWelcomeMode && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                processTimeline={isProcessTimelineEnabled()}
                 paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
                 hasMoreHistory={hasMoreHistory}
                 loadMoreHistory={loadMoreHistory}
@@ -108,6 +112,8 @@ export default function ChatPage() {
                 tokenUsageInlineMode={tokenUsageInlineMode}
                 canRegenerate={canRegenerate}
                 onRegenerateMessage={handleRegenerate}
+                pendingInterjections={pendingInterjections}
+                onUndoInterjection={handleUndoInterjection}
                 onSubmitHumanInput={
                   isMock || isDemoMode ? undefined : handleSubmitHumanInput
                 }

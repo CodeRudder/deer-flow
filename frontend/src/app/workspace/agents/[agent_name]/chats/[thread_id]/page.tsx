@@ -6,7 +6,10 @@ import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import {
+  type PromptInputMessage,
+  usePromptInputController,
+} from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
@@ -31,6 +34,7 @@ import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicato
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
+import { isProcessTimelineEnabled } from "@/core/messages/timeline";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings, useThreadSettings } from "@/core/settings";
@@ -39,6 +43,7 @@ import {
   useThreadStream,
   useThreadTokenUsage,
 } from "@/core/threads/hooks";
+import type { PendingInterjection } from "@/core/threads/interjection";
 import { threadTokenUsageToTokenUsage } from "@/core/threads/token-usage";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
@@ -87,6 +92,8 @@ export default function AgentChatPage() {
   const {
     thread,
     pendingUsageMessages,
+    pendingInterjections,
+    cancelPendingInterjection,
     sendMessage,
     regenerateMessage,
     isUploading,
@@ -166,6 +173,26 @@ export default function AgentChatPage() {
       void sendPromise;
     },
     [sendMessage, threadId, agent_name],
+  );
+
+  // Thread interjection undo (plan-b): cancel the queued message and put its
+  // text back into the composer (appended as a new segment when needed).
+  const promptTextInput = usePromptInputController().textInput;
+  const promptTextInputRef = useRef(promptTextInput);
+  promptTextInputRef.current = promptTextInput;
+  const handleUndoInterjection = useCallback(
+    async (item: PendingInterjection) => {
+      const entry = await cancelPendingInterjection(threadId, item.id);
+      if (!entry) {
+        return;
+      }
+      const input = promptTextInputRef.current;
+      const current = input.value;
+      input.setInput(
+        current.trim() ? `${current}\n\n${entry.text}` : entry.text,
+      );
+    },
+    [cancelPendingInterjection, threadId],
   );
 
   const handleStop = useCallback(async () => {
@@ -262,6 +289,7 @@ export default function AgentChatPage() {
                 className={cn("size-full", !isWelcomeMode && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                processTimeline={isProcessTimelineEnabled()}
                 paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
                 hasMoreHistory={hasMoreHistory}
                 loadMoreHistory={loadMoreHistory}
@@ -276,6 +304,8 @@ export default function AgentChatPage() {
                   !hasOpenHumanInputCard
                 }
                 onRegenerateMessage={handleRegenerate}
+                pendingInterjections={pendingInterjections}
+                onUndoInterjection={handleUndoInterjection}
                 onSubmitHumanInput={
                   isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
                     ? undefined

@@ -1,7 +1,20 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
-import { ChevronUpIcon, Loader2Icon, RefreshCcwIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronUpIcon,
+  CornerDownRightIcon,
+  Loader2Icon,
+  RefreshCcwIcon,
+  Undo2Icon,
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 import {
@@ -22,6 +35,11 @@ import {
   type HumanInputResponse,
 } from "@/core/messages/human-input";
 import {
+  buildTimelineEntries,
+  isProcessTimelineEnabled,
+  type TimelineEntry,
+} from "@/core/messages/timeline";
+import {
   buildTokenDebugSteps,
   type TokenUsageInlineMode,
 } from "@/core/messages/usage-model";
@@ -40,6 +58,7 @@ import {
   isAssistantMessageGroupStreaming,
   isClarificationPreambleGroup,
   isHiddenFromUIMessage,
+  type MessageGroup,
 } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { useSubtaskStatuses } from "@/core/subagents/hooks";
@@ -50,6 +69,7 @@ import {
   parseSubtaskResult,
 } from "@/core/tasks/subtask-result";
 import type { AgentThreadState } from "@/core/threads";
+import type { PendingInterjection } from "@/core/threads/interjection";
 import { cn } from "@/lib/utils";
 
 import { ArtifactFileList } from "../artifacts/artifact-file-list";
@@ -63,7 +83,7 @@ import {
   type HumanInputSubmitResult,
 } from "./human-input-card";
 import { MarkdownContent } from "./markdown-content";
-import { MessageGroup } from "./message-group";
+import { MessageGroup as MessageGroupPanel } from "./message-group";
 import { MessageListItem } from "./message-list-item";
 import {
   MessageTokenUsageDebugList,
@@ -72,6 +92,7 @@ import {
 import { MessageListSkeleton } from "./skeleton";
 import { SubtaskCard } from "./subtask-card";
 import { useGetThinkingMessage } from "./thinking-message";
+import { TimelineView } from "./timeline-view";
 
 export const MESSAGE_LIST_DEFAULT_PADDING_BOTTOM = 24;
 
@@ -100,11 +121,46 @@ function LoadMoreHistoryIndicator({
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadRef = useRef(0);
+  // Scroll anchor: captured before a page load starts so the prepended
+  // history does not shift the viewport once the new rows render.
+  const scrollAnchorRef = useRef<{
+    scrollTop: number;
+    scrollHeight: number;
+  } | null>(null);
+  const wasLoadingRef = useRef(false);
+
+  const getScrollElement = useCallback(() => {
+    // `Conversation` (StickToBottom root) carries role="log".
+    return sentinelRef.current?.closest<HTMLElement>('[role="log"]') ?? null;
+  }, []);
+
+  const restoreScrollAnchor = useCallback(() => {
+    const anchor = scrollAnchorRef.current;
+    scrollAnchorRef.current = null;
+    if (!anchor) {
+      return;
+    }
+    const element = getScrollElement();
+    if (!element) {
+      return;
+    }
+    const delta = element.scrollHeight - anchor.scrollHeight;
+    if (delta > 0) {
+      element.scrollTop = anchor.scrollTop + delta;
+    }
+  }, [getScrollElement]);
 
   const throttledLoadMore = useCallback(() => {
     if (!hasMore || isLoading) {
       return;
     }
+
+    const captureAnchor = () => {
+      const element = getScrollElement();
+      scrollAnchorRef.current = element
+        ? { scrollTop: element.scrollTop, scrollHeight: element.scrollHeight }
+        : null;
+    };
 
     const now = Date.now();
     const remaining =
@@ -112,6 +168,7 @@ function LoadMoreHistoryIndicator({
 
     if (remaining <= 0) {
       lastLoadRef.current = now;
+      captureAnchor();
       loadMore?.();
       return;
     }
@@ -126,9 +183,22 @@ function LoadMoreHistoryIndicator({
         return;
       }
       lastLoadRef.current = Date.now();
+      captureAnchor();
       loadMore?.();
     }, remaining);
-  }, [hasMore, isLoading, loadMore]);
+  }, [getScrollElement, hasMore, isLoading, loadMore]);
+
+  useLayoutEffect(() => {
+    const wasLoading = wasLoadingRef.current;
+    wasLoadingRef.current = isLoading ?? false;
+    if (!wasLoading || isLoading) {
+      return;
+    }
+    // The load finished and the page rendered in this commit; compensate for
+    // the height the prepended messages added so the viewport stays anchored
+    // on the messages the user was reading instead of jumping.
+    restoreScrollAnchor();
+  }, [isLoading, restoreScrollAnchor]);
 
   useEffect(() => {
     const element = sentinelRef.current;
@@ -206,6 +276,9 @@ export function MessageList({
   canRegenerate = false,
   onSubmitHumanInput,
   collapsedSteps = false,
+  pendingInterjections,
+  onUndoInterjection,
+  processTimeline = isProcessTimelineEnabled(),
 }: {
   className?: string;
   threadId: string;
@@ -231,6 +304,20 @@ export function MessageList({
     request: HumanInputRequest,
     response: HumanInputResponse,
   ) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
+  /**
+   * Thread interjections queued into the in-flight run (plan-b). Rendered as
+   * queued user bubbles with an undo action until the backend applies them.
+   */
+  pendingInterjections?: PendingInterjection[];
+  /** Undo (cancel) a still-queued interjection; text returns to the composer. */
+  onUndoInterjection?: (item: PendingInterjection) => void;
+  /**
+   * Process timeline (docs/plans/2026-11-03-process-timeline-design.md): render
+   * the reasoning/tool-call process as single-line step rows instead of the
+   * legacy ChainOfThought panel. Defaults to the
+   * `NEXT_PUBLIC_PROCESS_TIMELINE` flag (off unless enabled at dev time).
+   */
+  processTimeline?: boolean;
 }) {
   const { t } = useI18n();
   const getThinkingMessage = useGetThinkingMessage();
@@ -334,6 +421,28 @@ export function MessageList({
   const groupedMessages = getMessageGroups(messages, {
     isCurrentTurnLoading: thread.isLoading,
   });
+  // Process timeline (flag-gated): normalized entry stream replacing the
+  // `assistant:processing` mega-group + tail-rendered interjections.
+  const timelineEntries = useMemo(
+    () =>
+      processTimeline
+        ? buildTimelineEntries(messages, {
+            isLoading: thread.isLoading,
+            interjections: pendingInterjections,
+          })
+        : null,
+    [messages, pendingInterjections, processTimeline, thread.isLoading],
+  );
+  const groupIndexByFirstMessageId = useMemo(() => {
+    const map = new Map<string, number>();
+    groupedMessages.forEach((group, index) => {
+      const id = group.messages[0]?.id;
+      if (typeof id === "string" && !map.has(id)) {
+        map.set(id, index);
+      }
+    });
+    return map;
+  }, [groupedMessages]);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<
     string | null
   >(null);
@@ -472,7 +581,7 @@ export function MessageList({
       }
 
       return (
-        <div className="mt-2 flex justify-start gap-1 opacity-0 transition-opacity delay-200 duration-300 group-hover/assistant-turn:opacity-100">
+        <div className="pointer-events-none mt-2 flex justify-start gap-1 opacity-0 transition-opacity delay-200 duration-300 group-hover/assistant-turn:pointer-events-auto group-hover/assistant-turn:opacity-100">
           {clipboardData && <CopyButton clipboardData={clipboardData} />}
           {enableRegenerateForTurn &&
             regenerateTarget?.id &&
@@ -567,6 +676,365 @@ export function MessageList({
     [thread.isLoading, tokenDebugSteps, tokenUsageInlineMode],
   );
 
+  const renderGroup = (
+    group: MessageGroup,
+    groupIndex: number,
+  ): React.ReactNode => {
+    const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
+    const groupIsLoading = thread.isLoading && groupIndex === lastGroupIndex;
+    const groupKey = group.id ?? `group-${group.type}-${groupIndex}`;
+
+    if (group.type === "human" || group.type === "assistant") {
+      return (
+        <div
+          key={groupKey}
+          className={cn(
+            "w-full",
+            group.type === "assistant" && "group/assistant-turn",
+          )}
+        >
+          {group.messages.map((msg, msgIndex) => {
+            return (
+              <MessageListItem
+                key={`${groupKey}/${msg.id ?? msgIndex}`}
+                message={msg}
+                isLoading={
+                  thread.isLoading && groupIndex === groupedMessages.length - 1
+                }
+                threadId={threadId}
+                showCopyButton={group.type !== "assistant"}
+                turnStartTime={
+                  groupIndex === groupedMessages.length - 1
+                    ? turnStartTime
+                    : null
+                }
+              />
+            );
+          })}
+          {renderTokenUsage({
+            messages: group.messages,
+            turnUsageMessages,
+          })}
+          {group.type === "assistant" &&
+            !isClarificationPreambleGroup(groupedMessages, groupIndex) &&
+            renderAssistantActions(
+              group.messages,
+              isAssistantMessageGroupStreaming(
+                group.messages,
+                streamingMessages,
+              ),
+              group.id === latestAssistantGroupId,
+            )}
+        </div>
+      );
+    } else if (group.type === "assistant:clarification") {
+      const message = group.messages[0];
+      if (!message) {
+        return null;
+      }
+
+      const humanInputRequest = extractHumanInputRequest(message);
+      if (humanInputRequest) {
+        const answeredResponse =
+          humanInputState.answeredResponses.get(humanInputRequest.request_id) ??
+          null;
+        const pending = pendingHumanInputRequestIds.has(
+          humanInputRequest.request_id,
+        );
+        return (
+          <div key={groupKey} className="w-full">
+            {answeredResponse ? (
+              <HumanInputAnsweredRow
+                request={humanInputRequest}
+                response={answeredResponse}
+              />
+            ) : (
+              <HumanInputCard
+                disabled={
+                  thread.isLoading ||
+                  pending ||
+                  humanInputState.latestOpenRequestId !==
+                    humanInputRequest.request_id ||
+                  !onSubmitHumanInput
+                }
+                pending={pending}
+                request={humanInputRequest}
+                onSubmit={
+                  onSubmitHumanInput
+                    ? (response) =>
+                        handleSubmitHumanInput(humanInputRequest, response)
+                    : undefined
+                }
+              />
+            )}
+            {renderTokenUsage({
+              messages: group.messages,
+              turnUsageMessages,
+            })}
+          </div>
+        );
+      }
+
+      if (hasContent(message)) {
+        return (
+          <div key={groupKey} className="w-full">
+            <MarkdownContent
+              content={extractContentFromMessage(message)}
+              isLoading={thread.isLoading}
+              rehypePlugins={rehypePlugins}
+            />
+            {renderTokenUsage({
+              messages: group.messages,
+              turnUsageMessages,
+            })}
+          </div>
+        );
+      }
+      return null;
+    } else if (group.type === "assistant:present-files") {
+      const files: string[] = [];
+      for (const message of group.messages) {
+        if (hasPresentFiles(message)) {
+          const presentFiles = extractPresentFilesFromMessage(message);
+          files.push(...presentFiles);
+        }
+      }
+      return (
+        <div className="w-full" key={groupKey}>
+          {group.messages[0] && hasContent(group.messages[0]) && (
+            <MarkdownContent
+              content={extractContentFromMessage(group.messages[0])}
+              isLoading={thread.isLoading}
+              rehypePlugins={rehypePlugins}
+              className="mb-4"
+            />
+          )}
+          <ArtifactFileList
+            files={files}
+            threadId={threadId}
+            variant="message"
+          />
+          {renderTokenUsage({
+            messages: group.messages,
+            turnUsageMessages,
+          })}
+        </div>
+      );
+    } else if (group.type === "assistant:subagent") {
+      const tasks = new Set<Subtask>();
+      for (const message of group.messages) {
+        if (message.type === "ai") {
+          for (const toolCall of message.tool_calls ?? []) {
+            if (toolCall.name === "task") {
+              const taskId = toolCall.id;
+              if (!taskId) {
+                continue;
+              }
+              const status = derivePendingSubtaskStatus(
+                taskId,
+                group.messages,
+                groupIsLoading,
+              );
+              const task: Subtask = {
+                id: taskId,
+                subagent_type:
+                  typeof toolCall.args.subagent_type === "string"
+                    ? toolCall.args.subagent_type
+                    : "",
+                description:
+                  typeof toolCall.args.description === "string"
+                    ? toolCall.args.description
+                    : "",
+                prompt:
+                  typeof toolCall.args.prompt === "string"
+                    ? toolCall.args.prompt
+                    : "",
+                status,
+                ...(status === "failed" ? { error: t.subtasks.failed } : {}),
+              };
+              tasks.add(task);
+            }
+          }
+        }
+      }
+
+      const results: React.ReactNode[] = [];
+      const subagentDebugMessageIds: string[] = [];
+      if (tasks.size > 0) {
+        results.push(
+          <div
+            key="subtask-count"
+            className="text-muted-foreground pt-2 text-sm font-normal"
+          >
+            {t.subtasks.executing(tasks.size)}
+          </div>,
+        );
+      }
+      for (const [messageIndex, message] of group.messages
+        .filter((message) => message.type === "ai")
+        .entries()) {
+        if (hasReasoning(message)) {
+          results.push(
+            <MessageGroupPanel
+              key={`thinking-group-${message.id ?? `${groupKey}-${messageIndex}`}`}
+              messages={[message]}
+              isLoading={groupIsLoading}
+              collapsedSteps={collapsedSteps}
+              tokenDebugSteps={tokenDebugSteps.filter(
+                (step) => step.messageId === message.id,
+              )}
+              showTokenDebugSummaries={tokenUsageInlineMode === "step_debug"}
+            />,
+          );
+        } else if (message.id) {
+          subagentDebugMessageIds.push(message.id);
+        }
+        const taskIds = message.tool_calls?.flatMap((toolCall) =>
+          toolCall.name === "task" && toolCall.id ? [toolCall.id] : [],
+        );
+        for (const taskId of taskIds ?? []) {
+          results.push(
+            <SubtaskCard
+              key={"task-group-" + taskId}
+              taskId={taskId}
+              threadId={threadId}
+              isLoading={groupIsLoading}
+            />,
+          );
+        }
+      }
+      return (
+        <div
+          key={`subtask-group-${groupKey}`}
+          className="relative z-1 flex flex-col gap-2"
+        >
+          {results}
+          {renderTokenUsage({
+            messages: group.messages,
+            turnUsageMessages,
+            debugMessageIds: subagentDebugMessageIds,
+          })}
+        </div>
+      );
+    }
+    return (
+      <div key={`group-${groupKey}`} className="w-full">
+        <MessageGroupPanel
+          messages={group.messages}
+          isLoading={thread.isLoading}
+          collapsedSteps={collapsedSteps}
+          tokenDebugSteps={tokenDebugSteps.filter((step) =>
+            group.messages.some((message) => message.id === step.messageId),
+          )}
+          showTokenDebugSummaries={tokenUsageInlineMode === "step_debug"}
+        />
+        {renderTokenUsage({
+          messages: group.messages,
+          turnUsageMessages,
+          inlineDebug: false,
+        })}
+      </div>
+    );
+  };
+
+  const renderInterjectionBubble = (item: PendingInterjection) => (
+    <div
+      key={`interjection-${item.id}`}
+      className={cn(
+        "flex w-full flex-col items-end gap-1",
+        item.applied && "opacity-90",
+      )}
+    >
+      <div className="group bg-muted relative max-w-[70%] rounded-3xl px-4 py-2 text-sm">
+        <span className="break-words whitespace-pre-wrap">{item.text}</span>
+        {!item.applied && onUndoInterjection && (
+          <button
+            type="button"
+            title={t.interjection.undoTooltip}
+            aria-label={t.interjection.undoTooltip}
+            className="text-muted-foreground hover:text-foreground absolute top-1/2 left-3 -translate-x-full -translate-y-1/2 rounded-full p-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+            onClick={() => onUndoInterjection(item)}
+          >
+            <Undo2Icon className="size-4" />
+          </button>
+        )}
+      </div>
+      {!item.applied && (
+        <span className="text-muted-foreground text-xs">
+          {t.interjection.queuedHint}
+        </span>
+      )}
+    </div>
+  );
+
+  // Process timeline path: non-step entries reuse the exact legacy rendering —
+  // bubbles, cards and file lists stay byte-identical; only the process panel
+  // is replaced by single-line step rows.
+  // Timeline interjection event: always visible, styled distinctly from a
+  // normal user bubble. Applied (injected) events carry an "injected" marker;
+  // queued ones keep the undo affordance and hint at the timeline tail.
+  const renderInterjectionEvent = (
+    entry: Extract<TimelineEntry, { kind: "interjection" }>,
+  ) => {
+    const { item, text, applied } = entry;
+    return (
+      <div
+        key={entry.id}
+        className={cn(
+          "group bg-muted/50 relative flex w-full max-w-[70%] flex-col gap-0.5 rounded-lg px-3 py-2",
+          applied ? "opacity-90" : "border-border/60 border border-dashed",
+        )}
+        data-testid="timeline-interjection-event"
+        data-applied={applied ? "true" : "false"}
+      >
+        <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <CornerDownRightIcon className="size-3.5 shrink-0" />
+          {applied ? t.interjection.injectedHint : t.interjection.queuedHint}
+        </span>
+        <span className="text-sm break-words whitespace-pre-wrap">{text}</span>
+        {!applied && onUndoInterjection && (
+          <button
+            type="button"
+            title={t.interjection.undoTooltip}
+            aria-label={t.interjection.undoTooltip}
+            className="text-muted-foreground hover:text-foreground absolute top-1/2 left-3 -translate-x-full -translate-y-1/2 rounded-full p-1.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100"
+            onClick={() => onUndoInterjection(item)}
+          >
+            <Undo2Icon className="size-4" />
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const renderTimelineEntry = (entry: TimelineEntry): React.ReactNode => {
+    if (entry.kind === "interjection") {
+      return renderInterjectionEvent(entry);
+    }
+    if (entry.kind === "step") {
+      // Rendered by TimelineView itself; never delegated here.
+      return null;
+    }
+    const message =
+      entry.kind === "artifact" ? entry.group.messages[0] : entry.message;
+    const groupIndex =
+      groupIndexByFirstMessageId.get(message?.id ?? "") ??
+      groupedMessages.length - 1;
+    if (entry.kind === "human") {
+      return renderGroup(
+        { id: entry.message.id, type: "human", messages: [entry.message] },
+        groupIndex,
+      );
+    }
+    if (entry.kind === "answer") {
+      return renderGroup(
+        { id: entry.message.id, type: "assistant", messages: [entry.message] },
+        groupIndex,
+      );
+    }
+    return renderGroup(entry.group, groupIndex);
+  };
+
   if (thread.isThreadLoading && messages.length === 0) {
     return <MessageListSkeleton />;
   }
@@ -584,275 +1052,21 @@ export function MessageList({
           hasMore={hasMoreHistory}
           loadMore={loadMoreHistory}
         />
-        {groupedMessages.map((group, groupIndex) => {
-          const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
-          const groupIsLoading =
-            thread.isLoading && groupIndex === lastGroupIndex;
-          const groupKey = group.id ?? `group-${group.type}-${groupIndex}`;
-
-          if (group.type === "human" || group.type === "assistant") {
-            return (
-              <div
-                key={groupKey}
-                className={cn(
-                  "w-full",
-                  group.type === "assistant" && "group/assistant-turn",
-                )}
-              >
-                {group.messages.map((msg, msgIndex) => {
-                  return (
-                    <MessageListItem
-                      key={`${groupKey}/${msg.id ?? msgIndex}`}
-                      message={msg}
-                      isLoading={
-                        thread.isLoading &&
-                        groupIndex === groupedMessages.length - 1
-                      }
-                      threadId={threadId}
-                      showCopyButton={group.type !== "assistant"}
-                      turnStartTime={
-                        groupIndex === groupedMessages.length - 1
-                          ? turnStartTime
-                          : null
-                      }
-                    />
-                  );
-                })}
-                {renderTokenUsage({
-                  messages: group.messages,
-                  turnUsageMessages,
-                })}
-                {group.type === "assistant" &&
-                  !isClarificationPreambleGroup(groupedMessages, groupIndex) &&
-                  renderAssistantActions(
-                    group.messages,
-                    isAssistantMessageGroupStreaming(
-                      group.messages,
-                      streamingMessages,
-                    ),
-                    group.id === latestAssistantGroupId,
-                  )}
-              </div>
-            );
-          } else if (group.type === "assistant:clarification") {
-            const message = group.messages[0];
-            if (!message) {
-              return null;
-            }
-
-            const humanInputRequest = extractHumanInputRequest(message);
-            if (humanInputRequest) {
-              const answeredResponse =
-                humanInputState.answeredResponses.get(
-                  humanInputRequest.request_id,
-                ) ?? null;
-              const pending = pendingHumanInputRequestIds.has(
-                humanInputRequest.request_id,
-              );
-              return (
-                <div key={groupKey} className="w-full">
-                  {answeredResponse ? (
-                    <HumanInputAnsweredRow
-                      request={humanInputRequest}
-                      response={answeredResponse}
-                    />
-                  ) : (
-                    <HumanInputCard
-                      disabled={
-                        thread.isLoading ||
-                        pending ||
-                        humanInputState.latestOpenRequestId !==
-                          humanInputRequest.request_id ||
-                        !onSubmitHumanInput
-                      }
-                      pending={pending}
-                      request={humanInputRequest}
-                      onSubmit={
-                        onSubmitHumanInput
-                          ? (response) =>
-                              handleSubmitHumanInput(
-                                humanInputRequest,
-                                response,
-                              )
-                          : undefined
-                      }
-                    />
-                  )}
-                  {renderTokenUsage({
-                    messages: group.messages,
-                    turnUsageMessages,
-                  })}
-                </div>
-              );
-            }
-
-            if (hasContent(message)) {
-              return (
-                <div key={groupKey} className="w-full">
-                  <MarkdownContent
-                    content={extractContentFromMessage(message)}
-                    isLoading={thread.isLoading}
-                    rehypePlugins={rehypePlugins}
-                  />
-                  {renderTokenUsage({
-                    messages: group.messages,
-                    turnUsageMessages,
-                  })}
-                </div>
-              );
-            }
-            return null;
-          } else if (group.type === "assistant:present-files") {
-            const files: string[] = [];
-            for (const message of group.messages) {
-              if (hasPresentFiles(message)) {
-                const presentFiles = extractPresentFilesFromMessage(message);
-                files.push(...presentFiles);
-              }
-            }
-            return (
-              <div className="w-full" key={groupKey}>
-                {group.messages[0] && hasContent(group.messages[0]) && (
-                  <MarkdownContent
-                    content={extractContentFromMessage(group.messages[0])}
-                    isLoading={thread.isLoading}
-                    rehypePlugins={rehypePlugins}
-                    className="mb-4"
-                  />
-                )}
-                <ArtifactFileList
-                  files={files}
-                  threadId={threadId}
-                  variant="message"
-                />
-                {renderTokenUsage({
-                  messages: group.messages,
-                  turnUsageMessages,
-                })}
-              </div>
-            );
-          } else if (group.type === "assistant:subagent") {
-            const tasks = new Set<Subtask>();
-            for (const message of group.messages) {
-              if (message.type === "ai") {
-                for (const toolCall of message.tool_calls ?? []) {
-                  if (toolCall.name === "task") {
-                    const taskId = toolCall.id;
-                    if (!taskId) {
-                      continue;
-                    }
-                    const status = derivePendingSubtaskStatus(
-                      taskId,
-                      group.messages,
-                      groupIsLoading,
-                    );
-                    const task: Subtask = {
-                      id: taskId,
-                      subagent_type:
-                        typeof toolCall.args.subagent_type === "string"
-                          ? toolCall.args.subagent_type
-                          : "",
-                      description:
-                        typeof toolCall.args.description === "string"
-                          ? toolCall.args.description
-                          : "",
-                      prompt:
-                        typeof toolCall.args.prompt === "string"
-                          ? toolCall.args.prompt
-                          : "",
-                      status,
-                      ...(status === "failed"
-                        ? { error: t.subtasks.failed }
-                        : {}),
-                    };
-                    tasks.add(task);
-                  }
-                }
-              }
-            }
-
-            const results: React.ReactNode[] = [];
-            const subagentDebugMessageIds: string[] = [];
-            if (tasks.size > 0) {
-              results.push(
-                <div
-                  key="subtask-count"
-                  className="text-muted-foreground pt-2 text-sm font-normal"
-                >
-                  {t.subtasks.executing(tasks.size)}
-                </div>,
-              );
-            }
-            for (const [messageIndex, message] of group.messages
-              .filter((message) => message.type === "ai")
-              .entries()) {
-              if (hasReasoning(message)) {
-                results.push(
-                  <MessageGroup
-                    key={`thinking-group-${message.id ?? `${groupKey}-${messageIndex}`}`}
-                    messages={[message]}
-                    isLoading={groupIsLoading}
-                    collapsedSteps={collapsedSteps}
-                    tokenDebugSteps={tokenDebugSteps.filter(
-                      (step) => step.messageId === message.id,
-                    )}
-                    showTokenDebugSummaries={
-                      tokenUsageInlineMode === "step_debug"
-                    }
-                  />,
-                );
-              } else if (message.id) {
-                subagentDebugMessageIds.push(message.id);
-              }
-              const taskIds = message.tool_calls?.flatMap((toolCall) =>
-                toolCall.name === "task" && toolCall.id ? [toolCall.id] : [],
-              );
-              for (const taskId of taskIds ?? []) {
-                results.push(
-                  <SubtaskCard
-                    key={"task-group-" + taskId}
-                    taskId={taskId}
-                    threadId={threadId}
-                    isLoading={groupIsLoading}
-                  />,
-                );
-              }
-            }
-            return (
-              <div
-                key={`subtask-group-${groupKey}`}
-                className="relative z-1 flex flex-col gap-2"
-              >
-                {results}
-                {renderTokenUsage({
-                  messages: group.messages,
-                  turnUsageMessages,
-                  debugMessageIds: subagentDebugMessageIds,
-                })}
-              </div>
-            );
-          }
-          return (
-            <div key={`group-${groupKey}`} className="w-full">
-              <MessageGroup
-                messages={group.messages}
-                isLoading={thread.isLoading}
-                collapsedSteps={collapsedSteps}
-                tokenDebugSteps={tokenDebugSteps.filter((step) =>
-                  group.messages.some(
-                    (message) => message.id === step.messageId,
-                  ),
-                )}
-                showTokenDebugSummaries={tokenUsageInlineMode === "step_debug"}
-              />
-              {renderTokenUsage({
-                messages: group.messages,
-                turnUsageMessages,
-                inlineDebug: false,
-              })}
-            </div>
-          );
-        })}
+        {timelineEntries ? (
+          <TimelineView
+            entries={timelineEntries}
+            isLoading={thread.isLoading}
+            renderEntry={renderTimelineEntry}
+          />
+        ) : (
+          groupedMessages.map((group, groupIndex) =>
+            renderGroup(group, groupIndex),
+          )
+        )}
+        {!timelineEntries &&
+          (pendingInterjections ?? []).map((item) =>
+            renderInterjectionBubble(item),
+          )}
         {(thread.isLoading || pendingHumanInputRequestIds.size > 0) &&
           !hasActiveAssistantText && (
             <div className="w-full">

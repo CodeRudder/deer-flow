@@ -326,6 +326,14 @@ def build_middlewares(
 
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name, app_config=resolved_app_config))
 
+    # Thread interjection (plan-b): drain queued user messages into the next
+    # model call. No-ops unless the worker installed the per-run applier into
+    # the runtime context (i.e. only for runs that actually have queued
+    # interjections), so the hot path pays one dict lookup.
+    from deerflow.agents.middlewares.interjection_middleware import InterjectionMiddleware
+
+    middlewares.append(InterjectionMiddleware())
+
     # Deterministically load a full SKILL.md when the user starts the turn with
     # /skill-name. This keeps the base system prompt metadata-only while giving
     # explicit user activation priority over model-side relevance guessing.

@@ -464,6 +464,17 @@ test("buildRunMessagesUrl returns a relative URL when using the nginx proxy", ()
   );
 });
 
+test("buildRunMessagesUrl includes the lazy-history page limit", () => {
+  expect(
+    buildRunMessagesUrl("", "thread-1", "run-1", undefined, 30),
+  ).toBe("/api/threads/thread-1/runs/run-1/messages?limit=30");
+  expect(
+    buildRunMessagesUrl("", "thread-1", "run-1", 18, 30),
+  ).toBe(
+    "/api/threads/thread-1/runs/run-1/messages?limit=30&before_seq=18",
+  );
+});
+
 test("buildThreadMessagesUrl encodes thread id and includes limit", () => {
   expect(
     buildThreadMessagesUrl("https://api.example.test/", "thread/with space"),

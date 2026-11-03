@@ -103,6 +103,8 @@ export const enUS: Translations = {
     createSkillPrompt:
       "We're going to build a new skill step by step with `skill-creator`. To start, what do you want this skill to do?",
     addAttachments: "Add attachments",
+    attachmentsDuringRunUnsupported:
+      "Attachments can't be sent while a run is streaming — please send them after this turn finishes.",
     mode: "Mode",
     flashMode: "Flash",
     flashModeDescription: "Fast and efficient, but may not be accurate",
@@ -340,6 +342,25 @@ export const enUS: Translations = {
     gatewayUnavailableRetrying: "Retrying in the background…",
   },
 
+  // Workspace file browser sidebar
+  workspaceFiles: {
+    title: "Files",
+    toggle: "Toggle workspace files panel",
+    rootName: "workspace",
+    up: "Up one level",
+    refresh: "Refresh",
+    searchPlaceholder: "Search files…",
+    loading: "Loading…",
+    empty: "No files in this directory.",
+    noResults: "No matching files.",
+    notFound: "This directory does not exist.",
+    loadError: "Failed to load files.",
+    truncated: "List truncated — refine the path or search.",
+    manualRefreshHint: "Files refresh manually via the refresh button.",
+    tooLargeToPreview:
+      "This file is too large to preview inline — download it instead.",
+  },
+
   // Conversation
   conversation: {
     noMessages: "No messages yet",
@@ -463,6 +484,24 @@ export const enUS: Translations = {
   uploads: {
     uploading: "Uploading...",
     uploadingFiles: "Uploading files, please wait...",
+  },
+
+  interjection: {
+    undoTooltip: "Undo and edit",
+    queuedHint: "Queued — will take effect after the current step finishes",
+    alreadyApplied:
+      "This message was already applied to the model context and cannot be undone",
+    runEndedQueuedDropped:
+      "The previous reply finished before your queued message could be inserted — please send it again",
+    queuedAutoRun:
+      "Your queued message was turned into a new task and is now running",
+    injectedHint: "Interjected into the running task",
+  },
+  processTimeline: {
+    narrationLabel: "Note",
+    viewMore: (count: number) => `View more (${count} characters left)`,
+    viewLess: "Collapse to preview",
+    openArtifact: "Open artifact",
   },
 
   subtasks: {

@@ -510,6 +510,54 @@ def test_get_thread_history_returns_iso_for_legacy_checkpoint_metadata() -> None
         assert _ISO_TIMESTAMP_RE.match(entry["created_at"]), entry
 
 
+def test_get_thread_history_pins_checkpoint_ns_in_alist_config() -> None:
+    """``/history`` must pass ``checkpoint_ns=""`` to ``checkpointer.alist``.
+
+    Without it the sqlite checkpointer's WHERE clause loses the namespace
+    predicate, ``ORDER BY checkpoint_id DESC`` falls back to a temp B-tree
+    over *every* checkpoint row of the thread, and a single history request
+    materializes multi-GB of blobs (measured ~13s on a real 751-checkpoint
+    thread vs ~3ms with the namespace pinned).
+    """
+    app, _store, checkpointer = _build_thread_app()
+    thread_id = "history-pins-ns"
+    seen_configs: list[dict] = []
+
+    original_alist = checkpointer.alist
+
+    async def _spy_alist(config, **kwargs):  # type: ignore[no-untyped-def]
+        seen_configs.append(config)
+        async for item in original_alist(config, **kwargs):
+            yield item
+
+    checkpointer.alist = _spy_alist  # type: ignore[method-assign]
+
+    async def _seed() -> None:
+        from langgraph.checkpoint.base import empty_checkpoint
+
+        await checkpointer.aput(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+            empty_checkpoint(),
+            {"step": -1, "source": "input", "writes": None, "parents": {}},
+            {},
+        )
+
+    import asyncio
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/threads/{thread_id}/history",
+            json={"limit": 10},
+        )
+
+    assert response.status_code == 200, response.text
+    assert seen_configs, "expected /history to call checkpointer.alist"
+    assert seen_configs[0]["configurable"]["checkpoint_ns"] == ""
+    assert seen_configs[0]["configurable"]["thread_id"] == thread_id
+
+
 def test_get_thread_history_does_not_trim_checkpoint_messages() -> None:
     app, _store, checkpointer = _build_thread_app()
     thread_id = "history-not-trimmed"

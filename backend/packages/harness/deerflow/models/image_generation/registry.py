@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from deerflow.config.app_config import get_app_config
 from deerflow.config.extensions_config import get_extensions_config
+from deerflow.media_gateway.providers import cached_media_gateway_models
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,57 @@ def _builtin_providers() -> list[ImageGenerationProvider]:
     ]
 
 
+def _media_gateway_provider() -> ImageGenerationProvider | None:
+    """The Media Gateway (MGW) image provider, offered only when MGW is configured.
+
+    Not part of the static ``_PROVIDERS`` table: MGW has no per-provider API key
+    (per-user tokens are provisioned JIT via ``deerflow.media_gateway``), so its
+    opt-in signal is ``MEDIA_GATEWAY_BASE_URL``. Kept out of the builtin table so
+    deployments without MGW see zero change. Generation itself is handled by
+    ``deerflow.media_gateway.providers`` (M2-1); token wiring happens at the
+    gateway layer (M2-3).
+
+    Read straight from the environment (same names as
+    ``MediaGatewaySettings``) — deliberately no dotenv/settings load here so the
+    registry stays side-effect free.
+    """
+    if not os.getenv("MEDIA_GATEWAY_BASE_URL"):
+        return None
+
+    model_name = os.getenv("MEDIA_GATEWAY_IMAGE_MODEL") or "media-gateway"
+    default_model = ImageGenerationModel(
+        name=model_name,
+        display_name=model_name,
+        description="通过 Media Gateway 生成图片；能力（比例/参数域）以网关侧 capability API 为准，网关不支持的参数会被本地拒绝。",
+    )
+    # Runtime enumeration: all available gateway tiers (see
+    # ``deerflow.media_gateway.providers.refresh_media_gateway_models`` — the
+    # async route layer refreshes the snapshot; here we only read the cache so
+    # this function stays synchronous and network-free). The env-default tier
+    # always stays, first; enumerated tiers are appended without duplicating it.
+    # With no snapshot (gateway unreachable / never refreshed) the list is
+    # exactly the single env-default model — the pre-enumeration output.
+    models = [default_model]
+    seen = {model_name}
+    for entry in cached_media_gateway_models("image"):
+        if entry["name"] in seen:
+            continue
+        seen.add(entry["name"])
+        models.append(
+            ImageGenerationModel(
+                name=entry["name"],
+                display_name=entry["display_name"],
+                description=entry["description"],
+            )
+        )
+    return ImageGenerationProvider(
+        name="media_gateway",
+        display_name="Media Gateway 生图",
+        configured=True,
+        models=models,
+    )
+
+
 def get_image_generation_providers() -> ImageGenerationProvidersResponse:
     """Return selectable image generation providers for the frontend."""
 
@@ -235,6 +287,12 @@ def get_image_generation_providers() -> ImageGenerationProvidersResponse:
 
     config = _image_generation_config()
     providers = _providers_from_config(config) or _builtin_providers()
+
+    # MGW is additive: always appended when configured, unless the operator
+    # already declared a media_gateway entry in config (no duplicates).
+    media_gateway = _media_gateway_provider()
+    if media_gateway is not None and not any(provider.name == media_gateway.name for provider in providers):
+        providers.append(media_gateway)
 
     return ImageGenerationProvidersResponse(
         skill_enabled=True,

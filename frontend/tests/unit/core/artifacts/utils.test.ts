@@ -73,4 +73,36 @@ describe("artifact URL helpers", () => {
       resolveArtifactURL("/mnt/user-data/outputs/style.css", "thread-1"),
     ).toBe("/demo/threads/thread-1/user-data/outputs/style.css");
   });
+
+  test("preview variant helpers", async () => {
+    const {
+      artifactImageSrc,
+      isArtifactImageURL,
+      withArtifactPreviewImage,
+    } = await loadFreshArtifactUtils();
+
+    expect(withArtifactPreviewImage("/api/threads/t1/artifacts/mnt/x.png")).toBe(
+      "/api/threads/t1/artifacts/mnt/x.png?w=720&fmt=jpg",
+    );
+    expect(withArtifactPreviewImage("/api/threads/t1/artifacts/mnt/x.png?download=true")).toBe(
+      "/api/threads/t1/artifacts/mnt/x.png?download=true&w=720&fmt=jpg",
+    );
+    expect(withArtifactPreviewImage("")).toBe("");
+
+    expect(isArtifactImageURL("/api/threads/t1/artifacts/mnt/x.png")).toBe(true);
+    expect(isArtifactImageURL("/mock/api/threads/t1/artifacts/mnt/x.png")).toBe(true);
+    expect(isArtifactImageURL("https://example.com/pic.png")).toBe(false);
+    expect(isArtifactImageURL("/api/threads/t1/uploads/x.png")).toBe(false);
+
+    // Artifact image URLs get the variant; everything else is untouched.
+    expect(artifactImageSrc("/api/threads/t1/artifacts/mnt/x.png")).toBe(
+      "/api/threads/t1/artifacts/mnt/x.png?w=720&fmt=jpg",
+    );
+    expect(artifactImageSrc("https://example.com/pic.png")).toBe(
+      "https://example.com/pic.png",
+    );
+    expect(artifactImageSrc("/api/threads/t1/uploads/x.png")).toBe(
+      "/api/threads/t1/uploads/x.png",
+    );
+  });
 });

@@ -32,7 +32,7 @@ import {
   upsertFeedback,
   type FeedbackData,
 } from "@/core/api/feedback";
-import { resolveArtifactURL } from "@/core/artifacts/utils";
+import { artifactImageSrc, resolveArtifactURL } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   extractContentFromMessage,
@@ -171,10 +171,10 @@ export function MessageListItem({
             isHuman
               ? "absolute right-0 -bottom-9 left-0 justify-end"
               : "absolute right-0 bottom-0 left-0",
-            "z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
+            "pointer-events-none z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:pointer-events-auto group-hover/conversation-message:opacity-100",
           )}
         >
-          <div className="pointer-events-auto flex gap-1">
+          <div className="pointer-events-none flex gap-1 group-hover/conversation-message:pointer-events-auto">
             <CopyButton clipboardData={copyData} />
             {feedback !== undefined && runId && threadId && (
               <FeedbackButtons
@@ -214,8 +214,15 @@ function MessageImage({
   const url = src.startsWith("/mnt/") ? resolveArtifactURL(src, threadId) : src;
 
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer">
-      <img className={imgClassName} src={url} alt={alt} {...props} />
+    // The inline preview loads the 720p JPEG variant; the link (and its
+    // download attribute) points at the original bytes.
+    <a href={url} download target="_blank" rel="noopener noreferrer">
+      <img
+        className={imgClassName}
+        src={artifactImageSrc(url)}
+        alt={alt}
+        {...props}
+      />
     </a>
   );
 }
@@ -359,7 +366,10 @@ function MessageContent_({
       <ImageLightbox
         images={lightboxImages.map((file) => ({
           alt: file.filename,
-          src: resolveArtifactURL(file.path, threadId),
+          // Preview loads the 720p JPEG variant; the toolbar link still
+          // downloads the original bytes.
+          src: artifactImageSrc(resolveArtifactURL(file.path, threadId)),
+          downloadUrl: resolveArtifactURL(file.path, threadId),
         }))}
         initialIndex={lightboxIndex}
         onClose={() => setLightboxIndex(null)}
@@ -621,7 +631,7 @@ function RichFileCard({
           onClick={onImageClick}
         >
           <img
-            src={fileUrl}
+            src={artifactImageSrc(fileUrl)}
             alt={file.filename}
             className="h-32 w-auto max-w-60 object-cover transition-transform group-hover/file:scale-105"
           />
@@ -639,7 +649,7 @@ function RichFileCard({
         className="group/file border-border/40 relative block overflow-hidden rounded-lg border"
       >
         <img
-          src={fileUrl}
+          src={artifactImageSrc(fileUrl)}
           alt={file.filename}
           className="h-32 w-auto max-w-60 object-cover transition-transform group-hover/file:scale-105"
         />

@@ -33,6 +33,9 @@ def test_registry_uses_builtin_providers_when_config_is_absent(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("H3_IMAGE_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("H3IMG_AUTH_TOKEN", raising=False)
+    # media_gateway provider is env-gated; another test's dotenv load may have
+    # injected these into os.environ, so pin them off like the keys above.
+    monkeypatch.delenv("MEDIA_GATEWAY_BASE_URL", raising=False)
 
     response = registry.get_image_generation_providers()
     providers = {provider.name: provider for provider in response.providers}
@@ -117,6 +120,7 @@ def test_registry_reads_selectable_models_from_config_in_order(monkeypatch):
     )
     monkeypatch.setenv("CUSTOM_IMAGE_KEY", "test-key")
     monkeypatch.delenv("QWEN_IMAGE_API_KEY", raising=False)
+    monkeypatch.delenv("MEDIA_GATEWAY_BASE_URL", raising=False)
 
     response = registry.get_image_generation_providers()
 

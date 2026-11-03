@@ -2,6 +2,7 @@
 
 import type { ChatStatus } from "ai";
 import {
+  ArrowUpIcon,
   CheckIcon,
   GraduationCapIcon,
   ImageIcon,
@@ -11,6 +12,7 @@ import {
   PlusIcon,
   SparklesIcon,
   RocketIcon,
+  SquareIcon,
   XIcon,
   ZapIcon,
 } from "lucide-react";
@@ -468,9 +470,18 @@ export function InputBox({
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
-      if (status === "streaming") {
-        onStop?.();
-        return;
+      // Thread interjection (plan-b): while a run streams, a text-only send
+      // must reach the normal submit path — `useThreadStream`'s sendMessage
+      // queues it into the running agent (202 + queued bubble) instead of
+      // starting a second run. Stopping is the separate stop button below,
+      // never the send key. Attachments still cannot join an in-flight run,
+      // so reject them here (the rejection keeps the composer state for a
+      // retry — the primitive does not clear on a rejected submit promise).
+      if (status === "streaming" && message.files.length > 0) {
+        toast.error(t.inputBox.attachmentsDuringRunUnsupported);
+        return Promise.reject(
+          new Error("Attachments cannot be sent while a run is streaming."),
+        );
       }
       if (!message.text.trim() && message.files.length === 0) {
         return;
@@ -520,11 +531,11 @@ export function InputBox({
       context,
       onContextChange,
       onSubmit,
-      onStop,
       resolvedModelName,
       selectedModel?.supports_thinking,
       status,
       t.inputBox.suggestionPlaceholderRequired,
+      t.inputBox.attachmentsDuringRunUnsupported,
     ],
   );
 
@@ -738,22 +749,17 @@ export function InputBox({
 
   const handlePromptTextareaKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (
-        status === "streaming" &&
-        event.key === "Enter" &&
-        !event.shiftKey &&
-        !isIMEComposing(event)
-      ) {
-        event.preventDefault();
-        return;
-      }
+      // No streaming guard here: while a run streams, Enter must still submit
+      // so the text is queued as an interjection (the stop action lives on the
+      // dedicated stop button, not on Enter). IME-safe submission is handled
+      // by the prompt primitive's own key handling downstream.
       handleSkillSuggestionKeyDown(event);
       if (event.defaultPrevented) {
         return;
       }
       handlePromptHistoryKeyDown(event);
     },
-    [handlePromptHistoryKeyDown, handleSkillSuggestionKeyDown, status],
+    [handlePromptHistoryKeyDown, handleSkillSuggestionKeyDown],
   );
 
   const handlePromptTextareaChange = useCallback(() => {
@@ -1409,12 +1415,30 @@ export function InputBox({
                 </div>
               </ModelSelectorContent>
             </ModelSelector>
+            {status === "streaming" && onStop && (
+              <Tooltip content={t.inputBox.stopGenerating}>
+                <PromptInputButton
+                  aria-label={t.inputBox.stopGenerating}
+                  className="rounded-full"
+                  onClick={onStop}
+                >
+                  <SquareIcon className="size-3 fill-current" />
+                </PromptInputButton>
+              </Tooltip>
+            )}
             <PromptInputSubmit
               className="rounded-full"
               disabled={disabled}
               variant="outline"
               status={status}
-            />
+            >
+              {/* Keep the send icon while streaming: the square stop icon the
+                  primitive renders for that status would turn the send key
+                  into a second stop button, next to the dedicated one. */}
+              {status === "streaming" ? (
+                <ArrowUpIcon className="size-4" />
+              ) : undefined}
+            </PromptInputSubmit>
           </PromptInputTools>
         </PromptInputFooter>
         {!isWelcomeMode && (

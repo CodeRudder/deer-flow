@@ -2,7 +2,14 @@
 
 import type { Message } from "@langchain/langgraph-sdk";
 import type { ChatStatus } from "ai";
-import { ChevronDownIcon, PlusIcon, SparklesIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  ChevronDownIcon,
+  PlusIcon,
+  SparklesIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -346,11 +353,15 @@ export function MobileComposer({
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
-      // The send button doubles as stop while a run streams (same contract as
-      // the desktop input box).
-      if (status === "streaming") {
-        onStop();
-        return;
+      // Thread interjection (plan-b): while a run streams, a text-only send
+      // reaches the normal submit path — `useThreadStream` queues it into the
+      // running agent instead of stopping it. Stopping is the separate stop
+      // button next to the send key, never the send key itself.
+      if (status === "streaming" && message.files.length > 0) {
+        toast.error(t.inputBox.attachmentsDuringRunUnsupported);
+        return Promise.reject(
+          new Error("Attachments cannot be sent while a run is streaming."),
+        );
       }
       if (!message.text.trim() && message.files.length === 0) {
         return;
@@ -367,7 +378,14 @@ export function MobileComposer({
       }
       return onSubmit(message);
     },
-    [context, onContextChange, onSubmit, onStop, resolvedMode, status],
+    [
+      context,
+      onContextChange,
+      onSubmit,
+      resolvedMode,
+      status,
+      t.inputBox.attachmentsDuringRunUnsupported,
+    ],
   );
 
   return (
@@ -554,17 +572,30 @@ export function MobileComposer({
             />
           </PromptInputTools>
           <PromptInputTools>
+            {status === "streaming" && (
+              <button
+                aria-label={t.inputBox.stopGenerating}
+                className={cn(ROW_BUTTON_CLASS, "text-muted-foreground")}
+                data-testid="mobile-composer-stop"
+                onClick={onStop}
+                type="button"
+              >
+                <SquareIcon className="size-4 fill-current" />
+              </button>
+            )}
             <PromptInputSubmit
               className={cn(ROW_BUTTON_CLASS, "rounded-full")}
               disabled={disabled}
               status={status}
-              aria-label={
-                status === "streaming"
-                  ? t.inputBox.stopGenerating
-                  : t.inputBox.sendMessage
-              }
+              aria-label={t.inputBox.sendMessage}
               data-testid="mobile-composer-send"
-            />
+            >
+              {/* Send icon even while streaming — the primitive's square icon
+                  would turn the send key into a second stop button. */}
+              {status === "streaming" ? (
+                <ArrowUpIcon className="size-4" />
+              ) : undefined}
+            </PromptInputSubmit>
           </PromptInputTools>
         </PromptInputFooter>
       </PromptInput>

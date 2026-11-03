@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 
 from deerflow.sandbox.search import GrepMatch
 
@@ -10,10 +11,36 @@ class Sandbox(ABC):
 
     def __init__(self, id: str):
         self._id = id
+        # Session-level env injected into every ``execute_command`` call.
+        # Populated via :meth:`set_session_env` (e.g. by the Media Gateway
+        # credential middleware); empty by default so behaviour is unchanged.
+        self._session_env: dict[str, str] = {}
 
     @property
     def id(self) -> str:
         return self._id
+
+    def set_session_env(self, env: Mapping[str, str]) -> None:
+        """Set session-level environment variables for this sandbox.
+
+        Every subsequent :meth:`execute_command` runs with these variables
+        layered over the inherited host/container environment (session values
+        win). Used to inject per-user Media Gateway credentials so skills and
+        scripts can read them from ``os.environ`` without handling secrets
+        themselves.
+
+        Base-class storage works for every provider; providers that do not
+        execute commands in-process (e.g. the AIO/docker provider) honour it
+        through their own ``execute_command`` env plumbing — see the
+        ``LocalSandbox`` implementation for the reference wiring and the
+        TODO in the AIO provider for the follow-up integration point.
+        """
+        self._session_env = dict(env)
+
+    @property
+    def session_env(self) -> dict[str, str]:
+        """The session-level environment override (may be empty)."""
+        return dict(self._session_env)
 
     @abstractmethod
     def execute_command(self, command: str) -> str:

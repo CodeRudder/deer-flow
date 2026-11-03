@@ -24,8 +24,10 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal, cast
 
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.checkpoint.base import empty_checkpoint
 
+from deerflow.agents.middlewares.interjection_middleware import RUN_BRIDGE_CONTEXT_KEY, RUN_INTERJECTIONS_CONTEXT_KEY
 from deerflow.config.app_config import AppConfig
 from deerflow.runtime.run_outcome import RUN_OUTCOME_CONTEXT_KEY, RunOutcomeTracker
 from deerflow.runtime.serialization import serialize
@@ -33,6 +35,7 @@ from deerflow.runtime.stream_bridge import StreamBridge
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.tracing import inject_langfuse_metadata
 
+from .interjection import DEFAULT_MAX_PENDING, INTERJECTION_AS_NODE, INTERJECTION_AUTO_RUN_EVENT, InterjectionApplier, merge_interjection_texts
 from .manager import RunManager, RunRecord
 from .naming import resolve_root_run_name
 from .schemas import RunStatus
@@ -41,6 +44,34 @@ logger = logging.getLogger(__name__)
 
 # Valid stream_mode values for LangGraph's graph.astream()
 _VALID_LG_MODES = {"values", "updates", "checkpoints", "tasks", "debug", "messages", "custom"}
+
+
+def _interjection_max_pending(app_config: AppConfig | None) -> int:
+    if app_config is None:
+        return DEFAULT_MAX_PENDING
+    section = getattr(app_config, "interjection", None)
+    if section is None:
+        return DEFAULT_MAX_PENDING
+    return int(getattr(section, "max_pending", DEFAULT_MAX_PENDING))
+
+
+async def _persist_applied_interjections(agent: Any, config: dict, applier: InterjectionApplier, run_id: str) -> None:
+    """Commit applied interjections into the final checkpoint (run end).
+
+    The InterjectionMiddleware injected them into model-call payloads only;
+    langgraph's in-memory pregel loop never saw them as channel state, so the
+    checkpoint needs this explicit append for subsequent turns to see them.
+    Runs after the astream loop has finished, so ``aupdate_state`` cannot
+    collide with the loop's checkpoint writes.
+    """
+    if not applier.applied_items:
+        return
+    messages = [HumanMessage(content=item.text, additional_kwargs={"interjection": True}) for item in applier.applied_items]
+    try:
+        await agent.aupdate_state(config, {"messages": messages}, as_node=INTERJECTION_AS_NODE)
+        logger.info("Run %s: persisted %d applied interjection(s) into final checkpoint", run_id, len(messages))
+    except Exception:
+        logger.warning("Run %s: failed to persist applied interjections into final checkpoint", run_id, exc_info=True)
 
 
 def _debug_thinking_enabled() -> bool:
@@ -156,6 +187,105 @@ def _agent_factory_supports_app_config(agent_factory: Any) -> bool:
         return _compute_agent_factory_supports_app_config(agent_factory)
 
 
+class _StreamedMessageCollector:
+    """Accumulates streamed ``messages``-mode AIMessageChunks during a run.
+
+    When a run is interrupted (user abort / task cancellation) mid model
+    call, LangGraph discards the partial state: only an ``__error__`` write
+    is recorded and the streamed assistant reply never reaches a committed
+    checkpoint.  Refreshing the thread then loses the reply the user just
+    watched stream in.  This collector merges the streamed chunks per
+    message id so :meth:`persist_interrupted` can commit the partial reply
+    via ``checkpointer.aput_writes`` on abort.
+    """
+
+    def __init__(self) -> None:
+        self._merged: dict[str, AIMessageChunk] = {}
+
+    def observe(self, mode: str, chunk: Any) -> None:
+        """Record a streamed chunk. No-op for non-``messages`` modes."""
+        if mode != "messages":
+            return
+        msg = chunk[0] if isinstance(chunk, tuple) and len(chunk) == 2 else chunk
+        if not isinstance(msg, AIMessageChunk):
+            return
+        msg_id = msg.id
+        if not msg_id:
+            return
+        existing = self._merged.get(msg_id)
+        try:
+            self._merged[msg_id] = msg if existing is None else existing + msg
+        except TypeError:
+            # Non-mergeable chunk payload — keep the first variant rather
+            # than losing the collector's other messages to one bad chunk.
+            logger.debug("Skipping unmergeable message chunk %s", msg_id)
+
+    async def persist_interrupted(self, checkpointer: Any, thread_id: str, run_id: str) -> int:
+        """Commit accumulated (non-empty) messages as pending writes.
+
+        Writes are attached to the *latest committed checkpoint* so the
+        ``/history`` read-side merge can surface them.  Idempotent per
+        run: ``aput_writes`` keys by ``(checkpoint, task_id, idx)`` with a
+        deterministic ``task_id`` derived from *run_id*.  Returns the
+        number of messages persisted; failures are logged, never raised.
+        """
+        if checkpointer is None or not self._merged:
+            return 0
+
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        try:
+            ckpt_tuple = await _call_checkpointer_method(checkpointer, "aget_tuple", "get_tuple", config)
+            if ckpt_tuple is None:
+                return 0
+            tuple_config = getattr(ckpt_tuple, "config", None)
+            if isinstance(tuple_config, dict) and tuple_config.get("configurable", {}).get("checkpoint_id"):
+                config = tuple_config
+
+            # Skip messages that a concurrently committed checkpoint already
+            # carries — prevents duplicates when the abort lands after the
+            # graph committed the full reply.
+            committed_ids: set[str] = set()
+            channel_values = (getattr(ckpt_tuple, "checkpoint", {}) or {}).get("channel_values", {}) or {}
+            for msg in channel_values.get("messages") or []:
+                mid = msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
+                if mid:
+                    committed_ids.add(mid)
+
+            writes: list[tuple[str, AIMessage]] = []
+            for msg_id, merged in self._merged.items():
+                if msg_id in committed_ids:
+                    continue
+                if not (merged.content or merged.tool_calls):
+                    continue
+                writes.append(
+                    (
+                        "messages",
+                        AIMessage(
+                            id=msg_id,
+                            content=merged.content,
+                            additional_kwargs=copy.deepcopy(merged.additional_kwargs),
+                            response_metadata=copy.deepcopy(merged.response_metadata),
+                        ),
+                    )
+                )
+            if not writes:
+                return 0
+
+            await _call_checkpointer_method(
+                checkpointer,
+                "aput_writes",
+                "put_writes",
+                config,
+                writes,
+                task_id=f"aborted-{run_id}",
+            )
+            logger.info("Run %s: persisted %d streamed message(s) after interrupt", run_id, len(writes))
+            return len(writes)
+        except Exception:
+            logger.warning("Run %s: failed to persist streamed messages after interrupt", run_id, exc_info=True)
+            return 0
+
+
 async def run_agent(
     bridge: StreamBridge,
     run_manager: RunManager,
@@ -169,8 +299,16 @@ async def run_agent(
     stream_subgraphs: bool = False,
     interrupt_before: list[str] | Literal["*"] | None = None,
     interrupt_after: list[str] | Literal["*"] | None = None,
+    followup_runner: Any | None = None,
 ) -> None:
-    """Execute an agent in the background, publishing events to *bridge*."""
+    """Execute an agent in the background, publishing events to *bridge*.
+
+    ``followup_runner`` — optional async callable ``(merged_text) -> RunRecord``
+    provided by the gateway layer. When the run ends with still-queued
+    interjections, they are merged into one user message and a follow-up run
+    is started automatically instead of being discarded; failure falls back to
+    the legacy discard behaviour and never affects the finished run's delivery.
+    """
 
     # Unpack infrastructure dependencies from RunContext.
     checkpointer = ctx.checkpointer
@@ -188,6 +326,10 @@ async def run_agent(
     outcome_tracker = RunOutcomeTracker(run_id=run_id)
 
     journal = None
+    streamed_collector = _StreamedMessageCollector()
+    # Interjection channel (plan-b): the applier is exposed to the agent via
+    # runtime context (step 5b); applied messages are persisted at run end.
+    interjection_applier: InterjectionApplier | None = None
 
     # Track whether "events" was requested but skipped
     if "events" in requested_modes:
@@ -318,6 +460,24 @@ async def run_agent(
         if interrupt_after:
             agent.interrupt_after_nodes = interrupt_after
 
+        # 5b. Expose the interjection applier + bridge to the agent runtime so
+        # InterjectionMiddleware can drain queued user messages at the next
+        # model-call boundary (plan-b). Only mounted when the feature is
+        # enabled for this run (the API side creates the applier on enqueue,
+        # so an installed channel also covers explicit enqueue calls).
+        interjection_enabled = False
+        if ctx.app_config is not None:
+            section = getattr(ctx.app_config, "interjection", None)
+            interjection_enabled = bool(getattr(section, "enabled", False))
+        interjection_applier = None
+        if interjection_enabled or record.interjections is not None:
+            interjection_applier = record.ensure_interjections(max_pending=_interjection_max_pending(ctx.app_config))
+            runtime_ctx[RUN_INTERJECTIONS_CONTEXT_KEY] = interjection_applier
+            runtime_ctx[RUN_BRIDGE_CONTEXT_KEY] = bridge
+            # runtime_ctx was already installed into config/__pregel_runtime
+            # above; the dict is shared by reference, so the keys are visible
+            # to the graph runtime without reinstalling.
+
         # 6. Build LangGraph stream_mode list
         #    "events" is NOT a valid astream mode — skip it
         #    "messages-tuple" maps to LangGraph's "messages" mode
@@ -352,6 +512,7 @@ async def run_agent(
                 if record.abort_event.is_set():
                     logger.info("Run %s abort requested — stopping", run_id)
                     break
+                streamed_collector.observe(single_mode, chunk)
                 sse_event = _lg_mode_to_sse_event(single_mode)
                 await bridge.publish(run_id, sse_event, serialize(chunk, mode=single_mode, slim=(single_mode == "values")))
         else:
@@ -370,6 +531,7 @@ async def run_agent(
                 if mode is None:
                     continue
 
+                streamed_collector.observe(mode, chunk)
                 sse_event = _lg_mode_to_sse_event(mode)
                 await bridge.publish(run_id, sse_event, serialize(chunk, mode=mode, slim=(mode == "values")))
 
@@ -391,6 +553,10 @@ async def run_agent(
                 except Exception:
                     logger.warning("Failed to rollback checkpoint for run %s", run_id, exc_info=True)
             else:
+                # Keep the partial assistant reply the user already saw
+                # streaming: commit it as pending writes so /history can
+                # surface it after a refresh (interrupt action).
+                await streamed_collector.persist_interrupted(checkpointer, thread_id, run_id)
                 await run_manager.set_status(run_id, RunStatus.interrupted)
         elif outcome_tracker.had_llm_error_fallback:
             await run_manager.set_status(
@@ -418,12 +584,19 @@ async def run_agent(
             except Exception:
                 logger.warning("Run %s cancellation rollback failed", run_id, exc_info=True)
         else:
+            # Same as the abort path above: keep the streamed partial reply
+            # visible across refreshes (interrupt action on cancellation).
+            await streamed_collector.persist_interrupted(checkpointer, thread_id, run_id)
             await run_manager.set_status(run_id, RunStatus.interrupted)
             logger.info("Run %s was cancelled", run_id)
 
     except Exception as exc:
         error_msg = f"{exc}"
         logger.exception("Run %s failed: %s", run_id, error_msg)
+        # Same contract as the abort/cancel paths: keep whatever the user
+        # already watched stream in before the failure (e.g. an LLM error
+        # mid-generation) so a refresh does not lose the partial reply.
+        await streamed_collector.persist_interrupted(checkpointer, thread_id, run_id)
         await run_manager.set_status(run_id, RunStatus.error, error=error_msg)
         await bridge.publish(
             run_id,
@@ -435,6 +608,18 @@ async def run_agent(
         )
 
     finally:
+        # Interjection finalize (plan-b): persist applied messages into the
+        # final checkpoint so the next turn sees them. The run's own delivery
+        # semantics are untouched here — leftover handling happens below as an
+        # independent post-completion step.
+        if interjection_applier is not None:
+            try:
+                await _persist_applied_interjections(agent, runnable_config, interjection_applier, run_id)
+            except Exception:
+                logger.warning("Run %s: interjection finalize failed", run_id, exc_info=True)
+
+        followup_spawned = False
+
         # Flush any buffered journal events and persist completion data
         if journal is not None:
             try:
@@ -449,6 +634,59 @@ async def run_agent(
             except Exception:
                 logger.warning("Failed to persist run completion for %s (non-fatal)", run_id, exc_info=True)
 
+        # Interjection run-end follow-up: the run ended before another model
+        # call consumed some queued messages. Instead of dropping them, take
+        # them out of the queue (atomically — the take is idempotent, so a
+        # leftover batch can never spawn two follow-up runs), merge them into
+        # one user message, and start a follow-up run through the gateway's
+        # spawner. Fully failure-isolated: any error falls back to the legacy
+        # discard behaviour and never touches the finished run's delivery.
+        if interjection_applier is not None:
+            try:
+                leftover = await interjection_applier.take_pending_for_auto_run()
+            except Exception:
+                leftover = []
+                logger.warning("Run %s: failed to drain leftover interjections", run_id, exc_info=True)
+            if leftover:
+                if followup_runner is None:
+                    logger.warning(
+                        "Run %s: discarded %d never-applied interjection(s) at run end (no follow-up runner; seq=%s)",
+                        run_id,
+                        len(leftover),
+                        [item.seq for item in leftover],
+                    )
+                else:
+                    try:
+                        merged_text = merge_interjection_texts(leftover)
+                        new_record = await followup_runner(merged_text)
+                        followup_spawned = True
+                        logger.info(
+                            "Run %s: auto-started follow-up run %s with %d merged interjection(s)",
+                            run_id,
+                            getattr(new_record, "run_id", "?"),
+                            len(leftover),
+                        )
+                        await bridge.publish(
+                            run_id,
+                            "custom",
+                            {
+                                "type": INTERJECTION_AUTO_RUN_EVENT,
+                                "run_id": run_id,
+                                "thread_id": thread_id,
+                                "new_run_id": getattr(new_record, "run_id", None),
+                                "input": merged_text,
+                                "interjections": [item.to_dict() for item in leftover],
+                            },
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Run %s: follow-up run for %d interjection(s) failed — falling back to discard (seq=%s)",
+                            run_id,
+                            len(leftover),
+                            [item.seq for item in leftover],
+                            exc_info=True,
+                        )
+
         # Sync title from checkpoint to threads_meta.display_name
         if checkpointer is not None and thread_store is not None:
             try:
@@ -462,8 +700,10 @@ async def run_agent(
             except Exception:
                 logger.debug("Failed to sync title for thread %s (non-fatal)", thread_id)
 
-        # Update threads_meta status based on run outcome
-        if thread_store is not None:
+        # Update threads_meta status based on run outcome. When a follow-up
+        # run was already started for leftover interjections it marked the
+        # thread "running"; don't clobber that with this run's terminal state.
+        if thread_store is not None and not followup_spawned:
             try:
                 final_status = "idle" if record.status == RunStatus.success else record.status.value
                 await thread_store.update_status(thread_id, final_status)

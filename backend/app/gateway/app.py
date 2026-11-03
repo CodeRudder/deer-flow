@@ -22,6 +22,7 @@ from app.gateway.routers import (
     commands,
     feedback,
     mcp,
+    media_gateway,
     memory,
     models,
     quota,
@@ -31,6 +32,7 @@ from app.gateway.routers import (
     thread_runs,
     threads,
     uploads,
+    workspace_files,
 )
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level, unify_uvicorn_logging
@@ -469,6 +471,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)
 
+    # Workspace file browsing API is mounted at /api/threads/{thread_id}/workspace/files
+    app.include_router(workspace_files.router)
+
     # Uploads API is mounted at /api/threads/{thread_id}/uploads
     app.include_router(uploads.router)
 
@@ -486,6 +491,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Channels API is mounted at /api/channels
     app.include_router(channels.router)
+
+    # Media Gateway proxy API is mounted at /api/media-gateway
+    app.include_router(media_gateway.router)
 
     # Assistants compatibility API (LangGraph Platform stub)
     app.include_router(assistants_compat.router)
