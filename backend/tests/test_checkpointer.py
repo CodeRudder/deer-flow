@@ -115,6 +115,12 @@ def _call_getter_concurrently(getter, workers: int = 8) -> list[object]:
         return [future.result(timeout=3) for future in futures]
 
 
+def _unwrap(checkpointer):
+    """SlimmingCheckpointer wraps configured savers transparently (P1
+    checkpoint slimming); read paths delegate — unwrap for identity checks."""
+    return getattr(checkpointer, "delegate", checkpointer)
+
+
 # ---------------------------------------------------------------------------
 # Config tests
 # ---------------------------------------------------------------------------
@@ -225,14 +231,14 @@ class TestGetCheckpointer:
         with patch("deerflow.config.app_config.get_app_config", side_effect=FileNotFoundError):
             cp = get_checkpointer()
         assert cp is not None
-        assert isinstance(cp, InMemorySaver)
+        assert isinstance(_unwrap(cp), InMemorySaver)
 
     def test_memory_returns_in_memory_saver(self):
         load_checkpointer_config_from_dict({"type": "memory"})
         from langgraph.checkpoint.memory import InMemorySaver
 
         cp = get_checkpointer()
-        assert isinstance(cp, InMemorySaver)
+        assert isinstance(_unwrap(cp), InMemorySaver)
 
     def test_memory_singleton(self):
         load_checkpointer_config_from_dict({"type": "memory"})
@@ -290,7 +296,7 @@ class TestGetCheckpointer:
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
+        assert _unwrap(cp) is mock_saver_instance
         mock_saver_cls.from_conn_string.assert_called_once()
         mock_saver_instance.setup.assert_called_once()
 
@@ -327,7 +333,7 @@ class TestGetCheckpointer:
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
+        assert _unwrap(cp) is mock_saver_instance
         mock_ensure.assert_called_once_with("/tmp/resolved/relative/test.db")
         mock_saver_cls.from_conn_string.assert_called_once_with("/tmp/resolved/relative/test.db")
 
@@ -386,7 +392,7 @@ class TestGetCheckpointer:
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
+        assert _unwrap(cp) is mock_saver_instance
         mock_saver_cls.from_conn_string.assert_called_once_with("postgresql://localhost/db")
         mock_saver_instance.setup.assert_called_once()
 
@@ -414,7 +420,7 @@ class TestSyncSingletonThreadSafety:
             finally:
                 futures_started.shutdown(wait=True)
 
-        assert all(result is factory.value for result in results)
+        assert all(_unwrap(result) is factory.value for result in results)
         assert factory.enter_count() == 1
 
     def test_concurrent_store_getter_creates_one_instance(self):
@@ -432,7 +438,7 @@ class TestSyncSingletonThreadSafety:
             finally:
                 futures_started.shutdown(wait=True)
 
-        assert all(result is factory.value for result in results)
+        assert all(_unwrap(result) is factory.value for result in results)
         assert factory.enter_count() == 1
 
     def test_checkpointer_loads_config_outside_singleton_lock(self):
@@ -492,7 +498,7 @@ class TestSyncSingletonThreadSafety:
             assert factory.exit_count() == 0
 
             factory.release.set()
-            assert get_future.result(timeout=3) is factory.value
+            assert _unwrap(get_future.result(timeout=3)) is factory.value
             reset_future.result(timeout=3)
 
         assert factory.exit_count() == 1
@@ -522,7 +528,7 @@ class TestSyncSingletonThreadSafety:
             assert factory.exit_count() == 0
 
             factory.release.set()
-            assert get_future.result(timeout=3) is factory.value
+            assert _unwrap(get_future.result(timeout=3)) is factory.value
             reset_future.result(timeout=3)
 
         assert factory.exit_count() == 1
@@ -558,7 +564,7 @@ class TestAsyncCheckpointer:
             ) as mock_to_thread,
         ):
             async with make_checkpointer() as saver:
-                assert saver is mock_saver
+                assert _unwrap(saver) is mock_saver
 
         mock_to_thread.assert_awaited_once()
         called_fn, called_path = mock_to_thread.await_args.args
@@ -602,7 +608,7 @@ class TestAsyncCheckpointer:
             # AsyncConnectionPool() is a callable that returns mock_pool_instance
             # We need the constructor to be an async context manager
             async with make_checkpointer() as saver:
-                assert saver is mock_saver
+                assert _unwrap(saver) is mock_saver
 
         # Verify the pool was constructed with check Connection
         mock_pool_cls.assert_called_once()
@@ -650,7 +656,7 @@ class TestAsyncCheckpointer:
             patch.dict(sys.modules, {"psycopg_pool": MagicMock(AsyncConnectionPool=mock_pool_cls)}),
         ):
             async with make_checkpointer() as saver:
-                assert saver is mock_saver
+                assert _unwrap(saver) is mock_saver
 
         mock_pool_cls.assert_called_once()
         call_kwargs = mock_pool_cls.call_args
@@ -692,7 +698,7 @@ class TestAsyncCheckpointer:
             ) as mock_to_thread,
         ):
             async with make_checkpointer() as saver:
-                assert saver is mock_saver
+                assert _unwrap(saver) is mock_saver
 
         mock_to_thread.assert_awaited_once()
         called_fn, called_db_config = mock_to_thread.await_args.args
@@ -756,7 +762,7 @@ class TestClientCheckpointerFallback:
             client._ensure_agent(config)
 
         assert "checkpointer" in captured_kwargs
-        assert isinstance(captured_kwargs["checkpointer"], InMemorySaver)
+        assert isinstance(_unwrap(captured_kwargs["checkpointer"]), InMemorySaver)
 
     def test_client_explicit_checkpointer_takes_precedence(self):
         """An explicitly provided checkpointer is used even when config checkpointer is set."""

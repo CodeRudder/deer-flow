@@ -273,10 +273,20 @@ describe("ProcessStepRow", () => {
     expect(getByTestId("process-step-row").textContent).toContain("✓");
   });
 
-  it("D2 — forceExpanded shows the reasoning detail without user interaction", () => {
-    const { getByTestId } = render(
-      <ProcessStepRow step={reasoningStep} forceExpanded={true} />,
+  it("D2 (revised) — nothing auto-expands: a streaming reasoning row stays collapsed with a tail preview", () => {
+    const streaming: TimelineStep = {
+      id: "r4",
+      messageId: "m4",
+      variant: "reasoning",
+      reasoning: longText(10),
+      status: "done",
+    };
+    const { getByTestId, queryByTestId } = render(
+      <ProcessStepRow step={streaming} streamingTail={true} />,
     );
-    expect(getByTestId("process-step-detail")).not.toBeNull();
+    expect(queryByTestId("process-step-detail")).toBeNull();
+    const preview = getByTestId("process-step-preview");
+    expect(preview.textContent).toContain("line-10");
+    expect(preview.textContent?.startsWith("line-1")).toBe(false);
   });
 });

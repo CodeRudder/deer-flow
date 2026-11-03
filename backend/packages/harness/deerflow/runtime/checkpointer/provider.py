@@ -122,6 +122,12 @@ def get_checkpointer() -> Checkpointer:
     # this provider lock to avoid cross-provider lock-order inversion.
     ensure_config_loaded()
 
+    from deerflow.runtime.checkpointer.slimming import get_slimming_enabled_default, wrap_with_slimming
+
+    # The slimming switch is the process-wide flag recorded by the async
+    # factory (the only place allowed to load AppConfig); default is enabled.
+    slimming_enabled_value = get_slimming_enabled_default()
+
     with _checkpointer_lock:
         if _checkpointer is not None:
             return _checkpointer
@@ -134,13 +140,13 @@ def get_checkpointer() -> Checkpointer:
             from langgraph.checkpoint.memory import InMemorySaver
 
             logger.info("Checkpointer: using InMemorySaver (in-process, not persistent)")
-            _checkpointer = InMemorySaver()
+            _checkpointer = wrap_with_slimming(InMemorySaver(), enabled=slimming_enabled_value)
             return _checkpointer
 
         checkpointer_ctx = _sync_checkpointer_cm(config)
         checkpointer = checkpointer_ctx.__enter__()
         _checkpointer_ctx = checkpointer_ctx
-        _checkpointer = checkpointer
+        _checkpointer = wrap_with_slimming(checkpointer, enabled=slimming_enabled_value)
 
     return _checkpointer
 
@@ -182,11 +188,15 @@ def checkpointer_context() -> Iterator[Checkpointer]:
     """
 
     config = get_app_config()
+    from deerflow.runtime.checkpointer.slimming import set_slimming_enabled, slimming_enabled_from_config, wrap_with_slimming
+
+    enabled = slimming_enabled_from_config(config)
+    set_slimming_enabled(enabled)
     if config.checkpointer is None:
         from langgraph.checkpoint.memory import InMemorySaver
 
-        yield InMemorySaver()
+        yield wrap_with_slimming(InMemorySaver(), enabled=enabled)
         return
 
     with _sync_checkpointer_cm(config.checkpointer) as saver:
-        yield saver
+        yield wrap_with_slimming(saver, enabled=enabled)

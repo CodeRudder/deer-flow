@@ -183,13 +183,16 @@ describe("MessageList — process timeline flag on", () => {
       { length: 8 },
       (_, i) => `thought-${i + 1}`,
     ).join("\n");
+    // Live-order mid-stream snapshot: the newest message carries only the
+    // (growing) reasoning — no tool-call chunks yet — so the reasoning row is
+    // the last step and its collapsed preview shows the tail.
     const streamingMessages: Message[] = [
       { id: "h1", type: "human", content: "go" } as Message,
       {
         id: "a1",
         type: "ai",
-        content: reasoning,
-        tool_calls: [{ id: "tc1", name: "ls", args: {} }],
+        content: "",
+        additional_kwargs: { reasoning_content: reasoning },
       } as unknown as Message,
     ];
     const thread = {
@@ -206,6 +209,32 @@ describe("MessageList — process timeline flag on", () => {
     expect(preview?.textContent).toContain("thought-7");
     // tail, not head
     expect(preview?.textContent).not.toContain("thought-1");
+  });
+
+  it("reasoning of an answer renders once — as the step row, not inside the bubble", () => {
+    const messages: Message[] = [
+      { id: "h1", type: "human", content: "hi" } as Message,
+      {
+        id: "a1",
+        type: "ai",
+        content: "the answer",
+        additional_kwargs: { reasoning_content: "private thoughts" },
+      } as unknown as Message,
+    ];
+    render(
+      <MessageList
+        threadId="t"
+        thread={fakeThread(messages)}
+        processTimeline={true}
+      />,
+    );
+    expect(
+      document.querySelectorAll('[data-testid="process-step-row"]'),
+    ).toHaveLength(1);
+    const occurrences =
+      document.body.textContent?.split("private thoughts").length ?? 1;
+    // exactly one rendering of the reasoning text (step row preview)
+    expect(occurrences).toBe(2);
   });
 
   it("renders queued interjections after the answer entries", () => {

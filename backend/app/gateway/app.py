@@ -280,8 +280,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if cleaner_cfg.get("enabled", True):
                 checkpoint_cleaner = CheckpointCleaner(
                     checkpointer=app.state.checkpointer,
-                    keep=int(cleaner_cfg.get("keep", 100)),
+                    keep=int(cleaner_cfg.get("keep", 20)),
                     interval=int(cleaner_cfg.get("interval", 3600)),
+                    dry_run=bool(cleaner_cfg.get("dry_run", False)),
+                    leaf_policy=str(cleaner_cfg.get("leaf_policy", "all")),
                 )
                 checkpoint_cleaner.start(asyncio.get_event_loop())
                 app.state.checkpoint_cleaner = checkpoint_cleaner

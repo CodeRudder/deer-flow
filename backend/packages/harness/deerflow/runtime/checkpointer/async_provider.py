@@ -183,20 +183,27 @@ async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterato
     if app_config is None:
         app_config = get_app_config()
 
+    from deerflow.runtime.checkpointer.slimming import set_slimming_enabled, slimming_enabled_from_config, wrap_with_slimming
+
+    enabled = slimming_enabled_from_config(app_config)
+    # Publish the switch process-wide so the sync singleton (which must not
+    # load AppConfig itself) honours the same setting.
+    set_slimming_enabled(enabled)
+
     # Legacy: standalone checkpointer config takes precedence
     if app_config.checkpointer is not None:
         async with _async_checkpointer(app_config.checkpointer) as saver:
-            yield saver
+            yield wrap_with_slimming(saver, enabled=enabled)
             return
 
     # Unified database config
     db_config = getattr(app_config, "database", None)
     if db_config is not None and db_config.backend != "memory":
         async with _async_checkpointer_from_database(db_config) as saver:
-            yield saver
+            yield wrap_with_slimming(saver, enabled=enabled)
             return
 
     # Default: in-memory
     from langgraph.checkpoint.memory import InMemorySaver
 
-    yield InMemorySaver()
+    yield wrap_with_slimming(InMemorySaver(), enabled=enabled)

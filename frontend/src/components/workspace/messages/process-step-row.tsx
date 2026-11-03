@@ -499,15 +499,12 @@ export function ProcessStepRow({
   step,
   roundIndex,
   isLoading = false,
-  forceExpanded = false,
   failed = false,
   streamingTail = false,
 }: {
   step: TimelineStep;
   roundIndex?: number;
   isLoading?: boolean;
-  /** D2: the streaming newest reasoning row is expanded by the container. */
-  forceExpanded?: boolean;
   /** D7: failed steps open with their error detail visible until collapsed. */
   failed?: boolean;
   /**
@@ -518,11 +515,11 @@ export function ProcessStepRow({
 }) {
   // Row-local state is safe: step keys are stable (tool_call/message ids), so
   // streaming re-renders reuse the mounted row instead of resetting it.
+  const { t } = useI18n();
   const [userPreference, setUserPreference] = useState<boolean | null>(null);
-  // Explicit user toggles win over the D2 auto-expand of the streaming
-  // reasoning row, so a manually collapsed row stays collapsed (its preview
-  // then shows the streaming tail — req 4).
-  const expanded = userPreference ?? (forceExpanded || failed);
+  // D2 (revised by user testing): nothing auto-expands; failed steps (D7)
+  // still open by default. Manual clicks toggle any row.
+  const expanded = userPreference ?? failed;
   const summary = useStepSummary(step);
   const preview = useStepPreview(step, streamingTail && !expanded);
   const Icon = stepIcon(step);
@@ -598,6 +595,18 @@ export function ProcessStepRow({
           data-testid="process-step-detail"
           className="border-border/60 ml-6 border-l-2 pl-3"
         >
+          {/* Long details scroll the summary row out of view; keep a collapse
+              affordance at the top of the detail so the compact state is
+              always one visible click away (the row itself also toggles). */}
+          <button
+            type="button"
+            data-testid="process-step-collapse"
+            className="text-muted-foreground hover:text-foreground -my-1 flex min-h-11 w-full cursor-pointer items-center gap-1.5 py-2 text-left text-xs"
+            onClick={toggle}
+          >
+            <ChevronDownIcon className="size-3.5 shrink-0 rotate-180" />
+            {t.processTimeline.viewLess}
+          </button>
           <StepDetail step={step} isLoading={isLoading} />
         </div>
       )}

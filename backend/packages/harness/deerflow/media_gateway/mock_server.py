@@ -42,6 +42,13 @@ Drama series (M2 batch 2, contract ``minimax-h3-gateway/docs/integration/api/dra
   speaker → empty English column → clip budget) / ``GET`` / ``PATCH`` / ``DELETE`` (soft)
 - ``GET/POST …/chapters/{ch}/partition/preview|commit`` + ``GET …/episodes``
 
+Shot plan (media.md §plan, deterministic / zero GPU):
+
+- ``POST /v1/media/{id}/plan``       → sample plan.json (chunked shots, >15 s
+  split warning path), persisted on the media record; ``GET`` reads it (404
+  before first POST); ``GET …/plan/estimate`` is read-only (no persist)
+- video kind only — image media → 400 ``invalid_request``
+
 Error envelope everywhere: ``{"error": {code, message, retryable}}``; 429/503
 carry ``Retry-After``. Drama routes use the drama contract envelope instead:
 ``{"detail": {"error": {code, …}}}`` for structured errors (shot save-chain,
@@ -1000,6 +1007,17 @@ class MockMediaGateway:
             return httpx.Response(200, json=storyboard)
         if len(rest) == 3 and rest[0] == "storyboard" and rest[1] == "shots" and method == "PATCH":
             return self._storyboard_patch(media, int(rest[2]), self._json(request))
+        if rest == ["plan"] and method == "POST":
+            return self._media_plan(media, self._json(request))
+        if rest == ["plan"] and method == "GET":
+            plan = media.get("plan")
+            if plan is None:
+                return _error(404, "not_found", "还没有制作包（先 POST /plan）")
+            return httpx.Response(200, json=plan)
+        if rest == ["plan", "estimate"] and method == "GET":
+            # 只读估算，不落盘（media.md §plan）。
+            duration = self._plan_shot_chunks(media)
+            return httpx.Response(200, json=self._sample_plan_estimate(media, duration))
         if rest == ["generate"] and method == "POST":
             return self._groupvid_generate(request, media, user_id)
         if rest == ["generate"] and method == "GET":
@@ -1031,6 +1049,7 @@ class MockMediaGateway:
             "probe": {"images": probe_images} if kind == "images" else {"duration_s": 10.0},
             "analyzed": False,
             "storyboard": None,
+            "plan": None,
             "generate": None,
         }
         self.media[media_id] = media
@@ -1050,9 +1069,121 @@ class MockMediaGateway:
             "original_url": f"/v1/media/{media['id']}/file?kind=original",
         }
         if detail:
-            body["has_plan"] = False
+            body["has_plan"] = media.get("plan") is not None
             body["image_count"] = media["count"]
         return body
+
+    # ── INSERT-PLAN: 制作包（media.md §plan，确定性、零 GPU）──────────────
+    # POST /v1/media/{id}/plan（落盘）+ GET（读取）+ GET …/plan/estimate（只读）。
+    # 样例 plan 按媒体时长确定性切镜（每镜 ≤8 s，最后一段 >15 s 触发拆镜告警），
+    # 提示词行遵循模板 v2 拼装规则（[Shot N] 头句 / 主体： / 动作节奏： / 场景：），
+    # 供 deer-flow 的 plan_shots_to_storyboard 做前缀解析映射。
+    def _plan_shot_chunks(self, media: dict[str, Any]) -> list[float]:
+        duration = float((media.get("probe") or {}).get("duration_s") or 0)
+        if duration <= 0:
+            return []
+        chunks: list[float] = []
+        remaining = duration
+        while remaining > 0:
+            if remaining > 24:
+                take = 18.0  # 超 15 s 档 → 触发拆镜告警，覆盖告警路径
+            elif remaining > 8:
+                take = 8.0
+            else:
+                take = remaining
+            chunks.append(round(take, 2))
+            remaining = round(remaining - take, 2)
+        return chunks
+
+    @staticmethod
+    def _plan_tier(seconds: float) -> int:
+        for tier in (1, 5, 10, 15):
+            if seconds <= tier + 1e-6:
+                return tier
+        return 15
+
+    def _sample_plan(self, media: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        aspect = body.get("aspect")
+        short_edge = body.get("short_edge")
+        chunks = self._plan_shot_chunks(media)
+        shots: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        start = 0.0
+        gpu_s = 0.0
+        for i, dur in enumerate(chunks, start=1):
+            tier = self._plan_tier(dur)
+            end = round(start + dur, 2)
+            shot_warnings: list[str] = []
+            if dur > 15:
+                shot_warnings.append(f"原镜头 {dur:.1f}s 超过 15 s 档，需要拆镜")
+                warnings.append(f"#{i}：原镜头 {dur:.1f}s 超过 15 s 档，需要拆镜")
+            elif abs(dur - tier) > 1e-6:
+                shot_warnings.append(f"时长 {dur:.2f}s 向上取到 {tier}s 档")
+            ok = not shot_warnings or dur <= 15
+            gpu_s += 25.0 * tier / 5.0
+            shots.append(
+                {
+                    "index": i,
+                    "source": {"start_s": start, "end_s": end},
+                    "mode": "t2va",
+                    "mode_name": "h3-clip-std",
+                    "duration_s": tier,
+                    "aspect": aspect,
+                    "short_edge": short_edge,
+                    "prompt": (f"[Shot {i}] 中景，平视，固定机位；自然光，暖调。\n主体：人物位于画面中央，向前行走。\n动作节奏：起步：迈步向前；收势：站定。\n场景：城市街道，两旁店铺入画。\n画面方向：自左向右。"),
+                    "keyframe": None,
+                    "refs": [],
+                    "feasibility": {"ok": ok, "warnings": shot_warnings, "confidence": 0.8},
+                    "estimate": {"gpu_s": round(25.0 * tier / 5.0, 1), "wall_s": round(25.0 * tier / 5.0, 1), "basis": "h3-clip-std ETA 25s × 档位系数"},
+                }
+            )
+            start = end
+        return {
+            "version": 1,
+            "template_version": "shot-prompt-v2",
+            "media_id": media["id"],
+            "source": {"duration_s": float((media.get("probe") or {}).get("duration_s") or 0), "shot_count": len(shots), "probe": media.get("probe")},
+            "target": {"aspect": aspect, "short_edge": short_edge, "duration_policy": str(body.get("duration_policy") or "up")},
+            "style": {"look": "暖调", "lighting": "自然光", "light_direction": "侧光", "time_hint": "白天", "setting": "城市街道", "palette": "暖调/中等饱和/中等对比", "shot_size": "中景"},
+            "characters": [],
+            "locations": [],
+            "shots": shots,
+            "warnings": warnings,
+            "estimate": {
+                "gpu_s": round(gpu_s, 1),
+                "wall_s": round(gpu_s, 1),
+                "queue_s": None,
+                "mode_name": "h3-clip-std",
+                "by_mode": {"t2va": round(gpu_s, 1)},
+                "basis": "h3-clip-std ETA 25s",
+                "notes": ["只算推理（ETA × 时长档系数），不含排队与人工", "超过 15 s 的镜头按 15 s 计，需先拆镜"],
+            },
+            "assembly": {"order": [s["index"] for s in shots], "transition": "cut", "trim_preroll": True, "tail_fade": True, "burn_subtitles": False},
+            "config_snapshot": {},
+        }
+
+    def _media_plan(self, media: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
+        if media.get("kind") != "video":
+            return _error(400, "invalid_request", "制作包只支持已入库视频（kind=video）")
+        chunks = self._plan_shot_chunks(media)
+        if not chunks:
+            return _error(400, "invalid_request", "还没有切分结果（先完成镜头分析）")
+        plan = self._sample_plan(media, body)
+        media["plan"] = plan
+        return httpx.Response(200, json=plan)
+
+    def _sample_plan_estimate(self, media: dict[str, Any], chunks: list[float]) -> dict[str, Any]:
+        gpu_s = sum(25.0 * self._plan_tier(d) / 5.0 for d in chunks)
+        return {
+            "media_id": media["id"],
+            "shot_count": len(chunks),
+            "gpu_s": round(gpu_s, 1),
+            "wall_s": round(gpu_s, 1),
+            "queue_s": None,
+            "mode_name": "h3-clip-std",
+            "basis": "h3-clip-std ETA 25s",
+            "warnings": [f"#{i}：原镜头 {d:.1f}s 超过 15 s 档，需要拆镜" for i, d in enumerate(chunks, start=1) if d > 15],
+        }
 
     @staticmethod
     def _parse_multipart(request: httpx.Request) -> tuple[dict[str, str], list[tuple[str, str, bytes]]]:

@@ -164,7 +164,7 @@ describe("buildTimelineEntries", () => {
     expect(narration.content).toContain("Working on it");
   });
 
-  test("#3868 — a settled content-only message renders once as an answer, its reasoning never as a step", () => {
+  test("#3868 — a settled content-only message renders its reasoning exactly once: as the compact step row before the answer (the bubble suppresses its own block)", () => {
     const messages: Message[] = [
       human("h1", "hi"),
       ai("a1", "the answer", {
@@ -173,12 +173,16 @@ describe("buildTimelineEntries", () => {
     ];
 
     const entries = buildTimelineEntries(messages);
-    expect(kinds(entries)).toEqual(["human", "answer"]);
+    expect(kinds(entries)).toEqual(["human", "step", "answer"]);
+    const step = entries[1] as Extract<TimelineEntry, { kind: "step" }>;
+    expect(step.step.variant).toBe("reasoning");
+    expect(step.step.reasoning).toBe("private thoughts");
+    // exactly one reasoning rendering for the message
     expect(
-      entries.some(
+      entries.filter(
         (entry) => entry.kind === "step" && entry.step.variant === "reasoning",
       ),
-    ).toBe(false);
+    ).toHaveLength(1);
   });
 
   test("round counter resets at each new human turn", () => {
