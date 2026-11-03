@@ -1925,3 +1925,22 @@ auth:
 # throws, the original payload is written unchanged.
 checkpoint_slimming:
   enabled: true
+
+# ---------------------------------------------------------------------------
+# Checkpoint cleanup (P2 of docs/plans/2026-11-03-session-data-slimming.md)
+# ---------------------------------------------------------------------------
+# Periodic background cleanup: keeps the latest N checkpoints per
+# (thread, namespace) chain plus every leaf checkpoint, deleting the rest
+# together with their pending writes and now-unreferenced checkpoint blobs.
+# Supports both SQLite and Postgres checkpointers. Set dry_run: true to log
+# planned deletions without touching data.
+checkpoint_cleanup:
+  enabled: true
+  keep: 20
+  interval: 3600
+  dry_run: false
+  # all: protect every branch leaf (safe default; heavily branched threads
+  #      retain up to leaves x keep checkpoints). recent: walk only from each
+  #      chain's newest leaf — old abandoned branches become prunable (they
+  #      may no longer be reachable for checkpoint time travel).
+  leaf_policy: all
