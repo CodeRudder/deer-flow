@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 
 import type { TimelineEntry } from "@/core/messages/timeline";
 import { cn } from "@/lib/utils";
@@ -13,8 +13,9 @@ import { ProcessStepRow } from "./process-step-row";
  * Non-step entries (human / answer / artifact / interjection) are delegated to
  * `renderEntry` — `MessageList` owns their rendering so the bubble, card and
  * file-list shapes stay byte-identical to the legacy path. This component owns
- * the step rows, their expansion set (container-level so streaming re-renders
- * never lose it) and the D2 auto-expand of the newest reasoning row.
+ * the step rows and the streaming-tail pointer (req 4: the last in-progress
+ * row's collapsed preview follows the stream). Nothing auto-expands (D2
+ * revised by user testing): details are manual click only.
  */
 
 export function TimelineView({
@@ -28,61 +29,24 @@ export function TimelineView({
   renderEntry: (entry: TimelineEntry) => React.ReactNode;
   className?: string;
 }) {
-  // D2: while streaming, the newest reasoning row auto-expands; when the run
-  // settles every reasoning row collapses again (stable rows stay collapsed).
-  const latestReasoningStepId = useMemo(() => {
-    if (!isLoading) {
-      return null;
-    }
-    for (let index = entries.length - 1; index >= 0; index--) {
-      const entry = entries[index];
-      if (entry?.kind === "step" && entry.step.variant === "reasoning") {
-        return entry.step.id;
-      }
-    }
-    return null;
-  }, [entries, isLoading]);
-  const autoExpandedIdsRef = useRef<ReadonlySet<string>>(new Set());
-  const [autoExpandedIds, setAutoExpandedIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  // D2 (revised by user testing): nothing auto-expands — every step row stays
+  // collapsed and compact; details are manual click only (expanded behaviour
+  // unchanged: formatted content, 10-line clamp, view-more).
 
-  useEffect(() => {
-    const next = new Set(autoExpandedIdsRef.current);
-    if (latestReasoningStepId) {
-      next.add(latestReasoningStepId);
-    } else {
-      next.clear();
-    }
-    autoExpandedIdsRef.current = next;
-    setAutoExpandedIds(next);
-  }, [latestReasoningStepId]);
-
-  // Only the last in-progress step scrolls its collapsed preview with the
-  // stream: the newest reasoning/narration text wins (that is where visible
-  // content grows); a running tool call (no streaming text) is the fallback.
-  // Every settled row keeps its head-lines preview fixed.
+  // Req 4 (scope widened): while streaming, the LAST step row — any variant,
+  // the newest reasoning included — scrolls its collapsed preview with the
+  // stream (tail lines); every settled row keeps its head-lines preview fixed.
   const streamingTailStepId = useMemo(() => {
     if (!isLoading) {
       return null;
     }
-    let runningToolCallId: string | null = null;
     for (let index = entries.length - 1; index >= 0; index--) {
       const entry = entries[index];
-      if (entry?.kind !== "step") {
-        continue;
-      }
-      if (
-        entry.step.variant === "reasoning" ||
-        entry.step.variant === "narration"
-      ) {
+      if (entry?.kind === "step") {
         return entry.step.id;
       }
-      if (runningToolCallId === null && entry.step.status === "running") {
-        runningToolCallId = entry.step.id;
-      }
     }
-    return runningToolCallId;
+    return null;
   }, [entries, isLoading]);
 
   return (
@@ -104,10 +68,6 @@ export function TimelineView({
               step={entry.step}
               roundIndex={entry.roundIndex}
               isLoading={isLoading}
-              forceExpanded={
-                entry.step.variant === "reasoning" &&
-                autoExpandedIds.has(entry.step.id)
-              }
               failed={entry.step.status === "failed"}
               streamingTail={entry.step.id === streamingTailStepId}
             />

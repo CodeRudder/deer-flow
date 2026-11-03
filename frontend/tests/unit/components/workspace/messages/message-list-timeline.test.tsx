@@ -183,13 +183,16 @@ describe("MessageList — process timeline flag on", () => {
       { length: 8 },
       (_, i) => `thought-${i + 1}`,
     ).join("\n");
+    // Live-order mid-stream snapshot: the newest message carries only the
+    // (growing) reasoning — no tool-call chunks yet — so the reasoning row is
+    // the last step and its collapsed preview shows the tail.
     const streamingMessages: Message[] = [
       { id: "h1", type: "human", content: "go" } as Message,
       {
         id: "a1",
         type: "ai",
-        content: reasoning,
-        tool_calls: [{ id: "tc1", name: "ls", args: {} }],
+        content: "",
+        additional_kwargs: { reasoning_content: reasoning },
       } as unknown as Message,
     ];
     const thread = {

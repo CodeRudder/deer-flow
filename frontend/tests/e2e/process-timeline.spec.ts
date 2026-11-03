@@ -129,6 +129,18 @@ test.describe("process timeline interactions", () => {
       page.locator('[data-testid="process-step-detail"]'),
     ).toHaveCount(0);
 
+    // D2 (revised) — expanded again, the detail's own top collapse affordance
+    // folds it back without scrolling to the row (long details push the row
+    // out of view).
+    await page.locator('[data-testid="process-step-toggle"]').first().click();
+    await expect(
+      page.locator('[data-testid="process-step-detail"]').first(),
+    ).toBeVisible();
+    await page.locator('[data-testid="process-step-collapse"]').first().click();
+    await expect(
+      page.locator('[data-testid="process-step-detail"]'),
+    ).toHaveCount(0);
+
     // 1 — the write_file row toggles instead of jumping to the artifact panel.
     const artifactRow = page
       .locator('[data-testid="process-step-row"][data-step-variant="toolCall"]')
