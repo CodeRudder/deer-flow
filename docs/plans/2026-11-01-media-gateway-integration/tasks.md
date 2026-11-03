@@ -165,3 +165,19 @@ M1 ─► M2 ──────────────────┘
 - R2-3 评估读取：`GET /v1/images/jobs/{id}/assessment`（QC 评分）接入生成结果（quality 字段），供 drama/video-clips QC 闭环直接消费
 - R2-4 多 mode 选择：确认 /v1/images/modes 全量档位（moss/qwen/wan/ltx/h3-*）经能力发现在模型下拉全部可选（含参考图类 ref2va 的参考图参数域）
 - R2-5 形状锁：`GET/POST /v1/shape-lock` 状态提示接入生成前校验提示（仅提示不阻断）
+
+## 参考视频模式：MGW plan 制作包接入（2026-11-03）
+
+用户给参考视频 →"照这个片子的节奏/运镜生成××"：视频入库 → MGW
+`POST /v1/media/{id}/plan`（确定性制作包，零 GPU）→ plan 镜头表转 skill
+分镜骨架 → 内容按 target 主题改写 → 走既有生成链路。决策（用户已批）：
+plan→shots **1:1 基线、agent 可增删**（>15 s 拆镜告警必须拆）；参考视频
+**首期仅支持上传**；`estimate` 封装备用、主流程不暴露。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 封装 `deerflow/media_gateway/shot_plan.py` | ✅ | `make_plan`/`get_plan`/`estimate_plan` + `plan_shots_to_storyboard`（模板 v2 行前缀解析 → 五要素） |
+| mock_server plan 路由 | ✅ | POST 落盘 / GET 读取 / estimate 只读；按媒体时长确定性切镜，>15 s 段覆盖拆镜告警路径；video kind 校验 |
+| 测试 `tests/test_media_gateway_shot_plan.py` | ✅ | 封装调用 + 确定性 + owner 隔离 + 拆镜告警 + 1:1 映射/可行性 |
+| skill 接入 | ✅ | `video-clips/SKILL.md` ⓪ 参考视频模式分支 + 契约映射表；`drama-production/SKILL.md` 参考视频模式节（plan 字段 → drama shots 落库映射） |
+| E2E-real 小验证 | ⏳ | 短视频入库 → plan → 制作包结构检查（进行中） |

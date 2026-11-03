@@ -50,6 +50,36 @@ MGW 契约真源：`minimax-h3-gateway/docs/integration/api/drama.md`——所�
 用 `ask_clarification`（`approach_choice`）确认：`["checkpoint 模式", "auto 模式"]`，
 同时确认输入类型（创意 / 大纲 / 原著文本）与目标单集时长（缺省 60s）。
 
+## 参考视频模式（可选分支：`shot_plan.py`，用户给了参考视频才走）
+
+用户给一条已拍好的参考视频（仅支持会话上传入库，暂不支持链接抓取）要求
+"照这个片子的节奏/运镜写/生成"时，先用它得到**分镜骨架**，再进阶段 1 的
+结构落库；剧本主体（角色/台词/主题）仍由你按用户 target 起草：
+
+1. **视频入库**：会话上传链入库（`kind=video`）→
+   `POST /v1/media/{video_id}/plan`（`deerflow.media_gateway.shot_plan.make_plan`，
+   可带目标 `aspect` / `short_edge`）→ 确定性 plan.json（零 GPU、可复现）；
+2. **镜头表 → 分镜骨架**：`plan_shots_to_storyboard(plan)` 按 **1:1 基线**
+   （checkpoint 目检后可增删）映射：
+
+   | plan 字段 | 落到 drama shots 字段 |
+   |---|---|
+   | 首句运镜语言 + `场景：`/`画面方向：`/`视线：` 行 | `camera` / `size`（原样继承参考片） |
+   | `主体：` + `动作节奏：` 行 | `prompt_zh` 骨架——**内容按 target 主题改写**，动作链与节奏保留；`prompt_en` 给改写后英文 |
+   | `duration_s`（1/5/10/15 档） | `duration_s`；连续镜按合计 ≤`budget_tier` 分组进 clip（`budget_tier ∈ {1,5,10,15}` 见阶段 1 速查表） |
+   | `source` 时间码 / `template_prompt` | 只作改写对照，不落库 |
+
+   顶层 `style`（众数影调/色调/景别）写进每镜设计做跨镜一致性基线；
+   `expression` / `dialogue` plan 无分析，由你按 target 补写（`dialogue` 每条
+   带 `speaker`，走阶段 2 校验）；
+3. **拆镜告警（必须处理）**：`feasible=False` 或 `warnings` 含"超过 15 s 档，
+   需要拆镜"的镜 → 按动作节拍拆成多镜（逐镜 ≤15 s），落库时在 checkpoint
+   分镜板标注"较参考片多 N 镜（拆镜）"；
+4. 骨架经 checkpoint 目检后并入阶段 1 第 2 步的结构落库（clip/shots 照常
+   建，五要素照常过 `prompt_preview` 门），参考视频本身不参与生成；
+   `estimate_plan` 已封装但主流程不调（plan 自带 `estimate`，仅用户主动问
+   成本时做只读估算）。
+
 ## 阶段 1：剧本编写（LLM 起草 → MGW 落库）
 
 1. **LLM 起草**（在会话内完成，先给用户看，checkpoint 模式确认后再落库）：

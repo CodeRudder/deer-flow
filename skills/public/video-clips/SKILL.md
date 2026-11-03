@@ -1,6 +1,6 @@
 ---
 name: video-clips
-description: Use this skill when the user wants 组图生视频 / 分镜片段视频 — e.g. gives a set of reference images (素材/组图/分镜图) and asks to 生成分镜视频 / 让图片动起来 / 组图转视频. Orchestrates the Media Gateway groupvid pipeline — 素材入库 → 分镜方案（plan/design，每镜五要素）→ 设计图目检 → 逐镜提交生成 → QC → 逐镜产物交付.
+description: Use this skill when the user wants 组图生视频 / 分镜片段视频 — e.g. gives a set of reference images (素材/组图/分镜图) and asks to 生成分镜视频 / 让图片动起来 / 组图转视频, or gives a reference video and asks to 照这个片子的节奏/运镜生成 (参考视频模式: MGW plan 制作包 → 分镜骨架 → 按主题改写). Orchestrates the Media Gateway groupvid pipeline — 素材入库 → 分镜方案（plan/design，每镜五要素）→ 设计图目检 → 逐镜提交生成 → QC → 逐镜产物交付.
 ---
 
 # 组图生视频 / 分镜片段（video-clips）
@@ -21,10 +21,43 @@ sidecar（见文末"中断续作"）。
 - **参考图/素材**：用户给的图片文件（上传到会话或给出 URL 抓取结果），或
   素材库中已有的组图媒体（`med_…`）。一张也可以，多张（1–20）更好——
   分镜从组图中选参考图。
+- **参考视频（可选，参考视频模式）**：用户给一条已拍好的视频（仅支持会话
+  上传入库，暂不支持链接抓取），要求"照这个片子的节奏/运镜生成××"。此时
+  视频只提供**分镜骨架**（镜头数/每镜时长/运镜/节奏），生图参考仍走上面的
+  组图入库链路。
 - 分镜数量（缺省 3，1–10）、每镜时长档（1/5/10/15 秒，缺省 5）、补充要求
   （氛围/动作偏好）。
 
 ## 流程（按序执行；①②③可由 `video_clips.py` 对应函数完成）
+
+### ⓪ 参考视频模式（可选分支：`shot_plan.py`，有参考视频才走）
+
+用户给了参考视频时，先用它替代 ② 的 LLM 初稿出**分镜骨架**，其余步骤
+（① 素材入库、③ QC、④ 确认、⑤⑥ 生成交付）不变：
+
+1. **视频入库**：会话上传链入库（`kind=video`，仅支持用户上传）；
+2. **制作包**：`POST /v1/media/{video_id}/plan`（`deerflow.media_gateway.shot_plan.make_plan`，
+   可带目标 `aspect` / `short_edge`）→ 确定性 plan.json（零 GPU、可复现）；
+3. **镜头表 → 五要素骨架**：`plan_shots_to_storyboard(plan)` 按
+   **1:1 基线**（你可在 checkpoint 目检后增删镜头）把每镜映射成五要素草稿：
+
+   | plan 字段 | 含义 | 落到五要素 |
+   |---|---|---|
+   | 首句（景别/角度/运镜）+ `场景：` + `画面方向：`/`视线：` 行 | 运镜语言 | `scene`（落库 `camera`，**原样继承参考片**） |
+   | `主体：` + `动作节奏：` 行 | 动作结构 | `action` 骨架——**内容主体按 target 主题改写**，保留动作链与节奏 |
+   | （无对应分析） | — | `expression` / `dialogue` 由你按 target 补写 |
+   | `duration_s`（1/5/10/15 档） | 节奏 | `pacing` |
+   | `source`（参考片时间码）/ `template_prompt`（模板 v2 原文） | 改写对照 | 随镜透传，不改写 `camera` |
+
+   顶层 `style`（众数聚合的影调/色调/景别）作为跨镜一致性基线写进每镜设计；
+4. **拆镜告警（必须处理）**：`feasible=False` 或 `warnings` 含"超过 15 s 档，
+   需要拆镜"的镜 → 把该镜按动作节拍拆成多镜（总时长不变，逐镜 ≤15 s 档），
+   并在 checkpoint 表格里标注"较参考片多 N 镜（拆镜）"；
+5. 改写后的五要素进 ② 的既有落库路径（`build_shot_patch` →
+   `PATCH …/storyboard/shots/{index}`），参考视频本身不再参与生成。
+
+`estimate_plan`（`GET …/plan/estimate`）已封装但主流程不调——plan 自带
+`estimate`；仅当用户主动问成本时用它做只读估算。
 
 ### ① 素材入库（`ingest_materials`）
 
@@ -121,6 +154,8 @@ media-console-link）」。
 |---|---|
 | `400 还没有组图分析结果` | 先跑 `ensure_analysis` 再设计分镜 |
 | `400 kind≠images` | 素材不是组图（是视频）；改用抽帧入库或换素材 |
+| `400 制作包只支持已入库视频（kind=video）` | 参考视频模式把组图当视频送了 plan；视频走 plan，组图走 storyboard |
+| `400 还没有切分结果（先完成镜头分析）` | 视频还没切分分析；先跑镜头分析再 `make_plan` |
 | `404 media 不存在` | media_id 错或非本人素材；让用户确认素材来源 |
 | `409 conflict` | 同 Idempotency-Key 不同参数；换 key 或复用原参数 |
 | 作业 `failed` | 走 ⑥ 的归因修正闭环 |
