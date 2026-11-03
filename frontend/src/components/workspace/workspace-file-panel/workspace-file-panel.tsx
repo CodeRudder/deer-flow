@@ -261,7 +261,15 @@ function WorkspaceFilePreviewDialog({
             </Button>
           </Tooltip>
         </div>
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        {/* The scroll container for preview content. `ArtifactFilePreview`
+            renders non-scrolling `size-full` markup — inside the artifacts
+            panel `ArtifactContent` (`min-h-0 flex-1 overflow-auto`) is the
+            scroller; this div plays that same role here. Without it long
+            markdown/code is clipped by the frame's `overflow-hidden`. */}
+        <div
+          className="relative min-h-0 flex-1 overflow-auto"
+          data-testid="workspace-files-preview-body"
+        >
           {body}
         </div>
       </div>
@@ -578,14 +586,25 @@ export function WorkspaceFilePanel({
 
   if (variant === "embedded") {
     return (
-      <div
-        data-testid="workspace-files-panel"
-        className="flex size-full min-h-0 flex-col"
-      >
-        {header}
-        {body}
-        {footer}
-      </div>
+      <>
+        <div
+          data-testid="workspace-files-panel"
+          className="flex size-full min-h-0 flex-col"
+        >
+          {header}
+          {body}
+          {footer}
+        </div>
+        {/* Full preview dialog (image / text / media / too-large fallback). */}
+        {previewEntry && previewKindFor(previewEntry) !== null && (
+          <WorkspaceFilePreviewDialog
+            entry={previewEntry}
+            threadId={threadId}
+            kind={previewKindFor(previewEntry)!}
+            onClose={() => setPreviewEntry(null)}
+          />
+        )}
+      </>
     );
   }
 
