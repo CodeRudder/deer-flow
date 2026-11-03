@@ -679,6 +679,7 @@ export function MessageList({
   const renderGroup = (
     group: MessageGroup,
     groupIndex: number,
+    { suppressReasoning = false }: { suppressReasoning?: boolean } = {},
   ): React.ReactNode => {
     const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
     const groupIsLoading = thread.isLoading && groupIndex === lastGroupIndex;
@@ -702,6 +703,7 @@ export function MessageList({
                   thread.isLoading && groupIndex === groupedMessages.length - 1
                 }
                 threadId={threadId}
+                suppressReasoning={suppressReasoning}
                 showCopyButton={group.type !== "assistant"}
                 turnStartTime={
                   groupIndex === groupedMessages.length - 1
@@ -1027,9 +1029,12 @@ export function MessageList({
       );
     }
     if (entry.kind === "answer") {
+      // Timeline mode: the answer's reasoning is the preceding step row; the
+      // bubble must not paint its own (unbounded) reasoning block.
       return renderGroup(
         { id: entry.message.id, type: "assistant", messages: [entry.message] },
         groupIndex,
+        { suppressReasoning: true },
       );
     }
     return renderGroup(entry.group, groupIndex);

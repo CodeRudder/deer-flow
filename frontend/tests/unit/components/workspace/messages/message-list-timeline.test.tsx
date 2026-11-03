@@ -208,6 +208,32 @@ describe("MessageList — process timeline flag on", () => {
     expect(preview?.textContent).not.toContain("thought-1");
   });
 
+  it("reasoning of an answer renders once — as the step row, not inside the bubble", () => {
+    const messages: Message[] = [
+      { id: "h1", type: "human", content: "hi" } as Message,
+      {
+        id: "a1",
+        type: "ai",
+        content: "the answer",
+        additional_kwargs: { reasoning_content: "private thoughts" },
+      } as unknown as Message,
+    ];
+    render(
+      <MessageList
+        threadId="t"
+        thread={fakeThread(messages)}
+        processTimeline={true}
+      />,
+    );
+    expect(
+      document.querySelectorAll('[data-testid="process-step-row"]'),
+    ).toHaveLength(1);
+    const occurrences =
+      document.body.textContent?.split("private thoughts").length ?? 1;
+    // exactly one rendering of the reasoning text (step row preview)
+    expect(occurrences).toBe(2);
+  });
+
   it("renders queued interjections after the answer entries", () => {
     const item: PendingInterjection = {
       id: "i1",

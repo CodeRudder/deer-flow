@@ -270,8 +270,32 @@ export function buildTimelineEntries(
       !hasToolCalls(message) &&
       !isUnresolvedAssistantText;
 
+    // Answer messages keep their reasoning OUT of the bubble (MessageListItem
+    // suppresses it in timeline mode) and render it as a compact step row in
+    // front of the answer, so thinking is always single-line + clamped.
+    const answerReasoningSteps = (): TimelineEntry[] => {
+      const answerReasoning = extractReasoningContentFromMessage(message);
+      if (!answerReasoning?.trim()) {
+        return [];
+      }
+      return [
+        {
+          kind: "step",
+          id: `${message.id ?? `ai-${messageIndex}`}-reasoning`,
+          roundIndex: roundCounter,
+          step: {
+            id: `${message.id ?? `ai-${messageIndex}`}-reasoning`,
+            messageId: message.id,
+            variant: "reasoning",
+            reasoning: answerReasoning,
+            status: "done",
+          },
+        },
+      ];
+    };
+
     if (isUnresolvedAssistantText) {
-      entries.push({
+      entries.push(...answerReasoningSteps(), {
         kind: "answer",
         id: message.id ?? `answer-${messageIndex}`,
         message,
@@ -281,7 +305,7 @@ export function buildTimelineEntries(
     }
 
     if (becomesAssistantBubble) {
-      entries.push({
+      entries.push(...answerReasoningSteps(), {
         kind: "answer",
         id: message.id ?? `answer-${messageIndex}`,
         message,

@@ -128,6 +128,7 @@ export function MessageListItem({
   threadId,
   showCopyButton = true,
   turnStartTime,
+  suppressReasoning = false,
 }: {
   className?: string;
   message: Message;
@@ -137,6 +138,12 @@ export function MessageListItem({
   runId?: string;
   showCopyButton?: boolean;
   turnStartTime?: number | null;
+  /**
+   * Process timeline mode: the message's reasoning renders as a compact
+   * timeline step row instead of the in-bubble `<Reasoning>` block, so the
+   * bubble must not paint it a second time (and never at unbounded height).
+   */
+  suppressReasoning?: boolean;
 }) {
   const isHuman = message.type === "human";
   // What the toolbar copies (backend-injected context stripped), memoized per
@@ -164,6 +171,7 @@ export function MessageListItem({
         isLoading={isLoading}
         threadId={threadId}
         turnStartTime={turnStartTime}
+        suppressReasoning={suppressReasoning}
       />
       {!isLoading && showCopyButton && (
         <MessageToolbar
@@ -235,12 +243,15 @@ function MessageContent_({
   isLoading = false,
   threadId,
   turnStartTime,
+  suppressReasoning = false,
 }: {
   className?: string;
   message: Message;
   isLoading?: boolean;
   threadId: string;
   turnStartTime?: number | null;
+  /** See MessageListItem — timeline mode renders reasoning as a step row. */
+  suppressReasoning?: boolean;
 }) {
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const getThinkingMessage = useGetThinkingMessage();
@@ -393,8 +404,9 @@ function MessageContent_({
     );
   }
 
-  // Reasoning-only AI message (no main response content yet)
-  if (!isHuman && reasoningContent && !rawContent) {
+  // Reasoning-only AI message (no main response content yet). In timeline
+  // mode it is a step row, never an in-bubble reasoning block.
+  if (!suppressReasoning && !isHuman && reasoningContent && !rawContent) {
     return (
       <AIElementMessageContent className={className}>
         <Reasoning
@@ -439,7 +451,8 @@ function MessageContent_({
     <AIElementMessageContent className={className}>
       {filesList}
       {/* Tool-calling bubbles keep reasoning in the CoT panel (#3868). */}
-      {!isHuman &&
+      {!suppressReasoning &&
+        !isHuman &&
         !hasToolCalls(message) &&
         (!!reasoningContent || wasLoading || turnDuration !== undefined) && (
           <Reasoning

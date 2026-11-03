@@ -68,6 +68,7 @@ const THREAD_MESSAGES = [
     type: "ai",
     id: "a3",
     content: [{ type: "text", text: "All done — here is the draft." }],
+    additional_kwargs: { reasoning_content: "wrap up: 3 files drafted" },
   },
 ];
 
@@ -94,8 +95,9 @@ test.describe("process timeline interactions", () => {
     });
 
     const rows = page.locator('[data-testid="process-step-row"]');
-    // reasoning + web_search + narration + write_file
-    await expect(rows).toHaveCount(4);
+    // reasoning + web_search + narration + write_file + the answer's wrap-up
+    // reasoning (compact step row, not an in-bubble block)
+    await expect(rows).toHaveCount(5);
 
     // Collapsed preview shows the head lines of the long reasoning.
     const firstPreview = rows
@@ -143,5 +145,48 @@ test.describe("process timeline interactions", () => {
     // detail-internal clicks never collapse the row
     await page.locator('[data-testid="process-step-open-artifact"]').click();
     await expect(artifactDetail).toBeVisible();
+
+    // The answer's reasoning renders exactly once — as the compact step row,
+    // never as the unbounded in-bubble Reasoning block.
+    await expect(page.getByText("wrap up: 3 files drafted")).toHaveCount(1);
+  });
+});
+
+// Mobile viewport regression (390×844-class): the mobile chat page reuses the
+// desktop transcript; the same historical thread must render as timeline rows
+// (never the legacy "ran N steps · M tools" collapsed card), and reasoning
+// stays compact.
+test.describe("process timeline on mobile", () => {
+  // Runs under the config's mobile project (iPhone 13, 390×844-class); the
+  // desktop project repeats it as a parity check.
+  test("historical thread renders step rows at phone width", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, {
+      threads: [
+        {
+          thread_id: THREAD_ID,
+          title: "Timeline thread",
+          messages: THREAD_MESSAGES,
+        },
+      ],
+    });
+
+    await page.goto(`/workspace/chats/${THREAD_ID}`);
+    await expect(page.getByText("All done — here is the draft.")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const rows = page.locator('[data-testid="process-step-row"]');
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByText("wrap up: 3 files drafted")).toHaveCount(1);
+    await expect(
+      page.locator('[data-testid="mobile-collapsed-steps"]'),
+    ).toHaveCount(0);
+    // expanded detail is reachable on tap
+    await rows.first().locator('[data-testid="process-step-toggle"]').click();
+    await expect(
+      page.locator('[data-testid="process-step-detail"]').first(),
+    ).toBeVisible();
   });
 });
